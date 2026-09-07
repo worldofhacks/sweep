@@ -51,8 +51,24 @@ export interface TelemetryPayload {
 }
 
 export interface PoseCaptureAlignment {
-  readonly gimbal_capture: SourceTime
-  readonly attitude_capture: SourceTime
+  readonly v: 1
+  readonly alignment_config_id: string
+  readonly alignment_config_sha256: string
+  readonly kinematic_calibration_id: string
+  readonly kinematic_calibration_sha256: string
+  readonly frame_pts: SourceTime
+  readonly gimbal_receipt: SourceTime
+  readonly body_attitude_receipt: SourceTime
+  readonly gimbal_attitude: Readonly<{ yaw_deg: number; pitch_deg: number; roll_deg: number }>
+  readonly body_attitude: Readonly<{ yaw_deg: number; pitch_deg: number; roll_deg: number }>
+  readonly frame_capture_error_ms: number
+  readonly gimbal_callback_latency_ms: number
+  readonly body_attitude_callback_latency_ms: number
+  readonly gimbal_callback_orientation_error_deg: number
+  readonly body_attitude_callback_orientation_error_deg: number
+  readonly gimbal_angular_rate_bound_deg_s: number
+  readonly body_angular_rate_bound_deg_s: number
+  readonly max_extrinsics_angle_error_deg: number
 }
 
 export interface PosePayload {
@@ -268,12 +284,38 @@ function telemetryPayload(value: unknown, frame: string): TelemetryPayload | nul
 }
 
 function poseCaptureAlignment(value: unknown): PoseCaptureAlignment | null {
-  const result = exact(value, new Set(['gimbal_capture', 'attitude_capture']))
-  const gimbalCapture = result && sourceTime(result.gimbal_capture)
-  const attitudeCapture = result && sourceTime(result.attitude_capture)
-  return gimbalCapture && attitudeCapture
-    ? freeze({ gimbal_capture: gimbalCapture, attitude_capture: attitudeCapture })
-    : null
+  const fields = new Set(['v', 'alignment_config_id', 'alignment_config_sha256', 'kinematic_calibration_id', 'kinematic_calibration_sha256', 'frame_pts', 'gimbal_receipt', 'body_attitude_receipt', 'gimbal_attitude', 'body_attitude', 'frame_capture_error_ms', 'gimbal_callback_latency_ms', 'body_attitude_callback_latency_ms', 'gimbal_callback_orientation_error_deg', 'body_attitude_callback_orientation_error_deg', 'gimbal_angular_rate_bound_deg_s', 'body_angular_rate_bound_deg_s', 'max_extrinsics_angle_error_deg'])
+  const result = exact(value, fields)
+  if (!result || result.v !== 1) return null
+  const textFields = ['alignment_config_id', 'kinematic_calibration_id'] as const
+  if (textFields.some(field => !text(result[field]))) return null
+  const alignmentSha = typeof result.alignment_config_sha256 === 'string' && /^[0-9a-f]{64}$/.test(result.alignment_config_sha256) ? result.alignment_config_sha256 : null
+  const calibrationSha = typeof result.kinematic_calibration_sha256 === 'string' && /^[0-9a-f]{64}$/.test(result.kinematic_calibration_sha256) ? result.kinematic_calibration_sha256 : null
+  const times = [sourceTime(result.frame_pts), sourceTime(result.gimbal_receipt), sourceTime(result.body_attitude_receipt)]
+  const attitude = (raw: unknown) => {
+    const value = exact(raw, new Set(['yaw_deg', 'pitch_deg', 'roll_deg']))
+    const yaw = value && number(value.yaw_deg)
+    const pitch = value && number(value.pitch_deg)
+    const roll = value && number(value.roll_deg)
+    return yaw === null || pitch === null || roll === null ? null : freeze({ yaw_deg: yaw, pitch_deg: pitch, roll_deg: roll })
+  }
+  const gimbal = attitude(result.gimbal_attitude)
+  const body = attitude(result.body_attitude)
+  const numericFields = ['frame_capture_error_ms', 'gimbal_callback_latency_ms', 'body_attitude_callback_latency_ms', 'gimbal_callback_orientation_error_deg', 'body_attitude_callback_orientation_error_deg', 'gimbal_angular_rate_bound_deg_s', 'body_angular_rate_bound_deg_s', 'max_extrinsics_angle_error_deg'] as const
+  const numbers = numericFields.map(field => number(result[field]))
+  if (!alignmentSha || !calibrationSha || times.some(value => !value) || !gimbal || !body || numbers.some(value => value === null || value < 0)) return null
+  return freeze({
+    v: 1,
+    alignment_config_id: text(result.alignment_config_id)!,
+    alignment_config_sha256: alignmentSha,
+    kinematic_calibration_id: text(result.kinematic_calibration_id)!,
+    kinematic_calibration_sha256: calibrationSha,
+    frame_pts: times[0]!, gimbal_receipt: times[1]!, body_attitude_receipt: times[2]!,
+    gimbal_attitude: gimbal, body_attitude: body,
+    frame_capture_error_ms: numbers[0]!, gimbal_callback_latency_ms: numbers[1]!, body_attitude_callback_latency_ms: numbers[2]!,
+    gimbal_callback_orientation_error_deg: numbers[3]!, body_attitude_callback_orientation_error_deg: numbers[4]!,
+    gimbal_angular_rate_bound_deg_s: numbers[5]!, body_angular_rate_bound_deg_s: numbers[6]!, max_extrinsics_angle_error_deg: numbers[7]!,
+  })
 }
 
 function posePayload(value: unknown, frame: string): PosePayload | null {
