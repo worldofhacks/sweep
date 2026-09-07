@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -91,3 +92,10 @@ def test_owner_rollback_verifies_backup_and_restores_vendor_metadata(tmp_path: P
     assert "chown 1000:1000 $target" in rollback
     assert "chmod 600 $target" in rollback
     assert "chcon u:object_r:system_app_data_file:s0 $target" in rollback
+
+
+def test_owner_rollback_pins_current_sampler_module() -> None:
+    module = Path(__file__).with_name("vendor") / "sweep_paired_encoder_sampler.js"
+    module_sha = hashlib.sha256(module.read_bytes()).hexdigest()
+    rollback = Path(__file__).with_name("rollback_owner_encoder_patch.sh").read_text()
+    assert f'module_sha="{module_sha}"' in rollback

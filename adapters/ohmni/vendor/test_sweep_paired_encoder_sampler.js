@@ -51,7 +51,11 @@ function nextJson(client) {
   });
 }
 
-async function withSampler(test) {
+async function withSampler(options, test) {
+  if (typeof options === 'function') {
+    test = options;
+    options = {};
+  }
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sweep-paired-encoder-'));
   const socketPath = path.join(directory, 'encoder.sock');
   const serial = new FakeSerial();
@@ -62,6 +66,10 @@ async function withSampler(test) {
     replyTimeoutMs: 20,
   });
   sampler.start();
+  if (options.activate !== false) {
+    sampler.beginInitialization();
+    sampler.activate();
+  }
   await wait(5);
   try {
     await test({ sampler, serial, socketPath });
@@ -69,6 +77,43 @@ async function withSampler(test) {
     await new Promise((resolve) => sampler.stop(resolve));
     fs.rmSync(directory, { recursive: true, force: true });
   }
+}
+
+async function testNativeInitializationDefersPollingButKeepsTheEncoderGate() {
+  await withSampler({ activate: false }, async ({ sampler, serial, socketPath }) => {
+    const client = await connect(socketPath);
+    try {
+      serial.sendCustom(0, 4, Buffer.from([58, 2]));
+      sampler.beginInitialization();
+      await wait(25);
+      assert.deepStrictEqual(serial.requests, []);
+
+      const firstPair = nextJson(client);
+      sampler.activate();
+      await wait(5);
+      assert.deepStrictEqual(serial.requests.map((request) => request.sid), [0]);
+      serial.reply(0, 10);
+      serial.reply(1, 20);
+      assert.strictEqual((await firstPair).type, 'sweep_encoder_pair');
+
+      const invalidated = nextJson(client);
+      sampler.beginInitialization();
+      assert.deepStrictEqual(await invalidated, {
+        v: 1,
+        type: 'sweep_encoder_unavailable',
+        poll_id: null,
+        reason: 'serial_reinitializing',
+      });
+      await wait(25);
+      assert.deepStrictEqual(serial.requests.map((request) => request.sid), [0, 1]);
+
+      sampler.activate();
+      await wait(5);
+      assert.deepStrictEqual(serial.requests.map((request) => request.sid), [0, 1, 0]);
+    } finally {
+      client.destroy();
+    }
+  });
 }
 
 async function testDelayedPairFansOut() {
@@ -194,6 +239,7 @@ async function testFanoutBoundsClientsAndDropsSlowReaders() {
 }
 
 (async () => {
+  await testNativeInitializationDefersPollingButKeepsTheEncoderGate();
   await testDelayedPairFansOut();
   await testOutOfOrderReplyCannotAdvanceThePoll();
   await testIncompletePollLatchesUnavailableAndNeverReusesLateReply();

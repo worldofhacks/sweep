@@ -13,8 +13,8 @@ case "$node_dir" in
 esac
 adb=${ADB:-adb}
 reference_sha="f463feaab912999d3b4133fea049925ed95a6e32ee82856fb7ffa273cbe2ca3e"
-patched_sha="7d7ec2647e083adb42040f5ebbfd274fe87b7775739ada162c7402d55ffea70d"
-module_sha="f7dbd82f36df7a95ef13266bfe27e93b7df799f19d86dc855f398125ff4c260d"
+patched_sha="0394a830141bf8ce4343944b768de17887531f3c1d89e3521216b5f7ca5b82ea"
+module_sha="3dd6f7795b1f3ec8e56b302c5bdb6cf5c59301c0371742e6573fd16ca26db72f"
 vendor_owner="1000:1000"
 vendor_mode=600
 vendor_context="u:object_r:system_app_data_file:s0"
