@@ -444,7 +444,7 @@ export function parseObservation(value: unknown): Observation | null {
   if (!eventId || !session || deviceId === null || epoch === null || !sourceId || !nodeType || !frame || confidence === null || (capture === null && result.t_capture !== null) || !receipt || mapping === null && result.clock_mapping_id !== null || ingest === null) return null
   if (capture && (capture.clock_id !== receipt.clock_id || capture.unit !== receipt.unit || capture.value > receipt.value)) return null
   const parsedPayload = payload(result.payload, frame)
-  if (!parsedPayload) return null
+  if (!parsedPayload || (parsedPayload.kind === 'pose' && parsedPayload.capture_alignment && !mapping)) return null
   const observation = freeze({ v: 1 as const, type: 'observation' as const, event_id: eventId, session, device_id: deviceId, connection_epoch: epoch, source_id: sourceId, node_type: nodeType, frame, confidence, t_capture: capture, t_source_receipt: receipt, clock_mapping_id: mapping, payload: parsedPayload, t_ingest: ingest })
   return new TextEncoder().encode(JSON.stringify(observation)).length <= MAX_OBSERVATION_BYTES ? observation : null
 }

@@ -86,7 +86,7 @@ describe('observation v1 console mirror', () => {
     }
   })
 
-  test('rejects a malformed capture-alignment artifact digest', () => {
+  test('rejects a malformed capture alignment or missing host mapping', () => {
     const value = observation({
       kind: 'pose',
       pose: {
@@ -96,8 +96,30 @@ describe('observation v1 console mirror', () => {
       capture_alignment: { ...captureAlignment(), alignment_config_sha256: 'not-a-digest' },
     })
     value.frame = 'body'
-
     expect(parseObservation(value)).toBeNull()
+
+    const clock = observation({
+      kind: 'pose',
+      pose: {
+        parent_frame: 'body', child_frame: 'camera',
+        x_m: 0, y_m: 0, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1,
+      },
+      capture_alignment: { ...captureAlignment(), frame_pts: { clock_id: 'dji_stream_presentation_ms', unit: 'us', value: 1000 } },
+    })
+    clock.frame = 'body'
+    expect(parseObservation(clock)).toBeNull()
+
+    const unmapped: Record<string, unknown> = observation({
+      kind: 'pose',
+      pose: {
+        parent_frame: 'body', child_frame: 'camera',
+        x_m: 0, y_m: 0, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1,
+      },
+      capture_alignment: captureAlignment(),
+    })
+    unmapped.frame = 'body'
+    unmapped.clock_mapping_id = null
+    expect(parseObservation(unmapped)).toBeNull()
   })
 
   test('parses local lidar and camera-tag evidence without a world claim', () => {

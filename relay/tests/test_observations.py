@@ -560,3 +560,83 @@ def test_ground_telemetry_uses_the_same_payload_shape_as_aircraft() -> None:
         timing=TimingPolicy(25),
     )
     assert accepted.submission.payload["kind"] == "telemetry"
+
+
+def test_phone_capture_alignment_fixture_requires_its_host_clock_mapping() -> None:
+    root = Path(__file__).parents[2]
+    fixture = root / "perception/fixtures/capture-alignment-observation.json"
+    kotlin_fixture = (
+        root
+        / "adapters/dji_mini3/pilot-app/bridge-node/src/test/resources/capture_alignment"
+        / "capture-alignment-observation.json"
+    )
+    assert fixture.read_bytes() == kotlin_fixture.read_bytes()
+    raw = json.loads(fixture.read_text())
+    event = decode_submission(json.dumps(raw))
+    binding = SourceBinding(
+        "ohmni",
+        7,
+        3,
+        "dji-body-camera",
+        "aircraft",
+        ("body", "camera"),
+        ("pose",),
+        allowed_clock_mapping_ids=("dji-pts-phone-fixture",),
+    )
+    frames = FrameRegistry(
+        (
+            FrameDeclaration(
+                "body",
+                "body",
+                "right_handed_z_up",
+                "m",
+                session="ohmni",
+                device_id=7,
+                connection_epoch=3,
+                source_id="dji-body-camera",
+            ),
+            FrameDeclaration(
+                "camera",
+                "camera",
+                "right_down_forward",
+                "m",
+                session="ohmni",
+                device_id=7,
+                connection_epoch=3,
+                source_id="dji-body-camera",
+            ),
+        )
+    )
+    mapping = ClockMapping(
+        "dji-pts-phone-fixture", "phone_elapsed_realtime_ms", "ms", 0, 0, 1, 1, 5
+    )
+    accepted = ingest(
+        event,
+        t_ingest=1_001_020,
+        frames=frames,
+        binding=binding,
+        mappings={mapping.mapping_id: mapping},
+        timing=TimingPolicy(25),
+    )
+    assert accepted.submission.payload["capture_alignment"]["frame_pts"]["value"] == 1_000
+
+    raw["clock_mapping_id"] = None
+    missing_mapping = ObservationSubmission.parse(
+        {key: value for key, value in raw.items() if key != "t_ingest"}
+    )
+    with pytest.raises(ObservationError) as rejected:
+        ingest(
+            missing_mapping,
+            t_ingest=1_001_020,
+            frames=frames,
+            binding=binding,
+            mappings={mapping.mapping_id: mapping},
+            timing=TimingPolicy(25),
+        )
+    assert rejected.value.code == "clock_mapping_required"
+
+    raw["clock_mapping_id"] = mapping.mapping_id
+    raw["payload"]["capture_alignment"]["frame_pts"]["unit"] = "us"
+    with pytest.raises(ObservationError) as invalid_clock:
+        ObservationSubmission.parse({key: value for key, value in raw.items() if key != "t_ingest"})
+    assert invalid_clock.value.code == "invalid_observation"
