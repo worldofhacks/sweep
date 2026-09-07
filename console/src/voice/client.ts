@@ -7,6 +7,7 @@
  * the operator confirms.
  */
 import { isVoicePlan, type VoicePlan } from '../relay/contract'
+import { relayHttpUrl } from '../relay/origin'
 
 export type VoiceOutcome = {
   v: 1
@@ -106,19 +107,9 @@ export class UnavailableTranscriptClient implements TranscriptClient {
 }
 
 export function transcriptEndpoint(baseUrl: string, sessionId: string): string {
-  const url = new URL(baseUrl)
-  if (url.protocol === 'ws:') url.protocol = 'http:'
-  if (url.protocol === 'wss:') url.protocol = 'https:'
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('Relay URL must use ws, wss, http, or https.')
-  }
-  url.username = ''
-  url.password = ''
-  url.search = ''
-  url.hash = ''
-  const basePath = url.pathname.replace(/\/$/, '')
-  url.pathname = `${basePath}/api/sessions/${encodeURIComponent(sessionId)}/transcripts`
-  return url.toString()
+  const url = relayHttpUrl(baseUrl, `/api/sessions/${encodeURIComponent(sessionId)}/transcripts`)
+  if (!url) throw new Error('Relay URL must use ws, wss, http, or https.')
+  return url
 }
 
 export function isVoiceOutcome(value: unknown, sessionId: string, correlationId: string): value is VoiceOutcome {

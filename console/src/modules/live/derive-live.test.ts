@@ -8,8 +8,6 @@ import {
   deriveReadiness,
   deriveStream,
   formatAge,
-  mosaicNote,
-  mosaicSlots,
 } from './derive-live'
 
 const now = 1_756_700_000_000
@@ -101,8 +99,14 @@ describe('readiness word', () => {
   test('joins the relay reasons or says ready', () => {
     expect(deriveReadiness(drone())).toEqual({ text: 'ready', tone: 'ok' })
     expect(deriveReadiness(drone({ readiness_reasons: ['telemetry_stale', 'home_pose_missing'] }))).toEqual({
-      text: 'telemetry_stale, home_pose_missing',
+      text: 'Telemetry stale, Home pose missing',
       tone: 'danger',
+    })
+  })
+
+  test('missing authority says control is not granted without inventing an interlock cause', () => {
+    expect(deriveReadiness(drone({ readiness_reasons: ['control_authority_missing'] }))).toEqual({
+      text: 'Control not granted', tone: 'danger',
     })
   })
 })
@@ -143,23 +147,5 @@ describe('capture progress', () => {
       tone: 'warn',
     })
     expect(deriveCaptureProgress([captureRequest('cancelled')], 1)).toEqual({ text: 'cancelled', tone: 'warn' })
-  })
-})
-
-describe('mosaic slots', () => {
-  test('fills the first slots by id and leaves the rest empty, never padded from a fixture', () => {
-    const four = fixtureAircraft(now)
-    expect(mosaicSlots(four, 6).map((slot) => slot?.drone_id ?? null)).toEqual([1, 2, 3, 4, null, null])
-    expect(mosaicSlots(fixtureAircraft(now, 6), 4).map((slot) => slot?.drone_id ?? null)).toEqual([1, 2, 3, 4])
-    expect(mosaicSlots([], 4)).toEqual([null, null, null, null])
-  })
-
-  test('the wall note says how the reported fleet maps onto the tiles', () => {
-    const base = "4 tiles. Focus follows the operator's selection and survives video loss on the focused aircraft."
-    expect(mosaicNote(4, 4)).toBe(base)
-    expect(mosaicNote(4, 6)).toBe(`${base} The relay reports 6 aircraft; the first 4 by id are shown.`)
-    expect(mosaicNote(6, 4)).toBe(
-      "6 tiles. Focus follows the operator's selection and survives video loss on the focused aircraft. 4 of 6 slots have a reported aircraft.",
-    )
   })
 })

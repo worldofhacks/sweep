@@ -3,6 +3,7 @@
  * Only the WHEP request is carried over; the HLS fallback and its hls.js
  * dependency stay on #68 and are reconciled when that branch merges.
  */
+import { MAX_FLEET_DEVICES, validMediaStreamName } from '../relay/contract'
 
 export interface MediaRuntimeConfiguration {
   /** MediaMTX WebRTC origin without path, query, or credentials. */
@@ -11,8 +12,15 @@ export interface MediaRuntimeConfiguration {
   readerPassword: string
 }
 
+/** A media path is keyed by the relay's global device identity. */
+export interface StreamDevice {
+  drone_id: number
+}
+
 export interface PlaybackConfiguration extends MediaRuntimeConfiguration {
-  droneId: number
+  device: StreamDevice
+  /** Explicit camera stream provisioned by the relay; never an arbitrary URL. */
+  stream?: string
 }
 
 export interface PlaybackRequest {
@@ -26,20 +34,23 @@ export interface PlaybackDescriptor {
   primary: PlaybackRequest
 }
 
-/** The console derives stream names; no adapter-supplied media URL is ever used. */
-export function streamName(droneId: number): string {
-  return `drone${droneId}`
+/**
+ * Media paths use the global relay ID, which matches the device-side publisher.
+ */
+export function streamName(device: StreamDevice): string {
+  if (!Number.isInteger(device.drone_id) || device.drone_id < 1 || device.drone_id > MAX_FLEET_DEVICES) {
+    throw new Error(`drone_id must be an integer from 1 through ${MAX_FLEET_DEVICES}`)
+  }
+  return `drone${device.drone_id}`
 }
 
 export function createPlaybackDescriptor(config: PlaybackConfiguration): PlaybackDescriptor {
-  if (!Number.isInteger(config.droneId) || config.droneId < 1 || config.droneId > 6) {
-    throw new Error('droneId must be an integer from 1 through 6')
-  }
   if (!config.readerUsername || !config.readerPassword) {
     throw new Error('Media reader credentials are required')
   }
 
-  const stream = streamName(config.droneId)
+  const stream = config.stream ?? streamName(config.device)
+  if (!validMediaStreamName(stream)) throw new Error('Invalid configured camera stream name')
   const authorization = `Basic ${btoa(`${config.readerUsername}:${config.readerPassword}`)}`
   return {
     stream,

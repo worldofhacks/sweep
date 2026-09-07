@@ -7,6 +7,7 @@ import type { ControlClients } from './control/use-control-console'
 import { useControlConsole } from './control/use-control-console'
 import type { MediaRuntime } from './media/runtime'
 import type { ModuleId, ModuleServices } from './modules/types'
+import type { MapEndpoint } from './relay/map-endpoint'
 import { Shell } from './shell/Shell'
 
 interface AppProps {
@@ -20,6 +21,10 @@ interface AppProps {
   services?: ModuleServices
   /** Playback runtime from the media bootstrap; absent means playback is not configured. */
   media?: MediaRuntime
+  /** Relay WebSocket base URL from the bootstrap, shown by the Devices module for node configuration. */
+  relayBaseUrl?: string
+  /** The session's occupancy map behind the relay bearer; absent means the Map pane reads none. */
+  mapEndpoint?: MapEndpoint
 }
 
 /** Runtime clients in, the control hook, and the persistent shell around every module. */
@@ -31,6 +36,8 @@ export default function App({
   initialModule,
   services,
   media,
+  relayBaseUrl,
+  mapEndpoint,
 }: AppProps) {
   const controller = useControlConsole({ sessionId, clients, intentDependencies })
   const [fallbackCatalog] = useState(() => new UnreportedCatalogClient())
@@ -43,6 +50,8 @@ export default function App({
       initialModule={initialModule}
       services={services}
       media={media}
+      relayBaseUrl={relayBaseUrl}
+      mapEndpoint={mapEndpoint}
     />
   )
 }

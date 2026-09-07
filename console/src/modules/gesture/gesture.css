@@ -54,6 +54,9 @@
 .tg-strip-all:hover:not(:disabled) { background: var(--color-ground); }
 .tg-strip-all:disabled { color: var(--color-ink-3); background: var(--color-disabled-bg); }
 .tg-strip-blockers { flex: 1 1 100%; font-size: var(--text-11-5); line-height: var(--leading-1-4); color: var(--color-ink-3); }
+.tg-strip-readiness { flex: 1 1 100%; font-size: var(--text-11-5); line-height: var(--leading-1-4); }
+.tg-strip-readiness summary { cursor: pointer; }
+.tg-strip-readiness > div { border-top: 1px solid var(--color-rule-inner); margin-top: 8px; padding-top: 8px; }
 .tg-strip-quick { display: flex; flex-wrap: wrap; gap: 5px; flex: 0 0 auto; }
 .tg-quick {
   display: flex;
@@ -80,6 +83,17 @@
 .tg-quick-badge { font-family: var(--font-mono); font-size: var(--text-11); font-weight: var(--weight-400); opacity: .7; }
 
 /* Camera and readout */
+.gs-profile { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0 0 16px; padding: 12px; border: 1px solid var(--color-hairline); }
+.gs-profile legend { font-size: var(--text-12-5); font-weight: var(--weight-600); padding: 0 4px; }
+.gs-profile label { display: inline-flex; gap: 8px; align-items: center; font-size: var(--text-13); cursor: pointer; }
+.gs-profile p { flex: 1 1 100%; margin: 0; font-size: var(--text-12); color: var(--color-ink-3); }
+.gs-flight { margin-bottom: 16px; padding: 12px; border: 1px solid var(--color-hairline); }
+.gs-flight-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.gs-flight-action { min-width: 0; }
+.gs-flight-action button { width: 100%; min-height: 44px; }
+.gs-flight-action > span { display: block; margin-top: 8px; font-size: var(--text-12); font-weight: var(--weight-600); }
+.gs-flight-action p { margin: 4px 0 0; font-size: var(--text-12); color: var(--color-ink-3); }
+.gs-pair-blocked { flex: 1 1 100%; font-size: var(--text-12); color: var(--color-warn); }
 .gs-two { align-items: start; }
 .gs-column { min-width: 0; }
 .gs-stage {
@@ -246,3 +260,13 @@
 @media (max-width: 759px) {
   .tg-strip-quick { flex: 1 1 100%; }
 }
+
+.gs-profile { border: 1px solid var(--color-border-secondary); padding: 12px; margin: 0 0 16px; display: flex; flex-wrap: wrap; gap: 12px; }
+.gs-profile legend { font-weight: 600; }
+.gs-profile label { display: flex; align-items: center; gap: 4px; }
+.gs-profile p { flex-basis: 100%; margin: 0; font-size: 12px; color: var(--color-ink-3); }
+.gs-pair-blocked { grid-column: 1 / -1; font-size: 12px; color: var(--color-warn); }
+
+.gs-pair-readiness { flex: 1 1 100%; font-size: var(--text-11-5); color: var(--color-ink-2); }
+.gs-pair-readiness.gs-pair-blocked { color: var(--color-warn); }
+.gs-consensus { margin: 0; font-size: var(--text-12); color: var(--color-ink-2); }
