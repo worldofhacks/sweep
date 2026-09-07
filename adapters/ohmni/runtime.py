@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import signal
 import threading
 import time
 import uuid
@@ -828,12 +829,27 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
     )
 
 
+def _install_sigterm_stop(node: OhmniRuntime) -> Callable[[], None]:
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def stop(_signal: int, _frame: object) -> None:
+        node.stop()
+
+    signal.signal(signal.SIGTERM, stop)
+
+    def restore() -> None:
+        signal.signal(signal.SIGTERM, previous)
+
+    return restore
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     from .device import build
 
     config = parse_args(argv)
     device = build()
     node = OhmniRuntime(config, device)
+    restore_sigterm = _install_sigterm_stop(node)
     try:
         asyncio.run(node.run())
     except KeyboardInterrupt:
@@ -842,6 +858,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _LOGGER.error("%s", error)
         return 1
     finally:
+        restore_sigterm()
         device.close()
     return 0
 
