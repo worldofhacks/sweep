@@ -24,6 +24,12 @@ function SweepEncoderPlugin(owner) {
   );
   this._sampler.start();
   this._trace.installCallObserver();
+  const samplerFail = this._sampler._fail.bind(this._sampler);
+  this._sampler._fail = (reason) => {
+    const poll = this._sampler._active;
+    this._trace.recordFault(reason, poll ? poll.id : null, poll ? poll.side : null);
+    return samplerFail(reason);
+  };
 
   const modelStart = owner._model.start.bind(owner._model);
   owner._model.start = (...args) => {

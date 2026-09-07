@@ -28,6 +28,7 @@ function EncoderTrace(serial, snapshotPath) {
   this._snapshotPath = snapshotPath;
   this._first = [];
   this._latest = [];
+  this._fault = null;
   this._flushPending = false;
   this._writePending = false;
   this._wireSend = serial.sendCustom.bind(serial);
@@ -56,7 +57,28 @@ EncoderTrace.prototype.snapshot = function () {
     type: 'sweep_encoder_trace',
     first: this._first.slice(),
     latest: this._latest.slice(),
+    fault: this._fault === null ? null : {
+      reason: this._fault.reason,
+      poll_id: this._fault.poll_id,
+      pending_side: this._fault.pending_side,
+      monotonic_ns: this._fault.monotonic_ns,
+      context: this._fault.context.slice(),
+      after_fault: this._fault.after_fault.slice(),
+    },
   };
+};
+
+EncoderTrace.prototype.recordFault = function (reason, pollId, pendingSide) {
+  if (this._fault !== null) return;
+  this._fault = {
+    reason: reason,
+    poll_id: pollId,
+    pending_side: pendingSide,
+    monotonic_ns: monotonicNs(),
+    context: this._latest.slice(),
+    after_fault: [],
+  };
+  this._scheduleFlush();
 };
 
 EncoderTrace.prototype._recordSend = function (type, sid, command, payload) {
@@ -79,6 +101,10 @@ EncoderTrace.prototype._record = function (record) {
   if (this._first.length < FIRST_LIMIT) this._first.push(record);
   this._latest.push(record);
   if (this._latest.length > LATEST_LIMIT) this._latest.shift();
+  if (this._fault !== null) {
+    this._fault.after_fault.push(record);
+    if (this._fault.after_fault.length > LATEST_LIMIT) this._fault.after_fault.shift();
+  }
   this._scheduleFlush();
 };
 
