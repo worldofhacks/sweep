@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest'
+import nodeStatusProjection from './python-node-status-projection.fixture.json?raw'
 import {
   C1_BASIC_CONTROL_INTENTS,
   C2_FLEET_OPERATIONS_INTENTS,
@@ -457,6 +458,19 @@ describe('M1.1 wire compatibility', () => {
     }
     expect(parseRelayServerEvent(status)).toMatchObject({ type: 'node_status', local_height: { z_m: 0.4 } })
     expect(parseRelayServerEvent({ ...status, local_height: null })).toBeNull()
+    expect(parseRelayServerEvent({ ...status, local_height: { ...status.local_height, reported_at_ms: t } })).toBeNull()
+  })
+
+  test('accepts Python-projected node status with and without height evidence', () => {
+    const states = JSON.parse(nodeStatusProjection) as { absent: unknown; present: unknown }
+
+    for (const state of [states.absent, states.present]) {
+      expect(parseRelayServerEvent(state)).toMatchObject({ type: 'state' })
+    }
+    const absent = parseRelayServerEvent(states.absent)
+    const present = parseRelayServerEvent(states.present)
+    expect(absent).toMatchObject({ drones: [{ node_status: { local_height: null } }] })
+    expect(present).toMatchObject({ drones: [{ node_status: { local_height: { reported_at_ms: 1_756_700_000_000 } } }] })
   })
 
   test('accepts node-local safety actions as operator-visible evidence', () => {

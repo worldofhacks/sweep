@@ -518,6 +518,10 @@ class FleetSnapshot:
         if not isinstance(selection_raw, Iterable) or isinstance(selection_raw, str | bytes):
             raise ValueError("selection must be an iterable of aircraft ids")
         selection = tuple(_parse_drone_id(value) for value in selection_raw)
+        ground_ids_raw = raw.get("ground_ids", ())
+        if not isinstance(ground_ids_raw, Iterable) or isinstance(ground_ids_raw, str | bytes):
+            raise ValueError("ground_ids must be an iterable of ground node ids")
+        ground_ids = tuple(_parse_drone_id(value) for value in ground_ids_raw)
         fleet_observation_complete = raw.get("fleet_observation_complete", False)
         if not isinstance(fleet_observation_complete, bool):
             raise ValueError("fleet_observation_complete must be a boolean")
@@ -534,7 +538,7 @@ class FleetSnapshot:
             formation=_string(raw, "formation", fallback="none"),
             spacing=_number_or_default(raw, "spacing", 0.8),
             fleet_observation_complete=fleet_observation_complete,
-            ground_ids=(),
+            ground_ids=ground_ids,
         )
 
     @classmethod
