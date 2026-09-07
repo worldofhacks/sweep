@@ -138,7 +138,12 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                 return@launch
             }
             val navigationAdmission = try {
-                loadNavigationAdmission(application.filesDir)
+                loadNavigationAdmission(
+                    application.filesDir,
+                    setup.session,
+                    setup.droneId,
+                    setup.token.toByteArray(Charsets.UTF_8),
+                )
             } catch (_: Exception) {
                 logLine("cannot start the relay link: navigation-admission.json is invalid")
                 return@launch
