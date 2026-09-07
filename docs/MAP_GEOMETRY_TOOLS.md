@@ -165,9 +165,10 @@ SHA-256-pinned hand-height record. Static obstacles and no-fly volumes expand by
 sum of the aircraft radius, uncertainty and stopping allowances. Unmeasured space is
 blocked.
 
-Routes name the corridor segments they use and are checked across the full tube width
-and altitude interval. Formation volumes name the measured free volumes that contain
-them. Their two-aircraft fit uses the declared separation and the combined aircraft,
+Routes name the corridor segments they use. The generator proves each continuous
+route capsule and altitude prism against one measured corridor segment at a time,
+then checks geofence and static hazards with the same envelope. Formation volumes name
+the measured free volumes that contain them. Their two-aircraft fit uses the declared separation and the combined aircraft,
 uncertainty and stopping envelope. Named zones supply geographic context; a zone alone
 does not establish aerial clearance.
 
@@ -178,13 +179,16 @@ measured world record. The tag must have its independent tape verification and t
 reported error must be no greater than its declared bound, capped at 0.10 m.
 
 Camera models carry a SHA-256-pinned calibration envelope containing the body-frame
-forward direction, FOV, detection range and tag-facing threshold. Every route tube is
-sampled at 0.10 m or less across its centre and lateral edges at both altitude bounds.
-Coverage requires a front-facing tag inside the envelope with a clear line through the
-static hazard inventory. Nearby tags do not count as coverage.
+forward direction, FOV, detection range and tag-facing threshold. Visibility samples
+are spaced at 0.10 m or less across each route centre, lateral edges, and end caps at
+both altitude bounds. They only use verified tags on the route floor. Coverage records
+positive evidence for those sampled locations; static route containment is proven
+separately for the continuous capsule. Nearby tags do not count as coverage.
 
 `geometry.json` records the exact bundle and authoring hashes, every evidence pin,
 route and formation decision, held-out checkpoint calculation, output-file hashes and
-the static-only flag. The v2 `NavigationArtifact` loader checks its exact schema,
+the static-only flag. Visibility diagnostics retain a bounded deterministic prefix of
+uncovered samples plus the full uncovered count; every emitted report and preview fits
+the loader's 2 MB artifact limit. The v2 `NavigationArtifact` loader checks its exact schema,
 hashes and successful measured route, coverage, formation and checkpoint results. It
 still returns offline preview evidence with dispatch disabled.
