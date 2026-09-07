@@ -7,7 +7,11 @@ from collections import deque
 import numpy as np
 import pytest
 
-from perception.shared_camera_pipeline import CameraPipelineConfig, SharedCameraPipeline
+from perception.shared_camera_pipeline import (
+    CameraPipelineConfig,
+    SharedCameraPipeline,
+    SharedCameraPipelineConstructionError,
+)
 
 
 class Stream:
@@ -117,7 +121,7 @@ def test_blocked_detector_does_not_delay_fresh_localization() -> None:
         pipeline.close()
 
 
-def test_invalid_detector_constructor_closes_the_started_decoder() -> None:
+def test_invalid_detector_constructor_does_not_start_the_decoder() -> None:
     stream = Stream()
 
     with pytest.raises(ValueError, match="detector must declare"):
@@ -130,8 +134,73 @@ def test_invalid_detector_constructor_closes_the_started_decoder() -> None:
             mission_id="mission1",
         )
 
+    assert not stream.started
+    assert not stream.closed
+
+
+def test_constructor_cleanup_failure_keeps_the_live_owner_on_the_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = Stream(close_error=True)
+    calls = []
+
+    class Worker:
+        def __init__(self, *_args, **_kwargs):
+            calls.append(True)
+            if len(calls) == 2:
+                raise RuntimeError("worker setup failed")
+
+    monkeypatch.setattr("perception.shared_camera_pipeline.LiveDetectionWorker", Worker)
+
+    with pytest.raises(SharedCameraPipelineConstructionError) as raised:
+        SharedCameraPipeline(
+            "rtsp://camera/drone1",
+            Localizer(),
+            source_id="drone1",
+            stream_factory=lambda _url: stream,
+            detector=object(),
+            mission_id="mission1",
+        )
+
     assert stream.started
     assert stream.closed
+    assert raised.value.owner.decoder_status == "shutdown_failed"
+
+
+def test_close_waits_for_an_inflight_detection_callback() -> None:
+    stream = Stream()
+    callback_entered = threading.Event()
+    release_callback = threading.Event()
+    closed = threading.Event()
+
+    def on_detection(_event):
+        callback_entered.set()
+        release_callback.wait(1)
+
+    pipeline = SharedCameraPipeline(
+        "rtsp://camera/drone1",
+        Localizer(),
+        source_id="drone1",
+        stream_factory=lambda _url: stream,
+        detector=SlowDetector(),
+        mission_id="mission1",
+        on_detection=on_detection,
+        config=_config(),
+    )
+    pipeline._activate_callbacks()
+
+    callback_thread = threading.Thread(target=lambda: pipeline._detection_callback(object()))
+    callback_thread.start()
+    _wait(callback_entered.is_set)
+    close_thread = threading.Thread(target=lambda: (pipeline.close(), closed.set()))
+    close_thread.start()
+    time.sleep(0.02)
+    assert not closed.is_set()
+
+    release_callback.set()
+    callback_thread.join(1)
+    close_thread.join(1)
+    assert closed.is_set()
 
 
 def test_blocked_detector_cannot_call_back_after_pipeline_close() -> None:
