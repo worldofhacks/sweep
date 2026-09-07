@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import subprocess
 import threading
 import time
@@ -104,6 +105,32 @@ def command(ffmpeg: str, url: str, source: V4LSource) -> list[str]:
         )
     )
     return values
+
+
+def from_environment(host: str, key: str) -> Camera:
+    if not key:
+        raise ValueError("camera publishing requires a node key")
+    try:
+        raw_fps = os.environ["SWEEP_CAMERA_INPUT_FPS"]
+        source = V4LSource(
+            device=os.environ["SWEEP_CAMERA_DEVICE"],
+            input_format=os.environ["SWEEP_CAMERA_INPUT_FORMAT"],
+            input_fps=None if raw_fps == "native" else int(raw_fps),
+            width=int(os.environ["SWEEP_CAMERA_WIDTH_PX"]),
+            height=int(os.environ["SWEEP_CAMERA_HEIGHT_PX"]),
+        )
+        device_id = int(os.environ["SWEEP_DEVICE_UNIT"])
+    except KeyError as error:
+        raise ValueError(f"camera publishing requires {error.args[0]}") from error
+    except ValueError as error:
+        raise ValueError("camera publishing configuration is invalid") from error
+    return Camera(
+        host,
+        device_id,
+        key,
+        os.environ.get("SWEEP_FFMPEG", "/data/local/sweep/ffmpeg"),
+        source,
+    )
 
 
 class Camera:
