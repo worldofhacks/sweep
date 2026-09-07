@@ -300,6 +300,10 @@ class OhmniDevice:
         *,
         host_lease: Callable[[float], str | None],
     ) -> str:
+        """Require supervised clear space: this bypasses calibrated obstacle checks.
+
+        The lease callback returns a stop reason or None on admission and each control tick.
+        """
         if (
             not all(math.isfinite(value) for value in (velocity_m_s, yaw_rate_deg_s, duration_s))
             or (velocity_m_s, yaw_rate_deg_s) not in {(0.04, 0.0), (0.0, 10.0)}

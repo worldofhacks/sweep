@@ -231,6 +231,10 @@ class RunnerSimulation:
         self.last_tick = self.clock()
         moving = self.started_moving is not None
         gain = 0.0 if self.fault == "no_motion" else 1.0
+        if self.fault == "wheel_limit":
+            gain = 10.0
+        if self.fault == "yaw_limit" and self.units[0] == self.units[1]:
+            gain = 4.0
         self.left += self.units[0] * 0.18 / 250 * 1000 * TICKS_PER_MM * elapsed * gain
         self.right += self.units[1] * 0.18 / 250 * 1000 * TICKS_PER_MM * elapsed * gain
         if not (moving and self.fault == "encoder"):
@@ -456,3 +460,89 @@ def test_failed_final_disable_discards_capture(monkeypatch: pytest.MonkeyPatch, 
             sleep=simulation.sleep,
         ).run()
     assert not output.exists()
+
+
+@pytest.mark.parametrize("fault", ["wheel_limit", "yaw_limit"])
+def test_runner_stops_when_actual_encoder_travel_exceeds_session_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, fault: str
+) -> None:
+    from .calibration import CalibrationError, CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch, fault=fault)
+    output = tmp_path / "capture.json"
+    with pytest.raises(CalibrationError):
+        CalibrationRunner(
+            simulation.device,
+            simulation.lease,
+            output,
+            monotonic=simulation.clock,
+            sleep=simulation.sleep,
+        ).run()
+    expected = (
+        "calibration_wheel_travel_limit" if fault == "wheel_limit" else "calibration_yaw_limit"
+    )
+    assert simulation.device.last_refusal == expected
+    assert simulation.device.motion is None
+    assert simulation.units == (0, 0)
+    assert not output.exists()
+
+
+def test_cleanup_preserves_a_replacement_at_the_capture_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from .calibration import CalibrationError, CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch)
+    output = tmp_path / "capture.json"
+    runner = CalibrationRunner(
+        simulation.device,
+        simulation.lease,
+        output,
+        monotonic=simulation.clock,
+        sleep=simulation.sleep,
+    )
+    original_write = runner._write
+
+    def replace_then_write(stages, descriptor):
+        output.rename(tmp_path / "original.json")
+        output.write_text("belongs to another writer")
+        original_write(stages, descriptor)
+
+    monkeypatch.setattr(runner, "_write", replace_then_write)
+    with pytest.raises(CalibrationError, match="calibration_output_replaced"):
+        runner.run()
+    assert output.read_text() == "belongs to another writer"
+    assert simulation.units == (0, 0)
+
+
+@pytest.mark.parametrize("drift", ["translation", "yaw"])
+def test_capture_stops_when_encoder_drift_breaks_the_settled_stage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, drift: str
+) -> None:
+    from .calibration import CalibrationError, CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch)
+    original_sleep = simulation.sleep
+
+    def drifting_sleep(delay):
+        original_sleep(delay)
+        if drift == "translation":
+            simulation.left += 120
+            simulation.right -= 120
+        else:
+            simulation.left -= 40
+            simulation.right -= 40
+        simulation._sample()
+
+    output = tmp_path / "capture.json"
+    with pytest.raises(CalibrationError, match="calibration_capture_drift"):
+        CalibrationRunner(
+            simulation.device,
+            simulation.lease,
+            output,
+            monotonic=simulation.clock,
+            sleep=drifting_sleep,
+        ).run()
+    assert not output.exists()
+    assert simulation.started_moving is None
+    assert simulation.units == (0, 0)

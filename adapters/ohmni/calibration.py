@@ -36,8 +36,8 @@ MAX_YAW_DEGREES = 15.0
 REVOLUTIONS_PER_STAGE = 10
 STAGE_TIMEOUT_S = 8.0
 SETTLE_TIMEOUT_S = 2.0
-MAX_CAPTURE_DRIFT_M = 0.01
-MAX_CAPTURE_DRIFT_DEG = 2.0
+MAX_CAPTURE_DRIFT_M = 0.001
+MAX_CAPTURE_DRIFT_DEG = 0.1
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 MOUNT_X_M = -0.3951312693270427
 MOUNT_Y_M = 0.3951312693270427
@@ -255,17 +255,26 @@ class CalibrationRunner:
             self.device.disable()
             self._write(stages, descriptor)
         except BaseException:
-            self.output.unlink(missing_ok=True)
+            self._remove_owned_output(descriptor)
             raise
         finally:
             try:
                 self.device.disable()
             except BaseException:
-                self.output.unlink(missing_ok=True)
+                self._remove_owned_output(descriptor)
                 raise
             finally:
                 os.close(descriptor)
         return self.output
+
+    def _remove_owned_output(self, descriptor: int) -> None:
+        try:
+            current = self.output.lstat()
+        except FileNotFoundError:
+            return
+        owned = os.fstat(descriptor)
+        if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
+            self.output.unlink()
 
     def _initialize(self) -> None:
         deadline = self.monotonic() + STAGE_TIMEOUT_S
@@ -492,7 +501,8 @@ class CalibrationRunner:
             stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
-        if os.stat(self.output, follow_symlinks=False).st_ino != os.fstat(descriptor).st_ino:
+        current, owned = self.output.lstat(), os.fstat(descriptor)
+        if (current.st_dev, current.st_ino) != (owned.st_dev, owned.st_ino):
             raise CalibrationError("calibration_output_replaced")
 
 
