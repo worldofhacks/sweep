@@ -924,12 +924,28 @@ class SurveyIntentRouter:
     def adapter_disconnected(
         self, *, drone_id: int, connection_epoch: int, relay_state: dict[str, object]
     ) -> list[dict[str, object]]:
-        return self.survey.adapter_disconnected(
-            drone_id=drone_id, connection_epoch=connection_epoch
+        events: list[dict[str, object]] = []
+        underlying = getattr(self.autonomy, "adapter_disconnected", None)
+        if callable(underlying):
+            events.extend(
+                underlying(
+                    drone_id=drone_id,
+                    connection_epoch=connection_epoch,
+                    relay_state=relay_state,
+                )
+            )
+        events.extend(
+            self.survey.adapter_disconnected(drone_id=drone_id, connection_epoch=connection_epoch)
         )
+        return events
 
-    def periodic_events(self, _state: object) -> list[dict[str, object]]:
-        return self.survey.periodic_events()
+    def periodic_events(self, state: object) -> list[dict[str, object]]:
+        events: list[dict[str, object]] = []
+        underlying = getattr(self.autonomy, "periodic_events", None)
+        if callable(underlying):
+            events.extend(underlying(state))
+        events.extend(self.survey.periodic_events())
+        return events
 
     def __getattr__(self, name: str) -> object:
         return getattr(self.autonomy, name)
@@ -939,13 +955,21 @@ class AutonomyComposition:
     """Per-session autonomy workers behind ``create_app``'s sink and leave factories."""
 
     def __init__(
-        self, config: AutonomyConfig, capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE
+        self,
+        config: AutonomyConfig,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+        *,
+        survey_enabled: bool = False,
     ) -> None:
         self.config = config
         base_profile = config.planning.effective_capability_profile(capability_profile)
-        self.capability_profile = CapabilityProfile(
-            f"{base_profile.name}.ground_survey",
-            base_profile.enabled_intent_names | SURVEY_ADDITIONAL_INTENT_NAMES,
+        self.capability_profile = (
+            CapabilityProfile(
+                base_profile.name,
+                base_profile.enabled_intent_names | SURVEY_ADDITIONAL_INTENT_NAMES,
+            )
+            if survey_enabled
+            else base_profile
         )
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
@@ -1012,7 +1036,13 @@ def create_autonomy_app(
     """
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
-    composition = AutonomyComposition(config, settings.capability_profile)
+    composition = AutonomyComposition(
+        config,
+        settings.capability_profile,
+        survey_enabled=any(
+            node_type.value == "ground" for node_type in settings.node_types.values()
+        ),
+    )
     control_localization_factory = (
         None
         if config.control_localization_projector is None

@@ -1,8 +1,10 @@
 # Pilot-assisted survey area
 
-A console submits confirmed `survey_area {"area_id": "…"}` with exactly one selected ready ground node. The relay records its current accepted pose identity, then accepts canonical `range_scan` observations for that node and epoch. Surveying never issues a drive command.
+A confirmed `survey_area {"area_id": "…"}` records canonical lidar evidence from one selected ready ground node. It does not issue a drive command. The run pins the node epoch, accepted pose identity, configured lidar source, odometry frame, lidar frame, and configured mount ID. A change to any pinned input fails the run.
 
-The console finishes or cancels the active run on its authenticated session WebSocket with this bounded frame:
+Completion publishes one immutable directory under the audit root's `survey_candidates` directory. It contains the canonical recording, a local occupancy PNG and metadata, the sensor pose path, a tag-candidates document, and `candidate.json`. The recording and grid use the `ohmni_scan_record` and `ohmni_occupancy_grid` artifact formats. Reload checks each named artifact through bounded no-follow reads. The candidate is local odometry evidence and has no movement authority.
+
+The console completes or cancels a run on its authenticated session WebSocket:
 
 ```json
 {
@@ -18,6 +20,6 @@ The console finishes or cancels the active run on its authenticated session WebS
 }
 ```
 
-`operation` is `complete` or `cancel`. The request must identify the active intent, run, and connection epoch exactly. Its event ID passes the normal relay transport replay gate. The relay refuses a stale epoch, an unknown run, malformed input, or a completion without a scan. It fails an active run when the ground adapter disconnects, the pose is no longer current, the duration expires, or its evidence reaches a hard bound.
+`operation` is `complete` or `cancel`. The request identifies the current intent, run, and epoch. Its event ID uses the normal relay replay gate. Cancellation remains available after a timeout, stale pose, stale source, or readiness loss. Completion checks those conditions again and requires at least one current scan.
 
-Completion writes one create-only JSON candidate under the relay audit root’s `survey_candidates` directory. The candidate includes the selected node and epoch, the accepted pose identity, and each admitted scan with its source, event, frame, timestamp, and sensor-pose identity. A write either publishes the entire candidate or leaves no candidate file. Candidate output is evidence for later mapping approval; it does not authorize movement or publish a map.
+A candidate ID is a SHA-256-derived identity of the session, intent, and run. The artifact directory is created in a temporary sibling directory and published by rename. If the audit operation fails, the lifecycle restores the run and removes the published candidate.

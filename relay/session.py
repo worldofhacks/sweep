@@ -431,6 +431,15 @@ class RelaySession:
             self._ensure_mutation_usable()
             return self._protocol_refusal(reason=reason, detail=detail, now=self.clock())
 
+    def on_audit_rollback(self, undo: Callable[[], None]) -> bool:
+        """Register an in-memory or filesystem undo for the current relay operation."""
+        if not callable(undo):
+            raise ValueError("rollback hook must be callable")
+        if self._audit_undo is None:
+            return False
+        self._audit_undo.append(undo)
+        return True
+
     def process_survey_lifecycle(
         self, raw: object, principal: Principal
     ) -> list[dict[str, object]]:
@@ -440,6 +449,14 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
+            if principal.source != "console" or principal.drone_id is not None:
+                return [
+                    self._protocol_refusal(
+                        reason="source_not_allowed",
+                        detail="survey lifecycle requests require the authenticated console",
+                        now=now,
+                    )
+                ]
             try:
                 request = SurveyLifecycleRequest.parse(raw)
                 if request.session != self.session_id:
