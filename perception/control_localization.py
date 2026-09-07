@@ -662,13 +662,15 @@ class ControlLocalization:
             and np.isfinite(covariance).all()
         )
         source_ids = tuple(
-            source_id
-            for kind, source_id in (
-                ("tag", self.config.tag_source_id),
-                ("velocity", self.config.velocity_source_id),
-                ("height", self.config.height_source_id),
+            dict.fromkeys(
+                source_id
+                for kind, source_id in (
+                    ("tag", self.config.tag_source_id),
+                    ("velocity", self.config.velocity_source_id),
+                    ("height", self.config.height_source_id),
+                )
+                if last[kind] is not None
             )
-            if last[kind] is not None
         )
         return ControlLocalizationSnapshot(
             self.config.drone_id,

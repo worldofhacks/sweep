@@ -19,9 +19,10 @@ def tag_corners(size):
     return np.array([[-1, 1, 0], [1, 1, 0], [1, -1, 0], [-1, -1, 0]]) * size / 2
 
 
-def map_points(tag):
-    transform = rigid(tag["T_map_tag"])
-    return tag_corners(tag["size"]) @ transform[:3, :3].T + transform[:3, 3]
+def map_points(tag, *, world=False):
+    transform = rigid(tag["T_world_tag" if world else "T_map_tag"])
+    size = tag["size_m" if world else "size"]
+    return tag_corners(size) @ transform[:3, :3].T + transform[:3, 3]
 
 
 class TagLocalizer:
@@ -36,6 +37,18 @@ class TagLocalizer:
         T_body_camera,
     ):
         self.manifest = validate_bundle(bundle, accepted_versions)
+        self.world = self.manifest["schema_version"] == 2
+        self.pose_frame = {
+            "name": self.manifest["frame"]["name"],
+            "bundle_version": self.manifest["bundle_version"],
+            "content_sha256": self.manifest["content_sha256"],
+        }
+        if self.world:
+            self.pose_frame.update(
+                map_id=self.manifest["map_id"],
+                physical_datum=self.manifest["frame"]["physical_datum"],
+                axis_convention=self.manifest["frame"]["axis_convention"],
+            )
         calibration_path = Path(calibration_path)
         payload = calibration_path.read_bytes()
         if hashlib.sha256(payload).hexdigest() != calibration_sha256:
@@ -118,6 +131,7 @@ class TagLocalizer:
             decode_time=decode_time,
             age_s=now - capture_time,
             map_sha256=self.manifest["content_sha256"],
+            pose_frame=dict(self.pose_frame),
             calibration_sha256=self.calibration_sha256,
             T_body_camera=self.T_body_camera.tolist(),
             timing_provenance="upstream_capture_clock",
@@ -135,9 +149,12 @@ class TagLocalizer:
             i not in self.tags for i in identifiers
         ):
             return report | {"reason": "unknown_or_duplicate_tag"}
+        if self.world and any(not self.tags[i]["verified_for_flight"] for i in identifiers):
+            return report | {"reason": "unverified_world_tag", "tag_ids": identifiers}
         # ArUco returns decoded TL/TR/BR/BL; these are not image-position sorting.
         pixels = np.concatenate([c.reshape(4, 2) for c in corners]).astype(float)
-        points = np.concatenate([map_points(self.tags[i]) for i in identifiers])
+        points = np.concatenate([map_points(self.tags[i], world=self.world) for i in identifiers])
+        transform_key = "T_world_tag" if self.world else "T_map_tag"
         centered = points - points.mean(axis=0)
         _, singular, axes = np.linalg.svd(centered)
         planar = singular[-1] < 1e-6
@@ -167,8 +184,8 @@ class TagLocalizer:
             T_map_camera = np.linalg.inv(T_camera_map)
             if any(
                 np.dot(
-                    T_map_camera[:3, 3] - np.array(self.tags[i]["T_map_tag"])[:3, 3],
-                    np.array(self.tags[i]["T_map_tag"])[:3, 2],
+                    T_map_camera[:3, 3] - np.array(self.tags[i][transform_key])[:3, 3],
+                    np.array(self.tags[i][transform_key])[:3, 2],
                 )
                 <= 0
                 for i in identifiers
@@ -190,11 +207,16 @@ class TagLocalizer:
             return report | {"reason": "ambiguous"}
         error, camera = candidates[0]
         body = camera @ np.linalg.inv(self.T_body_camera)
-        return report | dict(
-            accepted=True,
-            reason="pose",
-            tag_ids=identifiers,
-            reprojection_rms_px=error,
-            T_map_camera=camera.tolist(),
-            T_map_body=body.tolist(),
+        return (
+            report
+            | dict(
+                accepted=True,
+                reason="pose",
+                tag_ids=identifiers,
+                reprojection_rms_px=error,
+            )
+            | {
+                "T_world_camera" if self.world else "T_map_camera": camera.tolist(),
+                "T_world_body" if self.world else "T_map_body": body.tolist(),
+            }
         )

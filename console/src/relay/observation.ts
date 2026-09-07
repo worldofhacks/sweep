@@ -50,9 +50,15 @@ export interface TelemetryPayload {
   readonly state: string
 }
 
+export interface PoseCaptureAlignment {
+  readonly gimbal_capture: SourceTime
+  readonly attitude_capture: SourceTime
+}
+
 export interface PosePayload {
   readonly kind: 'pose'
   readonly pose: FramedPose
+  readonly capture_alignment?: PoseCaptureAlignment
 }
 
 export interface RangeScanPayload {
@@ -261,10 +267,23 @@ function telemetryPayload(value: unknown, frame: string): TelemetryPayload | nul
   return freeze({ kind: 'telemetry', position, velocity: freeze({ frame: velocityFrame, x_m_s: vx, y_m_s: vy, z_m_s: vz }), battery, link, pos_quality: posQuality, state })
 }
 
+function poseCaptureAlignment(value: unknown): PoseCaptureAlignment | null {
+  const result = exact(value, new Set(['gimbal_capture', 'attitude_capture']))
+  const gimbalCapture = result && sourceTime(result.gimbal_capture)
+  const attitudeCapture = result && sourceTime(result.attitude_capture)
+  return gimbalCapture && attitudeCapture
+    ? freeze({ gimbal_capture: gimbalCapture, attitude_capture: attitudeCapture })
+    : null
+}
+
 function posePayload(value: unknown, frame: string): PosePayload | null {
-  const result = exact(value, new Set(['kind', 'pose']))
-  const pose = result && result.kind === 'pose' ? framedPose(result.pose) : null
-  return pose && pose.parent_frame === frame ? freeze({ kind: 'pose', pose }) : null
+  const raw = record(value)
+  if (!raw || (Object.keys(raw).length !== 2 && Object.keys(raw).length !== 3) || raw.kind !== 'pose') return null
+  if (!('pose' in raw) || ('capture_alignment' in raw && Object.keys(raw).length !== 3)) return null
+  const pose = framedPose(raw.pose)
+  const alignment = 'capture_alignment' in raw ? poseCaptureAlignment(raw.capture_alignment) : undefined
+  if (!pose || pose.parent_frame !== frame || ('capture_alignment' in raw && !alignment)) return null
+  return alignment ? freeze({ kind: 'pose', pose, capture_alignment: alignment }) : freeze({ kind: 'pose', pose })
 }
 
 function rangeScanPayload(value: unknown, frame: string): RangeScanPayload | null {
