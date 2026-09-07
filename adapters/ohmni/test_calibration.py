@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from .calibration import TICKS_PER_MM, HostLease, _Progress
+from .calibration import TICKS_PER_MM, CalibrationConfig, HostLease, _Progress
 from .device import Config, OhmniDevice
 from .lidar import RawRevolution
 from .odometry import Pose
@@ -245,6 +245,113 @@ class RunnerSimulation:
             self.sequence += 1
             assert self.lease.renew(self.sequence, b"c" * 32)
         self.device.step(self.clock())
+
+
+def test_longer_calibration_profile_rejects_mixed_limits() -> None:
+    assert CalibrationConfig.longer().forward_distance_m == 0.4
+    assert CalibrationConfig.longer().yaw_degrees == 30.0
+    with pytest.raises(ValueError, match="immutable capture profile"):
+        CalibrationConfig(forward_distance_m=0.4)
+
+
+def test_longer_runner_reaches_the_extended_motion_targets_and_stops(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import json
+
+    from .calibration import CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch)
+    output = tmp_path / "longer-capture.json"
+    CalibrationRunner(
+        simulation.device,
+        simulation.lease,
+        output,
+        monotonic=simulation.clock,
+        sleep=simulation.sleep,
+        config=CalibrationConfig.longer(),
+    ).run()
+    capture = json.loads(output.read_text())
+    assert capture["limits"] == {
+        "wheel_diameter_mm": 152.4,
+        "forward_speed_m_s": 0.04,
+        "forward_distance_m": 0.4,
+        "yaw_rate_deg_s": 10.0,
+        "yaw_degrees": 30.0,
+        "pulse_duration_s": 0.5,
+        "max_wheel_travel_m": 0.6,
+        "max_yaw_degrees": 40.0,
+        "max_runtime_s": 60.0,
+    }
+    stages = capture["stages"]
+    assert 0.4 <= stages["after_forward"]["pose"]["x_m"] < 0.43
+    assert 30.0 <= stages["after_yaw"]["pose"]["yaw_deg"] < 40.0
+    assert simulation.device.motion is None
+    assert not simulation.device.enabled
+    assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]
+
+
+@pytest.mark.parametrize("fault", ["lease", "wheel_limit"])
+def test_longer_runner_fails_closed_on_lease_or_extended_motion_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, fault: str
+) -> None:
+    from .calibration import CalibrationError, CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch, fault=fault)
+    output = tmp_path / "longer-capture.json"
+    with pytest.raises(CalibrationError):
+        CalibrationRunner(
+            simulation.device,
+            simulation.lease,
+            output,
+            monotonic=simulation.clock,
+            sleep=simulation.sleep,
+            config=CalibrationConfig.longer(),
+        ).run()
+    assert not output.exists()
+    assert simulation.device.motion is None
+    assert not simulation.device.enabled
+    assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]
+
+
+def test_longer_runner_stops_an_active_turn_that_exceeds_its_yaw_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from .calibration import CalibrationError, CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch)
+    output = tmp_path / "longer-capture.json"
+    original_sleep = simulation.sleep
+    injected_turn_samples = 0
+
+    def overshoot_turn_encoder(delay: float) -> None:
+        nonlocal injected_turn_samples
+        if (
+            simulation.units[0] == simulation.units[1]
+            and simulation.units != (0, 0)
+            and injected_turn_samples < 2
+            and simulation.clock() + delay - simulation.last_tick >= 0.1 - 1e-8
+        ):
+            simulation.left -= 8_000
+            simulation.right -= 8_000
+            injected_turn_samples += 1
+        original_sleep(delay)
+
+    with pytest.raises(CalibrationError):
+        CalibrationRunner(
+            simulation.device,
+            simulation.lease,
+            output,
+            monotonic=simulation.clock,
+            sleep=overshoot_turn_encoder,
+            config=CalibrationConfig.longer(),
+        ).run()
+    assert simulation.started_moving is not None
+    assert simulation.device.last_refusal == "calibration_yaw_limit"
+    assert not output.exists()
+    assert simulation.device.motion is None
+    assert not simulation.device.enabled
+    assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]
 
 
 def test_runner_completes_three_stages_using_command_driven_wheels_and_real_odometry(
