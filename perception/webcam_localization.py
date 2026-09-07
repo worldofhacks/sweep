@@ -7,6 +7,7 @@ import math
 import os
 import signal
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlsplit
 
