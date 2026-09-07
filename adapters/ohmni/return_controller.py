@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import math
+import os
 import stat
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -478,13 +479,18 @@ def read_approval_key(path: Path) -> bytes:
 
 
 def _read_bounded(path: Path, maximum: int, name: str) -> bytes:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     try:
-        if not stat.S_ISREG(path.stat().st_mode):
-            raise ValueError(f"{name} is unreadable")
-        with path.open("rb") as source:
-            content = source.read(maximum + 1)
+        descriptor = os.open(path, flags)
     except OSError as error:
         raise ValueError(f"{name} is unreadable") from error
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError(f"{name} is unreadable")
+        with os.fdopen(descriptor, "rb", closefd=False) as source:
+            content = source.read(maximum + 1)
+    finally:
+        os.close(descriptor)
     if len(content) > maximum:
         raise ValueError(f"{name} exceeds the safety limit")
     return content
