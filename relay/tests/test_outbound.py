@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -54,6 +55,9 @@ def test_later_send_failure_releases_receiver_and_adapter(
                 self.closed.append(code)
                 if stall_close:
                     await asyncio.Event().wait()
+
+            async def receive_text(self):
+                return json.dumps(await self.receive_json())
 
             async def receive_json(self):
                 self.receives += 1
@@ -153,6 +157,9 @@ def test_stalled_acceptance_send_times_out_and_releases_receipt_and_connection(
             async def close(self, code):
                 self.closed.append(code)
 
+            async def receive_text(self):
+                return json.dumps(await self.receive_json())
+
             async def receive_json(self):
                 self.receives += 1
                 if self.receives == 1:
@@ -219,6 +226,9 @@ def test_state_only_stalled_sender_times_out_through_real_receive_loop(
 
             async def close(self, code):
                 self.closed.append(code)
+
+            async def receive_text(self):
+                return json.dumps(await self.receive_json())
 
             async def receive_json(self):
                 self.receives += 1

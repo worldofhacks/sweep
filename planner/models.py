@@ -11,9 +11,12 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from math import dist, isfinite
 from types import MappingProxyType
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from relay.intent_v1 import IntentName, IntentV1
+
+if TYPE_CHECKING:
+    from planner.navigation_runtime import NavigationExecution
 
 type JsonScalar = None | bool | int | float | str
 type JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -684,9 +687,11 @@ class Plan:
     hold_scope: HoldScope | None = None
     status: LifecycleStatus = LifecycleStatus.ACCEPTED
     altitude_grounding: AltitudeGrounding | None = None
+    navigation: NavigationExecution | None = None
 
     def to_dict(self) -> dict[str, JsonValue]:
         return {
+            **({"navigation": self.navigation.to_dict()} if self.navigation is not None else {}),
             **(
                 {"altitude_grounding": self.altitude_grounding.to_dict()}
                 if self.altitude_grounding is not None
