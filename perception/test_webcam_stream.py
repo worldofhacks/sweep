@@ -85,6 +85,26 @@ def test_hung_decoder_does_not_block_poll_or_shutdown() -> None:
     stream.close()
 
 
+def test_close_reports_a_decoder_that_survives_kill() -> None:
+    class StubbornProcess(_Process):
+        def kill(self) -> None:
+            self.killed = True
+
+    stream = WebcamStream("rtsp://localhost/drone1")
+    process = StubbornProcess()
+    stream._process = process
+    stream.start()
+
+    with pytest.raises(RuntimeError, match="^webcam decoder did not stop$"):
+        stream.close()
+
+    assert process.joins == [0.2, 0.5, 0.5]
+    assert process.terminated and process.killed
+    assert not process.closed
+    with pytest.raises(RuntimeError, match="^webcam decoder did not stop$"):
+        stream.close()
+
+
 def test_failed_start_is_redacted_and_closed() -> None:
     stream = WebcamStream("rtsp://user:secret@example/path")
     stream._process = _Process(start_error=True)
