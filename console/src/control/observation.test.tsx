@@ -1,7 +1,10 @@
 import { act, render, renderHook, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import App from '../App'
 import type { RelayAircraftState } from '../relay/contract'
+import { C1_BASIC_CONTROL_INTENTS, parseRelayServerEvent } from '../relay/contract'
+import type { Observation } from '../relay/observation'
 import { FixtureRelayClient, fixtureAircraft } from '../testing/fixture-relay-client'
 import { deriveStream } from '../modules/live/derive-live'
 import { dpadBlockedReason, motionStateWord } from '../modules/control/controls'
@@ -20,6 +23,35 @@ const observed = (device: RelayAircraftState, now = relayNow) => ({ ...device, c
 afterEach(() => vi.useRealTimers())
 
 describe('current and retained device observations', () => {
+  test.each([
+    ['valid', 0.9, relayNow, true],
+    ['missing confidence', 0, relayNow, false],
+    ['stale', 0.9, relayNow - 5_001, false],
+  ])('a %s canonical ground pose governs ground motion without legacy telemetry', (_label, confidence, t_ingest, ready) => {
+    const ground = aircraft({
+      drone_id: 11, node_type: 'ground', device_class: 'ground_vehicle', unit: 11, connection_epoch: 1,
+      membership: 'ready', selectable: true, telemetry: null, last_seen_at: null,
+      ground_readiness: { source_id: 'ohmni-pose' },
+    })
+    const pose: Observation = {
+      v: 1, type: 'observation', event_id: 'ground-pose', session: sessionId, device_id: 11, connection_epoch: 1,
+      source_id: 'ohmni-pose', node_type: 'ground', frame: 'world', confidence, t_capture: null,
+      t_source_receipt: { clock_id: 'ohmni-ms', unit: 'ms', value: relayNow }, clock_mapping_id: null,
+      payload: { kind: 'pose', pose: { parent_frame: 'world', child_frame: 'base_link', x_m: 1, y_m: 2, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } }, t_ingest,
+    }
+    const reported = {
+      ...createInitialControlState(sessionId, relayNow),
+      connection: { status: 'connected' as const, transport: 'websocket' as const, changedAt: relayNow },
+      aircraft: { 11: ground }, latestObservations: { pose },
+      lastStateEvent: { t: relayNow, receivedAt: relayNow, rosterVersion: 1, source: 'console' as const },
+    }
+    const current = observedControlState(reported, relayNow).aircraft[11]
+    expect(current.node_type).toBe('ground')
+    expect(current.client_observation?.ground).toMatchObject({ poseCurrent: ready })
+    expect(motionObservationCurrent(current)).toBe(ready)
+    expect(isReady(current)).toBe(ready)
+  })
+
   test.each(['disconnected', 'leaving'] as const)('a %s device never displays retained hovering or video as current', (membership) => {
     const device = observed(aircraft({ membership }))
     expect(device.client_observation.state).toBe('offline')
@@ -104,6 +136,35 @@ test('a powered-off device becomes stale without another relay frame and cannot 
   expect(dpadBlockedReason(result.current.state)).toContain('Current target motion telemetry')
   expect(result.current.state.selection).toEqual([1])
   expect(result.current.state.aircraft[1].flight_state).toBe('hovering')
+})
+
+test('Ground controls enable only after a current accepted canonical pose', async () => {
+  const peers = clients(() => relayNow)
+  const user = userEvent.setup()
+  render(<App sessionId={sessionId} clients={peers} intentDependencies={{ now: () => relayNow, nextId: () => 'ground-pulse' }} />)
+  await screen.findByText('1 of 4 selected')
+  const ground = aircraft({
+    drone_id: 11, node_type: 'ground', device_class: 'ground_vehicle', unit: 11, connection_epoch: 1,
+    membership: 'ready', selectable: true, telemetry: null, last_seen_at: null,
+    ground_readiness: { source_id: 'ohmni-pose' }, adapter_capabilities: ['ground_drive'],
+  })
+  const state = parseRelayServerEvent({
+    v: 1, t: relayNow, type: 'state', event_id: 'root-ground-state', session: sessionId,
+    roster_version: 8, armed: false, estop: false, selection: [11], formation: 'none', spacing: 0.8, mode: 'indoor',
+    capability_profile: 'c1_ground_runtime', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'ground_velocity'],
+    pending: null, accepted_plan: null, drones: [ground],
+  })
+  const pose = parseRelayServerEvent({
+    v: 1, type: 'observation', event_id: 'root-ground-pose', session: sessionId, device_id: 11, connection_epoch: 1,
+    source_id: 'ohmni-pose', node_type: 'ground', frame: 'world', confidence: 0.9, t_capture: null,
+    t_source_receipt: { clock_id: 'ohmni-ms', unit: 'ms', value: relayNow }, clock_mapping_id: null,
+    payload: { kind: 'pose', pose: { parent_frame: 'world', child_frame: 'base_link', x_m: 1, y_m: 2, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } }, t_ingest: relayNow,
+  })
+  if (!state || !pose) throw new Error('expected canonical ground relay events')
+  act(() => { peers.console.emitServer(state); peers.console.emitServer(pose) })
+  await screen.findByText('1 of 1 selected')
+  await user.click(screen.getByRole('button', { name: 'Ground' }))
+  expect(screen.getByRole('button', { name: 'Forward · 80 mm/s · 250 ms' })).toBeEnabled()
 })
 
 test('Devices labels old values as last reported and drops live readiness after silence', () => {

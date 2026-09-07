@@ -31,6 +31,10 @@ describe('relay media configuration source', () => {
       url: 'https://relay.example/runtime-config.json',
       authorization: 'Bearer relay-token',
     })
+    expect(relayMediaConfigurationSource('wss://sweep.example/field', 'relay-token')).toEqual({
+      url: 'https://sweep.example/field/runtime-config.json',
+      authorization: 'Bearer relay-token',
+    })
   })
 
   test.each([

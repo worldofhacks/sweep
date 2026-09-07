@@ -12,12 +12,7 @@ export function GroundPane({ controller }: Pick<ModuleProps, 'controller'>) {
   const selectedId = state.selection.length === 1 ? state.selection[0] : null
   const selected = selectedId === null ? undefined : state.aircraft[selectedId]
   const groundSelected = selected?.node_type === 'ground' ? selected : undefined
-  const poseSource = groundSelected?.ground_readiness?.source_id ?? null
-  const hasCurrentPose = groundSelected !== undefined && poseSource !== null && Object.values(state.latestObservations).some(
-    (observation) => observation.device_id === groundSelected.drone_id &&
-      observation.connection_epoch === groundSelected.connection_epoch &&
-      observation.source_id === poseSource && observation.payload.kind === 'pose',
-  )
+  const hasCurrentPose = groundSelected?.client_observation?.ground?.poseCurrent === true
   const selectedReason = !groundSelected || !isReady(groundSelected)
     ? 'Select one ready ground node.'
     : !hasCurrentPose

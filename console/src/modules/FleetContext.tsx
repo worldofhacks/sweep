@@ -20,6 +20,7 @@ import { motionStateWord } from './control/controls'
 import { deviceScan } from './map/derive-map'
 import { LidarPolar } from './map/LidarPolar'
 import { ReadinessHelp } from './ReadinessHelp'
+import { GroundObservation } from './GroundObservation'
 import type { ModuleProps } from './types'
 
 /**
@@ -151,6 +152,7 @@ function FleetCard({
         <FleetMetric label="link" value={drone.link} />
         <FleetMetric label="position" value={drone.pos_quality} />
       </div>
+      <GroundObservation device={drone} now={now} />
       <p className="fleet-line">
         <span className={drone.control_authority ? 'tone-ink' : 'tone-danger'}>
           {words.authority}
