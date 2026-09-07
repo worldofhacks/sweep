@@ -8,7 +8,11 @@ import {
 import { isSupportedIntent, selectionRule } from '../../relay/contract'
 import { isReady, sortedAircraft } from '../../shell/derive'
 import { formatPercent, humanizeCode } from '../../shell/format'
-import { rosterIds } from '../control/controls'
+import {
+  aircraftControlSelectionReason,
+  isAircraftNode,
+  rosterIds,
+} from '../control/controls'
 import type { ModuleProps } from '../types'
 
 type Controller = ModuleProps['controller']
@@ -73,6 +77,8 @@ function quickCommandView(
 ): QuickCommandView {
   const capability = capabilityBlockedReason(state, spec.name)
   if (capability) return { badge: null, reason: capability, note: capability }
+  const ground = aircraftControlSelectionReason(state, spec.name)
+  if (ground) return { badge: null, reason: ground, note: ground }
   if (!isSupportedIntent(spec.name)) {
     const sentences = [
       `The relay refuses ${spec.name} as unsupported; it is listed until the relay accepts it.`,
@@ -118,7 +124,7 @@ function quickCommandView(
 export function TargetStrip({ controller }: { controller: Controller }) {
   const { state, pendingRequest, toggleAircraft, prepareSelect } = controller
   const fleet = sortedAircraft(state.aircraft)
-  const ready = fleet.filter(isReady).map((drone) => drone.drone_id)
+  const ready = fleet.filter((drone) => isAircraftNode(drone) && isReady(drone)).map((drone) => drone.drone_id)
   const blockers = fleet.filter((drone) => !isReady(drone))
   const canSelect = isIntentEnabled(state, 'select')
   const allReadySelected = ready.length > 0 && ready.every((id) => state.selection.includes(id))
@@ -159,7 +165,7 @@ export function TargetStrip({ controller }: { controller: Controller }) {
             >
               <span className="tg-chip-id">{formatDroneId(drone.drone_id)}</span>
               <span className="tg-chip-sub">
-                {drone.flight_state ?? 'unreported'} · {formatPercent(drone.battery)}
+                {drone.node_type === 'ground' ? 'ground node' : drone.flight_state ?? 'unreported'} · {formatPercent(drone.battery)}
               </span>
             </button>
           )

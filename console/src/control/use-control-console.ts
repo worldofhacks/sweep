@@ -7,6 +7,7 @@ import type {
   IntentArgsByName,
   IntentSource,
   IntentV1,
+  SurveyLifecycleRequest,
   VoicePlan,
   VoicePlanStep,
 } from '../relay/contract'
@@ -26,6 +27,7 @@ import {
   type IntentFactoryDependencies,
 } from './intent'
 import { buildPlanPreview } from './plan'
+import { aircraftControlSelectionReason, isAircraftNode } from '../modules/control/controls'
 import {
   capabilityBlockedReason,
   controlReducer,
@@ -53,6 +55,8 @@ export interface UseControlConsoleOptions {
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
 }
+
+export const SURVEY_LIFECYCLE_TIMEOUT_MS = 15_000
 
 /** One control press: an intent name, its args, and the aircraft it addresses. */
 export interface IntentRequest<N extends ConsoleIntentName = ConsoleIntentName> {
@@ -244,12 +248,18 @@ export function useControlConsole({
 
   const issueIntent = useCallback(
     <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
-      if (!isIntentEnabled(state, request.name)) return null
+      const selection = ['arm', 'land_all', 'estop'].includes(request.name)
+        ? []
+        : request.targets ?? state.selection
+      if (
+        !isIntentEnabled(state, request.name) ||
+        aircraftControlSelectionReason(state, request.name, selection) !== null
+      ) return null
       const intent = createIntent(
         {
           name: request.name,
           args: request.args,
-          selection: ['arm', 'land_all', 'estop'].includes(request.name) ? [] : request.targets ?? state.selection,
+          selection,
           source: 'console',
           session: state.sessionId,
         },
@@ -259,6 +269,56 @@ export function useControlConsole({
       return intent
     },
     [intentDependencies, stageIntent, state],
+  )
+
+  const sendSurveyLifecycle = useCallback(
+    (intentId: string, operation: SurveyLifecycleRequest['operation']) => {
+      const request = state.requests.find((item) => item.intent.intent_id === intentId)
+      if (
+        request?.intent.name !== 'survey_area' ||
+        request.status !== 'executing' ||
+        request.surveyRun === undefined ||
+        state.connection.status !== 'connected'
+      ) return
+      const now = intentDependencies.now()
+      if (
+        request.surveyLifecycle !== undefined &&
+        request.surveyLifecycle.error === undefined &&
+        now - request.surveyLifecycle.sentAt < SURVEY_LIFECYCLE_TIMEOUT_MS
+      ) return
+      const groundId = request.intent.selection[0]
+      const ground = state.aircraft[groundId]
+      if (
+        ground?.node_type !== 'ground' ||
+        ground.connection_epoch !== request.surveyRun.connectionEpoch
+      ) return
+      const eventId = intentDependencies.nextId()
+      const lifecycle: SurveyLifecycleRequest = {
+        v: 1,
+        t: now,
+        type: 'survey_lifecycle',
+        event_id: eventId,
+        session: state.sessionId,
+        operation,
+        intent_id: request.intent.intent_id,
+        run_id: request.surveyRun.runId,
+        connection_epoch: request.surveyRun.connectionEpoch,
+      }
+      dispatch({
+        type: 'survey_lifecycle_sent',
+        intentId,
+        lifecycle: { operation, eventId, sentAt: now },
+      })
+      void clients.console.sendSurveyLifecycle(lifecycle).catch((error: unknown) => {
+        dispatch({
+          type: 'survey_lifecycle_send_failed',
+          intentId,
+          eventId,
+          error: error instanceof Error ? error.message : 'Survey lifecycle send failed for an unknown reason.',
+        })
+      })
+    },
+    [clients.console, intentDependencies, state],
   )
 
   /**
@@ -317,7 +377,7 @@ export function useControlConsole({
 
   const selectAllReady = useCallback(() => {
     const ready = Object.values(state.aircraft)
-      .filter((drone) => drone.membership === 'ready' && drone.selectable)
+      .filter((drone) => isAircraftNode(drone) && drone.membership === 'ready' && drone.selectable)
       .map((drone) => drone.drone_id)
       .sort((a, b) => a - b)
     sendSelection(ready)
@@ -339,7 +399,7 @@ export function useControlConsole({
       const selectedId = state.selection[0]
       if (state.selection.length !== 1 || !selectedId) return null
       const aircraft = state.aircraft[selectedId]
-      if (!aircraft || aircraft.membership !== 'ready' || !aircraft.selectable) return null
+      if (!isAircraftNode(aircraft) || aircraft.membership !== 'ready' || !aircraft.selectable) return null
       if (!aircraft.camera_patterns.includes(pattern)) return null
       const trimmedRoomId = roomId.trim()
       if (!isValidRoomId(trimmedRoomId)) return null
@@ -413,9 +473,12 @@ export function useControlConsole({
       source: DraftSource = 'console',
       expiresAt?: number,
     ): IntentV1 | null => {
-      if (!isIntentEnabled(state, request.name)) return null
       const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
       const selection = fleetWide ? [] : request.targets ?? state.selection
+      if (
+        !isIntentEnabled(state, request.name) ||
+        aircraftControlSelectionReason(state, request.name, selection) !== null
+      ) return null
       if (!fleetWide && selection.length === 0) return null
       const draft = createIntent(
         {
@@ -448,7 +511,10 @@ export function useControlConsole({
         return null
       }
       const draft = intentFromVoicePlanStep(plan, step, intentDependencies.now())
-      if (draft === null) return null
+      if (
+        draft === null ||
+        aircraftControlSelectionReason(state, draft.name, draft.selection) !== null
+      ) return null
       const intentCanonical = canonicalVoiceIntent(draft)
       return stageForConfirmation(draft, expiresAt, {
         planDigest: plan.plan_digest,
@@ -682,6 +748,7 @@ export function useControlConsole({
     state,
     pendingRequest,
     issueIntent,
+    sendSurveyLifecycle,
     toggleAircraft,
     selectAircraft,
     selectAllReady,

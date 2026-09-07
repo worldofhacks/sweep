@@ -10,6 +10,7 @@ import {
   controlReducer,
   createInitialControlState,
   createRequestRecord,
+  MAX_LATEST_OBSERVATIONS,
   type ControlState,
 } from './state'
 
@@ -740,6 +741,52 @@ describe('control reducer fleet lifecycle', () => {
 })
 
 describe('request lifecycle', () => {
+  test('retains only the relay-issued survey run identity until a terminal acknowledgement', () => {
+    const intent: IntentV1 = {
+      ...captureIntent('survey-1'),
+      name: 'survey_area',
+      args: { area_id: '1' },
+      selection: [9],
+      confirm: true,
+    }
+    let state = withReadyState()
+    state = controlReducer(state, {
+      type: 'request_created',
+      request: createRequestRecord(intent, t + 1),
+    })
+    state = controlReducer(state, { type: 'request_sent', intentId: intent.intent_id, t: t + 2 })
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: {
+        v: 1, t: t + 3, type: 'acknowledgement', event_id: 'survey-executing', session,
+        intent_id: intent.intent_id, command_id: null, status: 'executing', source: 'survey_area',
+        drone_id: null, connection_epoch: 1, roster_version: 1, reason: null, detail: null,
+        result: { run_id: 'survey-survey-1', connection_epoch: 1 },
+      },
+    })
+    state = controlReducer(state, {
+      type: 'survey_lifecycle_sent',
+      intentId: intent.intent_id,
+      lifecycle: { operation: 'complete', eventId: 'complete-1', sentAt: t + 4 },
+    })
+    expect(state.requests[0]).toMatchObject({
+      status: 'executing',
+      surveyRun: { runId: 'survey-survey-1', connectionEpoch: 1 },
+      surveyLifecycle: { operation: 'complete', eventId: 'complete-1' },
+    })
+
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: {
+        v: 1, t: t + 5, type: 'acknowledgement', event_id: 'survey-completed', session,
+        intent_id: intent.intent_id, command_id: null, status: 'completed', source: 'survey_area',
+        drone_id: 9, connection_epoch: 1, roster_version: 1, reason: null, detail: 'Candidate saved.',
+      },
+    })
+    expect(state.requests[0]).toMatchObject({ status: 'completed', surveyRun: { runId: 'survey-survey-1' } })
+    expect(state.requests[0].surveyLifecycle).toBeUndefined()
+  })
+
   test('does not terminalize a request from one command in a multi-command plan', () => {
     const intent: IntentV1 = { ...captureIntent('intent-multi'), confirm: true }
     let state = withReadyState()
@@ -943,5 +990,116 @@ describe('request lifecycle', () => {
       t: t + 50,
     })
     expect(retry.args).toEqual(original.args)
+  })
+})
+
+function observationFrame(overrides: Record<string, unknown> = {}) {
+  return {
+    v: 1,
+    type: 'observation',
+    event_id: 'observation-1',
+    session,
+    device_id: 1,
+    connection_epoch: 1,
+    source_id: 'ohmni-lidar',
+    node_type: 'aircraft',
+    frame: 'odom',
+    confidence: 0.9,
+    t_capture: null,
+    t_source_receipt: { clock_id: 'ohmni', unit: 'ms', value: 100 },
+    clock_mapping_id: null,
+    payload: {
+      kind: 'telemetry',
+      position: { frame: 'odom', x_m: 1, y_m: 2, z_m: 0 },
+      velocity: { frame: 'odom', x_m_s: 0, y_m_s: 0, z_m_s: 0 },
+      battery: 0.8,
+      link: 0.9,
+      pos_quality: 0.7,
+      state: 'ready',
+    },
+    t_ingest: t + 10,
+    ...overrides,
+  }
+}
+
+describe('latest observation retention', () => {
+  test('parses a socket-shaped observation and retains only the current producer identity', async () => {
+    const { parseRelayServerEvent } = await import('../relay/contract')
+    const parsed = parseRelayServerEvent(observationFrame())
+    expect(parsed?.type).toBe('observation')
+    if (parsed?.type !== 'observation') throw new Error('expected observation')
+
+    let state = withReadyState()
+    state = controlReducer(state, { type: 'relay_event', event: parsed })
+    expect(Object.values(state.latestObservations)).toEqual([parsed])
+
+    const newer = parseRelayServerEvent(observationFrame({ event_id: 'observation-2', t_ingest: t + 11 }))
+    if (newer?.type !== 'observation') throw new Error('expected observation')
+    state = controlReducer(state, { type: 'relay_event', event: newer })
+    expect(Object.values(state.latestObservations)).toEqual([newer])
+
+    const stale = parseRelayServerEvent(observationFrame({ event_id: 'observation-stale', connection_epoch: 2 }))
+    if (stale?.type !== 'observation') throw new Error('expected observation')
+    expect(controlReducer(state, { type: 'relay_event', event: stale })).toBe(state)
+
+    const outOfOrder = parseRelayServerEvent(observationFrame({ event_id: 'observation-old', t_ingest: t + 9 }))
+    if (outOfOrder?.type !== 'observation') throw new Error('expected observation')
+    expect(controlReducer(state, { type: 'relay_event', event: outOfOrder })).toBe(state)
+  })
+
+  test('clears a device on rejoin and accepts its new membership epoch', async () => {
+    const { parseRelayServerEvent } = await import('../relay/contract')
+    const first = parseRelayServerEvent(observationFrame())
+    if (first?.type !== 'observation') throw new Error('expected observation')
+    let state = controlReducer(withReadyState(), { type: 'relay_event', event: first })
+    expect(Object.keys(state.latestObservations)).toHaveLength(1)
+
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: {
+        v: 1, t: t + 20, type: 'membership', event_id: 'aircraft-rejoin', session,
+        roster_version: 2, action: 'join', drone_id: 1, connection_epoch: 2,
+        membership: 'registered', readiness_reasons: ['readiness_not_declared'],
+        adapter_id: 'adapter-1', capabilities: ['flight'], node_type: 'aircraft',
+        provenance: 'adapter_signature', reason: null,
+      },
+    })
+    expect(state.latestObservations).toEqual({})
+
+    const next = parseRelayServerEvent(observationFrame({ event_id: 'observation-epoch-2', connection_epoch: 2 }))
+    if (next?.type !== 'observation') throw new Error('expected observation')
+    state = controlReducer(state, { type: 'relay_event', event: next })
+    expect(Object.values(state.latestObservations)).toEqual([next])
+  })
+
+  test('clears observations when the console joins another session', async () => {
+    const { parseRelayServerEvent } = await import('../relay/contract')
+    const event = parseRelayServerEvent(observationFrame())
+    if (event?.type !== 'observation') throw new Error('expected observation')
+    const state = controlReducer(controlReducer(withReadyState(), {
+      type: 'relay_event',
+      event,
+    }), {
+      type: 'session_changed',
+      sessionId: 'another-session',
+      t: t + 20,
+    })
+    expect(state.latestObservations).toEqual({})
+  })
+
+  test('bounds latest observations by producer identity', async () => {
+    const { parseRelayServerEvent } = await import('../relay/contract')
+    let state = withReadyState()
+    for (let index = 0; index <= MAX_LATEST_OBSERVATIONS; index += 1) {
+      const event = parseRelayServerEvent(observationFrame({
+        event_id: `observation-${index}`,
+        source_id: `source-${index}`,
+        t_ingest: t + index + 10,
+      }))
+      if (event?.type !== 'observation') throw new Error('expected observation')
+      state = controlReducer(state, { type: 'relay_event', event })
+    }
+    expect(Object.keys(state.latestObservations)).toHaveLength(MAX_LATEST_OBSERVATIONS)
+    expect(Object.values(state.latestObservations).some((event) => event.source_id === 'source-0')).toBe(false)
   })
 })

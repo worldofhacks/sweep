@@ -152,6 +152,18 @@ describe('control gating', () => {
     expect(byKey.sweep).toMatchObject({ enabled: false })
   })
 
+  test('a ground selection permits hold and stop while disabling aircraft controls', () => {
+    const [first, second] = fixtureAircraft(t)
+    const ground = { ...first, node_type: 'ground' as const, adapter_capabilities: ['ground_drive'] }
+    const state = connected([1], { drones: [ground, second] })
+    const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((spec) => [spec.key, spec]))
+    expect(byKey.hold.enabled).toBe(true)
+    expect(byKey.arm.enabled).toBe(true)
+    expect(byKey.land_all.enabled).toBe(true)
+    expect(byKey.takeoff.note).toBe('D-01 is a ground node. Aircraft controls stay disabled.')
+    expect(dpadBlockedReason(state)).toBe('D-01 is a ground node. Aircraft controls stay disabled.')
+  })
+
   test('stop active: motion is blocked with the stop reason, the pad follows stop before selection', () => {
     const state = connected([], { estop: true })
     const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((s) => [s.key, s]))
@@ -248,7 +260,6 @@ describe('command catalogue', () => {
       ['Spacing tighter', '—', 'selected', 'available'],
       ['Spacing wider', '—', 'selected', 'available'],
       ['Sweep', 'confirm', 'selected', 'available'],
-      ['Survey area', 'confirm', 'any', 'later'],
       ['Map area', 'confirm', 'non-empty', 'later'],
     ])
     const later = groups[1].rows.filter((row) => row.status === 'later')
@@ -360,6 +371,9 @@ describe('capture readiness', () => {
     )
     expect(captureGate({ ...connected([1]), selection: [3] }, 'room-01', true, null).text).toBe(
       'D-03 is not ready: telemetry_stale, camera_not_ready.',
+    )
+    expect(captureGate({ ...connected([1]), selection: [99] }, 'room-01', true, null).text).toBe(
+      'D-99 is no longer in the authoritative roster.',
     )
     expect(captureGate(connected([1]), 'Kitchen', false, null).text).toBe(
       'The room identifier must be lower-case letters, digits and hyphens, 3 to 24 characters.',

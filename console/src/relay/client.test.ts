@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { WebSocketRelayClient, buildSessionWebSocketUrl } from './client'
+import type { SurveyLifecycleRequest } from './contract'
 
 class TestSocket extends EventTarget {
   readyState = 1
@@ -29,6 +30,28 @@ class TestSocket extends EventTarget {
 }
 
 describe('WebSocket relay client', () => {
+  test('sends survey completion only on its authenticated console session', async () => {
+    const socket = new TestSocket()
+    const client = new WebSocketRelayClient(
+      { baseUrl: 'ws://localhost:8000', sessionId: 'session-1', source: 'console', token: 'token' },
+      { now: () => 100, createSocket: () => socket as unknown as WebSocket },
+    )
+    const request: SurveyLifecycleRequest = {
+      v: 1, t: 100, type: 'survey_lifecycle', event_id: 'finish-1', session: 'session-1',
+      operation: 'complete', intent_id: 'survey-1', run_id: 'survey-survey-1', connection_epoch: 1,
+    }
+    await expect(client.sendSurveyLifecycle(request)).rejects.toThrow('not authenticated')
+    client.start()
+    socket.open()
+    socket.message({ v: 1, t: 100, type: 'auth.accepted', event_id: 'auth-1', session: 'session-1', source: 'console', drone_id: null })
+    await expect(client.sendSurveyLifecycle({ ...request, session: 'other' })).rejects.toThrow('session')
+    await expect(client.sendSurveyLifecycle({ ...request, run_id: '' })).rejects.toThrow('session')
+    await client.sendSurveyLifecycle(request)
+    await client.sendSurveyLifecycle({ ...request, event_id: 'cancel-1', operation: 'cancel' })
+    expect(socket.sent.slice(1).map((value) => JSON.parse(value))).toEqual([
+      request, { ...request, event_id: 'cancel-1', operation: 'cancel' },
+    ])
+  })
   test('puts no token in the URL and sends the strict first auth frame', () => {
     const socket = new TestSocket()
     const client = new WebSocketRelayClient(
@@ -180,5 +203,56 @@ describe('WebSocket relay client', () => {
 
     expect(statuses.at(-1)).toBe('connected')
     expect(serverTypes).toEqual(['auth.accepted', 'telemetry'])
+  })
+})
+
+function observationFrame() {
+  return {
+    v: 1,
+    type: 'observation',
+    event_id: 'observation-socket-1',
+    session: 'session-1',
+    device_id: 1,
+    connection_epoch: 2,
+    source_id: 'ohmni-lidar',
+    node_type: 'ground',
+    frame: 'odom',
+    confidence: 0.9,
+    t_capture: null,
+    t_source_receipt: { clock_id: 'ohmni', unit: 'ms', value: 101 },
+    clock_mapping_id: null,
+    payload: {
+      kind: 'telemetry',
+      position: { frame: 'odom', x_m: 1, y_m: 2, z_m: 0 },
+      velocity: { frame: 'odom', x_m_s: 0, y_m_s: 0, z_m_s: 0 },
+      battery: 0.8,
+      link: 0.9,
+      pos_quality: 0.7,
+      state: 'ready',
+    },
+    t_ingest: 102,
+  }
+}
+
+describe('observation socket events', () => {
+  test('forwards a validated observation payload after console authentication', () => {
+    const socket = new TestSocket()
+    const events: string[] = []
+    const client = new WebSocketRelayClient(
+      { baseUrl: 'ws://localhost:8000', sessionId: 'session-1', source: 'console', token: 'token' },
+      { now: () => 100, createSocket: () => socket as unknown as WebSocket },
+    )
+    client.subscribe((event) => {
+      if (event.kind === 'server_event') events.push(event.event.type)
+    })
+    client.start()
+    socket.open()
+    socket.message({
+      v: 1, t: 101, type: 'auth.accepted', event_id: 'auth-observation', session: 'session-1',
+      source: 'console', drone_id: null,
+    })
+    socket.message(observationFrame())
+
+    expect(events).toEqual(['auth.accepted', 'observation'])
   })
 })

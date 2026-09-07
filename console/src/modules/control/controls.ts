@@ -9,6 +9,7 @@ import type { TranslateDirection } from '../../control/intent'
 import type {
   ConsoleIntentName,
   DroneId,
+  RelayAircraftState,
   FormationName,
   IntentArgs,
   IntentArgsByName,
@@ -64,14 +65,42 @@ export const STOP_ACTIVE_REASON =
 export const NO_SELECTION_REASON = 'No aircraft selected.'
 export const NO_READY_REASON = 'No aircraft is ready.'
 
+export function isAircraftNode(drone: RelayAircraftState | undefined): drone is RelayAircraftState {
+  return drone !== undefined && (drone.node_type ?? 'aircraft') === 'aircraft'
+}
+
+export function groundSelectionReason(state: ControlState, targets = state.selection): string | null {
+  const ground = targets.find((id) => state.aircraft[id]?.node_type === 'ground')
+  return ground === undefined
+    ? null
+    : `${formatDroneId(ground)} is a ground node. Aircraft controls stay disabled.`
+}
+
+export function aircraftControlSelectionReason(
+  state: ControlState,
+  name: ConsoleIntentName,
+  targets = state.selection,
+): string | null {
+  if (name === 'ground_velocity' || name === 'survey_area') {
+    return targets.length === 1 && state.aircraft[targets[0]]?.node_type === 'ground' && isReady(state.aircraft[targets[0]])
+      ? null
+      : 'Select one ready ground node.'
+  }
+  return ['arm', 'disarm', 'estop', 'hold', 'land_all', 'select'].includes(name)
+    ? null
+    : groundSelectionReason(state, targets)
+}
+
 export function readyIds(state: ControlState): DroneId[] {
   return sortedAircraft(state.aircraft)
-    .filter(isReady)
+    .filter((drone) => isAircraftNode(drone) && isReady(drone))
     .map((drone) => drone.drone_id)
 }
 
 export function rosterIds(state: ControlState): DroneId[] {
-  return sortedAircraft(state.aircraft).map((drone) => drone.drone_id)
+  return sortedAircraft(state.aircraft)
+    .filter(isAircraftNode)
+    .map((drone) => drone.drone_id)
 }
 
 function notReadySentence(state: ControlState): string | null {
@@ -104,6 +133,8 @@ export function gateControl(state: ControlState, name: ConsoleIntentName, option
   if (connection) return { reason: connection }
   const capability = capabilityBlockedReason(state, name)
   if (capability) return { reason: capability }
+  const ground = aircraftControlSelectionReason(state, name)
+  if (ground) return { reason: ground }
   if (options.sel && state.selection.length === 0) return { reason: NO_SELECTION_REASON }
   if (options.ready) {
     const notReady = notReadySentence(state)
@@ -182,7 +213,10 @@ export function motionControls(state: ControlState): ControlSpec[] {
       'land_all',
       'Land all',
       { name: 'land_all', args: {}, targets: rosterIds(state) },
-      { okNote: 'Confirmation required. Targets every aircraft in the roster.' },
+      {
+        extra: rosterIds(state).length === 0 ? 'No aircraft are in the roster.' : null,
+        okNote: 'Confirmation required. Targets every aircraft in the roster.',
+      },
     ),
     control(state, 'sweep', 'Sweep', { name: 'sweep', args: {} }, { sel: true }),
     control(state, 'spacing-', 'Spacing tighter', { name: 'spacing', args: { delta: -1 } }, { sel: true }),
@@ -276,7 +310,6 @@ function catalogRow(spec: ControlSpec): CatalogRow {
   }
 }
 
-/** Rows for survey_area and map_area: the console does not build these envelopes yet. */
 function laterRow(key: string, label: string, intent: string, rule: string): CatalogRow {
   return {
     key,
@@ -285,7 +318,7 @@ function laterRow(key: string, label: string, intent: string, rule: string): Cat
     confirm: 'confirm',
     rule,
     status: 'later',
-    note: `${intent} needs an area_id from the map module, which this console does not build yet.`,
+    note: `${intent} needs an area selected in the map module.`,
     noteTone: 'muted',
     enabled: false,
     spec: null,
@@ -313,7 +346,6 @@ export function commandCatalog(state: ControlState): CatalogGroup[] {
         catalogRow(motion['spacing-']),
         catalogRow(motion['spacing+']),
         catalogRow(motion.sweep),
-        laterRow('survey_area', 'Survey area', 'survey_area', 'any'),
         laterRow('map_area', 'Map area', 'map_area', 'non-empty'),
       ],
     },
@@ -345,6 +377,7 @@ export function dpadBlockedReason(state: ControlState): string | null {
   return (
     connectionReason(state) ??
     capabilityBlockedReason(state, 'translate') ??
+    groundSelectionReason(state) ??
     (state.estop ? STOP_ACTIVE_REASON : state.selection.length === 0 ? NO_SELECTION_REASON : null)
   )
 }
@@ -504,7 +537,9 @@ export function aircraftChips(state: ControlState): ChipView[] {
     return {
       droneId: drone.drone_id,
       id: formatDroneId(drone.drone_id),
-      sub: `${drone.flight_state ?? 'flight state unreported'} · ${drone.battery === null ? '—' : `${Math.round(drone.battery * 100)}%`}`,
+      sub: drone.node_type === 'ground'
+        ? `ground node · ${drone.flight_state ?? 'state unreported'}`
+        : `${drone.flight_state ?? 'flight state unreported'} · ${drone.battery === null ? '—' : `${Math.round(drone.battery * 100)}%`}`,
       selected: state.selection.includes(drone.drone_id),
       selectable,
       reason: selectCapability ?? (selectable
@@ -635,6 +670,12 @@ export function captureGate(
   }
   const drone = state.aircraft[state.selection[0]]
   const id = formatDroneId(state.selection[0])
+  if (drone === undefined) {
+    return { ready: false, text: `${id} is no longer in the authoritative roster.` }
+  }
+  if (!isAircraftNode(drone)) {
+    return { ready: false, text: `${id} is a ground node. Capture room requires an aircraft.` }
+  }
   if (!isReady(drone)) {
     const reasons = drone?.readiness_reasons.length ? drone.readiness_reasons.join(', ') : 'not selectable'
     return { ready: false, text: `${id} is not ready: ${reasons}.` }
@@ -677,7 +718,7 @@ export function captureFlow(
   guidance: CaptureReadiness | null,
 ): FlowStep[] {
   const one = state.selection.length === 1 ? state.aircraft[state.selection[0]] : undefined
-  const oneReady = one !== undefined && isReady(one)
+  const oneReady = one !== undefined && isAircraftNode(one) && isReady(one)
   const stepOne =
     one !== undefined && oneReady
       ? `${formatDroneId(one.drone_id)} selected, ${one.flight_state ?? 'flight state unreported'} and ready`
@@ -685,7 +726,9 @@ export function captureFlow(
       ? 'no aircraft selected'
       : state.selection.length > 1
         ? `${state.selection.length} selected — capture_room takes exactly one`
-        : `${formatDroneId(state.selection[0])} is not ready`
+        : one?.node_type === 'ground'
+          ? `${formatDroneId(state.selection[0])} is a ground node`
+          : `${formatDroneId(state.selection[0])} is not ready`
   const failing = guidance ? failingGates(guidance) : []
   const gatesWord = !guidance
     ? 'gates unreported'

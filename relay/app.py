@@ -239,8 +239,8 @@ class RelayRuntime:
                     control_localization_projector=projector,
                     control_pose_signing_key=self.control_pose_signing_key,
                     media_evidence=self.media_evidence,
-                    observation_configuration=self.settings.observation_configuration,
                     node_types=self.settings.node_types,
+                    observation_configuration=self.settings.observation_configuration,
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
@@ -771,9 +771,10 @@ class RelayRuntime:
                     sequence = (
                         self._control_heartbeat_sequence.get(subscription.connection_id, 0) + 1
                     )
+                    issued_at = self.clock()
                     unsigned: dict[str, object] = {
                         "v": 1,
-                        "t": self.clock(),
+                        "t": issued_at,
                         "type": "control_heartbeat",
                         "event_id": self.event_ids(),
                         "session": session_id,
@@ -782,6 +783,10 @@ class RelayRuntime:
                         "connection_epoch": connection_epoch,
                         "roster_version": roster_version,
                         "seq": sequence,
+                        "issued_at": issued_at,
+                        "expires_at": issued_at + self.settings.node_watchdog_failsafe_ms,
+                        "hold_after_ms": self.settings.node_watchdog_hold_ms,
+                        "failsafe_after_ms": self.settings.node_watchdog_failsafe_ms,
                     }
                     event = {
                         **unsigned,
@@ -868,6 +873,32 @@ class RelayRuntime:
         principal: Principal,
     ) -> list[dict[str, object]]:
         events = session.process_frame(frame, principal)
+        if (
+            principal.source == "adapter"
+            and principal.drone_id is not None
+            and isinstance(frame, Mapping)
+            and frame.get("type") == "observation"
+            and not any(event.get("type") == "refusal" for event in events)
+        ):
+            accepted = getattr(session.intent_sink, "accepted_observation", None)
+            if callable(accepted):
+                try:
+                    observation = next(
+                        (event for event in events if event.get("type") == "observation"), None
+                    )
+                    if observation is not None:
+                        from relay.observations import Observation
+
+                        events.extend(accepted(Observation.parse(observation)))
+                except AuditLogError:
+                    raise
+                except Exception:
+                    events.append(
+                        session.protocol_refusal(
+                            reason="safety_runtime_error",
+                            detail="the configured survey runtime failed closed",
+                        )
+                    )
         if (
             principal.source == "adapter"
             and principal.drone_id is not None

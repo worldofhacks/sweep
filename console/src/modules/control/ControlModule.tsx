@@ -5,14 +5,16 @@ import type { ModuleProps } from '../types'
 import { CapturePane } from './CapturePane'
 import { CommandsPane } from './CommandsPane'
 import { FleetPane } from './FleetPane'
+import { GroundPane } from './GroundPane'
 import { RequestsPane } from './RequestsPane'
 import { SwarmPane } from './SwarmPane'
 import type { CaptureReadiness } from './controls'
 
-export type ControlPaneId = 'swarm' | 'capture' | 'commands' | 'requests' | 'fleet'
+export type ControlPaneId = 'swarm' | 'ground' | 'capture' | 'commands' | 'requests' | 'fleet'
 
 const PANES: PaneTab[] = [
   { id: 'swarm', label: 'Swarm' },
+  { id: 'ground', label: 'Ground' },
   { id: 'capture', label: 'Capture' },
   { id: 'commands', label: 'Commands' },
   { id: 'requests', label: 'Requests' },
@@ -63,6 +65,7 @@ export function ControlModule({
           onFormationPreview={setFormationPreview}
         />
       )}
+      {pane === 'ground' && <GroundPane controller={controller} now={now} />}
       {pane === 'capture' && (
         <CapturePane controller={controller} roomId={roomId} onRoomId={onRoomIdChange} guidance={guidance} />
       )}

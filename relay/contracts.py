@@ -47,6 +47,7 @@ class MembershipAction(StrEnum):
     UNEXPECTED_LOSS = "unexpected_loss"
     TELEMETRY_STALE = "telemetry_stale"
     TELEMETRY_RECOVERED = "telemetry_recovered"
+    OBSERVATION_STALE = "observation_stale"
 
 
 class LifecycleStatus(StrEnum):
@@ -149,6 +150,13 @@ COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingP
         CommandOperation.HOVER: MappingProxyType({}),
         CommandOperation.LAND: MappingProxyType({}),
         CommandOperation.ESTOP: MappingProxyType({}),
+        CommandOperation.GROUND_VELOCITY: MappingProxyType(
+            {
+                "linear_mm_s": "ground_linear_mm_s",
+                "angular_mrad_s": "ground_angular_mrad_s",
+                "duration_ms": "ground_duration_ms",
+            }
+        ),
         CommandOperation.CAMERA_CAPABILITIES: MappingProxyType({}),
         CommandOperation.SET_GIMBAL_PITCH: MappingProxyType({"pitch_mdeg": "integer"}),
         CommandOperation.CAMERA_READY: MappingProxyType({}),
@@ -157,11 +165,32 @@ COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingP
         CommandOperation.RETRIEVE_MEDIA: MappingProxyType({"file_id": "id"}),
     }
 )
+MAX_GROUND_VELOCITY_MM_S = 180
+MAX_GROUND_YAW_MRAD_S = 785
+MAX_GROUND_VELOCITY_DURATION_MS = 500
 
 _CAPTURE_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
 _CAPTURE_COVERAGES = frozenset({"full_equirectangular", "incomplete_vertical_coverage"})
 _CAMERA_RESULT_STATUSES = frozenset({"completed", "unsupported", "failed"})
 _ENVELOPE_FIELDS = frozenset({"v", "t", "type", "event_id", "session"})
+
+
+@dataclass(frozen=True, slots=True)
+class GroundPoseIdentity:
+    event_id: str
+    session: str
+    connection_epoch: int
+    source_id: str
+    frame: str
+
+    def to_event(self) -> dict[str, object]:
+        return {
+            "event_id": self.event_id,
+            "session": self.session,
+            "connection_epoch": self.connection_epoch,
+            "source_id": self.source_id,
+            "frame": self.frame,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +210,11 @@ class MembershipRequest:
     home_pose_confirmed: bool | None = None
     control_authority: bool | None = None
     rc_safety_operator_present: bool | None = None
+    drive_authority: bool | None = None
+    safety_operator_present: bool | None = None
+    local_stop_ready: bool | None = None
+    heartbeat_ready: bool | None = None
+    pose_identity: GroundPoseIdentity | None = None
 
     def unsigned_event(self) -> dict[str, object]:
         event: dict[str, object] = {
@@ -200,12 +234,24 @@ class MembershipRequest:
             if self.node_type is not None:
                 event["node_type"] = self.node_type.value
         elif self.action is MembershipAction.READINESS:
-            event.update(
-                connection_epoch=self.connection_epoch,
-                home_pose_confirmed=self.home_pose_confirmed,
-                control_authority=self.control_authority,
-                rc_safety_operator_present=self.rc_safety_operator_present,
-            )
+            if self.drive_authority is None:
+                event.update(
+                    connection_epoch=self.connection_epoch,
+                    home_pose_confirmed=self.home_pose_confirmed,
+                    control_authority=self.control_authority,
+                    rc_safety_operator_present=self.rc_safety_operator_present,
+                )
+            else:
+                event.update(
+                    connection_epoch=self.connection_epoch,
+                    drive_authority=self.drive_authority,
+                    safety_operator_present=self.safety_operator_present,
+                    local_stop_ready=self.local_stop_ready,
+                    heartbeat_ready=self.heartbeat_ready,
+                    pose_identity=None
+                    if self.pose_identity is None
+                    else self.pose_identity.to_event(),
+                )
         elif self.action is MembershipAction.GRACEFUL_LEAVE:
             event["connection_epoch"] = self.connection_epoch
         return event
@@ -676,19 +722,30 @@ def parse_membership_request(raw: object) -> MembershipRequest:
         "action",
         "signature",
     }
+    aircraft_readiness_fields = {
+        "connection_epoch",
+        "home_pose_confirmed",
+        "control_authority",
+        "rc_safety_operator_present",
+    }
+    ground_readiness_fields = {
+        "connection_epoch",
+        "drive_authority",
+        "safety_operator_present",
+        "local_stop_ready",
+        "heartbeat_ready",
+        "pose_identity",
+    }
     action_fields = {
         MembershipAction.JOIN: {"adapter_id", "capabilities"},
-        MembershipAction.READINESS: {
-            "connection_epoch",
-            "home_pose_confirmed",
-            "control_authority",
-            "rc_safety_operator_present",
-        },
+        MembershipAction.READINESS: aircraft_readiness_fields,
         MembershipAction.GRACEFUL_LEAVE: {"connection_epoch"},
     }
     expected_fields = common | action_fields[action]
     if action is MembershipAction.JOIN and "node_type" in value:
         expected_fields.add("node_type")
+    if action is MembershipAction.READINESS and set(value) == common | ground_readiness_fields:
+        expected_fields = common | ground_readiness_fields
     _exact_fields(value, expected_fields, "invalid_membership")
     _common_envelope(value, expected_type="membership", code="invalid_membership")
 
@@ -722,6 +779,52 @@ def parse_membership_request(raw: object) -> MembershipRequest:
         value["connection_epoch"], "connection_epoch", "invalid_membership"
     )
     if action is MembershipAction.READINESS:
+        if set(value) == common | ground_readiness_fields:
+            for field in (
+                "drive_authority",
+                "safety_operator_present",
+                "local_stop_ready",
+                "heartbeat_ready",
+            ):
+                if not isinstance(value[field], bool):
+                    raise ContractError("invalid_membership", f"{field} must be a boolean")
+            pose = _mapping(
+                value["pose_identity"], "invalid_membership", "pose_identity must be an object"
+            )
+            _exact_fields(
+                pose,
+                {"event_id", "session", "connection_epoch", "source_id", "frame"},
+                "invalid_membership",
+            )
+            pose_identity = GroundPoseIdentity(
+                _nonempty_string(pose["event_id"], "pose_identity.event_id", "invalid_membership"),
+                _nonempty_string(pose["session"], "pose_identity.session", "invalid_membership"),
+                _positive_int(
+                    pose["connection_epoch"],
+                    "pose_identity.connection_epoch",
+                    "invalid_membership",
+                ),
+                _nonempty_string(
+                    pose["source_id"], "pose_identity.source_id", "invalid_membership"
+                ),
+                _nonempty_string(pose["frame"], "pose_identity.frame", "invalid_membership"),
+            )
+            return MembershipRequest(
+                1,
+                value["t"],
+                "membership",
+                value["event_id"],
+                value["session"],
+                drone_id,
+                action,
+                signature,
+                connection_epoch=connection_epoch,
+                drive_authority=value["drive_authority"],
+                safety_operator_present=value["safety_operator_present"],
+                local_stop_ready=value["local_stop_ready"],
+                heartbeat_ready=value["heartbeat_ready"],
+                pose_identity=pose_identity,
+            )
         for field in (
             "home_pose_confirmed",
             "control_authority",
@@ -1191,6 +1294,7 @@ def acknowledgement_event(
     connection_epoch: int | None = None,
     reason: str | None = None,
     detail: str | None = None,
+    result: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     if status is LifecycleStatus.REFUSED:
         raise ValueError("refused outcomes use refusal_event")
@@ -1198,7 +1302,7 @@ def acknowledgement_event(
         raise ValueError("failed or invalidated acknowledgements require a reason")
     if reason is not None and not _is_machine_code(reason):
         raise ValueError("acknowledgement reason must be snake_case")
-    return {
+    event: dict[str, object] = {
         "v": 1,
         "t": t,
         "type": "acknowledgement",
@@ -1214,6 +1318,24 @@ def acknowledgement_event(
         "reason": reason,
         "detail": detail,
     }
+    if result is not None:
+        if set(result) != {"run_id", "connection_epoch"}:
+            raise ValueError("acknowledgement result must contain survey run identity")
+        run_id = result["run_id"]
+        epoch = result["connection_epoch"]
+        if (
+            not isinstance(run_id, str)
+            or not run_id
+            or len(run_id) > 128
+            or run_id != run_id.strip()
+            or not run_id.isprintable()
+            or not isinstance(epoch, int)
+            or isinstance(epoch, bool)
+            or not 1 <= epoch <= 2_147_483_647
+        ):
+            raise ValueError("acknowledgement result is not a bounded survey run identity")
+        event["result"] = {"run_id": run_id, "connection_epoch": epoch}
+    return event
 
 
 def refusal_event(
@@ -1455,8 +1577,27 @@ def _command_arguments(
             result[field] = _nonempty_string(value[field], field, code)
         elif kind == "positive":
             result[field] = _positive_int(value[field], field, code)
+        elif kind == "ground_linear_mm_s":
+            result[field] = _nonnegative_int(value[field], field, code)
+            if result[field] > MAX_GROUND_VELOCITY_MM_S:
+                raise ContractError(code, f"{field} exceeds the ground speed cap")
+        elif kind == "ground_angular_mrad_s":
+            result[field] = _integer(value[field], field, code)
+            if abs(result[field]) > MAX_GROUND_YAW_MRAD_S:
+                raise ContractError(code, f"{field} exceeds the ground yaw cap")
+        elif kind == "ground_duration_ms":
+            result[field] = _positive_int(value[field], field, code)
+            if result[field] > MAX_GROUND_VELOCITY_DURATION_MS:
+                raise ContractError(code, f"{field} exceeds the ground duration cap")
         else:
             result[field] = _integer(value[field], field, code)
+    if operation is CommandOperation.GROUND_VELOCITY and (
+        (result["linear_mm_s"] and result["angular_mrad_s"])
+        or (not result["linear_mm_s"] and not result["angular_mrad_s"])
+    ):
+        raise ContractError(
+            code, "ground velocity requires exactly one linear or angular component"
+        )
     return MappingProxyType(result)
 
 

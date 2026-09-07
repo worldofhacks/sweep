@@ -1,3 +1,5 @@
+import { parseObservation, type Observation } from './observation'
+
 /**
  * Console-side mirror of the frozen Intent v1 contract in relay/intent_v1.py.
  *
@@ -7,6 +9,7 @@
  */
 
 export type DroneId = number
+export type NodeType = 'aircraft' | 'ground'
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
 export type IntentSource = 'console' | 'keyboard' | 'webcam' | 'language'
 export const FORMATION_NAMES = ['line', 'column', 'wedge', 'diamond'] as const
@@ -22,10 +25,6 @@ export const MAX_INTENT_NAME_CODE_POINTS = 64
 export const MAX_INTENT_DRONE_IDS = 6
 export const MAX_INTENT_DRONE_ID = 2_147_483_647
 
-/**
- * Every intent name this console can build. Mirrors relay/intent_v1.py
- * IntentName minus survey_area and map_area, which the brief marks as later.
- */
 export type ConsoleIntentName =
   | 'arm'
   | 'disarm'
@@ -43,6 +42,8 @@ export type ConsoleIntentName =
   | 'come_home'
   | 'sweep'
   | 'capture_room'
+  | 'ground_velocity'
+  | 'survey_area'
 
 export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'arm',
@@ -61,6 +62,8 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'come_home',
   'sweep',
   'capture_room',
+  'ground_velocity',
+  'survey_area',
 ]
 
 /** The exact profile emitted by a C1 relay. */
@@ -100,7 +103,7 @@ export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
 
 /** Every intent implemented by this console, independently of deployment release. */
 export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>(
-  C2_FLEET_OPERATIONS_INTENTS,
+  [...C2_FLEET_OPERATIONS_INTENTS, 'ground_velocity', 'survey_area'],
 )
 
 export function isSupportedIntent(name: ConsoleIntentName): boolean {
@@ -118,6 +121,8 @@ export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<
   'land_all',
   'sweep',
   'capture_room',
+  'ground_velocity',
+  'survey_area',
 ])
 
 export function requiresConfirmation(name: ConsoleIntentName): boolean {
@@ -144,6 +149,8 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   come_home: 'selected',
   sweep: 'selected',
   capture_room: 'exactly one',
+  ground_velocity: 'exactly one',
+  survey_area: 'exactly one',
 }
 
 export function selectionRule(name: ConsoleIntentName): SelectionRule {
@@ -196,6 +203,40 @@ export interface CaptureRoomArgs {
   pattern: CapturePattern
 }
 
+export interface GroundVelocityArgs {
+  linear_mm_s: number
+  angular_mrad_s: number
+  duration_ms: number
+}
+
+export interface SurveyAreaArgs {
+  area_id: string
+}
+
+export interface SurveyLifecycleRequest {
+  v: 1
+  t: number
+  type: 'survey_lifecycle'
+  event_id: string
+  session: string
+  operation: 'complete' | 'cancel'
+  intent_id: string
+  run_id: string
+  connection_epoch: number
+}
+
+export function isSurveyLifecycleRequest(value: unknown): value is SurveyLifecycleRequest {
+  if (!isRecord(value) || Object.keys(value).length !== 9) return false
+  return value.v === 1 && value.type === 'survey_lifecycle' &&
+    Number.isSafeInteger(value.t) && Number(value.t) >= 0 &&
+    isCanonicalIntentText(value.event_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+    isCanonicalIntentText(value.session, MAX_INTENT_SESSION_CODE_POINTS) &&
+    isCanonicalIntentText(value.intent_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+    isCanonicalIntentText(value.run_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+    (value.operation === 'complete' || value.operation === 'cancel') &&
+    isDroneId(value.connection_epoch)
+}
+
 /** Args shape per intent name, mirroring relay/intent_v1.py _parse_args. */
 export interface IntentArgsByName {
   arm: EmptyArgs
@@ -214,6 +255,8 @@ export interface IntentArgsByName {
   come_home: EmptyArgs
   sweep: SweepArgs
   capture_room: CaptureRoomArgs
+  ground_velocity: GroundVelocityArgs
+  survey_area: SurveyAreaArgs
 }
 
 export type IntentArgs = IntentArgsByName[ConsoleIntentName]
@@ -240,8 +283,13 @@ export interface MediaStreamState {
   last_frame_at: number | null
 }
 
+export interface GroundReadiness {
+  source_id: string | null
+}
+
 export interface RelayAircraftState {
   drone_id: DroneId
+  node_type?: NodeType
   connection_epoch: number
   membership: MembershipState
   readiness_reasons: string[]
@@ -261,6 +309,7 @@ export interface RelayAircraftState {
   membership_history: unknown[]
   membership_history_truncated: number
   video?: MediaStreamState
+  ground_readiness?: GroundReadiness | null
 }
 
 export interface RelayStateEvent {
@@ -311,6 +360,7 @@ export interface RelayMembershipEvent {
   readiness_reasons: string[]
   adapter_id: string | null
   capabilities: string[]
+  node_type?: NodeType
   provenance:
     | 'adapter_signature'
     | 'relay_transport_attestation'
@@ -363,6 +413,12 @@ export interface RelayAcknowledgementEvent {
   roster_version: number
   drone_id: DroneId | null
   connection_epoch: number | null
+  result?: SurveyRunIdentity
+}
+
+export interface SurveyRunIdentity {
+  run_id: string
+  connection_epoch: number
 }
 
 export interface RelayRefusalEvent {
@@ -421,6 +477,7 @@ export type RelayServerEvent =
   | RelayAuthAcceptedEvent
   | RelayAuthRefusedEvent
   | RelayMembershipEvent
+  | Observation
   | RelayRefusalEvent
   | RelayStateEvent
   | RelaySafetyActionEvent
@@ -760,6 +817,24 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
+function isNodeType(value: unknown): value is NodeType {
+  return value === 'aircraft' || value === 'ground'
+}
+
+function isCapabilities(value: unknown): value is string[] {
+  if (!Array.isArray(value) || value.length > 64 || new Set(value).size !== value.length) return false
+  if (!value.every((item) => isCanonicalStateText(item))) return false
+  return new TextEncoder().encode(JSON.stringify(value)).length <= 8 * 1024
+}
+
+function isCanonicalStateText(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value === value.trim() &&
+    !/[\p{C}\p{Zl}\p{Zp}]/u.test(value) &&
+    new TextEncoder().encode(value).length <= 512
+}
+
 function isCapabilityAdvertisement(profile: unknown, enabled: unknown): enabled is ConsoleIntentName[] {
   if (
     typeof profile !== 'string' ||
@@ -791,6 +866,27 @@ function isNullableNonNegativeInteger(value: unknown): value is number | null {
   return value === null || isNonNegativeInteger(value)
 }
 
+function isSurveyRunIdentity(value: unknown): value is SurveyRunIdentity {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 2 &&
+    isCanonicalIntentText(value.run_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+    isPositiveInt32(value.connection_epoch)
+  )
+}
+
+function isGroundReadiness(value: unknown): value is GroundReadiness | null {
+  return value === null || (
+    isRecord(value) &&
+    Object.keys(value).length === 1 &&
+    (value.source_id === null || isCanonicalIntentText(value.source_id, MAX_INTENT_IDENTIFIER_CODE_POINTS))
+  )
+}
+
+function isPositiveInt32(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 2_147_483_647
+}
+
 function isNullableUnitNumber(value: unknown): value is number | null {
   return value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1)
 }
@@ -810,6 +906,7 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
 
   return (
     isDroneId(value.drone_id) &&
+    (value.node_type === undefined || isNodeType(value.node_type)) &&
     isNonNegativeInteger(value.connection_epoch) &&
     MEMBERSHIP_STATES.has(value.membership as MembershipState) &&
     isStringArray(readinessReasons) &&
@@ -824,13 +921,45 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
     typeof value.selectable === 'boolean' &&
     typeof value.adapter_id === 'string' &&
     value.adapter_id.length > 0 &&
-    isStringArray(value.adapter_capabilities) &&
+    isCapabilities(value.adapter_capabilities) &&
     'home_pose' in value &&
     'telemetry' in value &&
     Array.isArray(value.membership_history) &&
     isNonNegativeInteger(value.membership_history_truncated) &&
-    isVideoStreamState(value.video)
+    isVideoStreamState(value.video) &&
+    (value.ground_readiness === undefined || isGroundReadiness(value.ground_readiness))
   )
+}
+
+function normalizeRelayNodeState(value: unknown): unknown {
+  if (!isRecord(value)) return value
+  const nodeType = Object.hasOwn(value, 'node_type') ? value.node_type : 'aircraft'
+  if (nodeType !== 'ground') {
+    return {
+      ...value,
+      node_type: nodeType,
+      membership_history_truncated: Object.hasOwn(value, 'membership_history_truncated')
+        ? value.membership_history_truncated
+        : 0,
+    }
+  }
+  return {
+    flight_state: null,
+    battery: null,
+    link: null,
+    pos_quality: null,
+    control_authority: false,
+    rc_safety_operator_present: false,
+    last_seen_at: null,
+    camera_patterns: [],
+    selectable: false,
+    home_pose: null,
+    telemetry: null,
+    membership_history: [],
+    membership_history_truncated: 0,
+    ...value,
+    node_type: 'ground',
+  }
 }
 
 function isVideoStreamState(value: unknown): value is MediaStreamState | undefined {
@@ -858,15 +987,17 @@ function hasBaseEvent(value: Record<string, unknown>): boolean {
 
 /** Parses the M1.1 event seam; unknown frames fail closed. */
 export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
-  if (!isRecord(value) || !hasBaseEvent(value) || typeof value.type !== 'string') return null
+  if (!isRecord(value) || typeof value.type !== 'string') return null
+
+  if (value.type === 'observation') {
+    return parseObservation(value)
+  }
+
+  if (!hasBaseEvent(value)) return null
 
   if (value.type === 'state') {
     const drones = Array.isArray(value.drones)
-      ? value.drones.map((drone) =>
-          isRecord(drone) && !Object.hasOwn(drone, 'membership_history_truncated')
-            ? { ...drone, membership_history_truncated: 0 }
-            : drone,
-        )
+      ? value.drones.map(normalizeRelayNodeState)
       : value.drones
     if (
       !isNonNegativeInteger(value.roster_version) ||
@@ -919,7 +1050,8 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !MEMBERSHIP_STATES.has(value.membership as MembershipState) ||
       !isStringArray(value.readiness_reasons) ||
       !(value.adapter_id === null || typeof value.adapter_id === 'string') ||
-      !isStringArray(value.capabilities) ||
+      !isCapabilities(value.capabilities) ||
+      !(value.node_type === undefined || isNodeType(value.node_type)) ||
       ![
         'adapter_signature',
         'relay_transport_attestation',
@@ -930,7 +1062,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
     ) {
       return null
     }
-    return value as unknown as RelayMembershipEvent
+    return { ...value, node_type: value.node_type ?? 'aircraft' } as unknown as RelayMembershipEvent
   }
 
   if (value.type === 'auth.accepted') {
@@ -1002,7 +1134,10 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !isNullableString(value.detail) ||
       !isNonNegativeInteger(value.roster_version) ||
       !isNullableDroneId(value.drone_id) ||
-      !isNullableNonNegativeInteger(value.connection_epoch)
+      !isNullableNonNegativeInteger(value.connection_epoch) ||
+      (value.result !== undefined && !isSurveyRunIdentity(value.result)) ||
+      (value.result !== undefined &&
+        (value.source !== 'survey_area' || value.status !== 'executing' || value.connection_epoch !== value.result.connection_epoch))
     ) {
       return null
     }
@@ -1107,6 +1242,14 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
         isCanonicalIntentText(args.capture_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
         CAPTURE_PATTERNS.has(args.pattern as CapturePattern)
       )
+    case 'survey_area':
+      return keys.length === 1 && isCanonicalIntentText(args.area_id, MAX_INTENT_IDENTIFIER_CODE_POINTS)
+    case 'ground_velocity':
+      return keys.length === 3 &&
+        Number.isInteger(args.linear_mm_s) && Number(args.linear_mm_s) >= 0 && Number(args.linear_mm_s) <= 180 &&
+        Number.isInteger(args.angular_mrad_s) && Math.abs(Number(args.angular_mrad_s)) <= 785 &&
+        Number.isInteger(args.duration_ms) && Number(args.duration_ms) > 0 && Number(args.duration_ms) <= 500 &&
+        ((args.linear_mm_s === 0) !== (args.angular_mrad_s === 0))
     case 'arm':
     case 'disarm':
     case 'estop':

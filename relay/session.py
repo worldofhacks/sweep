@@ -296,8 +296,8 @@ class RelaySession:
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         relay_clock_id: str = "unix_epoch_ms",
         media_evidence: MediaEvidenceProvider | None = None,
-        observation_configuration: ObservationConfiguration | None = None,
         node_types: Mapping[int, NodeType] | None = None,
+        observation_configuration: ObservationConfiguration | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -404,11 +404,15 @@ class RelaySession:
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None
         if principal.source == "localization" and frame_type == "control_localization":
             return self.process_control_localization(raw, principal)
+        if principal.source == "console" and frame_type == "survey_lifecycle":
+            return self.process_survey_lifecycle(raw, principal)
         if principal.source in {"adapter", "localization"} and frame_type == "observation":
             return self.process_observation(raw, principal)
         if principal.source in REGISTERED_SOURCES and frame_type == "intent":
             return self.process_intent(raw, principal)
         if principal.source == "adapter":
+            if frame_type == "observation":
+                return self.process_observation(raw, principal)
             if frame_type == "membership":
                 return self.process_membership(raw, principal)
             if frame_type == "telemetry":
@@ -428,6 +432,49 @@ class RelaySession:
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             return self._protocol_refusal(reason=reason, detail=detail, now=self.clock())
+
+    def on_audit_rollback(self, undo: Callable[[], None]) -> bool:
+        """Register an in-memory or filesystem undo for the current relay operation."""
+        if not callable(undo):
+            raise ValueError("rollback hook must be callable")
+        if self._audit_undo is None:
+            return False
+        self._audit_undo.append(undo)
+        return True
+
+    def process_survey_lifecycle(
+        self, raw: object, principal: Principal
+    ) -> list[dict[str, object]]:
+        """Route a console-authenticated complete/cancel request to the active survey owner."""
+        from relay.survey_area import SurveyLifecycleError, SurveyLifecycleRequest
+
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            if principal.source != "console" or principal.drone_id is not None:
+                return [
+                    self._protocol_refusal(
+                        reason="source_not_allowed",
+                        detail="survey lifecycle requests require the authenticated console",
+                        now=now,
+                    )
+                ]
+            try:
+                request = SurveyLifecycleRequest.parse(raw)
+                if request.session != self.session_id:
+                    raise SurveyLifecycleError(
+                        "session_mismatch", "survey lifecycle session is not current"
+                    )
+                self._claim_transport_event(request.event_id, request.t, principal, now)
+                handler = getattr(self.intent_sink, "survey_lifecycle", None)
+                if not callable(handler):
+                    raise SurveyLifecycleError(
+                        "survey_not_configured", "survey lifecycle is unavailable"
+                    )
+                self._append_audit({**request.to_event(), "source": principal.source})
+                return handler(request)
+            except (SurveyLifecycleError, ContractError) as error:
+                return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
 
     def process_intent(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
@@ -531,6 +578,20 @@ class RelaySession:
                             normalized=intent,
                         )
                     ]
+
+            if (
+                intent.name is IntentName.GROUND_VELOCITY
+                and not self.registry.selection_includes_ground(intent.selection)
+            ):
+                return [
+                    self._refuse_intent(
+                        raw,
+                        reason="ground_target_required",
+                        detail="ground velocity requires a selected ground node",
+                        now=now,
+                        normalized=intent,
+                    )
+                ]
 
             if intent.name not in _GROUND_SAFE_INTENTS and self.registry.selection_includes_ground(
                 intent.selection
@@ -798,6 +859,12 @@ class RelaySession:
                             spacing=sink_result.spacing_update,
                         )
                     )
+                survey_result = (
+                    sink_result.result
+                    if sink_result.source == "survey_area"
+                    and sink_result.status is LifecycleStatus.EXECUTING
+                    else None
+                )
                 events.append(
                     self.record_lifecycle(
                         intent_id=pending.intent.intent_id,
@@ -805,6 +872,15 @@ class RelaySession:
                         source=sink_result.source,
                         reason=sink_result.reason,
                         detail=sink_result.detail,
+                        drone_id=(
+                            pending.intent.selection[0] if survey_result is not None else None
+                        ),
+                        connection_epoch=(
+                            survey_result["connection_epoch"]
+                            if survey_result is not None
+                            else None
+                        ),
+                        result=survey_result,
                     )
                 )
         pending.events = events
@@ -904,9 +980,29 @@ class RelaySession:
                     raise ObservationError(
                         "source_not_configured", "observation ingress is disabled"
                     )
-                event = self.observation_ingress.accept(
+                observation = self.observation_ingress.accept(
                     submission, now=now, producer_role=principal.source
-                ).to_mapping()
+                )
+                if (
+                    submission.node_type == NodeType.GROUND.value
+                    and submission.payload["kind"] == "pose"
+                ):
+                    if submission.confidence > 0:
+                        self.registry.apply_ground_pose_observation(
+                            drone_id=submission.device_id,
+                            connection_epoch=submission.connection_epoch,
+                            event_id=submission.event_id,
+                            session=submission.session,
+                            source_id=submission.source_id,
+                            frame=submission.frame,
+                            t=observation.t_ingest,
+                        )
+                    else:
+                        self.registry.clear_ground_pose_observation(
+                            drone_id=submission.device_id,
+                            connection_epoch=submission.connection_epoch,
+                        )
+                event = observation.to_mapping()
             except (ObservationError, ContractError, RegistryError) as error:
                 return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
             self._append_audit(event)
@@ -1545,6 +1641,7 @@ class RelaySession:
         connection_epoch: int | None = None,
         reason: str | None = None,
         detail: str | None = None,
+        result: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         """Wire a planner/arbiter-owned lifecycle result without importing its types."""
         if status is LifecycleStatus.REFUSED:
@@ -1576,6 +1673,7 @@ class RelaySession:
                 connection_epoch=connection_epoch,
                 reason=reason,
                 detail=detail,
+                result=result,
             )
             self._remember_intent(intent_id)
             self._transition_intent(entry, status)
@@ -1816,7 +1914,7 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
-            possible_ids = [self.event_ids() for _ in range(self.registry.aircraft_limit)]
+            possible_ids = [self.event_ids() for _ in range(self.registry.node_capacity)]
             transitions = self.registry.expire_stale_telemetry(now_ms=now, event_ids=possible_ids)
             events: list[dict[str, object]] = []
             for transition in transitions:
@@ -2487,7 +2585,15 @@ class RelaySession:
 
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
-_GROUND_SAFE_INTENTS = frozenset({IntentName.SELECT, IntentName.HOLD, IntentName.ESTOP})
+_GROUND_SAFE_INTENTS = frozenset(
+    {
+        IntentName.SELECT,
+        IntentName.HOLD,
+        IntentName.ESTOP,
+        IntentName.SURVEY_AREA,
+        IntentName.GROUND_VELOCITY,
+    }
+)
 # These two planner-owned objects share the per-aircraft projection budget. Four
 # maximum aircraft plus both maximum control objects still fit one 1 MiB record.
 MAX_MATERIAL_CONTROL_PROJECTION_BYTES = 128 * 1024
@@ -2711,8 +2817,11 @@ def _bounded_control_projection_snapshot(value: object, field: str) -> object:
 
 
 def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]:
-    missing = _DRONE_STATE_KEYS - set(drone)
-    unknown = set(drone) - _DRONE_STATE_KEYS
+    expected = _DRONE_STATE_KEYS
+    if drone.get("node_type") == "ground":
+        expected = expected | {"ground_readiness"}
+    missing = expected - set(drone)
+    unknown = set(drone) - expected
     if missing or unknown:
         detail = []
         if missing:
@@ -2739,7 +2848,17 @@ def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]
         not isinstance(home_pose, Mapping) or set(home_pose) != {"x", "y", "z"}
     ):
         raise AuditLogError("drone home_pose fields do not match the bounded projection")
-    projection = {key: drone[key] for key in _DRONE_STATE_KEYS - _VOLATILE_DRONE_KEYS}
+    ground_readiness = drone.get("ground_readiness")
+    if ground_readiness is not None and (
+        not isinstance(ground_readiness, Mapping)
+        or set(ground_readiness) != {"source_id"}
+        or (
+            ground_readiness["source_id"] is not None
+            and not isinstance(ground_readiness["source_id"], str)
+        )
+    ):
+        raise AuditLogError("drone ground_readiness fields do not match the bounded projection")
+    projection = {key: drone[key] for key in expected - _VOLATILE_DRONE_KEYS}
     for report, timestamp in _TIMESTAMPED_DRONE_REPORTS.items():
         value = projection.get(report)
         if value is None and report != "video":
