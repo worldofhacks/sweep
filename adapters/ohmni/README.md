@@ -37,6 +37,10 @@ SWEEP_CAMERA_HEIGHT_PX=480
 
 The source must be an approved V4L node, `mjpeg` or `uyvy422`, its native rate or a measured integer rate, and measured dimensions. The publisher uses the node ID for the MediaMTX path `drone{id}`. It reports `publishing` only after ffmpeg reports increasing decoded-frame counts and changes to `failed` when that progress is stale.
 
+## Owner encoder sampler
+
+The vendor Node owns paired drive-encoder reads and publishes bounded records through `sweep_encoder.sock`. No BotShell or adapter reader may query those registers while the sampler is installed. The ownership gate starts with the Node; polling begins only when the native model starts after servo initialization. A later native initialization withdraws pose through an unavailable event until a newly qualified sampler produces pairs. The patch installer only stages verified source and does not restart the vendor owner. A stock owner restart reconnects the serial bus, reinitializes the servos, enables wheel torque, and initializes the neck. A restart therefore requires a separately reviewed operator procedure after physical motion is permitted.
+
 ## Approved ground return
 
 A confirmed `come_home` for a selected ground node can dispatch an approved return only when the relay is configured with `SWEEP_GROUND_RETURN_ID`. The node requires `SWEEP_RETURN_APPROVAL_FILE`, `SWEEP_RETURN_APPROVAL_KEY_FILE`, and `SWEEP_ODOM_ORIGIN_ID`; it refuses the command when any is absent.
