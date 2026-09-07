@@ -10,6 +10,7 @@ import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
 import org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization
 import org.worldofhacks.sweep.bridge.core.frames.NavigationSegment
+import kotlin.math.round
 
 /**
  * The control loop against the kinematic fixture and a stepped clock: acknowledgement
@@ -85,6 +86,9 @@ class FlightControllerTest {
         var relayAlive = true
         private var localHeight: LocalHeightFacts? = null
         private var trackLocalHeight = false
+        private var localHeightDelayMs = 0L
+        private var localHeightQuantumM: Double? = null
+        private val localHeightHistory = ArrayDeque<Pair<Long, Double>>()
 
         init {
             controller.onStickSent = { _, frame, _ -> frames += frame }
@@ -149,13 +153,26 @@ class FlightControllerTest {
             updateFacts()
         }
 
-        fun trackLocalHeight() {
+        fun trackLocalHeight(delayMs: Long = 0, quantumM: Double? = null) {
             trackLocalHeight = true
+            localHeightDelayMs = delayMs
+            localHeightQuantumM = quantumM
+            localHeightHistory.clear()
             updateFacts()
         }
 
         private fun updateFacts() {
-            if (trackLocalHeight) localHeight = LocalHeightFacts(model.facts.zUp, clock.nowMs())
+            if (trackLocalHeight) {
+                val now = clock.nowMs()
+                localHeightHistory.addLast(now to model.facts.zUp)
+                while (localHeightHistory.size > 1 && localHeightHistory[1].first <= now - localHeightDelayMs) {
+                    localHeightHistory.removeFirst()
+                }
+                val (receivedAtMs, zUpM) = localHeightHistory.first()
+                val quantumM = localHeightQuantumM
+                val sampledHeight = if (quantumM == null) zUpM else round(zUpM / quantumM) * quantumM
+                localHeight = LocalHeightFacts(sampledHeight, receivedAtMs)
+            }
             controller.updateAircraft(model.facts.copy(localHeight = localHeight))
         }
 
@@ -963,11 +980,26 @@ class FlightControllerTest {
         h.tickMs(7_000)
 
         assertEquals("completed", takeoff.terminal?.first, takeoff.events.toString())
-        assertTrue(h.model.zUp in 1.75..1.9, "z ${h.model.zUp}")
+        assertTrue(h.model.zUp in 1.75..1.85, "z ${h.model.zUp}")
         val climbing = h.frames.filter { it.verticalThrottle > 0.0 }
         assertTrue(climbing.isNotEmpty())
         assertTrue(climbing.all { it.pitch == 0.0 && it.roll == 0.0 && it.yaw == 0.0 })
         assertTrue(takeoff.terminal!!.third!!.contains("local height"), takeoff.terminal!!.third!!)
+    }
+
+    @Test
+    fun `supervised vertical slows before the target with delayed 0point1m height and carried climb velocity`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+        h.trackLocalHeight(delayMs = 200, quantumM = 0.1)
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+
+        h.tickMs(8_000)
+
+        assertEquals("completed", takeoff.terminal?.first, takeoff.events.toString())
+        assertTrue(h.model.zUp in 1.75..1.85, "z ${h.model.zUp}")
+        assertTrue(h.frames.any { it.verticalThrottle > 0.0 && it.verticalThrottle < h.config.limits.maxVerticalMS })
+        assertTrue(h.frames.none { it.verticalThrottle < 0.0 })
     }
 
     @Test
