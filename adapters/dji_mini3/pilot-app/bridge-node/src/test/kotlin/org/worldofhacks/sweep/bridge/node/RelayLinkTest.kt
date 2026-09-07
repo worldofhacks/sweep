@@ -351,6 +351,9 @@ class RelayLinkTest {
                 await("joined") { link.state.value.joined }
                 stub.sendNavigationAuthorization()
                 stub.sendNavigationPose()
+                await("disabled navigation setup rejection") {
+                    logs.count { it.contains("without enabled navigation setup") } == 2
+                }
                 val command = stub.issueCommand(
                     CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-1"),
                     commandId = "route-command-1",
