@@ -204,18 +204,21 @@ def test_cli_extracts_bounded_pngs_with_their_source_frame_indices(tmp_path, cap
     )
     output = tmp_path / "pngs"
 
-    assert ohmni_camera_frames.main(
-        [
-            "--capture-dir",
-            str(directory),
-            "--output-dir",
-            str(output),
-            "--every-nth",
-            "2",
-            "--max-frames",
-            "2",
-        ]
-    ) == 0
+    assert (
+        ohmni_camera_frames.main(
+            [
+                "--capture-dir",
+                str(directory),
+                "--output-dir",
+                str(output),
+                "--every-nth",
+                "2",
+                "--max-frames",
+                "2",
+            ]
+        )
+        == 0
+    )
     result = json.loads(capsys.readouterr().out)
     assert result == {
         "camera_id": "downward-fisheye",

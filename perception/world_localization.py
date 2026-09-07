@@ -891,10 +891,7 @@ class WorldLocalizationAdapter:
         if config.clock_mapping_id != self.pins.capture_clock_mapping_id:
             raise WorldLocalizationError("capture alignment mapping is unpinned")
         capture = submission.t_capture
-        if (
-            capture is None
-            or (capture.clock_id, capture.unit) != config.capture_clock
-        ):
+        if capture is None or (capture.clock_id, capture.unit) != config.capture_clock:
             raise WorldLocalizationError("capture alignment capture clock is unpinned")
         if (
             submission.t_source_receipt.clock_id != capture.clock_id

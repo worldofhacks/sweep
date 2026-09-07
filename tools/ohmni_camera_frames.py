@@ -191,9 +191,7 @@ def _validate_manifest(manifest):
     started_monotonic_ns = _integer(
         capture.get("started_monotonic_ns"), "capture.started_monotonic_ns"
     )
-    ended_monotonic_ns = _integer(
-        capture.get("ended_monotonic_ns"), "capture.ended_monotonic_ns"
-    )
+    ended_monotonic_ns = _integer(capture.get("ended_monotonic_ns"), "capture.ended_monotonic_ns")
     started_utc_ns = _integer(capture.get("started_utc_ns"), "capture.started_utc_ns")
     ended_utc_ns = _integer(capture.get("ended_utc_ns"), "capture.ended_utc_ns")
     first_received_ns = _integer(
