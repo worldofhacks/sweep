@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from .paired_encoder import EncoderStreamUnavailable
+from .paired_encoder import EncoderPair, EncoderStreamUnavailable
 
 TICKS_PER_MM = 16384 * (30 / 11) / (math.pi * 150.5)
 BASE_MM = 332.0
@@ -87,13 +87,18 @@ class Odometry:
     def start(self) -> None:
         self._thread.start()
 
+    def _update_paired_sample(self, sample: EncoderPair) -> None:
+        self.update((sample.left, sample.right), sample.right_receipt_ns / 1_000_000_000)
+
     def _run(self) -> None:
         while not self._stop.is_set():
             started = time.monotonic()
             try:
                 if hasattr(self.shell, "read_pair"):
                     sample = self.shell.read_pair(ENCODER_READ_TIMEOUT_S)
-                    pair = None if sample is None else (sample.left, sample.right)
+                    if sample is not None:
+                        self._update_paired_sample(sample)
+                    pair = None
                 else:
                     text = self.shell.command("apos 0", expected=r"apos 0\s*=\s*\d+\s*\n")
                     text += self.shell.command("apos 1", expected=r"apos 1\s*=\s*\d+\s*\n")
