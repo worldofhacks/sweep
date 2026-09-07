@@ -28,6 +28,7 @@ import os
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import get_origin, get_type_hints
 
@@ -35,6 +36,7 @@ from fastapi import FastAPI
 
 from adapters.dispatch import AdapterDispatcher
 from adapters.dji_mini3.remote import CommandRequest, NodeLink
+from adapters.ohmni.dispatcher import GroundCommandDispatcher
 from adapters.sim.camera import SimCameraConfig
 from arbiter.safety import SafetyArbiter, SafetyConfig
 from planner.controller import AutonomyController, RelayExecution
@@ -44,6 +46,7 @@ from planner.models import (
     FleetSnapshot,
     FlightState,
     LifecycleStatus,
+    Plan,
     Refusal,
     RefusalReason,
     RelayAircraftSafetyEnrichment,
@@ -53,9 +56,14 @@ from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
 from relay.app import RelayRuntime, TranscriptServiceFactory, create_app
 from relay.bridge import RelayNodeLink, build_dispatcher
-from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.capabilities import (
+    C1_CAPABILITY_PROFILE,
+    SURVEY_ADDITIONAL_INTENT_NAMES,
+    CapabilityProfile,
+    with_ground_capabilities,
+)
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
-from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
+from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord, NodeType
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
 from relay.control_localization import (
     ClockMapping,
@@ -80,6 +88,7 @@ HOLD_PREEMPTS = frozenset(
         IntentName.SWEEP,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
+        IntentName.GROUND_VELOCITY,
     }
 )
 """Operator motion and camera plans a hold cancels; a running safety plan finishes first."""
@@ -666,19 +675,95 @@ class AutonomySession:
             return _PreemptibleLink(link, job, session)
 
         try:
-            snapshot = current()
-            dispatcher = build_dispatcher(
-                runtime,
-                self.session_id,
-                snapshot,
-                arbiter=self.arbiter,
-                sim_camera_config=self._composition.config.sim_camera,
-                link_wrapper=gate,
-            )
-            controller = AutonomyController(
-                planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
-            )
-            result = controller.execute(intent, snapshot, current_snapshot=current)
+            if intent.name is IntentName.GROUND_VELOCITY:
+                link = gate(
+                    RelayNodeLink(
+                        runtime,
+                        self.session_id,
+                        delivery_timeout_ms=runtime.settings.command_ttl_ms,
+                    )
+                )
+                result = GroundCommandDispatcher(
+                    link,
+                    acknowledgement_timeout_ms=runtime.settings.command_ttl_ms,
+                    command_deadline_ms=runtime.settings.command_deadline_ms,
+                ).dispatch(intent, session.current_state())
+                dispatcher = None
+            else:
+                snapshot = current()
+                if intent.name in {IntentName.HOLD, IntentName.ESTOP}:
+                    ground_dispatcher = None
+                    ground_state = session.current_state()
+                    if _ground_stop_targets(intent, ground_state):
+                        link = gate(
+                            RelayNodeLink(
+                                runtime,
+                                self.session_id,
+                                delivery_timeout_ms=runtime.settings.command_ttl_ms,
+                            )
+                        )
+                        ground_dispatcher = GroundCommandDispatcher(
+                            link,
+                            acknowledgement_timeout_ms=runtime.settings.command_ttl_ms,
+                            command_deadline_ms=runtime.settings.command_deadline_ms,
+                        )
+                    air_intent, air_snapshot = _air_only_stop(intent, snapshot)
+                    dispatch_aircraft = bool(air_snapshot.aircraft) and (
+                        intent.name is IntentName.ESTOP or bool(air_intent.selection)
+                    )
+                    if dispatch_aircraft:
+                        dispatcher = build_dispatcher(
+                            runtime,
+                            self.session_id,
+                            air_snapshot,
+                            arbiter=self.arbiter,
+                            sim_camera_config=self._composition.config.sim_camera,
+                            link_wrapper=gate,
+                        )
+                        controller = AutonomyController(
+                            planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
+                        )
+                    else:
+                        dispatcher = None
+                    if ground_dispatcher is not None and dispatch_aircraft:
+                        with ThreadPoolExecutor(max_workers=2) as workers:
+                            ground_future = workers.submit(
+                                ground_dispatcher.dispatch_stop, intent, ground_state
+                            )
+                            air_future = workers.submit(
+                                controller.execute,
+                                air_intent,
+                                air_snapshot,
+                                current_snapshot=lambda: _air_only_stop(intent, current())[1],
+                            )
+                            ground_result = ground_future.result()
+                            air_result = air_future.result()
+                    elif ground_dispatcher is not None:
+                        ground_result = ground_dispatcher.dispatch_stop(intent, ground_state)
+                        air_result = None
+                    elif dispatch_aircraft:
+                        ground_result = None
+                        air_result = controller.execute(
+                            air_intent,
+                            air_snapshot,
+                            current_snapshot=lambda: _air_only_stop(intent, current())[1],
+                        )
+                    else:
+                        ground_result = air_result = None
+                    result = _aggregate_stop_results(intent, snapshot, ground_result, air_result)
+                else:
+                    dispatcher = build_dispatcher(
+                        runtime,
+                        self.session_id,
+                        snapshot,
+                        arbiter=self.arbiter,
+                        sim_camera_config=self._composition.config.sim_camera,
+                        link_wrapper=gate,
+                    )
+                    controller = AutonomyController(
+                        planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
+                    )
+                    result = controller.execute(intent, snapshot, current_snapshot=current)
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             return
@@ -691,6 +776,8 @@ class AutonomySession:
             result = _composition_failure(intent, session, error)
         with self._lock:
             if result.status is LifecycleStatus.EXECUTING:
+                if dispatcher is None:
+                    raise RuntimeError("ground dispatcher returned a nonterminal command result")
                 self._awaiting[intent.intent_id] = _AwaitingExecution(
                     job=job,
                     session=session,
@@ -884,14 +971,89 @@ class AutonomySession:
         guarded()
 
 
+class SurveyIntentRouter:
+    """Combines pilot-assisted ground recording with the existing autonomous intent sink."""
+
+    def __init__(self, autonomy: AutonomySession, session: RelaySession) -> None:
+        from relay.survey_area import SurveyAreaLifecycle, SurveyCandidateRegistry
+
+        self.autonomy = autonomy
+        self.capability_profile = autonomy.capability_profile
+        self.survey = SurveyAreaLifecycle(
+            session, SurveyCandidateRegistry(session.audit_log.root / "survey_candidates")
+        )
+
+    def __call__(self, intent: IntentV1, state: dict[str, object]) -> object:
+        if intent.name is IntentName.SURVEY_AREA:
+            return self.survey.start(intent)
+        return self.autonomy(intent, state)
+
+    def survey_lifecycle(self, request: object) -> list[dict[str, object]]:
+        from relay.survey_area import SurveyLifecycleRequest
+
+        if not isinstance(request, SurveyLifecycleRequest):
+            raise ValueError("survey lifecycle request is invalid")
+        return self.survey.process(request)
+
+    def accepted_observation(self, observation: object) -> list[dict[str, object]]:
+        from relay.observations import Observation
+
+        return (
+            []
+            if not isinstance(observation, Observation)
+            else self.survey.accepted_observation(observation)
+        )
+
+    def adapter_disconnected(
+        self, *, drone_id: int, connection_epoch: int, relay_state: dict[str, object]
+    ) -> list[dict[str, object]]:
+        events: list[dict[str, object]] = []
+        underlying = getattr(self.autonomy, "adapter_disconnected", None)
+        if callable(underlying):
+            events.extend(
+                underlying(
+                    drone_id=drone_id,
+                    connection_epoch=connection_epoch,
+                    relay_state=relay_state,
+                )
+            )
+        events.extend(
+            self.survey.adapter_disconnected(drone_id=drone_id, connection_epoch=connection_epoch)
+        )
+        return events
+
+    def periodic_events(self, state: object) -> list[dict[str, object]]:
+        events: list[dict[str, object]] = []
+        underlying = getattr(self.autonomy, "periodic_events", None)
+        if callable(underlying):
+            events.extend(underlying(state))
+        events.extend(self.survey.periodic_events())
+        return events
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.autonomy, name)
+
+
 class AutonomyComposition:
     """Per-session autonomy workers behind ``create_app``'s sink and leave factories."""
 
     def __init__(
-        self, config: AutonomyConfig, capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE
+        self,
+        config: AutonomyConfig,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+        *,
+        node_types: Mapping[int, NodeType] | None = None,
     ) -> None:
         self.config = config
-        self.capability_profile = config.planning.effective_capability_profile(capability_profile)
+        profile = config.planning.effective_capability_profile(capability_profile)
+        if node_types is not None and any(
+            node_type is NodeType.GROUND for node_type in node_types.values()
+        ):
+            profile = with_ground_capabilities(profile)
+            profile = CapabilityProfile(
+                profile.name, profile.enabled_intent_names | SURVEY_ADDITIONAL_INTENT_NAMES
+            )
+        self.capability_profile = profile
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
@@ -921,7 +1083,7 @@ class AutonomyComposition:
         return self._runtime_source()
 
     def intent_sink_factory(self, session: RelaySession) -> IntentSink:
-        return self.session(session.session_id)
+        return SurveyIntentRouter(self.session(session.session_id), session)
 
     def leave_authorizer_factory(self, session_id: str) -> LeaveAuthorizer:
         return self.session(session_id).authorize_leave
@@ -957,7 +1119,9 @@ def create_autonomy_app(
     """
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
-    composition = AutonomyComposition(config, settings.capability_profile)
+    composition = AutonomyComposition(
+        config, settings.capability_profile, node_types=settings.node_types
+    )
     control_localization_factory = (
         None
         if config.control_localization_projector is None
@@ -975,6 +1139,107 @@ def create_autonomy_app(
     )
     composition.bind(app)
     return app, composition
+
+
+def _ground_stop_targets(intent: IntentV1, state: Mapping[str, object]) -> bool:
+    if intent.name not in {IntentName.HOLD, IntentName.ESTOP}:
+        return False
+    drones = state.get("drones")
+    if not isinstance(drones, list):
+        return False
+    selected = set(intent.selection)
+    return any(
+        isinstance(drone, Mapping)
+        and drone.get("node_type") == "ground"
+        and isinstance(drone.get("drone_id"), int)
+        and not isinstance(drone.get("drone_id"), bool)
+        and (intent.name is IntentName.ESTOP or drone["drone_id"] in selected)
+        for drone in drones
+    )
+
+
+def _air_only_stop(intent: IntentV1, snapshot: FleetSnapshot) -> tuple[IntentV1, FleetSnapshot]:
+    """Keep ground IDs out of the aircraft planner's selection projection."""
+    selection = tuple(drone_id for drone_id in intent.selection if drone_id in snapshot.aircraft)
+    return replace(intent, selection=selection), replace(snapshot, selection=selection)
+
+
+def _aggregate_stop_results(
+    intent: IntentV1,
+    snapshot: FleetSnapshot,
+    ground: ExecutionResult | None,
+    aircraft: ExecutionResult | None,
+) -> ExecutionResult:
+    if ground is None and aircraft is not None:
+        return aircraft
+    if aircraft is None and ground is not None:
+        return ground
+    if ground is None or aircraft is None:
+        return ExecutionResult(
+            intent_id=intent.intent_id,
+            roster_version=snapshot.roster_version,
+            status=LifecycleStatus.REFUSED,
+            refusal=Refusal(
+                intent_id=intent.intent_id,
+                roster_version=snapshot.roster_version,
+                drone_id=None,
+                connection_epoch=None,
+                reason=RefusalReason.INVALID_SELECTION,
+                detail="the stop has no dispatchable targets",
+            ),
+        )
+
+    plans = tuple(result.plan for result in (ground, aircraft) if result.plan is not None)
+    commands = tuple(command for plan in plans for command in plan.commands)
+    plan = Plan(
+        plan_id=f"plan:{intent.intent_id}:mixed-stop",
+        intent_id=intent.intent_id,
+        intent_name=intent.name,
+        roster_version=snapshot.roster_version,
+        selection=intent.selection,
+        confirmed=True,
+        commands=commands,
+        hold_scope=next((item.hold_scope for item in plans if item.hold_scope is not None), None),
+    )
+    acknowledgements = tuple(
+        acknowledgement
+        for result in (ground, aircraft)
+        for acknowledgement in result.acknowledgements
+    )
+    failed = next(
+        (result for result in (ground, aircraft) if result.status is not LifecycleStatus.COMPLETED),
+        None,
+    )
+    if failed is None:
+        return ExecutionResult(
+            intent_id=intent.intent_id,
+            roster_version=snapshot.roster_version,
+            status=LifecycleStatus.COMPLETED,
+            plan=plan,
+            acknowledgements=acknowledgements,
+        )
+    refusal = failed.refusal or Refusal(
+        intent_id=intent.intent_id,
+        roster_version=snapshot.roster_version,
+        drone_id=None,
+        connection_epoch=None,
+        reason=RefusalReason.ADAPTER_FAILURE,
+        detail="a stop target did not complete",
+        status=LifecycleStatus.FAILED,
+    )
+    return ExecutionResult(
+        intent_id=intent.intent_id,
+        roster_version=snapshot.roster_version,
+        status=LifecycleStatus.FAILED,
+        plan=plan,
+        acknowledgements=acknowledgements,
+        refusal=refusal,
+        degraded_aircraft=tuple(
+            sorted(
+                {drone_id for result in (ground, aircraft) for drone_id in result.degraded_aircraft}
+            )
+        ),
+    )
 
 
 def _composition_failure(

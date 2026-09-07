@@ -296,8 +296,8 @@ class RelaySession:
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         relay_clock_id: str = "unix_epoch_ms",
         media_evidence: MediaEvidenceProvider | None = None,
-        observation_configuration: ObservationConfiguration | None = None,
         node_types: Mapping[int, NodeType] | None = None,
+        observation_configuration: ObservationConfiguration | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -404,6 +404,10 @@ class RelaySession:
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None
         if principal.source == "localization" and frame_type == "control_localization":
             return self.process_control_localization(raw, principal)
+        if principal.source == "console" and frame_type == "survey_lifecycle":
+            return self.process_survey_lifecycle(raw, principal)
+        if principal.source in {"adapter", "localization"} and frame_type == "observation":
+            return self.process_observation(raw, principal)
         if principal.source in REGISTERED_SOURCES and frame_type == "intent":
             return self.process_intent(raw, principal)
         if principal.source == "adapter":
@@ -428,6 +432,49 @@ class RelaySession:
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             return self._protocol_refusal(reason=reason, detail=detail, now=self.clock())
+
+    def on_audit_rollback(self, undo: Callable[[], None]) -> bool:
+        """Register an in-memory or filesystem undo for the current relay operation."""
+        if not callable(undo):
+            raise ValueError("rollback hook must be callable")
+        if self._audit_undo is None:
+            return False
+        self._audit_undo.append(undo)
+        return True
+
+    def process_survey_lifecycle(
+        self, raw: object, principal: Principal
+    ) -> list[dict[str, object]]:
+        """Route a console-authenticated complete/cancel request to the active survey owner."""
+        from relay.survey_area import SurveyLifecycleError, SurveyLifecycleRequest
+
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            if principal.source != "console" or principal.drone_id is not None:
+                return [
+                    self._protocol_refusal(
+                        reason="source_not_allowed",
+                        detail="survey lifecycle requests require the authenticated console",
+                        now=now,
+                    )
+                ]
+            try:
+                request = SurveyLifecycleRequest.parse(raw)
+                if request.session != self.session_id:
+                    raise SurveyLifecycleError(
+                        "session_mismatch", "survey lifecycle session is not current"
+                    )
+                self._claim_transport_event(request.event_id, request.t, principal, now)
+                handler = getattr(self.intent_sink, "survey_lifecycle", None)
+                if not callable(handler):
+                    raise SurveyLifecycleError(
+                        "survey_not_configured", "survey lifecycle is unavailable"
+                    )
+                self._append_audit({**request.to_event(), "source": principal.source})
+                return handler(request)
+            except (SurveyLifecycleError, ContractError) as error:
+                return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
 
     def process_intent(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
@@ -531,6 +578,20 @@ class RelaySession:
                             normalized=intent,
                         )
                     ]
+
+            if (
+                intent.name is IntentName.GROUND_VELOCITY
+                and not self.registry.selection_includes_ground(intent.selection)
+            ):
+                return [
+                    self._refuse_intent(
+                        raw,
+                        reason="ground_target_required",
+                        detail="ground velocity requires a selected ground node",
+                        now=now,
+                        normalized=intent,
+                    )
+                ]
 
             if intent.name not in _GROUND_SAFE_INTENTS and self.registry.selection_includes_ground(
                 intent.selection
@@ -884,8 +945,13 @@ class RelaySession:
             self._ensure_mutation_usable()
             now = self.clock()
             try:
-                if principal.source != "adapter" or principal.drone_id is None:
-                    raise ObservationError("source_not_allowed", "observations require an adapter")
+                if (
+                    principal.source not in {"adapter", "localization"}
+                    or principal.drone_id is None
+                ):
+                    raise ObservationError(
+                        "source_not_allowed", "observations require a device-bound producer"
+                    )
                 submission = ObservationSubmission.parse(raw)
                 self._check_adapter_binding(submission.device_id, principal)
                 if submission.session != self.session_id:
@@ -899,7 +965,29 @@ class RelaySession:
                     raise ObservationError(
                         "source_not_configured", "observation ingress is disabled"
                     )
-                event = self.observation_ingress.accept(submission, now=now).to_mapping()
+                observation = self.observation_ingress.accept(
+                    submission, now=now, producer_role=principal.source
+                )
+                if (
+                    submission.node_type == NodeType.GROUND.value
+                    and submission.payload["kind"] == "pose"
+                ):
+                    if submission.confidence > 0:
+                        self.registry.apply_ground_pose_observation(
+                            drone_id=submission.device_id,
+                            connection_epoch=submission.connection_epoch,
+                            event_id=submission.event_id,
+                            session=submission.session,
+                            source_id=submission.source_id,
+                            frame=submission.frame,
+                            t=observation.t_ingest,
+                        )
+                    else:
+                        self.registry.clear_ground_pose_observation(
+                            drone_id=submission.device_id,
+                            connection_epoch=submission.connection_epoch,
+                        )
+                event = observation.to_mapping()
             except (ObservationError, ContractError, RegistryError) as error:
                 return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
             self._append_audit(event)
@@ -1809,7 +1897,7 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
-            possible_ids = [self.event_ids() for _ in range(self.registry.aircraft_limit)]
+            possible_ids = [self.event_ids() for _ in range(self.registry.node_capacity)]
             transitions = self.registry.expire_stale_telemetry(now_ms=now, event_ids=possible_ids)
             events: list[dict[str, object]] = []
             for transition in transitions:
@@ -2480,7 +2568,15 @@ class RelaySession:
 
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
-_GROUND_SAFE_INTENTS = frozenset({IntentName.SELECT, IntentName.HOLD, IntentName.ESTOP})
+_GROUND_SAFE_INTENTS = frozenset(
+    {
+        IntentName.SELECT,
+        IntentName.HOLD,
+        IntentName.ESTOP,
+        IntentName.SURVEY_AREA,
+        IntentName.GROUND_VELOCITY,
+    }
+)
 # These two planner-owned objects share the per-aircraft projection budget. Four
 # maximum aircraft plus both maximum control objects still fit one 1 MiB record.
 MAX_MATERIAL_CONTROL_PROJECTION_BYTES = 128 * 1024

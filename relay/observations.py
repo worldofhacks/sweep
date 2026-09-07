@@ -308,6 +308,8 @@ class SourceBinding:
     world_map_version: str | None = None
     world_physical_datum: str | None = None
     allowed_clock_mapping_ids: tuple[str, ...] = ()
+    range_mount_id: str | None = None
+    producer_role: Literal["adapter", "localization"] = "adapter"
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -326,6 +328,11 @@ class SourceBinding:
         object.__setattr__(self, "source_id", _text(self.source_id, "binding source_id"))
         if type(self.node_type) is not str or self.node_type not in {"aircraft", "ground"}:
             _error("invalid_source_binding", "binding node_type is unknown")
+        if type(self.producer_role) is not str or self.producer_role not in {
+            "adapter",
+            "localization",
+        }:
+            _error("invalid_source_binding", "binding producer role is unknown")
         if not isinstance(self.allowed_frames, tuple):
             _error("invalid_source_binding", "binding allowed frames must be a tuple")
         frames = tuple(_text(item, "allowed frame") for item in self.allowed_frames)
@@ -345,6 +352,8 @@ class SourceBinding:
                 "invalid_source_binding", "binding payload kinds must be known, unique, and bounded"
             )
         object.__setattr__(self, "allowed_payload_kinds", payload_kinds)
+        if self.range_mount_id is not None:
+            object.__setattr__(self, "range_mount_id", _text(self.range_mount_id, "range mount_id"))
         if not isinstance(self.allowed_clock_mapping_ids, tuple):
             _error("invalid_source_binding", "binding clock mappings must be a tuple")
         mappings = tuple(
