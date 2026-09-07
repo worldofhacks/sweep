@@ -15,7 +15,9 @@ class FakeSerial extends EventEmitter {
     this.requests = [];
   }
   sendCustom(sid, command, payload) {
-    this.requests.push({ sid, command, payload: Buffer.from(payload) });
+    const request = { sid, command, payload: Buffer.from(payload), sentNs: process.hrtime.bigint() };
+    this.requests.push(request);
+    this.emit('sent', request);
   }
   reply(sid, value, address) {
     const data = Buffer.alloc(2);
@@ -62,8 +64,8 @@ async function withSampler(options, test) {
   let clock = 1000;
   const sampler = new PairedEncoderSampler(serial, socketPath, {
     monotonicNs: () => String(clock++),
-    pollIntervalMs: 100,
-    replyTimeoutMs: 20,
+    pollIntervalMs: options.pollIntervalMs || 100,
+    replyTimeoutMs: options.replyTimeoutMs || 20,
   });
   sampler.start();
   if (options.activate !== false) {
@@ -176,6 +178,122 @@ async function testOutOfOrderReplyCannotAdvanceThePoll() {
   });
 }
 
+async function testDeferredVendorReadsKeepTheirSpacingBeforeAnotherEncoderPoll() {
+  await withSampler({ pollIntervalMs: 1 }, async ({ sampler, serial }) => {
+    assert.deepStrictEqual(serial.requests.map((request) => request.sid), [0]);
+    let injected = false;
+    serial.on('sent', (request) => {
+      if (!injected && request.payload[0] === 59 && request.sid === 0) {
+        injected = true;
+        setTimeout(() => serial.sendCustom(1, 4, Buffer.from([59, 4])), 1);
+      }
+    });
+    serial.sendCustom(1, 4, Buffer.from([59, 4]));
+    await wait(5);
+    serial.sendCustom(0, 4, Buffer.from([59, 4]));
+    serial.reply(0, 10);
+    serial.reply(1, 20);
+    await wait(24);
+    const vendor = serial.requests.filter((request) => request.payload[0] === 59);
+    assert.deepStrictEqual(vendor.map((request) => request.sid), [1, 0, 1]);
+    assert(vendor[1].sentNs - vendor[0].sentNs >= 4000000n);
+    assert(vendor[2].sentNs - vendor[1].sentNs >= 4000000n);
+    const lastVendor = serial.requests.lastIndexOf(vendor[2]);
+    const nextEncoder = serial.requests.findIndex((request, index) => index > lastVendor && request.payload[0] === 58);
+    assert(nextEncoder > lastVendor);
+    assert.strictEqual(sampler.isActive(), true);
+  });
+}
+
+async function testInitializationAndStopDrainDeferredVendorReadsWithoutBursting() {
+  await withSampler({ activate: false }, async ({ sampler, serial }) => {
+    sampler.activate();
+    await wait(5);
+    serial.sendCustom(1, 4, Buffer.from([59, 4]));
+    await wait(5);
+    serial.sendCustom(0, 4, Buffer.from([59, 4]));
+    sampler.beginInitialization();
+    await wait(12);
+    const initializationVendor = serial.requests.filter((request) => request.payload[0] === 59);
+    assert.deepStrictEqual(initializationVendor.map((request) => request.sid), [1, 0]);
+    assert(initializationVendor[1].sentNs - initializationVendor[0].sentNs >= 4000000n);
+
+    sampler.activate();
+    await wait(5);
+    serial.sendCustom(1, 4, Buffer.from([59, 4]));
+    await wait(5);
+    serial.sendCustom(0, 4, Buffer.from([59, 4]));
+    await new Promise((resolve) => sampler.stop(resolve));
+    const vendor = serial.requests.filter((request) => request.payload[0] === 59);
+    assert.deepStrictEqual(vendor.map((request) => request.sid), [1, 0, 1, 0]);
+    assert(vendor[3].sentNs - vendor[2].sentNs >= 4000000n);
+  });
+}
+
+async function testReinitializationPublishesInvalidationWithoutALatePair() {
+  await withSampler(async ({ sampler, serial, socketPath }) => {
+    const client = await connect(socketPath);
+    let buffer = '';
+    const messages = [];
+    client.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        messages.push(JSON.parse(buffer.slice(0, newline)));
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf('\n');
+      }
+    });
+    try {
+      serial.sendCustom(1, 4, Buffer.from([59, 4]));
+      await wait(5);
+      serial.sendCustom(0, 4, Buffer.from([59, 4]));
+      serial.reply(0, 10);
+      serial.reply(1, 20);
+      await wait(1);
+      sampler.beginInitialization();
+      await wait(18);
+      assert.deepStrictEqual(messages.map((message) => message.type), [
+        'sweep_encoder_pair',
+        'sweep_encoder_unavailable',
+      ]);
+      assert.strictEqual(messages[1].reason, 'serial_reinitializing');
+      assert.strictEqual(sampler._qualified, false);
+      assert.strictEqual(sampler._timer, null);
+    } finally {
+      client.destroy();
+    }
+  });
+}
+
+async function testFaultDrainKeepsDeferredVendorReadsSpacedAndNeverReusesLateReply() {
+  await withSampler(async ({ sampler, serial, socketPath }) => {
+    const client = await connect(socketPath);
+    try {
+      serial.sendCustom(1, 4, Buffer.from([59, 4]));
+      await wait(5);
+      serial.sendCustom(0, 4, Buffer.from([59, 4]));
+      const unavailable = await nextJson(client);
+      assert.deepStrictEqual(unavailable, {
+        v: 1,
+        type: 'sweep_encoder_unavailable',
+        poll_id: 1,
+        reason: 'missing_encoder_reply',
+      });
+      await wait(8);
+      const vendor = serial.requests.filter((request) => request.payload[0] === 59);
+      assert.deepStrictEqual(vendor.map((request) => request.sid), [1, 0]);
+      assert(vendor[1].sentNs - vendor[0].sentNs >= 4000000n);
+      serial.reply(0, 88);
+      await wait(25);
+      assert.strictEqual(sampler.isActive(), false);
+      assert.deepStrictEqual(serial.requests.filter((request) => request.payload[0] === 58).map((request) => request.sid), [0]);
+    } finally {
+      client.destroy();
+    }
+  });
+}
+
 async function testIncompletePollLatchesUnavailableAndNeverReusesLateReply() {
   await withSampler(async ({ serial, socketPath }) => {
     const client = await connect(socketPath);
@@ -260,6 +378,10 @@ async function testFanoutBoundsClientsAndDropsSlowReaders() {
   await testNativeInitializationDefersPollingButKeepsTheEncoderGate();
   await testDelayedPairFansOut();
   await testOutOfOrderReplyCannotAdvanceThePoll();
+  await testDeferredVendorReadsKeepTheirSpacingBeforeAnotherEncoderPoll();
+  await testInitializationAndStopDrainDeferredVendorReadsWithoutBursting();
+  await testReinitializationPublishesInvalidationWithoutALatePair();
+  await testFaultDrainKeepsDeferredVendorReadsSpacedAndNeverReusesLateReply();
   await testIncompletePollLatchesUnavailableAndNeverReusesLateReply();
   await testReaderConnectingAfterBootFailureReceivesTheLatchedFault();
   await testExternalDriveEncoderReadsAreSuppressedForSamplerLifetime();
