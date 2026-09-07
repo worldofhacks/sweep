@@ -1307,6 +1307,9 @@ async def _receive_frame(websocket: WebSocket) -> object:
         return result
 
     try:
+        byte_length = len(encoded.encode("utf-8"))
+        if byte_length > 1_048_576:
+            raise json.JSONDecodeError("frame exceeds 1 MiB", "", 0)
         frame = json.loads(encoded, object_pairs_hook=unique)
         pending = [(frame, 0)]
         while pending:
@@ -1318,10 +1321,10 @@ async def _receive_frame(websocket: WebSocket) -> object:
             elif isinstance(value, list):
                 pending.extend((child, depth + 1) for child in value)
         if isinstance(frame, Mapping) and frame.get("type") == "observation":
-            if len(encoded.encode("utf-8")) > 65_536:
+            if byte_length > 65_536:
                 raise json.JSONDecodeError("observation exceeds 64 KiB", "", 0)
         return frame
-    except (UnicodeError, RecursionError) as error:
+    except (ValueError, RecursionError) as error:
         raise json.JSONDecodeError("invalid JSON encoding or depth", "", 0) from error
 
 

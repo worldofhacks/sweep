@@ -10,9 +10,10 @@ from fastapi.testclient import TestClient
 import relay.observation_ingress as ingress_module
 from relay.app import RelayRuntime, create_app
 from relay.auth import Principal
+from relay.contracts import NodeType
 from relay.observation_ingress import ObservationConfiguration
 from relay.observations import FrameDeclaration, FrameRegistry, SourceBinding
-from relay.settings import RelaySettings
+from relay.settings import RelaySettings, SettingsError
 from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION, MutableClock, membership_payload
 
 
@@ -57,6 +58,7 @@ def settings(tmp_path):
         adapter_keys={1: ADAPTER_KEY},
         log_dir=tmp_path,
         observation_configuration=configuration(),
+        node_types={1: NodeType.GROUND},
     )
 
 
@@ -81,7 +83,14 @@ def test_websocket_observation_is_stamped_audited_and_delivered_to_console(setti
             )
             adapter.receive_json()
             adapter.receive_json()
-            adapter.send_json(membership_payload(action="join", event_id="join-1"))
+            adapter.send_json(
+                membership_payload(
+                    action="join",
+                    event_id="join-1",
+                    node_type="ground",
+                    capabilities=["ground_drive"],
+                )
+            )
             adapter.send_json(observation())
             for _ in range(20):
                 event = console.receive_json()
@@ -110,7 +119,12 @@ def test_authenticated_producer_cannot_change_host_identity_or_stamp(settings, c
     runtime = RelayRuntime(settings, clock=MutableClock())
     session = runtime.session(SESSION)
     principal = Principal("adapter", 1, ADAPTER_KEY)
-    session.process_frame(membership_payload(action="join", event_id="join-1"), principal)
+    session.process_frame(
+        membership_payload(
+            action="join", event_id="join-1", node_type="ground", capabilities=["ground_drive"]
+        ),
+        principal,
+    )
     events = session.process_frame(observation(**changes), principal)
     assert events[0]["reason"] == reason
     assert not any(row["event"]["type"] == "observation" for row in session.audit_log.replay())
@@ -154,7 +168,12 @@ def test_membership_replay_rate_and_clock_are_checked_before_audit(settings):
     session = RelayRuntime(settings, clock=clock).session(SESSION)
     principal = Principal("adapter", 1, ADAPTER_KEY)
     assert session.process_frame(observation(), principal)[0]["type"] == "refusal"
-    session.process_frame(membership_payload(action="join", event_id="join-1"), principal)
+    session.process_frame(
+        membership_payload(
+            action="join", event_id="join-1", node_type="ground", capabilities=["ground_drive"]
+        ),
+        principal,
+    )
     assert session.process_frame(observation(), principal)[0]["type"] == "observation"
     clock.advance(10)
     assert session.process_frame(observation(), principal)[0]["reason"] == "replayed_observation"
@@ -216,7 +235,12 @@ def test_host_configuration_loads_and_rejects_duplicate_keys(tmp_path):
     path.write_text(json.dumps(document))
     assert ObservationConfiguration.load(path) == configuration()
     settings = RelaySettings.from_env(
-        {"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(), "SWEEP_OBSERVATIONS_FILE": str(path)}
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_OBSERVATIONS_FILE": str(path),
+            "SWEEP_ADAPTER_KEYS_JSON": json.dumps({"1": ADAPTER_KEY.decode()}),
+            "SWEEP_NODE_TYPES_JSON": '{"1":"ground"}',
+        }
     )
     assert settings.observation_configuration == configuration()
     path.write_text('{"bindings": [], "bindings": []}')
@@ -229,7 +253,13 @@ def test_unconfigured_ingress_refuses_and_other_sources_cannot_submit(settings):
         replace(settings, observation_configuration=None), clock=MutableClock()
     ).session(SESSION)
     principal = Principal("adapter", 1, ADAPTER_KEY)
-    session.process_frame(membership_payload(action="join", event_id="join-1"), principal)
+    session.process_frame(
+        membership_payload(
+            action="join", event_id="join-1", node_type="ground", capabilities=["ground_drive"]
+        ),
+        principal,
+    )
+
     assert session.process_frame(observation(), principal)[0]["reason"] == "source_not_configured"
     assert (
         session.process_frame(observation(), Principal("console", None, CONSOLE_KEY))[0]["reason"]
@@ -237,11 +267,23 @@ def test_unconfigured_ingress_refuses_and_other_sources_cannot_submit(settings):
     )
 
 
+def test_observation_binding_cannot_change_membership_class(settings):
+    with pytest.raises(SettingsError, match="device class"):
+        replace(settings, node_types={1: NodeType.AIRCRAFT})
+    with pytest.raises(SettingsError, match="device class"):
+        replace(settings, adapter_keys={}, node_types={})
+
+
 def test_advancing_receipt_cannot_reuse_an_event_identity(settings, monkeypatch):
     clock = MutableClock()
     session = RelayRuntime(settings, clock=clock).session(SESSION)
     principal = Principal("adapter", 1, ADAPTER_KEY)
-    session.process_frame(membership_payload(action="join", event_id="join-1"), principal)
+    session.process_frame(
+        membership_payload(
+            action="join", event_id="join-1", node_type="ground", capabilities=["ground_drive"]
+        ),
+        principal,
+    )
     assert session.process_frame(observation(), principal)[0]["type"] == "observation"
     clock.advance(10)
     newer = {"clock_id": "hal-monotonic", "unit": "ns", "value": 101}
@@ -273,7 +315,13 @@ def test_admitted_observations_do_not_refresh_adapter_watchdog(settings, monkeyp
         return []
 
     monkeypatch.setattr(runtime, "adapter_activity", activity)
-    runtime.process_frame(session, membership_payload(action="join", event_id="join-1"), principal)
+    runtime.process_frame(
+        session,
+        membership_payload(
+            action="join", event_id="join-1", node_type="ground", capabilities=["ground_drive"]
+        ),
+        principal,
+    )
     assert activities == [1]
     event = runtime.process_frame(session, observation(), principal)
     assert event[0]["type"] == "observation"
