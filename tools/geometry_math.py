@@ -107,7 +107,8 @@ def rect_inside_polygon(rect, poly):
     )
 
 
-def _segment_distance(a, b, c, d):
+def segment_distance(a, b, c, d):
+    """Return metric clearance; touching segments have zero clearance."""
     if segments_intersect(a, b, c, d):
         return 0.0
     return min(
@@ -123,7 +124,7 @@ def rect_segment_distance(rect, a, b):
     corners = _rect_points(rect)
     if point_inside(corners, a) or point_inside(corners, b):
         return 0.0
-    return min(_segment_distance(a, b, c, d) for c, d in zip(corners, corners[1:], strict=False))
+    return min(segment_distance(a, b, c, d) for c, d in zip(corners, corners[1:], strict=False))
 
 
 def rect_polygon_distance(rect, poly):

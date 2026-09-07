@@ -1,0 +1,158 @@
+{
+  "schema_version": 2,
+  "units": "meters",
+  "frame": "world",
+  "tags": [
+    {
+      "id": 0,
+      "family": "tag36h11",
+      "floor_id": "level_1",
+      "size_m": 0.16,
+      "x_m": 0,
+      "y_m": 0,
+      "z_m": 0,
+      "yaw_rad": 0,
+      "normal": [
+        0,
+        0,
+        1
+      ],
+      "T_world_tag": [
+        [
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ],
+      "source": "measured",
+      "confidence": 0.9,
+      "observation_refs": [
+        "observation/0"
+      ],
+      "verified_for_flight": true,
+      "tape_verification": {
+        "source": "independent_tape_measurement",
+        "evidence_path": "evidence/tape-0-1.json",
+        "evidence_sha256": "cba9c968e441271774a1fecddfc9f7322bcd2f196bf50cb88210154464b1f0bd",
+        "compared_tag_id": 1,
+        "measured_distance_m": 2,
+        "maximum_error_m": 0.03
+      }
+    },
+    {
+      "id": 1,
+      "family": "tag36h11",
+      "floor_id": "level_1",
+      "size_m": 0.16,
+      "x_m": 2,
+      "y_m": 0,
+      "z_m": 0,
+      "yaw_rad": 0,
+      "normal": [
+        0,
+        0,
+        1
+      ],
+      "T_world_tag": [
+        [
+          1,
+          0,
+          0,
+          2
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ],
+      "source": "surveyed",
+      "confidence": 0.9,
+      "observation_refs": [
+        "observation/1"
+      ],
+      "verified_for_flight": false,
+      "tape_verification": null
+    },
+    {
+      "id": 2,
+      "family": "tag36h11",
+      "floor_id": "level_1",
+      "size_m": 0.16,
+      "x_m": 0,
+      "y_m": 2,
+      "z_m": 0,
+      "yaw_rad": 0,
+      "normal": [
+        0,
+        0,
+        1
+      ],
+      "T_world_tag": [
+        [
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          2
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
+      ],
+      "source": "auto_registered",
+      "confidence": 0.9,
+      "observation_refs": [
+        "observation/2"
+      ],
+      "verified_for_flight": false,
+      "tape_verification": null
+    }
+  ]
+}

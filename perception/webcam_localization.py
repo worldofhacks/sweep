@@ -87,6 +87,7 @@ class WebcamLocalization:
         self.sequence = 0
         self.last_pose = None
         self.provenance = {
+            "pose_frame": dict(self.localizer.pose_frame),
             "stream_path": config["stream_path"],
             "bundle_version": self.localizer.manifest["bundle_version"],
             "map_sha256": self.localizer.manifest["content_sha256"],
@@ -110,8 +111,9 @@ class WebcamLocalization:
         pose["capture_time_verified"] = False
         self.sequence += 1
         if pose["accepted"]:
+            transform_key = "T_world_body" if self.localizer.world else "T_map_body"
             observation = self.filter.observe(
-                str(self.sequence), capture_time, np.array(pose["T_map_body"])[:3, 3], now
+                str(self.sequence), capture_time, np.array(pose[transform_key])[:3, 3], now
             )
             pose["filter_status"] = observation["observation_status"]
         self.last_pose = pose
@@ -119,6 +121,9 @@ class WebcamLocalization:
 
     def at(self, now):
         state = self.filter.at(now)
+        if self.localizer.world:
+            state["position_world_m"] = state.pop("position_map_m")
+            state["velocity_world_mps"] = state.pop("velocity_map_mps")
         age = state["fix_age_s"]
         conservative_age = None if age is None else age + self.tail
         confidence = (
