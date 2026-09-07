@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'vitest'
+import supervisedVerticalReadiness from '../../relay/python-supervised-vertical-readiness.fixture.json?raw'
 import { controlReducer, createInitialControlState, createRequestRecord, type ControlState } from '../../control/state'
 import { createIntent } from '../../control/intent'
 import {
   C1_BASIC_CONTROL_INTENTS,
   C2_FLEET_OPERATIONS_INTENTS,
+  parseRelayServerEvent,
   type RelayStateEvent,
 } from '../../relay/contract'
 import { fixtureAircraft, fixtureScenario } from '../../testing/fixture-relay-client'
@@ -119,6 +121,32 @@ describe('control gating', () => {
       expect(spec.note).toBe('The console connection is disconnected. Nothing can be sent.')
     }
     expect(dpadBlockedReason(state)).toBe('The console connection is disconnected. Nothing can be sent.')
+  })
+
+  test('the relay-produced supervised vertical state stays selectable without a world home pose', () => {
+    const event = parseRelayServerEvent(JSON.parse(supervisedVerticalReadiness))
+    expect(event?.type).toBe('state')
+    if (event?.type !== 'state') throw new Error('expected the relay-produced state event')
+
+    let state = createInitialControlState(event.session, event.t)
+    state = controlReducer(state, {
+      type: 'connection_changed',
+      connection: { status: 'connected', transport: 'fixture', changedAt: event.t },
+    })
+    state = controlReducer(state, { type: 'relay_event', event })
+
+    expect(state.aircraft[1]).toMatchObject({
+      membership: 'ready',
+      selectable: true,
+      readiness_reasons: [],
+      home_pose: null,
+      node_status: null,
+    })
+    expect(aircraftChips(state)[0]).toMatchObject({ selectable: true, selected: true })
+    expect(motionControls(state).find((spec) => spec.key === 'takeoff')).toMatchObject({
+      enabled: true,
+      confirm: true,
+    })
   })
 
   test('connected with one ready aircraft selected: advertised controls send or confirm', () => {

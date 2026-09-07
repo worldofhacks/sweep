@@ -83,7 +83,7 @@ def vertical_server(tmp_path: Path) -> Iterator[RelayServer]:
         composition.close()
 
 
-def test_supervised_vertical_round_trip_allows_only_home_missing_without_gps_quality(
+def test_supervised_vertical_round_trip_without_home_pose_or_gps_quality(
     vertical_server: RelayServer,
 ) -> None:
     console = ConsoleProbe(vertical_server.url)
@@ -104,10 +104,10 @@ def test_supervised_vertical_round_trip_allows_only_home_missing_without_gps_qua
     try:
         _wait_until(
             lambda: (
-                _home_only_degraded_with_height(vertical_server)
+                _home_unconfirmed_ready_with_height(vertical_server)
                 and _position_quality(vertical_server) == 0.0
             ),
-            "GPS-denied node with only the home-pose readiness gap and SDK height",
+            "GPS-denied node ready without a world home pose and with SDK height",
         )
 
         select_id, select = _run(console, "select", [], {"ids": [1]})
@@ -407,7 +407,7 @@ def _position_quality(server: RelayServer) -> float | None:
     return None if not drones else drones[0]["telemetry"]["pos_quality"]
 
 
-def _home_only_degraded_with_height(server: RelayServer) -> bool:
+def _home_unconfirmed_ready_with_height(server: RelayServer) -> bool:
     session = server.runtime.sessions.get(SESSION)
     if session is None:
         return False
@@ -416,8 +416,9 @@ def _home_only_degraded_with_height(server: RelayServer) -> bool:
     )
     return (
         isinstance(aircraft, dict)
-        and aircraft.get("membership") == "degraded"
-        and aircraft.get("readiness_reasons") == ["home_pose_missing"]
+        and aircraft.get("membership") == "ready"
+        and aircraft.get("readiness_reasons") == []
+        and aircraft.get("selectable") is True
         and aircraft.get("home_pose") is None
         and isinstance(aircraft.get("node_status"), dict)
         and aircraft["node_status"].get("local_height") is not None
