@@ -1,9 +1,11 @@
 # Sweep production-chain readiness
 
-At the 15:21 UTC checkpoint on 2026-09-07, neither physical flight nor wheel
-acceptance has passed. The first supervised hover failed during the Virtual Stick
-ownership transition; the operator landed with the controller. A repaired phone
-build is installed, but a second flight test has not occurred.
+At the 15:43 UTC checkpoint on 2026-09-07, neither physical flight nor wheel
+acceptance has passed. The second supervised hover reached 1.0 m while the phone
+waited four seconds for MSDK control authority without a qualifying confirmation.
+Sweep's land command was refused. After the RC landing instruction, telemetry
+reported landed at 0.0 m. The network stop was confirmed, but the relay still
+reported the session armed after the console's Disarm control became unavailable.
 
 The console now points to session `sweep-field-20260907-v2` through `/field-v2/`,
 served on loopback port 18795 by `sweep-supervised-relay-v2`. Its source is the
@@ -16,8 +18,10 @@ The phone received APK `c386f4cb`, SHA-256
 `88bdd5827734e90fb82fd21617d9ee0d1b898e0d9dab0b8f8e5ef56a4d972e0d`,
 verified against the installed package. It includes stationary height polling,
 pending SDK-authority handling, and local supervised gimbal pitch controls.
-The combined source passed 184 core, 51 bridge-node, and 39 app tests. The phone joined v2 at epoch 1 with arming off. Fresh physical readiness
-and the grounded gimbal check remain pending.
+The combined source passed 184 core, 51 bridge-node, and 39 app tests. The phone
+joined v2 at epoch 1 with arming off. The grounded gimbal test reached -43.4° for
+the requested -45° pitch. Flight control authority and tag visibility remain
+unqualified.
 
 The earlier APK `296cc180` height fix passed a 30-second stationary check:
 all 30 samples reported 0.0 m with effective ages from -192 to 183 ms, within
@@ -50,6 +54,19 @@ operator's manual landing completed the physical recovery; Sweep did not complet
 the requested takeoff/hold/land sequence. The bounded command record is
 `/home/gauntlet/sweep-deploy/evidence/quick-hover-1788789081405/command-evidence.json`.
 
+At 15:33:47 UTC, the second physical attempt reached 1.0 m while the phone waited
+4,000 ms for MSDK authority. No qualifying authority confirmation arrived, and the
+actual safety hold reported `UNKNOWN`; Sweep refused the network land request.
+After the RC landing instruction, telemetry reported landed at 0.0 m at 15:34:27
+UTC. The bounded record is
+`/home/gauntlet/sweep-deploy/evidence/quick-hover-1788795225951`; it contains
+phone logcat and relay telemetry. Its logcat does not record `SessionModel` events,
+so it cannot establish a missing DJI callback. The separate stop record at
+`/home/gauntlet/sweep-deploy/evidence/quick-hover-1788795291540` and the following
+state check confirmed `estop: true` while the session remained armed after the
+Disarm control was unavailable. The result does
+not qualify takeoff, hold, land, disarm, or authority-loss recovery.
+
 A separate full-history request after the flight failure exposed a relay defect:
 replay scanned the roughly 415 MB audit log under its storage lock without checking
 the live replay deadline during the scan. Phone heartbeats and reconnects stalled.
@@ -61,8 +78,13 @@ remains unqualified, and the older v1 process still has the defect.
 
 At 13:58 UTC, a landed camera check saved 20 D-01 frames at 1280×720, with 18
 distinct image hashes. No tag36h11 ID decoded. The floor tags were visible at a
-strongly foreshortened angle. Gimbal aiming and detection during a controlled hover
-remain pending; this result supplies no metric localization evidence.
+strongly foreshortened angle.
+
+At 15:31–15:32 UTC, the grounded gimbal command reached -43.4° for a -45° request,
+within the two-degree tolerance. The 20 frames in
+`/home/gauntlet/sweep-deploy/evidence/dji-grounded-tags-20260907T1533-gimbal45`
+show a blurred close floor with no readable tags. This confirms pitch actuation only;
+it supplies no tag-visibility or localization evidence.
 
 The following table retains earlier field observations.
 
@@ -130,9 +152,15 @@ no physical flight evidence.
 
 The owner-side encoder sampler in #298 was installed on Ohmni 11, but the
 normal reboot restored the original vendor source and left the sampler inactive.
-The startup path is under investigation. The sampler must wait for completed
-servo initialization and withdraw its stream during reinitialization. A 60-second
-uninterrupted stationary recording must pass before ground motion.
+The vendor source has a fresh backup. At 15:40 UTC, the installer created the
+missing plugin directory and installed the owner plugin without changing either
+vendor process. Verification recorded the plugin, sampler, and original vendor
+source hashes; modes, ownership, and SELinux context matched the reviewed values.
+The new plugin directory is mode 0700, and the installed files are mode 0600.
+`plugin-install-verification.json` and `CHANGELOG.md` in
+`/var/tmp/gauntlet/sweep-production/ohmni11-handback-20260907T150000Z` retain the
+record. A normal reboot and a 60-second uninterrupted stationary recording remain
+required before ground motion.
 
 The lidar-frame fix in #295 prevents a second rotation of scans that already use
 body-relative angles. The operator estimates Ohmni 11's sensor is about 24 inches
@@ -141,7 +169,11 @@ degrees counterclockwise from forward. Ohmni 12's sensor is about 21 inches high
 and 20 inches diagonally from the midpoint at 120–135 degrees counterclockwise.
 Both wheel radii are roughly 3 inches. These rough measurements are not installed
 calibration. Both mounts remain unconfigured pending measured offsets and a
-stationary target check. No physical
+stationary target check. A reviewed eight-second probe on Ohmni 11 opened
+`ttyUSB0`, returned scan descriptor `a55a0500004081`, then sent STOP, set PWM to
+zero, and closed cleanly. Its evidence is
+`/var/tmp/gauntlet/sweep-production/ohmni11-handback-20260907T150000Z/lidar-sensor-probe.json`.
+The descriptor does not prove scan points or visible mechanical rotation. No physical
 drive or local collision-stop test has passed.
 
 ## Software and remaining evidence
@@ -214,9 +246,11 @@ A fixed integration snapshot at `aedbe6b0` passed all 2,768 Python tests and all
 a broader run exposed a default-capacity regression, which was corrected and
 verified with the four resume-interleaving tests and ten simulator tests.
 
-At the 12:55 UTC CI check, #294 through #298 each had five completed successful
-jobs. #296 was checked on head `5b2cad2da79c6e1ef938fefac615808fa82c6fc6`. The final
-fixed integration snapshot `f517a98f` passed all 2,810 Python tests in 7m48s. The later
+At the latest CI review, the current heads for the production-readiness stack are
+green. This includes the rerun of cancelled current-head workflows, the corrected
+capture-hold fixtures in #303, and the JVM authorization-test race fix in #307. Historical
+cancelled runs remain in the record; they are not current failures. The fixed
+integration snapshot `f517a98f` passed all 2,810 Python tests in 7m48s. The later
 `b51c388a` change only makes two Kotlin tests wait for the ready roster before
 issuing navigation commands; all 25 RelayLink tests passed. Ruff passed for all
 284 Python files.
