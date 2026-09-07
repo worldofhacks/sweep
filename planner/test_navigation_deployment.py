@@ -131,3 +131,144 @@ def test_deployment_refuses_shared_readable_approval_key(tmp_path, generated_geo
     (tmp_path / "approval.key").chmod(0o644)
     with pytest.raises(ValueError, match="0600"):
         load_navigation_deployment(path)
+
+
+def _wire_tuning() -> dict[str, object]:
+    return {
+        "v": 1,
+        "navigation_config_id": "wire-navigation-1",
+        "device_id": 1,
+        "limits": {
+            "max_speed_mm_s": 200,
+            "max_acceleration_mm_s2": 100,
+            "max_deceleration_mm_s2": 200,
+            "max_position_uncertainty_mm": 30,
+            "max_cross_track_mm": 50,
+            "arrival_horizontal_tolerance_mm": 40,
+            "arrival_vertical_tolerance_mm": 40,
+            "pose_freshness_ms": 200,
+            "tracking_timeout_ms": 1_000,
+        },
+    }
+
+
+def _wire_profile(tuning: dict[str, object]):
+    from hashlib import sha256
+
+    from relay.navigation_wire import NavigationWireConfig
+
+    encoded = json.dumps(tuning, sort_keys=True, separators=(",", ":")).encode()
+    return NavigationWireConfig(
+        clock_lease_id="lease-1",
+        clock_lease_expires_at_ms=110_000,
+        max_authorization_lifetime_ms=1_000,
+        max_clock_error_ms=2,
+        navigation_config_id="wire-navigation-1",
+        navigation_config_sha256=sha256(encoded).hexdigest(),
+        map_version="map-v1",
+        map_sha256="a" * 64,
+        geometry_sha256="b" * 64,
+        camera_calibration_sha256="c" * 64,
+        body_extrinsics_sha256="d" * 64,
+        world_transform_sha256="e" * 64,
+        control_source_ids=("dji-telemetry", "tag-detector"),
+        **tuning["limits"],
+    )
+
+
+def test_wire_tuning_requires_the_approved_raw_bytes_and_exact_limits(tmp_path):
+    from planner.navigation_deployment import _validate_wire_tuning
+
+    tuning = _wire_tuning()
+    profile = _wire_profile(tuning)
+    path = tmp_path / "wire.json"
+    path.write_bytes(json.dumps(tuning, sort_keys=True, separators=(",", ":")).encode())
+    _validate_wire_tuning({"1": "wire.json"}, tmp_path, {1: profile})
+
+    tuning["limits"]["max_speed_mm_s"] = 201
+    path.write_bytes(json.dumps(tuning, sort_keys=True, separators=(",", ":")).encode())
+    with pytest.raises(ValueError, match="approved profile"):
+        _validate_wire_tuning({"1": "wire.json"}, tmp_path, {1: profile})
+
+
+def test_world_localization_binding_rejects_a_changed_camera_artifact(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from planner.navigation_deployment import _validate_world_localization
+    from relay.control_localization import ClockMapping, ControlLocalizationPins
+
+    tuning = _wire_tuning()
+    profile = _wire_profile(tuning)
+    clock = ClockMapping("phone-clock", "relay-clock", 0, 0, 1_000, 2, True)
+    pins = ControlLocalizationPins(
+        drone_id=1,
+        map_id="map-1",
+        geometry_id="geometry-1",
+        camera_calibration_id="camera-1",
+        body_extrinsics_id="body-1",
+        source_ids=("dji-telemetry", "tag-detector"),
+        clock_mapping=clock,
+    )
+    config = NavigationExecutionConfig(
+        "level-1",
+        MotionConfig(0.1, 0.1, 0.01, 0.01, 0.05, 0.02, 0.2),
+        0.2,
+        0.04,
+        500,
+        0.5,
+        5_000,
+        (
+            NavigationFrame(
+                1,
+                "world-enu-1",
+                IDENTITY,
+                pins,
+                "c" * 64,
+                "d" * 64,
+                "e" * 64,
+            ),
+        ),
+    )
+    world_pins = SimpleNamespace(
+        map_id="map-1",
+        map_version="map-v1",
+        map_content_sha256="a" * 64,
+        geometry_id="geometry-1",
+        geometry_sha256="b" * 64,
+        camera_calibration_id="camera-1",
+        camera_calibration_sha256="c" * 64,
+        body_extrinsics_id="body-1",
+        capture_alignment_config_sha256="d" * 64,
+        capture_clock_mapping_id="phone-clock",
+        world_enu=SimpleNamespace(
+            transform_id="world-enu-1", sha256="e" * 64, matrix_world_enu=IDENTITY
+        ),
+    )
+    world = SimpleNamespace(
+        publisher=SimpleNamespace(
+            session="test-session",
+            drones={
+                1: SimpleNamespace(
+                    fuser=SimpleNamespace(
+                        tag_source_id="tag-detector",
+                        velocity_source_id="dji-telemetry",
+                        height_source_id="dji-telemetry",
+                    ),
+                    clock_mapping=SimpleNamespace(max_error_ms=2),
+                )
+            },
+        ),
+        adapters={1: SimpleNamespace(pins=world_pins)},
+    )
+    from perception.world_localization_runtime import WorldLocalizationRuntimeConfig
+
+    monkeypatch.setattr(WorldLocalizationRuntimeConfig, "load", lambda _: world)
+    _validate_world_localization(
+        tmp_path / "world.json", config, SimpleNamespace(session="test-session"), {1: profile}
+    )
+
+    world_pins.camera_calibration_sha256 = "f" * 64
+    with pytest.raises(ValueError, match="does not bind"):
+        _validate_world_localization(
+            tmp_path / "world.json", config, SimpleNamespace(session="test-session"), {1: profile}
+        )
