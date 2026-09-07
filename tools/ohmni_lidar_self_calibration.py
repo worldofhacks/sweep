@@ -41,17 +41,30 @@ OFFSET_UNCERTAINTY_METHOD = "local_curvature_ratio"
 MIN_GEOMETRY_RANK = 0.03
 MAX_INPUT_BYTES = 8 * 1024 * 1024
 MAX_OUTPUT_BYTES = 512 * 1024
-EXPECTED_LIMITS = {
-    "wheel_diameter_mm": 152.4,
-    "forward_speed_m_s": 0.04,
-    "forward_distance_m": 0.08,
-    "yaw_rate_deg_s": 10.0,
-    "yaw_degrees": 10.0,
-    "pulse_duration_s": 0.5,
-    "max_wheel_travel_m": 0.18,
-    "max_yaw_degrees": 15.0,
-    "max_runtime_s": 60.0,
-}
+CALIBRATION_PROFILES = (
+    {
+        "wheel_diameter_mm": 152.4,
+        "forward_speed_m_s": 0.04,
+        "forward_distance_m": 0.08,
+        "yaw_rate_deg_s": 10.0,
+        "yaw_degrees": 10.0,
+        "pulse_duration_s": 0.5,
+        "max_wheel_travel_m": 0.18,
+        "max_yaw_degrees": 15.0,
+        "max_runtime_s": 60.0,
+    },
+    {
+        "wheel_diameter_mm": 152.4,
+        "forward_speed_m_s": 0.04,
+        "forward_distance_m": 0.4,
+        "yaw_rate_deg_s": 10.0,
+        "yaw_degrees": 30.0,
+        "pulse_duration_s": 0.5,
+        "max_wheel_travel_m": 0.6,
+        "max_yaw_degrees": 40.0,
+        "max_runtime_s": 60.0,
+    },
+)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -268,10 +281,13 @@ def _limits(value: object) -> dict[str, float]:
         "limits",
     )
     result = {key: _number(raw[key], f"limits.{key}", minimum=0.0) for key in raw}
-    for name, expected in EXPECTED_LIMITS.items():
-        _require(
-            abs(result[name] - expected) < 1e-12, f"limits.{name} is not the fixed capture bound"
-        )
+    _require(
+        any(
+            all(abs(result[name] - expected) < 1e-12 for name, expected in profile.items())
+            for profile in CALIBRATION_PROFILES
+        ),
+        "limits are not a fixed capture bound or supported immutable profile",
+    )
     return result
 
 

@@ -6,7 +6,7 @@ import random
 
 import pytest
 
-from adapters.ohmni.calibration import CalibrationRunner
+from adapters.ohmni.calibration import CalibrationConfig, CalibrationRunner
 from adapters.ohmni.lidar import RawRevolution
 from adapters.ohmni.spike.rplidar_protocol import Measurement
 from adapters.ohmni.test_calibration import RunnerSimulation
@@ -156,7 +156,7 @@ def _wall_revolution(
     ("angle_sign", "offset_deg"),
     ((1, 31.4), (-1, -47.7)),
 )
-def test_calibration_runner_recovers_uniform_angle_asymmetric_room_scan(
+def test_longer_calibration_runner_recovers_uniform_angle_asymmetric_room_scan(
     monkeypatch: pytest.MonkeyPatch, tmp_path, angle_sign: int, offset_deg: float
 ) -> None:
     simulation = RunnerSimulation(monkeypatch)
@@ -170,6 +170,7 @@ def test_calibration_runner_recovers_uniform_angle_asymmetric_room_scan(
         capture_path,
         monotonic=simulation.clock,
         sleep=simulation.sleep,
+        config=CalibrationConfig.longer(),
         boot_id="simulation-boot",
         executed_bundle_source_sha256="a" * 64,
     ).run()

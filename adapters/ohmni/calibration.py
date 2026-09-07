@@ -33,6 +33,10 @@ YAW_RATE_DEG_S = 10.0
 YAW_DEGREES = 10.0
 MAX_WHEEL_TRAVEL_M = 0.18
 MAX_YAW_DEGREES = 15.0
+LONGER_FORWARD_DISTANCE_M = 0.4
+LONGER_YAW_DEGREES = 30.0
+LONGER_MAX_WHEEL_TRAVEL_M = 0.6
+LONGER_MAX_YAW_DEGREES = 40.0
 REVOLUTIONS_PER_STAGE = 10
 STAGE_TIMEOUT_S = 8.0
 SETTLE_TIMEOUT_S = 2.0
@@ -71,18 +75,40 @@ class CalibrationConfig:
             self.max_wheel_travel_m,
             self.max_yaw_degrees,
             self.max_runtime_s,
-        ) != (
-            WHEEL_DIAMETER_MM,
-            FORWARD_SPEED_M_S,
-            FORWARD_DISTANCE_M,
-            YAW_RATE_DEG_S,
-            YAW_DEGREES,
-            PULSE_DURATION_S,
-            MAX_WHEEL_TRAVEL_M,
-            MAX_YAW_DEGREES,
-            MAX_RUNTIME_S,
+        ) not in (
+            (
+                WHEEL_DIAMETER_MM,
+                FORWARD_SPEED_M_S,
+                FORWARD_DISTANCE_M,
+                YAW_RATE_DEG_S,
+                YAW_DEGREES,
+                PULSE_DURATION_S,
+                MAX_WHEEL_TRAVEL_M,
+                MAX_YAW_DEGREES,
+                MAX_RUNTIME_S,
+            ),
+            (
+                WHEEL_DIAMETER_MM,
+                FORWARD_SPEED_M_S,
+                LONGER_FORWARD_DISTANCE_M,
+                YAW_RATE_DEG_S,
+                LONGER_YAW_DEGREES,
+                PULSE_DURATION_S,
+                LONGER_MAX_WHEEL_TRAVEL_M,
+                LONGER_MAX_YAW_DEGREES,
+                MAX_RUNTIME_S,
+            ),
         ):
-            raise ValueError("calibration limits are fixed by this tool")
+            raise ValueError("calibration limits must match an immutable capture profile")
+
+    @classmethod
+    def longer(cls) -> CalibrationConfig:
+        return cls(
+            forward_distance_m=LONGER_FORWARD_DISTANCE_M,
+            yaw_degrees=LONGER_YAW_DEGREES,
+            max_wheel_travel_m=LONGER_MAX_WHEEL_TRAVEL_M,
+            max_yaw_degrees=LONGER_MAX_YAW_DEGREES,
+        )
 
 
 class HostLease:
@@ -329,8 +355,8 @@ class CalibrationRunner:
             self._snapshot(now)
         except CalibrationError as error:
             return str(error)
-        wheel_reserve_m = FORWARD_SPEED_M_S * 0.1
-        yaw_reserve_deg = YAW_RATE_DEG_S * 0.1
+        wheel_reserve_m = self.config.forward_speed_m_s * 0.1
+        yaw_reserve_deg = self.config.yaw_rate_deg_s * 0.1
         wheel_travel_m, yaw_degrees = self._progress.values()
         if wheel_travel_m + wheel_reserve_m > self.config.max_wheel_travel_m:
             return "calibration_wheel_travel_limit"
@@ -530,6 +556,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-boot-id", required=True)
     parser.add_argument("--expected-source-sha256", required=True)
     parser.add_argument("--supervised-clear-space", required=True, action="store_true")
+    parser.add_argument("--longer-calibration", action="store_true")
     args = parser.parse_args(argv)
     boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     source_sha256 = calibration_source_sha256()
@@ -564,6 +591,7 @@ def main(argv: list[str] | None = None) -> int:
             device,
             lease,
             args.output,
+            config=CalibrationConfig.longer() if args.longer_calibration else None,
             boot_id=boot_id,
             executed_bundle_source_sha256=source_sha256,
         ).run()
