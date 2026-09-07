@@ -57,6 +57,10 @@ def _digest(path: Path) -> dict[str, str]:
     return {"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
+def _bind_calibration_id(request: dict[str, object], calibration: Path) -> None:
+    request["calibration_id"] = f"sha256:{_digest(calibration)['sha256']}"
+
+
 def _calibration_document() -> dict[str, object]:
     return {
         "schema_version": 2,
@@ -204,7 +208,13 @@ def _event(
     return decode_observation(json.dumps(raw))
 
 
-def _camera(event_id: str, capture_ns: int, image_id: str) -> Observation:
+def _camera(
+    event_id: str,
+    capture_ns: int,
+    image_id: str,
+    *,
+    calibration_id: str = CALIBRATION_ID,
+) -> Observation:
     return _event(
         event_id,
         "camera",
@@ -215,7 +225,7 @@ def _camera(event_id: str, capture_ns: int, image_id: str) -> Observation:
             "sha256": "d" * 64,
             "width_px": 640,
             "height_px": 480,
-            "calibration_id": CALIBRATION_ID,
+            "calibration_id": calibration_id,
         },
         CAMERA_SCOPE,
     )
@@ -253,7 +263,21 @@ def _body(
     )
 
 
-def _tag(event_id: str, capture_ns: int, image_id: str, tag_id: int, x_m: float) -> Observation:
+def _tag(
+    event_id: str,
+    capture_ns: int,
+    image_id: str,
+    tag_id: int,
+    x_m: float,
+    *,
+    z_m: float = 1,
+    qx: float = 1,
+    qy: float = 0,
+    qz: float = 0,
+    qw: float = 0,
+    corners_px: list[list[float]] | None = None,
+    reprojection_rms_px: float = 0.2,
+) -> Observation:
     return _event(
         event_id,
         "camera",
@@ -269,18 +293,20 @@ def _tag(event_id: str, capture_ns: int, image_id: str, tag_id: int, x_m: float)
                 "child_frame": f"tag:{tag_id}",
                 "x_m": x_m,
                 "y_m": 0,
-                "z_m": 1,
-                "qx": 0,
-                "qy": 0,
-                "qz": 0,
-                "qw": 1,
+                "z_m": z_m,
+                "qx": qx,
+                "qy": qy,
+                "qz": qz,
+                "qw": qw,
             },
             "covariance_m2": [0.01, 0, 0, 0, 0.01, 0, 0, 0, 0.02],
             "reason": "pose",
             "size_m": 0.16,
-            "corners_px": [[100, 100], [120, 100], [120, 120], [100, 120]],
+            "corners_px": corners_px
+            if corners_px is not None
+            else [[100, 100], [120, 100], [120, 120], [100, 120]],
             "pixel_frame": "rectified_camera",
-            "reprojection_rms_px": 0.2,
+            "reprojection_rms_px": reprojection_rms_px,
         },
         TAG_SCOPE,
     )
@@ -312,9 +338,18 @@ def _fuse(events: list[Observation], *, vertical: bool = True) -> dict[str, obje
 
 
 def _fuse_local_odom(
-    events: list[Observation], mount_document: dict[str, object] | None = None
+    events: list[Observation],
+    mount_document: dict[str, object] | None = None,
+    *,
+    maximum_translation_spread_m: float | None = None,
+    maximum_rotation_spread_rad: float | None = None,
 ) -> dict[str, object]:
-    request = parse_fusion_request(_local_odom_request())
+    request_document = _local_odom_request()
+    if maximum_translation_spread_m is not None:
+        request_document["maximum_translation_spread_m"] = maximum_translation_spread_m
+    if maximum_rotation_spread_rad is not None:
+        request_document["maximum_rotation_spread_rad"] = maximum_rotation_spread_rad
+    request = parse_fusion_request(request_document)
     calibration = _calibration(
         _calibration_document(), {"path": "calibration.json", "sha256": "c" * 64}
     )
@@ -352,6 +387,105 @@ def test_fusion_uses_typed_canonical_observations_and_weighted_pose_chain() -> N
     assert result["candidates"][1]["translation_weight_sum_m2_inverse"] == pytest.approx(50)
     assert result["checkpoint"]["status"] == "evaluated"
     assert result["checkpoint"]["passes"] is True
+
+
+def test_fusion_conditions_covariance_weight_on_tag_geometry_and_capture_provenance() -> None:
+    def fuse_second(
+        *,
+        body_z_m: float = 0,
+        tag_z_m: float = 1,
+        tag_qx: float = 1,
+        tag_qw: float = 0,
+        corners_px: list[list[float]] | None = None,
+        reprojection_rms_px: float = 0.2,
+    ) -> dict[str, object]:
+        events = [
+            _camera("quality-camera-one", 1_000_000, "quality-image-one"),
+            _body("quality-body-one", 1_000_000),
+            _tag("quality-tag-one", 1_000_000, "quality-image-one", 51, 0),
+            _camera("quality-camera-two", 1_010_000, "quality-image-two"),
+            _body("quality-body-two", 1_010_000, x_m=0.01, z_m=body_z_m),
+            _tag(
+                "quality-tag-two",
+                1_010_000,
+                "quality-image-two",
+                51,
+                0,
+                z_m=tag_z_m,
+                qx=tag_qx,
+                qw=tag_qw,
+                corners_px=corners_px,
+                reprojection_rms_px=reprojection_rms_px,
+            ),
+        ]
+        return _fuse_local_odom(
+            events,
+            maximum_translation_spread_m=0.02,
+            maximum_rotation_spread_rad=2.0,
+        )
+
+    baseline = fuse_second()
+    larger_footprint = fuse_second(corners_px=[[100, 100], [140, 100], [140, 140], [100, 140]])
+    higher_reprojection = fuse_second(reprojection_rms_px=1.0)
+    longer_range = fuse_second(body_z_m=-1, tag_z_m=2)
+    oblique_view = fuse_second(tag_qx=math.sin(math.pi / 3), tag_qw=math.cos(math.pi / 3))
+
+    def x(result: dict[str, object]) -> float:
+        return result["candidates"][0]["T_odom_tag"][0][3]  # type: ignore[index]
+
+    assert x(baseline) == pytest.approx(0.005)
+    assert x(larger_footprint) > x(baseline)
+    assert x(higher_reprojection) < x(baseline)
+    assert x(longer_range) < x(baseline)
+    assert x(oblique_view) < x(baseline)
+    quality = baseline["candidates"][0]["observation_provenance"]  # type: ignore[index]
+    assert quality[1] == {
+        "event_id": "quality-tag-two",
+        "capture_clock_id": "capture",
+        "capture_time_ns": 1_010_000,
+        "range_m": pytest.approx(1),
+        "viewing_cosine": pytest.approx(1),
+        "minimum_edge_px": pytest.approx(20),
+        "reprojection_rms_px": pytest.approx(0.2),
+        "conditioning_factor": pytest.approx(6_400),
+    }
+
+
+@pytest.mark.parametrize(
+    ("tag_kwargs", "reason"),
+    (
+        ({"corners_px": [[100, 100], [119, 100], [119, 119], [100, 119]]}, "pixel footprint"),
+        ({"reprojection_rms_px": 2.1}, "reprojection RMS"),
+        ({"z_m": 0.001}, "range"),
+        ({"qx": 0, "qw": 1}, "oblique"),
+        (
+            {
+                "qx": math.sin((math.pi - math.acos(0.2)) / 2),
+                "qw": math.cos((math.pi - math.acos(0.2)) / 2),
+            },
+            "oblique",
+        ),
+    ),
+)
+def test_fusion_refuses_tag_geometry_outside_the_bounded_conditioning_envelope(
+    tag_kwargs: dict[str, object], reason: str
+) -> None:
+    events = [
+        _camera("gate-camera-one", 1_000_000, "gate-image-one"),
+        _body("gate-body-one", 1_000_000),
+        _tag("gate-tag-one", 1_000_000, "gate-image-one", 52, 0),
+        _camera("gate-camera-two", 1_010_000, "gate-image-two"),
+        _body("gate-body-two", 1_010_000),
+        _tag("gate-tag-two", 1_010_000, "gate-image-two", 52, 0, **tag_kwargs),
+    ]
+
+    result = _fuse_local_odom(events)
+
+    assert result["candidates"] == []
+    assert any(
+        item.get("event_id") == "gate-tag-two" and reason in item["reason"]
+        for item in result["diagnostics"]
+    )
 
 
 def test_fusion_without_measured_vertical_datum_is_explicitly_odom_only() -> None:
@@ -414,7 +548,7 @@ def test_local_odom_mode_fuses_camera_tag_through_measured_body_mount() -> None:
     assert transform[1][3] == pytest.approx(2.5)
     assert transform[2][3] == pytest.approx(4.25)
     assert transform[0][:2] == pytest.approx([-1.0, 0.0])
-    assert transform[1][:2] == pytest.approx([0.0, -1.0])
+    assert transform[1][:2] == pytest.approx([0.0, 1.0])
     assert {"registration", "vertical_datum", "checkpoint"}.isdisjoint(result)
     assert "world registered" in result["claim_scope"]
 
@@ -587,10 +721,10 @@ def test_actual_camera_smoke_submissions_with_receipt_only_stay_diagnostic() -> 
                 "x_m": 1,
                 "y_m": 0,
                 "z_m": 1,
-                "qx": 0,
+                "qx": 1,
                 "qy": 0,
                 "qz": 0,
-                "qw": 1,
+                "qw": 0,
             },
             "covariance_m2": [0.01, 0, 0, 0, 0.01, 0, 0, 0, 0.02],
             "reason": "pose",
@@ -670,6 +804,8 @@ def test_local_odom_run_refuses_missing_measured_camera_artifacts(
     request["mount"] = (
         _digest(mount) if mount.exists() else {"path": mount.name, "sha256": "b" * 64}
     )
+    if calibration.exists():
+        _bind_calibration_id(request, calibration)
     request_path = tmp_path / "request.json"
     request_path.write_text(json.dumps(request))
     output = tmp_path / "candidate.json"
@@ -685,27 +821,29 @@ def test_local_odom_run_writes_an_unapproved_candidate_without_world_evidence(
 ) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
+    calibration = evidence / "calibration.json"
+    mount = evidence / "mount.json"
+    calibration.write_text(json.dumps(_calibration_document()))
+    mount.write_text(json.dumps(_mount_document()))
+    calibration_id = f"sha256:{_digest(calibration)['sha256']}"
     events = []
     for index in range(2):
         capture = 1_000_000 + index * 10_000
         image = f"local-run-image-{index}"
         events.extend(
             [
-                _camera(f"local-run-camera-{index}", capture, image),
+                _camera(f"local-run-camera-{index}", capture, image, calibration_id=calibration_id),
                 _body(f"local-run-body-{index}", capture),
                 _tag(f"local-run-tag-{index}", capture, image, 31, 1.5),
             ]
         )
     observations = evidence / "observations.jsonl"
-    calibration = evidence / "calibration.json"
-    mount = evidence / "mount.json"
     observations.write_bytes(b"".join(event.encode() + b"\n" for event in events))
-    calibration.write_text(json.dumps(_calibration_document()))
-    mount.write_text(json.dumps(_mount_document()))
     request = _local_odom_request()
     request["observations"] = _digest(observations)
     request["calibration"] = _digest(calibration)
     request["mount"] = _digest(mount)
+    _bind_calibration_id(request, calibration)
     request_path = tmp_path / "request.json"
     request_path.write_text(json.dumps(request))
     output = tmp_path / "candidate.json"
@@ -719,23 +857,61 @@ def test_local_odom_run_writes_an_unapproved_candidate_without_world_evidence(
     assert {"registration", "vertical_datum", "checkpoint"}.isdisjoint(result)
 
 
+def test_run_refuses_archive_calibration_id_when_the_pinned_file_has_different_bytes(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    calibration_a = evidence / "calibration-a.json"
+    calibration_b = evidence / "calibration-b.json"
+    mount = evidence / "mount.json"
+    calibration_a.write_text(json.dumps(_calibration_document()))
+    changed_calibration = _calibration_document()
+    changed_calibration["camera_matrix"][0][0] = 301.0
+    calibration_b.write_text(json.dumps(changed_calibration))
+    mount.write_text(json.dumps(_mount_document()))
+    calibration_a_id = f"sha256:{_digest(calibration_a)['sha256']}"
+    events = [
+        item
+        for index in range(2)
+        for item in (
+            _camera(
+                f"archive-a-camera-{index}",
+                1_000_000 + index * 10_000,
+                f"archive-a-image-{index}",
+                calibration_id=calibration_a_id,
+            ),
+            _body(f"archive-a-body-{index}", 1_000_000 + index * 10_000),
+            _tag(
+                f"archive-a-tag-{index}",
+                1_000_000 + index * 10_000,
+                f"archive-a-image-{index}",
+                61,
+                0,
+            ),
+        )
+    ]
+    observations = evidence / "archive-observations.jsonl"
+    observations.write_bytes(b"".join(event.encode() + b"\n" for event in events))
+    request = _local_odom_request()
+    request.update(
+        {
+            "calibration_id": calibration_a_id,
+            "observations": _digest(observations),
+            "calibration": _digest(calibration_b),
+            "mount": _digest(mount),
+        }
+    )
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request))
+
+    with pytest.raises(ValueError, match="calibration_id does not match"):
+        run(request_path, evidence, tmp_path / "candidate.json")
+
+
 def test_run_pins_inputs_and_writes_a_bounded_create_only_candidate(tmp_path: Path) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    events = []
-    for tag_id, x_m in ((0, 1.0), (1, 2.0)):
-        for index in range(2):
-            capture = 1_000_000 + tag_id * 100_000 + index * 10_000
-            image = f"image-{tag_id}-{index}"
-            events.extend(
-                [
-                    _camera(f"camera-{tag_id}-{index}", capture, image),
-                    _body(f"body-{tag_id}-{index}", capture),
-                    _tag(f"tag-{tag_id}-{index}", capture, image, tag_id, x_m),
-                ]
-            )
-    observations = evidence / "observations.jsonl"
-    observations.write_bytes(b"".join(event.encode() + b"\n" for event in events))
     calibration = evidence / "calibration.json"
     mount = evidence / "mount.json"
     registration = evidence / "registration.json"
@@ -744,6 +920,23 @@ def test_run_pins_inputs_and_writes_a_bounded_create_only_candidate(tmp_path: Pa
     mount.write_text(json.dumps(_mount_document()))
     registration.write_text(json.dumps(_registration_document()))
     vertical.write_text(json.dumps(_vertical_document()))
+    calibration_id = f"sha256:{_digest(calibration)['sha256']}"
+    events = []
+    for tag_id, x_m in ((0, 1.0), (1, 2.0)):
+        for index in range(2):
+            capture = 1_000_000 + tag_id * 100_000 + index * 10_000
+            image = f"image-{tag_id}-{index}"
+            events.extend(
+                [
+                    _camera(
+                        f"camera-{tag_id}-{index}", capture, image, calibration_id=calibration_id
+                    ),
+                    _body(f"body-{tag_id}-{index}", capture),
+                    _tag(f"tag-{tag_id}-{index}", capture, image, tag_id, x_m),
+                ]
+            )
+    observations = evidence / "observations.jsonl"
+    observations.write_bytes(b"".join(event.encode() + b"\n" for event in events))
     request = _request()
     for name, path in (
         ("observations", observations),
@@ -753,6 +946,7 @@ def test_run_pins_inputs_and_writes_a_bounded_create_only_candidate(tmp_path: Pa
         ("vertical_datum", vertical),
     ):
         request[name] = _digest(path)
+    _bind_calibration_id(request, calibration)
     request_path = tmp_path / "request.json"
     request_path.write_text(json.dumps(request))
     output = tmp_path / "candidate.json"
@@ -796,8 +990,8 @@ def test_archived_live_mapper_events_fuse_only_as_unapproved_map_candidates(tmp_
                     "T_camera_tag": np.array(
                         [
                             [1.0, 0.0, 0.0, float(tag_id + 1)],
-                            [0.0, 1.0, 0.0, 0.0],
-                            [0.0, 0.0, 1.0, 1.0],
+                            [0.0, -1.0, 0.0, 0.0],
+                            [0.0, 0.0, -1.0, 1.0],
                             [0.0, 0.0, 0.0, 1.0],
                         ]
                     ),

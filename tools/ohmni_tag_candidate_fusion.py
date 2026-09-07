@@ -30,6 +30,12 @@ MAX_TRANSLATION_SPREAD_M = 1.0
 MAX_ROTATION_SPREAD_RAD = math.pi
 MAX_TAPE_ERROR_M = 0.10
 MAX_VERTICAL_ERROR_M = 0.10
+MIN_TAG_RANGE_M = 0.01
+MIN_TAG_EDGE_PX = 20.0
+MAX_TAG_REPROJECTION_RMS_PX = 2.0
+MIN_TAG_VIEWING_COSINE = 0.25
+REPROJECTION_NOISE_FLOOR_PX = 0.25
+MAX_TAG_CONDITIONING_FACTOR = 1_000_000.0
 
 
 def _require(condition: bool, message: str) -> None:
@@ -214,6 +220,20 @@ def _calibration(document: object, pin: Mapping[str, str]) -> dict[str, object]:
     # Reuse the detector's calibration loader so fusion accepts the same measured artifact.
     CameraTagDetector(document, camera_serial=serial, tag_sizes_m={0: 0.16})
     return {"camera_serial": serial, "pin": dict(pin)}
+
+
+def _require_calibration_binding(
+    request: Mapping[str, object], calibration: Mapping[str, object]
+) -> None:
+    pin = calibration.get("pin")
+    _require(
+        isinstance(pin, Mapping) and type(pin.get("sha256")) is str,
+        "calibration evidence has no SHA-256 pin",
+    )
+    _require(
+        request["calibration_id"] == f"sha256:{pin['sha256']}",
+        "request calibration_id does not match the pinned calibration bytes",
+    )
 
 
 def _mount(document: object, calibration: Mapping[str, object]) -> dict[str, object]:
@@ -594,6 +614,56 @@ def _weight(payload: Mapping[str, object]) -> float:
     return 1 / trace
 
 
+def _tag_conditioning(
+    payload: Mapping[str, object], transform: Sequence[Sequence[float]]
+) -> dict[str, float]:
+    translation = _translation(transform)
+    range_m = math.sqrt(sum(value * value for value in translation))
+    _require(range_m >= MIN_TAG_RANGE_M, "tag range is below the physical minimum")
+
+    normal = tuple(transform[row][2] for row in range(3))
+    viewing_cosine = sum(normal[index] * -translation[index] for index in range(3)) / range_m
+    _require(
+        viewing_cosine >= MIN_TAG_VIEWING_COSINE,
+        "tag plane is too oblique for conditioned fusion",
+    )
+
+    corners = payload["corners_px"]
+    _require(isinstance(corners, list | tuple) and len(corners) == 4, "tag corners are invalid")
+    points = []
+    for corner in corners:
+        _require(
+            isinstance(corner, list | tuple) and len(corner) == 2,
+            "tag corners are invalid",
+        )
+        points.append((_number(corner[0], "tag corner.x"), _number(corner[1], "tag corner.y")))
+    minimum_edge_px = min(
+        math.dist(point, points[(index + 1) % len(points)]) for index, point in enumerate(points)
+    )
+    _require(
+        minimum_edge_px >= MIN_TAG_EDGE_PX,
+        "tag pixel footprint is below the measured detector limit",
+    )
+
+    reprojection_rms_px = _number(payload["reprojection_rms_px"], "tag reprojection RMS", minimum=0)
+    _require(
+        reprojection_rms_px <= MAX_TAG_REPROJECTION_RMS_PX,
+        "tag reprojection RMS exceeds the measured detector limit",
+    )
+    conditioning_factor = min(
+        MAX_TAG_CONDITIONING_FACTOR,
+        (minimum_edge_px / (range_m * max(reprojection_rms_px, REPROJECTION_NOISE_FLOOR_PX))) ** 2
+        * viewing_cosine**2,
+    )
+    return {
+        "range_m": range_m,
+        "viewing_cosine": viewing_cosine,
+        "minimum_edge_px": minimum_edge_px,
+        "reprojection_rms_px": reprojection_rms_px,
+        "conditioning_factor": conditioning_factor,
+    }
+
+
 def _quaternion_from_rotation(
     matrix: Sequence[Sequence[float]],
 ) -> tuple[float, float, float, float]:
@@ -642,6 +712,7 @@ def _weighted_pose(
     translations = [sample["translation"] for sample in samples]
     rotations = [sample["transform"] for sample in samples]
     weights = [sample["weight"] for sample in samples]
+    covariance_weights = [sample["covariance_weight"] for sample in samples]
     total = sum(weights)
     translation = [
         sum(weight * point[index] for weight, point in zip(weights, translations, strict=True))
@@ -685,8 +756,10 @@ def _weighted_pose(
         "observation_count": len(samples),
         "translation_spread_max_m": maximum_translation,
         "rotation_spread_max_rad": maximum_rotation,
-        "translation_weight_sum_m2_inverse": total,
+        "translation_weight_sum_m2_inverse": sum(covariance_weights),
+        "conditioning_weight_sum": total,
         "observation_event_ids": [sample["event_id"] for sample in samples],
+        "observation_provenance": [sample["quality"] for sample in samples],
     }
 
 
@@ -771,6 +844,7 @@ def fuse_observations(
     _require(
         candidate_mode in {"world_registered", "local_odom"}, "fusion candidate mode is invalid"
     )
+    _require_calibration_binding(request, calibration)
     if candidate_mode == "world_registered":
         _require(
             registration is not None
@@ -900,7 +974,10 @@ def fuse_observations(
             diagnostics.append({"event_id": event_id, "reason": "body_pose_not_capture_associated"})
             continue
         try:
-            weight = _weight(payload)
+            tag_transform = _pose_matrix(tag_pose)
+            quality = _tag_conditioning(payload, tag_transform)
+            covariance_weight = _weight(payload)
+            weight = covariance_weight * quality["conditioning_factor"]
         except ValueError as error:
             diagnostics.append({"event_id": event_id, "reason": str(error)})
             continue
@@ -909,7 +986,7 @@ def fuse_observations(
                 _pose_matrix(body.submission.payload["pose"]),
                 mount["T_body_camera"],
             ),
-            _pose_matrix(tag_pose),
+            tag_transform,
         )
         identifier = payload["tag_id"]
         fused_samples.setdefault(identifier, []).append(
@@ -918,6 +995,13 @@ def fuse_observations(
                 "transform": odom_tag,
                 "translation": _translation(odom_tag),
                 "weight": weight,
+                "covariance_weight": covariance_weight,
+                "quality": {
+                    "event_id": event_id,
+                    "capture_clock_id": captured[0],
+                    "capture_time_ns": captured[1],
+                    **quality,
+                },
             }
         )
     _require(len(fused_samples) <= MAX_TAGS, "fused tag count exceeds the global bound")
@@ -1030,6 +1114,7 @@ def run(request_path: Path, evidence_root: Path, output: Path) -> dict[str, obje
     calibration = _calibration(
         parse_document(calibration_payload, calibration_pin["path"]), calibration_pin
     )
+    _require_calibration_binding(request, calibration)
     mount_payload, mount_pin = snapshots.read(request["mount"], "mount", maximum=1024 * 1024)
     mount = _mount(parse_document(mount_payload, mount_pin["path"]), calibration)
     registration: dict[str, object] | None = None
