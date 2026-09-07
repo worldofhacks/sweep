@@ -28,7 +28,7 @@ from planner.navigation import (
     Pose,
 )
 from planner.navigation_authorization import NavigationApproval, content_digest
-from planner.navigation_contracts import finite_number, integer, normalized_text
+from planner.navigation_contracts import finite_number, integer, normalized_text, sha256_digest
 from relay.control_localization import ControlLocalizationPins, ControlPose
 from relay.intent_v1 import IntentName, IntentV1
 
@@ -81,9 +81,12 @@ class NavigationExecutionConfig:
     minimum_position_quality: float
     segment_timeout_ms: int
     frames: tuple[NavigationFrame, ...]
+    wire_config_sha256: str | None = None
 
     def __post_init__(self) -> None:
         normalized_text(self.floor_id, "floor_id")
+        if self.wire_config_sha256 is not None:
+            sha256_digest(self.wire_config_sha256, "wire_config_sha256")
         if not isinstance(self.motion, MotionConfig):
             raise ValueError("navigation motion must use MotionConfig")
         for name in ("speed_m_s", "position_tolerance_m", "minimum_position_quality"):

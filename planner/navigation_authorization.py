@@ -47,6 +47,7 @@ class NavigationApproval:
         if (
             not isinstance(key, bytes)
             or len(key) < 32
+            or not isinstance(document["signature"], str)
             or not verify_event_signature(unsigned, document["signature"], key)
         ):
             raise ValueError("navigation approval signature is invalid")
