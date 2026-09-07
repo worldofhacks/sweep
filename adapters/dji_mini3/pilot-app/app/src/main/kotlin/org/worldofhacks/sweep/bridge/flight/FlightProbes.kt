@@ -20,12 +20,20 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.worldofhacks.sweep.bridge.bench.BenchRecorder
 import org.worldofhacks.sweep.bridge.core.admission.SystemClock
 import org.worldofhacks.sweep.bridge.core.flight.AxisProbe
+import org.worldofhacks.sweep.bridge.core.flight.BodyVelocity
 import org.worldofhacks.sweep.bridge.core.flight.FlightReason
 import org.worldofhacks.sweep.bridge.core.flight.FlightStatus
 import org.worldofhacks.sweep.bridge.core.flight.GroundFrame
 import org.worldofhacks.sweep.bridge.core.flight.ReportSink
 import org.worldofhacks.sweep.bridge.core.flight.StickFrame
 import org.worldofhacks.sweep.bridge.node.AircraftSource
+
+enum class BodyDirection(val forwardSign: Double, val rightSign: Double) {
+    FORWARD(1.0, 0.0),
+    BACKWARD(-1.0, 0.0),
+    LEFT(0.0, -1.0),
+    RIGHT(0.0, 1.0),
+}
 
 /** What the probes card shows. */
 data class ProbesState(
@@ -104,6 +112,43 @@ class FlightProbes(
         summary
     }
 
+    fun directionalProbe(direction: BodyDirection) = start("body probe ${direction.name.lowercase()}") {
+        val mapping = executor.status.value.mapping
+        val body = BodyVelocity(
+            forwardMS = direction.forwardSign * AXIS_PROBE_SPEED_MS,
+            rightMS = direction.rightSign * AXIS_PROBE_SPEED_MS,
+        )
+        val frame = mapping.toFrame(body)
+        val field = if (frame.pitch != 0.0) AxisProbe.Field.PITCH else AxisProbe.Field.ROLL
+        val commanded = if (field == AxisProbe.Field.PITCH) frame.pitch else frame.roll
+        record("directional_probe_start", "${direction.name.lowercase()} ${format(AXIS_PROBE_SPEED_MS)} m/s for $AXIS_PROBE_MS ms in BODY frame", "direction" to direction.name.lowercase(), "commanded_ms" to AXIS_PROBE_SPEED_MS, "mapping_transposed" to mapping.transposed)
+        val samples = ArrayList<AxisProbe.Sample>()
+        val outcome = holdWhile("body-${direction.name.lowercase()}", frame, AXIS_PROBE_MS) {
+            val snapshot = aircraft.snapshot.value
+            val (forward, right) = GroundFrame.toBody(snapshot.vx, snapshot.vy, snapshot.yawDeg)
+            samples += AxisProbe.Sample(System.currentTimeMillis(), forward, right)
+        }
+        val result = AxisProbe.classify(field, commanded, mapping, samples)
+        val summary = "${direction.name.lowercase()}: ${result.summary()} (bench ${outcome.first}${outcome.second?.let { ": $it" } ?: ""})"
+        record(
+            "directional_probe",
+            summary,
+            "direction" to direction.name.lowercase(),
+            "field" to field.name.lowercase(),
+            "commanded_ms" to commanded,
+            "observed_axis" to result.observedAxis.name.lowercase(),
+            "observed_sign" to result.observedSign,
+            "agrees" to result.agrees,
+            "mean_forward_ms" to result.meanForwardMS,
+            "mean_right_ms" to result.meanRightMS,
+            "samples" to result.samples,
+            "mapping_transposed" to mapping.transposed,
+            "outcome" to outcome.first,
+            "outcome_reason" to outcome.second,
+        )
+        summary
+    }
+
     fun hoverDrill(label: String, durationMs: Long = DRILL_MS) = start("hover drill $label") {
         val settings = executor.status.value.settings
         record("drill_start", "$label: neutral sticks under virtual stick for up to $durationMs ms", "label" to label, "stick_hz" to settings?.clampedStickHz, "hold_ms" to settings?.holdMs, "failsafe_ms" to settings?.failsafeMs)
@@ -145,10 +190,10 @@ class FlightProbes(
         summary
     }
 
-    fun benchTakeoff(zMm: Long = 1_200) = start("bench takeoff") {
-        val outcome = command { sink -> executor.benchTakeoff(zMm, sink) }
-        val summary = "bench takeoff ${outcome.first}${outcome.second?.let { ": $it" } ?: ""}"
-        record("bench_takeoff", summary, "z_mm" to zMm, "outcome" to outcome.first, "outcome_reason" to outcome.second)
+    fun takeoff(zMm: Long = 1_200) = start("takeoff") {
+        val outcome = command { sink -> executor.takeoff(zMm, sink) }
+        val summary = "takeoff ${outcome.first}${outcome.second?.let { ": $it" } ?: ""}"
+        record("takeoff", summary, "z_mm" to zMm, "outcome" to outcome.first, "outcome_reason" to outcome.second)
         summary
     }
 

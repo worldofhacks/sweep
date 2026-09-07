@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import org.worldofhacks.sweep.bridge.core.admission.Clock
 import org.worldofhacks.sweep.bridge.core.admission.SystemClock
+import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.flight.AircraftFacts
 import org.worldofhacks.sweep.bridge.core.flight.AxisMapping
 import org.worldofhacks.sweep.bridge.core.flight.FlightCommand
@@ -165,6 +166,10 @@ class FlightExecutor(
     fun stopBench() = post { controller.stopBench() }
 
     fun benchTakeoff(zMm: Long, sink: ReportSink) = post { controller.benchTakeoff(zMm, sink) }
+
+    fun takeoff(zMm: Long, sink: ReportSink) = post {
+        controller.execute(FlightCommand("bench-takeoff-${clock.nowMs()}", CommandArgs.Takeoff(zMm)), sink)
+    }
 
     fun benchLand(sink: ReportSink) = post { controller.benchLand(sink) }
 

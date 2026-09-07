@@ -1104,21 +1104,155 @@ class FlightControllerTest {
     }
 
     @Test
-    fun `supervised vertical disables rotation and bench motion`() {
+    fun `supervised directional bench probes require grounded qualification and stream all body directions`() {
         val h = Harness(supervisedVertical = SupervisedVerticalConfig())
-        h.hovering()
-        h.localHeight(1.2)
         h.join()
+        h.trackLocalHeight()
+        val unqualified = RecordingSink()
+        h.hovering()
+        assertFalse(h.controller.startBench("forward", StickFrame.NEUTRAL.copy(roll = 0.3), 1_500, unqualified))
+        assertEquals("authority_lost", unqualified.terminal?.second)
+
+        val qualification = RecordingSink()
+        h.model.place(zUp = 0.0, flying = false)
+        h.model.advance(h.clock.nowMs())
+        h.controller.updateAircraft(h.model.facts.copy(localHeight = LocalHeightFacts(0.0, h.clock.nowMs())))
+        h.controller.qualifyGroundedAuthority(qualification)
+        h.tick(1)
+        assertEquals("completed", qualification.terminal?.first, qualification.events.toString())
+        h.hovering()
+
+        val directions = listOf(
+            "forward" to BodyVelocity(forwardMS = 0.3),
+            "backward" to BodyVelocity(forwardMS = -0.3),
+            "left" to BodyVelocity(rightMS = -0.3),
+            "right" to BodyVelocity(rightMS = 0.3),
+        )
+        for ((label, body) in directions) {
+            val frame = h.controller.mapping.toFrame(body)
+            val startEast = h.model.xEast
+            val startNorth = h.model.yNorth
+            val firstFrame = h.frames.size
+            val sink = RecordingSink()
+            assertTrue(h.controller.startBench(label, frame, 1_500, sink), sink.events.toString())
+            h.tickMs(1_600)
+            assertEquals("completed", sink.terminal?.first, sink.events.toString())
+            assertTrue(h.frames.drop(firstFrame).filter { !it.isNeutral }.all { it == frame })
+            h.tickMs(300)
+            if (body.forwardMS != 0.0) {
+                assertTrue((h.model.yNorth - startNorth) * body.forwardMS > 0.05, "$label moved north ${h.model.yNorth - startNorth}")
+            } else {
+                assertTrue((h.model.xEast - startEast) * body.rightMS > 0.05, "$label moved east ${h.model.xEast - startEast}")
+            }
+        }
+    }
+
+    @Test
+    fun `supervised directional bench probes reject non-horizontal and unqualified inputs`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+        h.join()
+        h.trackLocalHeight()
+        val qualification = RecordingSink()
+        h.controller.qualifyGroundedAuthority(qualification)
+        h.tick(1)
+        h.hovering()
+
+        val invalid = listOf(
+            StickFrame.NEUTRAL to 1_500L,
+            StickFrame.NEUTRAL.copy(roll = 0.3, pitch = 0.3) to 1_500L,
+            StickFrame.NEUTRAL.copy(verticalThrottle = 0.1) to 1_500L,
+            StickFrame.NEUTRAL.copy(yaw = 1.0) to 1_500L,
+            StickFrame.NEUTRAL.copy(yaw = 1.0, yawMode = YawMode.ANGLE) to 1_500L,
+            StickFrame.NEUTRAL.copy(roll = 0.31) to 1_500L,
+            StickFrame.NEUTRAL.copy(roll = Double.NaN) to 1_500L,
+            StickFrame.NEUTRAL.copy(roll = 0.3) to 0L,
+            StickFrame.NEUTRAL.copy(roll = 0.3) to 1_501L,
+        )
+        for ((frame, durationMs) in invalid) {
+            val sink = RecordingSink()
+            assertFalse(h.controller.startBench("invalid", frame, durationMs, sink))
+            assertEquals("unsupported", sink.terminal?.second, sink.events.toString())
+        }
+
+        h.localHeight(null)
+        val missingHeight = RecordingSink()
+        assertFalse(h.controller.startBench("height", StickFrame.NEUTRAL.copy(roll = 0.3), 1_500, missingHeight))
+        assertEquals("local_height_unavailable", missingHeight.terminal?.second)
+        h.localHeight(2.5908)
+        val ceiling = RecordingSink()
+        assertFalse(h.controller.startBench("ceiling", StickFrame.NEUTRAL.copy(roll = 0.3), 1_500, ceiling))
+        assertEquals("vertical_ceiling_exceeded", ceiling.terminal?.second)
 
         val rotate = h.run(CommandArgs.RotateTo(yawMdeg = 90_000, speedMdegS = 30_000))
         assertEquals("unsupported", rotate.terminal?.second)
-        val bench = RecordingSink()
-        assertFalse(h.controller.startBench("axis-yaw", StickFrame.NEUTRAL.copy(yaw = 5.0), 1_000, bench))
-        assertEquals("unsupported", bench.terminal?.second)
         val benchTakeoff = RecordingSink()
         h.controller.benchTakeoff(1_800, benchTakeoff)
         assertEquals("unsupported", benchTakeoff.terminal?.second)
         assertTrue(h.frames.isEmpty())
+    }
+
+    @Test
+    fun `supervised directional bench probe stops on relay loss`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+        h.join()
+        h.trackLocalHeight()
+        val qualification = RecordingSink()
+        h.controller.qualifyGroundedAuthority(qualification)
+        h.tick(1)
+        h.hovering()
+        val sink = RecordingSink()
+        assertTrue(h.controller.startBench("forward", StickFrame.NEUTRAL.copy(roll = 0.3), 1_500, sink))
+        h.tick(1)
+        h.relayAlive = false
+        h.tickMs(500)
+
+        assertEquals("watchdog_hold", sink.terminal?.second, sink.events.toString())
+        assertEquals("watchdog_hold", h.controller.status.phase)
+        assertFalse(h.model.virtualStickEnabled)
+        val framesAfterHold = h.frames.size
+        h.tick(1)
+        assertEquals(framesAfterHold, h.frames.size)
+    }
+
+    @Test
+    fun `supervised directional bench pulse lands on invalid measured height and loses qualification on takeover`() {
+        fun admittedBench(): Pair<Harness, RecordingSink> {
+            val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+            h.join()
+            h.trackLocalHeight()
+            val qualification = RecordingSink()
+            h.controller.qualifyGroundedAuthority(qualification)
+            h.tick(1)
+            assertEquals("completed", qualification.terminal?.first, qualification.events.toString())
+            h.hovering()
+            val sink = RecordingSink()
+            assertTrue(h.controller.startBench("forward", StickFrame.NEUTRAL.copy(roll = 0.3), 1_500, sink))
+            h.tick(1)
+            return h to sink
+        }
+
+        val faults = listOf<(Harness) -> Unit>(
+            { it.localHeight(null) },
+            { it.localHeight(0.2) },
+            { it.localHeight(2.5908) },
+        )
+        for (fault in faults) {
+            val (h, sink) = admittedBench()
+            fault(h)
+            val framesBeforeStop = h.frames.size
+            h.tick(1)
+            assertEquals("landing", h.controller.status.phase)
+            assertTrue(sink.terminal?.second in setOf("local_height_unavailable", "not_airborne", "vertical_ceiling_exceeded"), sink.events.toString())
+            assertTrue(h.frames.drop(framesBeforeStop).all { it.isNeutral })
+        }
+
+        val (h, sink) = admittedBench()
+        h.controller.onTakeover("rc_takeover", "pilot stick moved")
+        assertEquals("authority_lost", sink.terminal?.second)
+        h.controller.rearmAuthority()
+        val retry = RecordingSink()
+        assertFalse(h.controller.startBench("forward", StickFrame.NEUTRAL.copy(roll = 0.3), 1_500, retry))
+        assertEquals("authority_lost", retry.terminal?.second)
     }
 
     @Test

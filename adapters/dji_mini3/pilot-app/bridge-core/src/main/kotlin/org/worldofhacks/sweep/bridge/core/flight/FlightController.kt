@@ -134,6 +134,7 @@ class FlightController(
     private var observedVirtualStickOwnedBySdk = false
     private var observedVirtualStickOwner = "UNKNOWN"
     private var authorityLost: String? = null
+    private var groundedAuthorityQualified = false
     private var pilotInputNoted = false
     private var estopLatched = false
     private var estopSinceMs = 0L
@@ -223,6 +224,7 @@ class FlightController(
         event("RC takeover ($reason${detail?.let { ": $it" } ?: ""}): loop cancelled, virtual stick released")
         failActive(FlightReason.AUTHORITY_LOST, "$reason${detail?.let { ": $it" } ?: ""}; re-arm control authority on the flight card")
         authorityLost = reason
+        groundedAuthorityQualified = false
         flownIntoHold = false
         supervisedFlightTargetZM = null
         supervisedFlightAirborne = false
@@ -515,10 +517,7 @@ class FlightController(
      * or moves a stick.
      */
     fun startBench(label: String, frame: StickFrame, durationMs: Long, sink: ReportSink): Boolean {
-        if (config.supervisedVertical != null) {
-            fail(sink, FlightReason.UNSUPPORTED, "bench stick motion is disabled by the supervised vertical profile")
-            return false
-        }
+        val supervised = config.supervisedVertical
         val now = clock.nowMs()
         val command = FlightCommand("bench-$label-$now", CommandArgs.Hover, label)
         authorityLost?.let {
@@ -527,6 +526,10 @@ class FlightController(
         }
         if (!facts.linked) {
             fail(sink, FlightReason.AIRCRAFT_UNAVAILABLE, "aircraft and RC must both be connected")
+            return false
+        }
+        if (supervised != null && (!groundedAuthorityQualified || !link.controlAuthorityGranted)) {
+            fail(sink, FlightReason.AUTHORITY_LOST, "supervised bench motion requires grounded authority qualification and the pilot's Control authority toggle")
             return false
         }
         when (watchdogState) {
@@ -549,6 +552,11 @@ class FlightController(
             fail(sink, FlightReason.NOT_AIRBORNE, "bench procedures start from a guarded hover")
             return false
         }
+        if (supervised != null && facts.flightState != HOVERING) {
+            fail(sink, FlightReason.NOT_AIRBORNE, "supervised bench motion requires a guarded hover, not ${facts.flightState}")
+            return false
+        }
+        if (supervised != null && !supervisedDirectionalBenchAllowed(frame, durationMs, supervised, sink)) return false
         val body = mapping.toBody(frame)
         if (!config.limits.within(body)) {
             fail(sink, FlightReason.UNSUPPORTED, "bench frame exceeds the flight limits")
@@ -559,7 +567,43 @@ class FlightController(
         return true
     }
 
+    private fun supervisedDirectionalBenchAllowed(
+        frame: StickFrame,
+        durationMs: Long,
+        supervised: SupervisedVerticalConfig,
+        sink: ReportSink,
+    ): Boolean {
+        if (durationMs !in 1..SUPERVISED_BENCH_MAX_DURATION_MS ||
+            listOf(frame.pitch, frame.roll, frame.yaw, frame.verticalThrottle).any { !it.isFinite() } ||
+            frame.yawMode != YawMode.ANGULAR_VELOCITY || frame.yaw != 0.0 || frame.verticalThrottle != 0.0
+        ) {
+            fail(sink, FlightReason.UNSUPPORTED, "supervised bench motion requires a finite, horizontal body-axis hold no longer than $SUPERVISED_BENCH_MAX_DURATION_MS ms")
+            return false
+        }
+        val body = mapping.toBody(frame)
+        val singleAxis = (body.forwardMS == 0.0) != (body.rightMS == 0.0)
+        if (!singleAxis || maxOf(kotlin.math.abs(body.forwardMS), kotlin.math.abs(body.rightMS)) > SUPERVISED_BENCH_MAX_SPEED_MS) {
+            fail(sink, FlightReason.UNSUPPORTED, "supervised bench motion permits one signed body axis at no more than $SUPERVISED_BENCH_MAX_SPEED_MS m/s")
+            return false
+        }
+        val height = freshLocalHeight(supervised)
+        if (height == null) {
+            fail(sink, FlightReason.LOCAL_HEIGHT_UNAVAILABLE, "supervised bench motion requires a fresh finite KeyAltitude callback")
+            return false
+        }
+        if (height < SUPERVISED_BENCH_MIN_HEIGHT_M) {
+            fail(sink, FlightReason.NOT_AIRBORNE, "supervised bench motion requires local height at least ${format(SUPERVISED_BENCH_MIN_HEIGHT_M)} m")
+            return false
+        }
+        if (height >= supervised.hardCeilingM) {
+            fail(sink, FlightReason.VERTICAL_CEILING_EXCEEDED, "local height ${format(height)} m is at the hard ceiling ${format(supervised.hardCeilingM)} m")
+            return false
+        }
+        return true
+    }
+
     fun qualifyGroundedAuthority(sink: ReportSink) {
+        groundedAuthorityQualified = false
         val now = clock.nowMs()
         authorityLost?.let {
             fail(sink, FlightReason.AUTHORITY_LOST, "control authority not re-armed after $it")
@@ -590,6 +634,7 @@ class FlightController(
                 if (active !== qualification || phase !is Phase.Releasing) return@releaseVirtualStick
                 when (result) {
                     PortResult.Ok -> {
+                        groundedAuthorityQualified = true
                         completeActive("virtual stick mode contract verified while grounded; Virtual Stick disable completed")
                         event("grounded authority qualification completed: virtual stick mode contract verified, Virtual Stick disable completed")
                         transition(Phase.Idle)
@@ -695,6 +740,7 @@ class FlightController(
 
     private fun checkLink() {
         if (facts.linked) return
+        groundedAuthorityQualified = false
         val reason = if (!facts.aircraftConnected) "aircraft_disconnected" else "rc_disconnected"
         if (supervisedFlightTargetZM != null && !facts.onGround && authorityLost == null) {
             if (phase !is Phase.Landing) {
@@ -815,9 +861,11 @@ class FlightController(
             is Phase.TakingOff -> advanceTakeoff(current, now)
             is Phase.SupervisedClimb -> advanceSupervisedClimb(current, now)
             is Phase.Landing -> advanceLanding(current, now)
-            is Phase.Bench -> if (now >= current.untilMs) {
-                completeActive("bench ${current.label} held ${frameWord(current.frame)} for ${now - (active?.startedMs ?: now)} ms")
-                releaseVirtualStick()
+            is Phase.Bench -> if (supervisedBenchHeightIsSafe(now)) {
+                if (now >= current.untilMs) {
+                    completeActive("bench ${current.label} held ${frameWord(current.frame)} for ${now - (active?.startedMs ?: now)} ms")
+                    releaseVirtualStick()
+                }
             }
         }
     }
@@ -1083,6 +1131,21 @@ class FlightController(
         }
         if (current.settledSinceMs != null) phase = current.copy(settledSinceMs = null)
         progress(now, "supervised climb: local height ${format(height)} m, target ${format(current.targetZM)} m")
+    }
+
+    private fun supervisedBenchHeightIsSafe(now: Long): Boolean {
+        val supervised = config.supervisedVertical ?: return true
+        val height = freshLocalHeight(supervised)
+        val failure = when {
+            height == null -> FlightReason.LOCAL_HEIGHT_UNAVAILABLE to "KeyAltitude is absent, invalid, future-dated, or older than ${supervised.maximumHeightAgeMs} ms"
+            height < SUPERVISED_BENCH_MIN_HEIGHT_M -> FlightReason.NOT_AIRBORNE to "local height ${format(height)} m is below ${format(SUPERVISED_BENCH_MIN_HEIGHT_M)} m"
+            height >= supervised.hardCeilingM -> FlightReason.VERTICAL_CEILING_EXCEEDED to "local height ${format(height)} m reached the hard ceiling ${format(supervised.hardCeilingM)} m"
+            else -> return true
+        }
+        failActive(failure.first, "supervised bench motion stopped: ${failure.second}")
+        event("supervised bench safety stop: ${failure.second}")
+        if (facts.flying) startLanding(now, failure.first.wire) else releaseVirtualStick()
+        return false
     }
 
     private fun freshLocalHeight(supervised: SupervisedVerticalConfig): Double? {
@@ -1447,5 +1510,9 @@ class FlightController(
         const val TAKING_OFF = "taking_off"
         const val LAND_COMMAND = "land_command"
         const val SPEED_EPSILON_MS = 0.02
+        const val HOVERING = "hovering"
+        const val SUPERVISED_BENCH_MIN_HEIGHT_M = 0.3
+        const val SUPERVISED_BENCH_MAX_SPEED_MS = 0.3
+        const val SUPERVISED_BENCH_MAX_DURATION_MS = 1_500L
     }
 }
