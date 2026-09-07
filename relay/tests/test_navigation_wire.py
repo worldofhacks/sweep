@@ -52,6 +52,7 @@ def _wire_config() -> NavigationWireConfig:
     return NavigationWireConfig(
         clock_lease_id="relay-clock-lease-1",
         clock_lease_expires_at_ms=110_000,
+        max_authorization_lifetime_ms=1_000,
         max_clock_error_ms=50,
         navigation_config_id="navigation-config-1",
         navigation_config_sha256=HASHES["navigation"],
@@ -64,17 +65,19 @@ def _wire_config() -> NavigationWireConfig:
         control_source_ids=("dji-telemetry", "tag-detector"),
         max_speed_mm_s=500,
         max_acceleration_mm_s2=300,
-        max_deceleration_mm_s2=300,
-        max_position_uncertainty_mm=100,
-        max_cross_track_mm=250,
-        arrival_horizontal_tolerance_mm=200,
-        arrival_vertical_tolerance_mm=200,
+        max_deceleration_mm_s2=500,
+        max_position_uncertainty_mm=30,
+        max_cross_track_mm=100,
+        arrival_horizontal_tolerance_mm=50,
+        arrival_vertical_tolerance_mm=50,
         pose_freshness_ms=500,
         tracking_timeout_ms=5_000,
     )
 
 
-def _control_pose(*, timestamp_ms: int = 99_950) -> ControlPose:
+def _control_pose(
+    *, timestamp_ms: int = 99_950, x_mm: int = 500, y_mm: int = 1_500, z_mm: int = 1_000
+) -> ControlPose:
     return ControlPose(
         t=timestamp_ms,
         event_id="control-pose-1",
@@ -87,9 +90,9 @@ def _control_pose(*, timestamp_ms: int = 99_950) -> ControlPose:
         body_extrinsics_id="body-extrinsics-v1",
         pose_time_ms=timestamp_ms,
         fix_time_ms=timestamp_ms,
-        x_mm=500,
-        y_mm=1_500,
-        z_mm=1_000,
+        x_mm=x_mm,
+        y_mm=y_mm,
+        z_mm=z_mm,
         position_frame="map_enu",
         position_uncertainty_mm=20,
         status="ready",
@@ -136,9 +139,12 @@ def _publisher() -> tuple[
                         True,
                     ),
                 ),
+                HASHES["calibration"],
+                HASHES["extrinsics"],
+                HASHES["transform"],
             ),
         ),
-        content_digest(asdict(wire)),
+        content_digest({"1": asdict(wire)}),
     )
     geometry = replace(artifact(), evidence=preview_evidence("measured"))
     approval_unsigned = {
@@ -181,7 +187,7 @@ def _publisher() -> tuple[
     event_ids = iter(("route-event-1", "pose-event-1", "pose-event-2", "pose-event-3"))
     publisher = NavigationWirePublisher(
         runtime,
-        wire,
+        {1: wire},
         session="test-session",
         signing_key=lambda _drone_id: NODE_KEY,
         event_ids=lambda: next(event_ids),
@@ -244,14 +250,18 @@ def test_phone_wire_binds_a_flight_approved_frozen_segment_and_fresh_pose() -> N
     assert pose["type"] == "navigation_pose"
     assert route["seq"] == 1
     assert pose["seq"] == 2
+    assert publisher.update(poses[0]) == []
     for frame in frames:
         unsigned = {name: value for name, value in frame.items() if name != "signature"}
         assert verify_event_signature(unsigned, frame["signature"], NODE_KEY)
         assert frame["flight_approved"] is True
 
-    clock.advance(1)
-    snapshot[0] = replace(snapshot[0], now_ms=100_001)
-    poses[0] = _control_pose(timestamp_ms=99_951)
+    publisher.activate(plan.commands[0].command_id)
+    clock.advance(100)
+    snapshot[0] = replace_aircraft(
+        replace(snapshot[0], now_ms=100_100), 1, pose=Position(2.0, 1.5, 1.0)
+    )
+    poses[0] = _control_pose(timestamp_ms=100_050, x_mm=2_000)
     updates = publisher.update(poses[0])
     assert len(updates) == 1
     assert updates[0]["seq"] == 3
@@ -298,3 +308,60 @@ def test_python_generated_fixture_remains_a_signed_phone_contract() -> None:
         assert isinstance(frame, dict)
         unsigned = {key: value for key, value in frame.items() if key != "signature"}
         assert verify_event_signature(unsigned, frame["signature"], NODE_KEY)
+
+
+def test_per_drone_profiles_bind_each_frame_and_reject_incomplete_mappings() -> None:
+    publisher, _, _, _, _ = _publisher()
+    runtime = publisher.runtime
+    first = _wire_config()
+    second = replace(
+        first,
+        clock_lease_id="relay-clock-lease-2",
+        navigation_config_id="navigation-config-2",
+        camera_calibration_sha256="1" * 64,
+        body_extrinsics_sha256="2" * 64,
+        world_transform_sha256="3" * 64,
+        control_source_ids=("tag-detector-2",),
+    )
+    second_frame = NavigationFrame(
+        2,
+        "measured-enu-world-2",
+        IDENTITY,
+        ControlLocalizationPins(
+            2,
+            "map-v2",
+            "geometry-v2",
+            "camera-calibration-v2",
+            "body-extrinsics-v2",
+            ("tag-detector-2",),
+            ClockMapping("phone-2", "relay-wall-ms", 0.0, 0, 1_000, 50, True),
+        ),
+        second.camera_calibration_sha256,
+        second.body_extrinsics_sha256,
+        second.world_transform_sha256,
+    )
+    runtime.config = replace(
+        runtime.config,
+        frames=(*runtime.config.frames, second_frame),
+        wire_config_sha256=content_digest({"1": asdict(first), "2": asdict(second)}),
+    )
+
+    with pytest.raises(ValueError, match="match every"):
+        NavigationWirePublisher(
+            runtime,
+            {1: first},
+            session="test-session",
+            signing_key=lambda _drone_id: NODE_KEY,
+            event_ids=lambda: "unused",
+            clock=lambda: 100_000,
+        )
+
+    per_drone = NavigationWirePublisher(
+        runtime,
+        {1: first, 2: second},
+        session="test-session",
+        signing_key=lambda _drone_id: NODE_KEY,
+        event_ids=lambda: "unused",
+        clock=lambda: 100_000,
+    )
+    assert per_drone.wire_configs[2] is second
