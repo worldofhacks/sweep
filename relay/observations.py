@@ -600,17 +600,25 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
                     character not in "0123456789abcdef" for character in digest
                 ):
                     _error("invalid_payload", f"{name} must be a lowercase SHA-256")
+            frame_pts = SourceTime.parse(alignment["frame_pts"])
+            gimbal_receipt = SourceTime.parse(alignment["gimbal_receipt"])
+            body_attitude_receipt = SourceTime.parse(alignment["body_attitude_receipt"])
+            if (frame_pts.clock_id, frame_pts.unit) != ("dji_stream_presentation_ms", "ms"):
+                _error("invalid_payload", "capture alignment frame PTS clock is invalid")
+            if any(
+                (stamp.clock_id, stamp.unit) != ("phone_elapsed_realtime_ms", "ms")
+                for stamp in (gimbal_receipt, body_attitude_receipt)
+            ):
+                _error("invalid_payload", "capture alignment callback clocks are invalid")
             result["capture_alignment"] = {
                 "v": 1,
                 "alignment_config_id": alignment["alignment_config_id"],
                 "alignment_config_sha256": alignment["alignment_config_sha256"],
                 "kinematic_calibration_id": alignment["kinematic_calibration_id"],
                 "kinematic_calibration_sha256": alignment["kinematic_calibration_sha256"],
-                "frame_pts": SourceTime.parse(alignment["frame_pts"]).to_mapping(),
-                "gimbal_receipt": SourceTime.parse(alignment["gimbal_receipt"]).to_mapping(),
-                "body_attitude_receipt": SourceTime.parse(
-                    alignment["body_attitude_receipt"]
-                ).to_mapping(),
+                "frame_pts": frame_pts.to_mapping(),
+                "gimbal_receipt": gimbal_receipt.to_mapping(),
+                "body_attitude_receipt": body_attitude_receipt.to_mapping(),
             }
             for name in ("gimbal_attitude", "body_attitude"):
                 attitude = _exact(
@@ -1014,6 +1022,8 @@ def ingest(
     outer_frame = binding.validate(submission, frames)
     _validate_payload_frames(submission, frames, binding, outer_frame)
     if submission.clock_mapping_id is None:
+        if submission.payload["kind"] == "pose" and "capture_alignment" in submission.payload:
+            _error("clock_mapping_required", "capture-aligned poses require a host clock mapping")
         _canonical_json(submission.to_mapping())
         return Observation(submission, ingest_time)
     if submission.clock_mapping_id not in binding.allowed_clock_mapping_ids:
