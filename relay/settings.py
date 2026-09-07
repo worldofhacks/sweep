@@ -16,7 +16,10 @@ from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, Cap
 from relay.contracts import NodeType
 from relay.observation_ingress import ObservationConfiguration
 from relay.session import RelayLimits
-from relay.state import aircraft_limit_for_profile
+from relay.state import (
+    DEFAULT_PHYSICAL_AIRCRAFT,
+    MAX_PHYSICAL_AIRCRAFT,
+)
 
 DEFAULT_CONSOLE_ORIGINS = (
     "http://localhost:5173",
@@ -57,6 +60,7 @@ class RelaySettings:
     adapter_backend: AdapterBackend = AdapterBackend.SIM
     capability_release: CapabilityRelease = CapabilityRelease.C1
     sim_aircraft_count: int | None = None
+    physical_aircraft_limit: int = DEFAULT_PHYSICAL_AIRCRAFT
     command_ttl_ms: int = 2_000
     command_deadline_ms: int = 10_000
     virtual_stick_hz: int = 10
@@ -164,18 +168,20 @@ class RelaySettings:
         ):
             raise SettingsError("SWEEP_CAPABILITY_RELEASE=c2 is allowed only with the sim backend")
         if self.sim_aircraft_count is not None and (
-            type(self.sim_aircraft_count) is not int or not 1 <= self.sim_aircraft_count <= 6
+            type(self.sim_aircraft_count) is not int or not 1 <= self.sim_aircraft_count <= 32
         ):
-            raise SettingsError("SWEEP_SIM_AIRCRAFT_COUNT must be an integer from 1 through 6")
+            raise SettingsError("SWEEP_SIM_AIRCRAFT_COUNT must be an integer from 1 through 32")
         if self.capability_release is CapabilityRelease.C2 and not (
-            4 <= self.effective_sim_aircraft_count <= 6
+            4 <= self.effective_sim_aircraft_count <= 32
         ):
-            raise SettingsError("the C2 simulator requires 4 through 6 aircraft")
-        profile_limit = aircraft_limit_for_profile(self.capability_profile)
-        if self.effective_sim_aircraft_count > profile_limit:
+            raise SettingsError("the C2 simulator requires 4 through 32 aircraft")
+        if (
+            type(self.physical_aircraft_limit) is not int
+            or not 1 <= self.physical_aircraft_limit <= MAX_PHYSICAL_AIRCRAFT
+        ):
             raise SettingsError(
-                f"the {self.capability_release.value.upper()} simulator supports at most "
-                f"{profile_limit} aircraft"
+                "SWEEP_PHYSICAL_AIRCRAFT_LIMIT must be an integer from 1 through "
+                f"{MAX_PHYSICAL_AIRCRAFT}"
             )
         if not 5 <= self.virtual_stick_hz <= 25:
             raise SettingsError("SWEEP_VIRTUAL_STICK_HZ must be within the documented 5 to 25")
@@ -264,6 +270,10 @@ class RelaySettings:
             capability_release=_capability_release(values.get("SWEEP_CAPABILITY_RELEASE", "c1")),
             sim_aircraft_count=_optional_positive_integer(
                 values.get("SWEEP_SIM_AIRCRAFT_COUNT"), "SWEEP_SIM_AIRCRAFT_COUNT"
+            ),
+            physical_aircraft_limit=_positive_integer(
+                values.get("SWEEP_PHYSICAL_AIRCRAFT_LIMIT", str(DEFAULT_PHYSICAL_AIRCRAFT)),
+                "SWEEP_PHYSICAL_AIRCRAFT_LIMIT",
             ),
             command_ttl_ms=_positive_integer(
                 values.get("SWEEP_COMMAND_TTL_MS", "2000"), "SWEEP_COMMAND_TTL_MS"

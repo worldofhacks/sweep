@@ -10,8 +10,8 @@ from tools.geometry_math import distance_to_segment, point_inside, polygon
 
 EPS = 1e-9
 MAX_GRID_CELLS = 100_000
-MAX_AIRCRAFT = 4
-MAX_ZONE_SLOTS = 4
+MAX_AIRCRAFT = 32
+MAX_ZONE_SLOTS = 32
 
 
 def finite_number(value: object, name: str, *, positive: bool = False) -> float:
@@ -424,7 +424,7 @@ class NavigationRequest:
         if not self.selected:
             raise ValueError("selected drones are required")
         if len(self.selected) > MAX_AIRCRAFT or len(self.all_positions) > MAX_AIRCRAFT:
-            raise ValueError("navigation previews support at most four aircraft")
+            raise ValueError("navigation previews support at most 32 aircraft")
         if not all(isinstance(drone, DronePose) for drone in (*self.selected, *self.all_positions)):
             raise ValueError("selected and all_positions must contain DronePose values")
         if len({drone.drone_id for drone in self.selected}) != len(self.selected):

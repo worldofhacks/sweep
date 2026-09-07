@@ -298,6 +298,7 @@ class RelaySession:
         media_evidence: MediaEvidenceProvider | None = None,
         observation_configuration: ObservationConfiguration | None = None,
         node_types: Mapping[int, NodeType] | None = None,
+        aircraft_limit: int | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -334,6 +335,7 @@ class RelaySession:
             media_evidence=media_evidence,
             membership_history_limit=limits.state_membership_history,
             node_types=node_types,
+            aircraft_limit=aircraft_limit,
         )
         self._audit_sampling = _AuditSampling()
         # Values are the last instant when the exact signed event could still pass

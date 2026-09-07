@@ -145,11 +145,13 @@ overlay, roster, selection, plan revision, connection epochs, motion allowances,
 permission before checking drift and the remaining 3-D route.
 
 `planner.mapped_formations` builds non-dispatchable line, column, wedge, and diamond
-previews for two or four aircraft. Formation permission is independent of arrival
-permission, every target slot must fit an explicitly approved formation volume, and
-the canonical navigation planner searches all feasible slot assignments before choosing
-the minimum-cost deterministic result. No kitchen fallback or formation permission is
-inferred from a navigation destination.
+previews for a bounded selected fleet. Navigation contracts allow up to 32 aircraft and
+slots; each approved execution configuration sets a lower `max_aircraft` limit, which
+defaults to four. Formation permission is independent of arrival permission, and every
+target slot must fit an explicitly approved formation volume. The planner searches all
+assignments through six aircraft. Larger fleets use a deterministic clearance-checked
+assignment and refuse when that assignment cannot produce every route. No kitchen
+fallback or formation permission is inferred from a navigation destination.
 
 These are software-planning foundations for issues #87, #88, #143, and #144. They emit
 no command and cannot authorize flight. Public `map_area`, search, mapped route

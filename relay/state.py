@@ -23,9 +23,10 @@ from relay.contracts import (
 from relay.intent_v1 import FORMATION_NAMES
 from relay.media import MediaEvidenceProvider, project_video
 
-MAX_PHYSICAL_AIRCRAFT = 4
+DEFAULT_PHYSICAL_AIRCRAFT = 4
+MAX_PHYSICAL_AIRCRAFT = 32
 MAX_PHYSICAL_GROUND = 3
-MAX_SIMULATED_AIRCRAFT = 6
+MAX_SIMULATED_AIRCRAFT = 32
 DEFAULT_MEMBERSHIP_HISTORY_LIMIT = 8
 MAX_MEMBERSHIP_HISTORY_LIMIT = 64
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
@@ -33,11 +34,11 @@ _FORMATIONS = frozenset(FORMATION_NAMES)
 
 
 def aircraft_limit_for_profile(capability_profile: CapabilityProfile) -> int:
-    """Return the registry capacity advertised by one capability profile."""
+    """Return the default registry capacity for one capability profile."""
     return (
         MAX_SIMULATED_AIRCRAFT
         if capability_profile.supports(IntentName.FORMATION_SET)
-        else MAX_PHYSICAL_AIRCRAFT
+        else DEFAULT_PHYSICAL_AIRCRAFT
     )
 
 
@@ -126,6 +127,7 @@ class FleetRegistry:
         media_evidence: MediaEvidenceProvider | None = None,
         membership_history_limit: int = DEFAULT_MEMBERSHIP_HISTORY_LIMIT,
         node_types: Mapping[int, NodeType] | None = None,
+        aircraft_limit: int | None = None,
     ) -> None:
         if telemetry_freshness_ms <= 0:
             raise ValueError("telemetry_freshness_ms must be positive")
@@ -140,7 +142,14 @@ class FleetRegistry:
             )
         self.telemetry_freshness_ms = telemetry_freshness_ms
         self.capability_profile = capability_profile
-        self.aircraft_limit = aircraft_limit_for_profile(capability_profile)
+        if aircraft_limit is None:
+            self.aircraft_limit = aircraft_limit_for_profile(capability_profile)
+        elif type(aircraft_limit) is int and 1 <= aircraft_limit <= MAX_SIMULATED_AIRCRAFT:
+            self.aircraft_limit = aircraft_limit
+        else:
+            raise ValueError(
+                f"aircraft_limit must be an integer from 1 through {MAX_SIMULATED_AIRCRAFT}"
+            )
         self._media_evidence = media_evidence
         self.membership_history_limit = membership_history_limit
         configured_node_types = {} if node_types is None else dict(node_types)

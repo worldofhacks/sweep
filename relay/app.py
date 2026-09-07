@@ -39,7 +39,7 @@ from relay.session import (
     LeaveAuthorizer,
     RelaySession,
 )
-from relay.settings import RelaySettings, console_origins_from_env
+from relay.settings import AdapterBackend, RelaySettings, console_origins_from_env
 from relay.voice import MAX_AUDIO_BYTES, MAX_AUDIO_DURATION_MS, TranscriptService, VoiceOutcome
 
 IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
@@ -242,6 +242,11 @@ class RelayRuntime:
                     control_localization_projector=projector,
                     control_pose_signing_key=self.control_pose_signing_key,
                     media_evidence=self.media_evidence,
+                    aircraft_limit=(
+                        self.settings.physical_aircraft_limit
+                        if self.settings.adapter_backend is AdapterBackend.REMOTE
+                        else None
+                    ),
                     observation_configuration=self.settings.observation_configuration,
                     node_types=self.settings.node_types,
                 )

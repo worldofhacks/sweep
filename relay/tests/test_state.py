@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from relay.capabilities import C2_CAPABILITY_PROFILE
+from relay.capabilities import (
+    C1_CAPABILITY_PROFILE,
+    C2_CAPABILITY_PROFILE,
+    CapabilityProfile,
+    IntentName,
+)
 from relay.contracts import Membership, parse_membership_request, parse_telemetry
 from relay.state import FleetRegistry, RegistryError
 from relay.tests.conftest import SESSION, membership_payload, telemetry_payload
@@ -34,17 +39,48 @@ def test_registry_accepts_four_stable_ids_and_rejects_a_fifth() -> None:
     assert error.value.code == "fleet_capacity"
 
 
-def test_c2_simulator_registry_accepts_six_stable_ids_and_rejects_a_seventh() -> None:
+def test_c2_simulator_registry_accepts_thirty_two_stable_ids_and_rejects_another() -> None:
     registry = FleetRegistry(
         telemetry_freshness_ms=1_000,
         capability_profile=C2_CAPABILITY_PROFILE,
     )
-    for drone_id in range(1, 7):
+    for drone_id in range(1, 33):
         _join(registry, drone_id, f"join-{drone_id}")
 
-    assert registry.roster_version == 6
+    assert registry.roster_version == 32
     with pytest.raises(RegistryError) as error:
-        _join(registry, 7, "join-7")
+        _join(registry, 33, "join-33")
+    assert error.value.code == "fleet_capacity"
+
+
+def test_configured_registry_capacity_accepts_and_bounds_the_deployment() -> None:
+    registry = FleetRegistry(telemetry_freshness_ms=1_000, aircraft_limit=5)
+
+    for drone_id in range(1, 6):
+        _join(registry, drone_id, f"join-{drone_id}")
+
+    with pytest.raises(RegistryError) as error:
+        _join(registry, 6, "join-6")
+    assert error.value.code == "fleet_capacity"
+
+
+@pytest.mark.parametrize("limit", [0, 33, True])
+def test_registry_capacity_must_be_bounded_integer(limit: int) -> None:
+    with pytest.raises(ValueError, match="aircraft_limit"):
+        FleetRegistry(telemetry_freshness_ms=1_000, aircraft_limit=limit)
+
+
+def test_explicit_physical_capacity_overrides_mapped_line_capability() -> None:
+    mapped_line = CapabilityProfile(
+        "mapped-line", C1_CAPABILITY_PROFILE.enabled_intent_names | {IntentName.FORMATION_SET}
+    )
+    registry = FleetRegistry(
+        telemetry_freshness_ms=1_000, capability_profile=mapped_line, aircraft_limit=1
+    )
+
+    _join(registry, 1, "join-1")
+    with pytest.raises(RegistryError) as error:
+        _join(registry, 2, "join-2")
     assert error.value.code == "fleet_capacity"
 
 
