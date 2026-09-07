@@ -42,6 +42,7 @@ class FlightControllerTest {
     private class Harness(
         private val navigationLeaseExpiresAtMs: Long = Long.MAX_VALUE,
         private val supervisedVertical: SupervisedVerticalConfig? = null,
+        private val autoReportVirtualStickOwnership: Boolean = true,
     ) {
         val clock = FakeClock(1_000)
         val model = FakeFlightModel()
@@ -126,6 +127,9 @@ class FlightControllerTest {
                 if (relayAlive) controlHeartbeat()
                 updateFacts()
                 controller.tick(clock.nowMs())
+                if (autoReportVirtualStickOwnership && model.virtualStickEnabled) {
+                    controller.onVirtualStickState(enabled = true, ownedBySdk = true, owner = "MSDK")
+                }
             }
         }
 
@@ -635,6 +639,149 @@ class FlightControllerTest {
         h.controller.onVirtualStickState(enabled = true, ownedBySdk = false, owner = "RC")
         assertEquals("authority_lost", goto.terminal?.second)
         assertEquals("virtual_stick_dropped", h.controller.status.authorityLostReason)
+    }
+
+    @Test
+    fun `supervised climb waits for MSDK ownership after an enabled unknown-owner callback`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig(), autoReportVirtualStickOwnership = false)
+        h.trackLocalHeight()
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+
+        h.tickMs(3_500)
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = false, owner = "UNKNOWN")
+
+        assertEquals("enabling_virtual_stick", h.controller.status.phase)
+        assertNull(takeoff.terminal, takeoff.events.toString())
+        assertTrue(h.frames.none { it.verticalThrottle > 0.0 })
+
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = true, owner = "MSDK")
+        h.tick(1)
+
+        assertEquals("supervised_climb", h.controller.status.phase)
+        assertTrue(h.frames.any { it.verticalThrottle > 0.0 })
+    }
+
+    @Test
+    fun `supervised climb fails closed when MSDK ownership remains unknown`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig(), autoReportVirtualStickOwnership = false)
+        h.trackLocalHeight()
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+
+        h.tickMs(3_500)
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = false, owner = "UNKNOWN")
+        h.tickMs(4_100)
+
+        assertEquals("virtual_stick_unavailable", takeoff.terminal?.second, takeoff.events.toString())
+        assertFalse(h.model.virtualStickEnabled)
+        assertTrue(h.frames.none { it.verticalThrottle > 0.0 })
+    }
+
+    @Test
+    fun `supervised climb fails closed when another owner is reported while authority is pending`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig(), autoReportVirtualStickOwnership = false)
+        h.trackLocalHeight()
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+
+        h.tickMs(3_500)
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = false, owner = "RC")
+
+        assertEquals("authority_lost", takeoff.terminal?.second, takeoff.events.toString())
+        assertEquals("virtual_stick_dropped", h.controller.status.authorityLostReason)
+        assertFalse(h.model.virtualStickEnabled)
+        assertTrue(h.frames.none { it.verticalThrottle > 0.0 })
+    }
+
+    @Test
+    fun `MSDK authority reported before enable completion starts the supervised climb`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig(), autoReportVirtualStickOwnership = false)
+        h.model.deferEnableTicks = 20
+        h.trackLocalHeight()
+        h.join()
+        h.run(CommandArgs.Takeoff(zMm = 1_800))
+
+        h.tickMs(3_500)
+        assertEquals("enabling_virtual_stick", h.controller.status.phase)
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = true, owner = "MSDK")
+        h.tickMs(2_000)
+
+        assertEquals("supervised_climb", h.controller.status.phase)
+        assertTrue(h.frames.any { it.verticalThrottle > 0.0 })
+    }
+
+    @Test
+    fun `late virtual stick enable callback cannot restart a cancelled supervised climb`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig(), autoReportVirtualStickOwnership = false)
+        h.model.deferEnableTicks = 20
+        h.trackLocalHeight()
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+
+        h.tickMs(3_500)
+        assertEquals("enabling_virtual_stick", h.controller.status.phase)
+        h.controller.onTakeover("rc_takeover", "test cancellation")
+        h.tickMs(2_000)
+
+        assertEquals("authority_lost", takeoff.terminal?.second, takeoff.events.toString())
+        assertEquals("idle", h.controller.status.phase)
+        assertFalse(h.model.virtualStickEnabled)
+        assertTrue(h.frames.none { it.verticalThrottle > 0.0 })
+    }
+
+    @Test
+    fun `MSDK authority after the enable deadline fails before a tick can promote the climb`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig(), autoReportVirtualStickOwnership = false)
+        h.trackLocalHeight()
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+
+        h.tickMs(3_500)
+        h.clock.advance(4_001)
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = true, owner = "MSDK")
+
+        assertEquals("virtual_stick_unavailable", takeoff.terminal?.second, takeoff.events.toString())
+        assertEquals("idle", h.controller.status.phase)
+        assertFalse(h.model.virtualStickEnabled)
+        assertTrue(h.frames.none { it.verticalThrottle > 0.0 })
+    }
+
+    @Test
+    fun `watchdog hold clears a pending authority callback before it can start the climb`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig(), autoReportVirtualStickOwnership = false)
+        h.trackLocalHeight()
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+
+        h.tickMs(3_500)
+        h.relayAlive = false
+        h.tickMs(600)
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = true, owner = "MSDK")
+
+        assertEquals("watchdog_hold", takeoff.terminal?.second, takeoff.events.toString())
+        assertEquals("idle", h.controller.status.phase)
+        assertFalse(h.model.virtualStickEnabled)
+        assertTrue(h.frames.none { it.verticalThrottle > 0.0 })
+    }
+
+    @Test
+    fun `hover preemption cannot reuse a pending supervised climb after MSDK authority arrives`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig(), autoReportVirtualStickOwnership = false)
+        h.trackLocalHeight()
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+
+        h.tickMs(3_500)
+        val hover = h.run(CommandArgs.Hover)
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = true, owner = "MSDK")
+        h.tick(1)
+
+        assertEquals("superseded", takeoff.terminal?.second, takeoff.events.toString())
+        assertEquals("virtual_stick_unavailable", hover.terminal?.second, hover.events.toString())
+        assertEquals("idle", h.controller.status.phase)
+        assertFalse(h.model.virtualStickEnabled)
+        assertTrue(h.frames.none { it.verticalThrottle > 0.0 })
     }
 
     @Test
