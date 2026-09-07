@@ -13,6 +13,10 @@ from relay.capabilities import (
     IntentName,
 )
 
+MAX_GROUND_LINEAR_MM_S = 180
+MAX_GROUND_ANGULAR_MRAD_S = 785
+MAX_GROUND_DURATION_MS = 500
+
 
 class Mode(StrEnum):
     INDOOR = "indoor"
@@ -234,6 +238,8 @@ def _is_bounded_intent_text(value: object, maximum_chars: int) -> bool:
 def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
     if name is IntentName.CAPTURE_ROOM:
         return raw["confirm"] is True and len(raw["selection"]) == 1
+    if name is IntentName.GROUND_VELOCITY:
+        return raw["confirm"] is True and len(raw["selection"]) == 1
     if name is IntentName.SURVEY_AREA:
         return raw["confirm"] is True
     if name is IntentName.MAP_AREA:
@@ -347,6 +353,27 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
             }
         )
 
+    if name is IntentName.GROUND_VELOCITY:
+        if set(value) != {"linear_mm_s", "angular_mrad_s", "duration_ms"}:
+            raise ValueError
+        linear = _nonnegative_int(value["linear_mm_s"])
+        angular = _integer(value["angular_mrad_s"])
+        duration = _positive_int(value["duration_ms"])
+        if (
+            linear > MAX_GROUND_LINEAR_MM_S
+            or abs(angular) > MAX_GROUND_ANGULAR_MRAD_S
+            or duration > MAX_GROUND_DURATION_MS
+            or (linear == 0) == (angular == 0)
+        ):
+            raise ValueError
+        return MappingProxyType(
+            {
+                "linear_mm_s": linear,
+                "angular_mrad_s": angular,
+                "duration_ms": duration,
+            }
+        )
+
     raise ValueError
 
 
@@ -357,6 +384,26 @@ def _is_finite_number(value: object) -> bool:
         return isfinite(value)
     except OverflowError:
         return False
+
+
+def _integer(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError
+    return value
+
+
+def _nonnegative_int(value: object) -> int:
+    result = _integer(value)
+    if result < 0:
+        raise ValueError
+    return result
+
+
+def _positive_int(value: object) -> int:
+    result = _integer(value)
+    if result <= 0:
+        raise ValueError
+    return result
 
 
 def _freeze_json(value: object) -> object:

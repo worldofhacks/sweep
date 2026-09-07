@@ -763,6 +763,11 @@ _C1_ARGS: dict[IntentName, dict[str, object]] = {
         "pattern": "pano_360",
     },
     IntentName.SURVEY_AREA: {"area_id": "floor-1"},
+    IntentName.GROUND_VELOCITY: {
+        "linear_mm_s": 100,
+        "angular_mrad_s": 0,
+        "duration_ms": 100,
+    },
 }
 _CONFIRMED_NAMES = frozenset(
     {
@@ -772,6 +777,7 @@ _CONFIRMED_NAMES = frozenset(
         IntentName.CAPTURE_ROOM,
         IntentName.SWEEP,
         IntentName.SURVEY_AREA,
+        IntentName.GROUND_VELOCITY,
     }
 )
 
