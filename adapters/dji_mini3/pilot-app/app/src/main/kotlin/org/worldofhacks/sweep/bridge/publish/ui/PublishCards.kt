@@ -31,11 +31,6 @@ import org.worldofhacks.sweep.bridge.publish.WhipEndpoint
 /** The Phase F publisher for the Setup and Connectivity cards; `MainActivity` provides it. */
 val LocalPublisher = staticCompositionLocalOf<Publisher> { error("LocalPublisher is not provided") }
 
-/**
- * The ground-station fields on the Setup card (Phase F): a bare LAN host or an HTTPS origin,
- * MediaMTX WebRTC port, and the auto-start switch. Values save as they change; nothing here
- * is a secret.
- */
 @Composable
 fun PublishSetupFields(relayUrl: String) {
     val publisher = LocalPublisher.current

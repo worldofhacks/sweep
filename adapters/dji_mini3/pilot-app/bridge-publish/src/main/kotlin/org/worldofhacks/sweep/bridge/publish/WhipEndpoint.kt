@@ -64,7 +64,19 @@ object WhipEndpoint {
         require("://" !in value && value.none { it in "/?#@" || it.isWhitespace() }) {
             "ground-station host must be bare or an HTTPS origin"
         }
-        return MediaOrigin("http", value)
+        if (':' !in value) return MediaOrigin("http", value)
+        val literal = value.removePrefix("[").removeSuffix("]")
+        require(literal == value || value == "[$literal]") {
+            "ground-station IPv6 host must use matched brackets"
+        }
+        val uri = runCatching { URI("http://[$literal]") }.getOrElse {
+            throw IllegalArgumentException("ground-station host is not an IPv6 literal")
+        }
+        val host = uri.host?.removePrefix("[")?.removeSuffix("]")
+        require(!host.isNullOrEmpty() && ':' in host) {
+            "ground-station host is not an IPv6 literal"
+        }
+        return MediaOrigin("http", host)
     }
 
     private data class MediaOrigin(val scheme: String, val host: String)
