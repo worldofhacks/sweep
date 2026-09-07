@@ -130,6 +130,12 @@ def write_preview(path, report, grids, points, tags, inset_cells):
         f"{report['evidence_kind'].capitalize()} evidence. Route geometry: {route_status}. "
         f"Formations: {formation_status}. Route height: {route['z_min']:g}–{route['z_max']:g} m."
     )
+    if "atrium_recommendation" in report:
+        summary += (
+            " Atrium: candidate pending measurements."
+            if report["atrium_recommendation"] == "candidate_pending_measurements"
+            else " Atrium: rejected; kitchen fallback needs acceptance."
+        )
     Path(path).write_text(
         '<!doctype html><html lang="en"><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'

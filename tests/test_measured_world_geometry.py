@@ -338,6 +338,33 @@ def test_measured_geometry_proves_the_continuous_route_capsule(tmp_path: Path) -
     assert report["routes"][0]["geometry_clear"] is False
 
 
+@pytest.mark.parametrize("bound,value", [("z_min_m", 0.88), ("z_max_m", 1.12)])
+def test_route_clearance_cannot_cross_geofence_altitude_bounds(bound, value):
+    from tools.map_geometry import _v2_route_envelope_clear
+
+    route = {
+        "centerline": [[-1, 0], [1, 0]],
+        "half_width_m": 0.1,
+        "z_min_m": 0.9,
+        "z_max_m": 1.1,
+    }
+    corridor = {
+        "centerline": route["centerline"],
+        "width_m": 1,
+        "z_min_m": 0,
+        "z_max_m": 3,
+        "height_evidence": [{"maximum_flight_height_m": 3}],
+    }
+    fence = {
+        "polygon": [[-3, -3], [3, -3], [3, 3], [-3, 3], [-3, -3]],
+        "z_min_m": 0,
+        "z_max_m": 3,
+    }
+    assert _v2_route_envelope_clear(route, [corridor], fence, [], 0.05, [-3, -3, 3, 3])
+    fence[bound] = value
+    assert not _v2_route_envelope_clear(route, [corridor], fence, [], 0.05, [-3, -3, 3, 3])
+
+
 def test_visibility_requires_a_verified_tag_on_the_route_floor() -> None:
     from tools.map_geometry import _v2_visibility
 

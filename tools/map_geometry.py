@@ -232,9 +232,10 @@ def generate(bundle, authoring, output, accepted_versions):
         raise ValueError(f"invalid geometry input: {exc}") from exc
 
 
-def _generate_v1(bundle, authoring, output, accepted_versions):
+def _generate_v1(bundle, authoring, output, accepted_versions, *, authoring_payload=None):
     manifest = validate_bundle(bundle, accepted_versions)
-    authoring_payload = authoring.read_bytes()
+    if authoring_payload is None:
+        authoring_payload = authoring.read_bytes()
     request = parse_document(authoring_payload, str(authoring))
     _require(
         type(request["schema_version"]) is int and request["schema_version"] == 1,
@@ -755,6 +756,11 @@ def _v2_route_envelope_clear(route, corridors, geofence, hazards, clearance, fli
         route["half_width_m"] >= clearance, "route half width must contain the aircraft envelope"
     )
     radius = route["half_width_m"] + clearance
+    if not (
+        geofence["z_min_m"] <= route["z_min_m"] - clearance
+        and route["z_max_m"] + clearance <= geofence["z_max_m"]
+    ):
+        return False
     for start, end in zip(route["centerline"], route["centerline"][1:], strict=False):
         if not (
             flight[0] + radius <= start[0] <= flight[2] - radius
@@ -1470,7 +1476,7 @@ def _generate(bundle, authoring, output, accepted_versions):
     request = parse_document(payload, str(authoring))
     version = request.get("schema_version") if isinstance(request, dict) else None
     if version == 1:
-        return _generate_v1(bundle, authoring, output, accepted_versions)
+        return _generate_v1(bundle, authoring, output, accepted_versions, authoring_payload=payload)
     if version == 2:
         return _generate_v2(bundle, authoring, output, accepted_versions, payload=payload)
     raise ValueError("unsupported geometry schema")
@@ -1490,17 +1496,16 @@ def main():
     except ValueError as exc:
         print(json.dumps({"valid": False, "error": str(exc)}))
         return 1
-    print(
-        json.dumps(
-            {
-                "valid": True,
-                "status": report["status"],
-                "flight_approved": False,
-                "route_geometry_clear": report["route"]["geometry_clear"],
-                "atrium_recommendation": report["atrium_recommendation"],
-            }
-        )
-    )
+    summary = {"valid": True, "status": report["status"], "flight_approved": False}
+    if report["schema_version"] == 2:
+        summary["routes"] = [
+            {"id": route["id"], "geometry_clear": route["geometry_clear"]}
+            for route in report["routes"]
+        ]
+    else:
+        summary["route_geometry_clear"] = report["route"]["geometry_clear"]
+        summary["atrium_recommendation"] = report["atrium_recommendation"]
+    print(json.dumps(summary))
     return 0
 
 
