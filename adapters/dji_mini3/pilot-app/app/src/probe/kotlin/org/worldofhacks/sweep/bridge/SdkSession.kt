@@ -30,6 +30,8 @@ import org.worldofhacks.sweep.bridge.session.AircraftIdentity
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.CaptureAlignmentSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
+import org.worldofhacks.sweep.bridge.session.GimbalPitchControls
+import org.worldofhacks.sweep.bridge.session.GimbalPitchState
 import org.worldofhacks.sweep.bridge.session.ProbeReport
 import org.worldofhacks.sweep.bridge.session.RawEvidenceExport
 import org.worldofhacks.sweep.bridge.session.RawEvidenceSession
@@ -58,7 +60,8 @@ internal class SdkSession(private val application: Application) :
     FpvSessionHost,
     SensorRecordingSession,
     RawEvidenceSession,
-    CaptureAlignmentSession {
+    CaptureAlignmentSession,
+    GimbalPitchControls {
     private val model = SessionModel()
     private val sensorRawLock = Any()
     private var sensorRelayContext: SensorRelayContext? = null
@@ -205,6 +208,13 @@ internal class SdkSession(private val application: Application) :
     override val fpv: DjiFpv = DjiFpv(application.filesDir, AndroidPhoneStatus(application), { name, detail -> model.event(name, detail) }, captureCollector)
 
     override val captureAlignmentSamples = captureCollector
+
+    override val gimbalPitch: StateFlow<GimbalPitchState>
+        get() = probe.gimbalPitch
+
+    override fun requestGimbalPitch(targetDegrees: Double) {
+        probe.requestLocalGimbalPitch(targetDegrees)
+    }
 
     override val state: StateFlow<SessionState> = model.state
 
