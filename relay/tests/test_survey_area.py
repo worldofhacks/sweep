@@ -151,6 +151,7 @@ def _session(tmp_path):  # type: ignore[no-untyped-def]
         "heartbeat_ready": True,
         "pose_identity": {
             "event_id": "pose-1",
+            "source_id": "ohmni-pose",
             "session": SESSION,
             "connection_epoch": 1,
             "frame": "odom",
@@ -542,6 +543,7 @@ def test_websocket_survey_completion_publishes_rendered_occupancy_candidate(tmp_
                 "heartbeat_ready": True,
                 "pose_identity": {
                     "event_id": "ws-pose",
+                    "source_id": "ohmni-pose",
                     "session": SESSION,
                     "connection_epoch": 1,
                     "frame": "odom",

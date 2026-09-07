@@ -15,6 +15,7 @@ from relay.capabilities import (
     C2_CAPABILITY_PROFILE,
     GROUND_ADDITIONAL_INTENT_NAMES,
     IMPLEMENTED_INTENT_NAMES,
+    SURVEY_ADDITIONAL_INTENT_NAMES,
     CapabilityProfile,
     IntentName,
     with_ground_capabilities,
@@ -54,7 +55,9 @@ def test_c2_profile_is_a_strict_c1_superset() -> None:
     )
     assert C1_CAPABILITY_PROFILE.enabled_intent_names < C2_CAPABILITY_PROFILE.enabled_intent_names
     assert IMPLEMENTED_INTENT_NAMES == (
-        C2_CAPABILITY_PROFILE.enabled_intent_names | GROUND_ADDITIONAL_INTENT_NAMES
+        C2_CAPABILITY_PROFILE.enabled_intent_names
+        | GROUND_ADDITIONAL_INTENT_NAMES
+        | SURVEY_ADDITIONAL_INTENT_NAMES
     )
 
 
