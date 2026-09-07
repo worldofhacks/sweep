@@ -114,6 +114,10 @@ The fisheye fit accepts 20 or more distinct detections, uses OpenCV's conditioni
 check, undistorts the detected corners before checking pose diversity, and independently
 reprojects every accepted board. Its `quality` object records the actual and required
 board counts, post-undistortion pose-constraint ratio, and reprojection RMS limits.
+The fit fixes skew at zero for OpenCV pose estimation. Rectification preserves the
+camera matrix and resolution, and refuses a radial fold or nonfinite mapping within
+the output image's ray domain. This check evaluates the radial derivative at its
+interior extrema and domain endpoints.
 These are offline image-fit checks. They do not prove camera identity, lens coverage,
 or flight readiness.
 

@@ -11,6 +11,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from calibration.fisheye import rectification_maps
+
 _IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 _MINIMUM_DETECTIONS = 20
 _MAXIMUM_RMS_REPROJECTION_ERROR_PX = 0.5
@@ -163,6 +165,7 @@ def _calibrate_fisheye(
     if not isfinite(float(rms_error)):
         raise ValueError("OpenCV produced a non-finite reprojection error")
     _validate_calibration_result(camera_matrix, distortion, image_size, distortion_count=4)
+    rectification_maps(camera_matrix, distortion, image_size)
     constraint_ratio = _validate_fisheye_pose_diversity(
         object_template, image_points, camera_matrix, distortion
     )
