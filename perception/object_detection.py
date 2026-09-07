@@ -323,6 +323,8 @@ class LiveDetectionWorker:
         with self._lifecycle_lock:
             self._stop.set()
             if self._thread is not None:
+                if self._thread is threading.current_thread():
+                    return
                 self._thread.join(self._sample_interval_s + 0.2)
                 if not self._thread.is_alive():
                     self._thread = None
