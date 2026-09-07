@@ -1,5 +1,66 @@
 # Sweep production-chain readiness
 
+## Mapping and flight checkpoint, 2026-09-07 23:35 UTC
+
+Physical testing has resumed. Ohmni 11 completed three bounded calibration
+captures. The operator confirmed forward motion followed by a left turn. Those
+observations exposed reversed wheel signs in odometry; the corrected capture
+reports 0.0833 m forward and 12.46 degrees counterclockwise. The robot stopped,
+and its calibration lease and ADB reverse were removed after capture.
+
+The corrected capture has SHA-256
+`9b1db0a2a4980923d51955d4610c9886715cbfee4eff0aa63e7d0cf634f796df`,
+boot `eb9786b4-310c-4a87-b03e-5eb234af0db6`, and executed source SHA-256
+`0f24530f771615793947bccc564c935cc46b1d7035500d43797d56f3b65e25be`.
+Its fitter result remains refused: competing angle basins, excessive angular
+uncertainty, and disagreement between the translation and rotation stages.
+Fit RMS was 3.20 cm and held-out RMS 4.40 cm; angular uncertainty was 20.34 degrees.
+No lidar calibration has been applied. The operator has since relocated the robot
+and authorized longer drives and turns. A separate bounded longer capture profile
+is being prepared; it has not run.
+
+The wheel-sign correction is published in
+[#323](https://github.com/worldofhacks/sweep/pull/323). Its adapter suite passed
+118 tests and the actual runner-to-fitter pipeline passed four cases. A follow-up
+bounds the regression's yaw assertion so a clockwise result near 360 degrees
+cannot pass as a positive left turn. The exact physical source remains pinned
+above; later test-only commits do not change the retained capture's provenance.
+
+The camera timestamp sidecar, live tag mapper, and accepted-observation archive
+are published in [#318](https://github.com/worldofhacks/sweep/pull/318),
+[#319](https://github.com/worldofhacks/sweep/pull/319), and
+[#320](https://github.com/worldofhacks/sweep/pull/320). All five CI jobs passed for
+each at `281bfbb3`, `22392956`, and `8a7fc829`, respectively.
+[#322](https://github.com/worldofhacks/sweep/pull/322) preserves qualified encoder
+pose timestamps; all five CI jobs passed at `4ddf1492`. These PRs are stacked on
+the runtime, authenticated-ingress, paired-encoder, and fusion prerequisites
+listed in their descriptions. Physical camera exposure timing, lens calibration,
+and camera-to-body registration remain unqualified.
+
+The drone rejoined a new session, `sweep-direction-tags-20260907-2322`, at epoch 1.
+Fresh telemetry reported landed, local height 0.0 m, Virtual Stick disabled,
+nominal watchdog, and battery 91%. The session was unarmed with no network stop.
+The installed registered APK has SHA-256
+`063d28d31230a1ef7895995d448faaa3b53b44778c06bd60c3a6c4bbe506c2ad`.
+Its ground check verified the Virtual Stick mode contract and confirmed disable.
+The previous session's latched stop had prevented the first check.
+
+No takeoff or horizontal flight command has been issued during this resumed
+check. The installed APK uses the supervised vertical profile, which explicitly
+refuses horizontal bench probes. A bounded directional test path is being
+implemented while preserving that profile's flight limits and failure handling.
+Its physical acceptance remains pending.
+
+A read-only baseline captured 20 current 1280x720 drone frames and decoded no
+AprilTag36h11 IDs. The camera looked almost horizontally across floor tags, which
+were heavily foreshortened. This is stationary visibility evidence. The requested
+flight test still needs a recording spanning actual forward, backward, left, and
+right movement. Decoder receipt times will be retained separately from exposure
+timestamps. Live observations also received `source_not_configured`; observation
+binding must be qualified before those detections can enter the shared map.
+
+## Historical field checkpoint, 2026-09-07 16:44 UTC
+
 At the 16:44 UTC checkpoint on 2026-09-07, neither physical flight nor wheel
 acceptance has passed. The second supervised hover reached 1.0 m while the phone
 waited four seconds for MSDK control authority without a qualifying confirmation.
@@ -275,8 +336,8 @@ A fixed integration snapshot at `aedbe6b0` passed all 2,768 Python tests and all
 a broader run exposed a default-capacity regression, which was corrected and
 verified with the four resume-interleaving tests and ten simulator tests.
 
-At the latest CI review, the current heads for the production-readiness stack are
-green. This includes the rerun of cancelled current-head workflows, the corrected
+At the earlier 16:44 UTC CI review, the then-current heads for the
+production-readiness stack were green. This includes the rerun of cancelled current-head workflows, the corrected
 capture-hold fixtures in #303, and the JVM authorization-test race fix in #307. Historical
 cancelled runs remain in the record; they are not current failures. The fixed
 integration snapshot `f517a98f` passed all 2,810 Python tests in 7m48s. The later
