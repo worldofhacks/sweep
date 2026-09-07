@@ -234,7 +234,7 @@ def test_paired_encoder_stream_withdraws_after_owner_reports_a_missing_reply(tmp
     thread.join(timeout=1)
 
 
-def test_field_confirmed_forward_and_counterclockwise_sequences_use_observed_encoder_signs() -> None:
+def test_field_encoder_counts_report_forward_and_left_turn() -> None:
     odometry = Odometry(object(), (0.0, 0.0, 0.0))
     forward = ((6572, 3836), (4572, 5836), (2572, 7836), (572, 9836), (14992, 11800))
     counterclockwise = ((14992, 11800), (15792, 12600), (208, 13400), (2180, 15360))
