@@ -12,6 +12,26 @@ import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonString
 import org.worldofhacks.sweep.bridge.core.json.JsonValue
 
+class ObservationSubmission private constructor(private val validated: ObservationFrame) {
+    fun toEvent(): JsonObject = validated.toEvent().without("t_ingest")
+
+    companion object {
+        fun parse(json: JsonObject): ObservationSubmission {
+            if ("t_ingest" in json.keys) {
+                throw ContractError("invalid_observation", "submission cannot set relay ingest time")
+            }
+            return ObservationSubmission(ObservationFrame.parse(json.with("t_ingest", JsonInt(0))))
+        }
+
+        fun decode(encoded: String): ObservationSubmission {
+            if (encoded.toByteArray(Charsets.UTF_8).size > ObservationFrame.MAX_CANONICAL_BYTES) {
+                throw ContractError("observation_too_large", "encoded submission exceeds the v1 byte ceiling")
+            }
+            return parse(Json.parse(encoded) as? JsonObject ?: throw ContractError("invalid_observation", "submission must be an object"))
+        }
+    }
+}
+
 /** Shared v1 observation envelope. The relay adds t_ingest after authenticating a submission. */
 @ConsistentCopyVisibility
 data class ObservationFrame private constructor(

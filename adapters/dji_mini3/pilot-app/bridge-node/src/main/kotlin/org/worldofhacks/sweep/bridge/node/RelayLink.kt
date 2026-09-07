@@ -683,6 +683,7 @@ class RelayLink(
             val rate = if (telemetryTimes.size >= 2 && span > 0) (telemetryTimes.size - 1) * 1000.0 / span else 0.0
             update { it.copy(telemetrySent = it.telemetrySent + 1, telemetryRateHz = rate) }
         }
+        canonicalTelemetry(config, snapshot, epoch, eventId(), clock.nowMs())?.let { send(it.toEvent()) }
     }
 
     private fun nodeStatusBody(): NodeStatusBody {
