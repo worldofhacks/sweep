@@ -1,5 +1,6 @@
 package org.worldofhacks.sweep.bridge
 
+import android.os.SystemClock
 import dji.sdk.keyvalue.key.AirLinkKey
 import dji.sdk.keyvalue.key.BatteryKey
 import dji.sdk.keyvalue.key.DJIKey
@@ -28,6 +29,8 @@ import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
 import org.worldofhacks.sweep.bridge.node.CommandReport
+import org.worldofhacks.sweep.bridge.node.AttitudeSample
+import org.worldofhacks.sweep.bridge.node.CaptureAlignmentCollector
 import org.worldofhacks.sweep.bridge.node.FlightStates
 import org.worldofhacks.sweep.bridge.node.TelemetryKeyLedger
 import org.worldofhacks.sweep.bridge.node.TelemetryKeyStatus
@@ -72,6 +75,7 @@ internal class ProbeAircraft(
     /** Bench log hook: one call per key and listener event (`attached`, `product_connected`, `first_value`). */
     private val record: (key: String, event: String, status: TelemetryKeyStatus) -> Unit = { _, _, _ -> },
     private val rawRecorder: SensorRawRecorder = SensorRawRecorder.NONE,
+    private val captureAlignment: CaptureAlignmentCollector? = null,
 ) : AircraftSource, CommandExecutor {
     private val lock = Any()
 
@@ -279,9 +283,11 @@ internal class ProbeAircraft(
             "KeyUltrasonicHeight" -> (value as? Int)?.let(rawRecorder::recordUltrasonicHeightDm)
             "KeyAircraftAttitude" -> (value as? Attitude)?.let { attitude ->
                 rawRecorder.recordAircraftAttitudeDegrees(attitude.yaw, attitude.pitch, attitude.roll)
+                captureAlignment?.recordBodyAttitude(AttitudeSample(attitude.yaw, attitude.pitch, attitude.roll, SystemClock.elapsedRealtime()))
             }
             "KeyGimbalAttitude" -> (value as? Attitude)?.let { attitude ->
                 rawRecorder.recordGimbalAttitudeDegrees(attitude.yaw, attitude.pitch, attitude.roll)
+                captureAlignment?.recordGimbal(AttitudeSample(attitude.yaw, attitude.pitch, attitude.roll, SystemClock.elapsedRealtime()))
             }
         }
         publish()

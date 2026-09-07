@@ -101,6 +101,7 @@ class RelayLink(
     client: OkHttpClient? = null,
     clientProvider: (() -> OkHttpClient?)? = null,
     private val videoPublish: VideoPublishSource = VideoPublishSource { VideoPublishState.STOPPED },
+    private val captureAlignmentSamples: CaptureAlignmentSampleSource? = null,
     private val navigationAdmission: NavigationAdmissionConfig? = null,
 ) : AutoCloseable {
     init {
@@ -805,6 +806,7 @@ class RelayLink(
             update { it.copy(telemetrySent = it.telemetrySent + 1, telemetryRateHz = rate) }
         }
         canonicalTelemetry(config, snapshot, epoch, eventId(), clock.nowMs())?.let { send(it.toEvent()) }
+        captureAlignmentSamples?.drain()?.forEach { sample -> canonicalBodyCameraPose(config, epoch, eventId(), sample)?.let { send(it.toEvent()) } }
     }
 
     private fun nodeStatusBody(): NodeStatusBody {
