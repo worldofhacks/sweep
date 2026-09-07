@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "bundle_kind": "world-bundle",
+  "bundle_version": "world-fixture-v2",
+  "map_id": "level-1-fixture",
+  "created_at": "2026-09-07T00:00:00Z",
+  "units": "meters",
+  "frame": {
+    "name": "world",
+    "axis_convention": "right_handed_z_up",
+    "x": "toward_elevator",
+    "y": "toward_street_wall",
+    "z": "up",
+    "units": "meters",
+    "physical_datum": "tag_0_center"
+  },
+  "occupancy": {
+    "path": "ohmni-grid.png",
+    "sha256": "262825e470bbb485b65b0f2beca795df53a75831682c27b607c16dfd6fa5ed1d",
+    "encoding": "png-gray8",
+    "width_cells": 3,
+    "height_cells": 2,
+    "cell_m": 0.1,
+    "origin_xy": [
+      -1,
+      -1
+    ],
+    "frame": "odom",
+    "source_scope": {
+      "session": "world-fixture-session",
+      "device_id": 9,
+      "connection_epoch": 3,
+      "source_id": "ohmni-lidar"
+    },
+    "row_0": "maximum_y",
+    "pixels": {
+      "occupied": 0,
+      "unknown": 128,
+      "free": 255
+    }
+  },
+  "registration": {
+    "source": "ohmni_slam",
+    "held_out_tag_ids": [],
+    "maximum_residual_m": 0.03,
+    "observed_tags": {
+      "path": "evidence/observed_tags.json",
+      "sha256": "b426c77f0f6931a87f2a8cdbb60ecb483cb4d7effb2ef6b9c8140cac8b4777c8"
+    },
+    "known_tags": {
+      "path": "evidence/known_tags.json",
+      "sha256": "e9b0d8682d6660acc283128f434de37630f3ed77d9b120ea96431ba41e237f61"
+    }
+  },
+  "files": {
+    "tags.yaml": "b7e5040ceaabe18aca66c2d54d5fdbf2827b1979f0a7704ca22becc8fbe27049",
+    "zones.yaml": "efbf54a72b7fdd24a2fab840689efa2b898be1dba4445ad9f473a738feed89bc",
+    "obstacles.yaml": "cb13e6dba1b2bc91f16e5685faeddd1fa24f906f1d97635922c9b85b2033a2ff"
+  },
+  "content_sha256": "5365428d77a308ff1cb12fc485f2de39689af163e8a0dc17b7dcb6b948cb32ba"
+}
