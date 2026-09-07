@@ -7,6 +7,7 @@ import dji.sdk.keyvalue.key.KeyTools
 import dji.sdk.keyvalue.key.RemoteControllerKey
 import dji.sdk.keyvalue.value.common.EmptyMsg
 import dji.sdk.keyvalue.value.flightcontroller.FlightControlAuthority
+import dji.sdk.keyvalue.value.flightcontroller.FlightControlAuthorityChangeReason
 import dji.sdk.keyvalue.value.flightcontroller.FlightCoordinateSystem
 import dji.sdk.keyvalue.value.flightcontroller.RollPitchControlMode
 import dji.sdk.keyvalue.value.flightcontroller.VerticalControlMode
@@ -17,6 +18,8 @@ import dji.v5.common.error.IDJIError
 import dji.v5.manager.KeyManager
 import dji.v5.manager.aircraft.virtualstick.Stick
 import dji.v5.manager.aircraft.virtualstick.VirtualStickManager
+import dji.v5.manager.aircraft.virtualstick.VirtualStickState
+import dji.v5.manager.aircraft.virtualstick.VirtualStickStateListener
 import kotlin.math.abs
 import org.worldofhacks.sweep.bridge.core.flight.FlightPort
 import org.worldofhacks.sweep.bridge.core.flight.PortResult
@@ -56,10 +59,38 @@ class DjiFlightPort(
     private val manager
         get() = VirtualStickManager.getInstance()
 
+    private val managerDiagnostic = ManagerAuthorityDiagnostic(recordAuthorityKey, SystemClock::elapsedRealtime)
+
+    private val managerDiagnosticListener = object : VirtualStickStateListener {
+        override fun onVirtualStickStateUpdate(state: VirtualStickState) {
+            val owner = state.currentFlightControlAuthorityOwner ?: FlightControlAuthority.UNKNOWN
+            managerDiagnostic.record(
+                enabled = state.isVirtualStickEnable,
+                advanced = state.isVirtualStickAdvancedModeEnabled,
+                owner = owner.name,
+                directContext = authority.diagnosticContext(),
+            )
+        }
+
+        override fun onChangeReasonUpdate(reason: FlightControlAuthorityChangeReason) {
+            recordAuthorityKey(
+                "VirtualStickManager.change_reason",
+                "listener_value",
+                "${reason.name} diagnostic_only ${authority.diagnosticContext()} t_ms=${SystemClock.elapsedRealtime()}",
+            )
+        }
+    }
+
     /** Registers the takeover signals once the SDK is registered; safe to call again. */
     fun attach(executor: FlightExecutor) {
         if (this.executor != null) return
         this.executor = executor
+        manager.setVirtualStickStateListener(managerDiagnosticListener)
+        recordAuthorityKey(
+            "VirtualStickManager.state",
+            "listener_registered",
+            "diagnostic_only ${authority.diagnosticContext()} t_ms=${SystemClock.elapsedRealtime()}",
+        )
         listenStick("left horizontal", RemoteControllerKey.KeyStickLeftHorizontal)
         listenStick("left vertical", RemoteControllerKey.KeyStickLeftVertical)
         listenStick("right horizontal", RemoteControllerKey.KeyStickRightHorizontal)
@@ -72,11 +103,20 @@ class DjiFlightPort(
     fun onProductConnected() {
         executor?.let { readFailsafeSetting(it) }
         val generation = authority.productConnected()
-        KeyManager.getInstance().cancelListen(authorityHolder)
+        val keyManager = KeyManager.getInstance()
+        keyManager.cancelListen(authorityHolder)
         listenAuthorityKeys(generation)
         authority.productSupport(
+            AuthorityKey.VIRTUAL_STICK_ENABLED,
+            keyManager.isKeySupported(KeyTools.createKey(FlightControllerKey.KeyVirtualStickEnabled)),
+        )
+        authority.productSupport(
+            AuthorityKey.FLIGHT_CONTROL_CURRENT_AUTHORITY,
+            keyManager.isKeySupported(KeyTools.createKey(FlightControllerKey.KeyFlightControlCurrentAuthority)),
+        )
+        authority.productSupport(
             AuthorityKey.FLIGHT_CONTROL_AUTHORITY_CHANGE_REASON,
-            KeyManager.getInstance().isKeySupported(
+            keyManager.isKeySupported(
                 KeyTools.createKey(FlightControllerKey.KeyFlightControlAuthorityChangeReason),
             ),
         )
@@ -88,6 +128,7 @@ class DjiFlightPort(
     }
 
     fun detach() {
+        manager.removeVirtualStickStateListener(managerDiagnosticListener)
         KeyManager.getInstance().cancelListen(holder)
         KeyManager.getInstance().cancelListen(authorityHolder)
         authority.disconnected()
@@ -388,6 +429,10 @@ internal class DirectAuthorityMonitor(
     }
 
     @Synchronized
+    fun diagnosticContext(): String =
+        "direct_generation=$productGeneration/$operationToken snapshot=${snapshot?.snapshotToken ?: "none"}"
+
+    @Synchronized
     fun readResult(key: AuthorityKey, request: AuthorityReadRequest, result: String, value: String?) {
         val current = snapshot
         if (request != current) {
@@ -444,6 +489,19 @@ internal class DirectAuthorityMonitor(
     private companion object {
         const val MAX_SNAPSHOT_AGE_MS = 1_000L
         const val MAX_READ_SKEW_MS = 250L
+    }
+}
+
+internal class ManagerAuthorityDiagnostic(
+    private val record: (key: String, event: String, status: String) -> Unit,
+    private val nowMs: () -> Long,
+) {
+    fun record(enabled: Boolean, advanced: Boolean, owner: String, directContext: String) {
+        record(
+            "VirtualStickManager.state",
+            "listener_value",
+            "enabled=$enabled advanced=$advanced owner=$owner diagnostic_only owner_freshness=unproven $directContext t_ms=${nowMs()}",
+        )
     }
 }
 
