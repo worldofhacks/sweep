@@ -10,8 +10,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from tools.ohmni_camera_frames import open_capture
-from tools.ohmni_head_capture import record_head
 
 from calibration.intrinsics import calibrate
 from perception.camera_tags import CameraTagDetector
@@ -22,6 +20,8 @@ from tests.test_calibration import (
     _write_fisheye_boards,
 )
 from tests.test_camera_tags import rendered_tag
+from tools.ohmni_camera_frames import open_capture
+from tools.ohmni_head_capture import record_head
 
 
 def test_calibrated_fisheye_artifact_recovers_pose_from_an_independent_print(tmp_path):
