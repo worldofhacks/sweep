@@ -717,6 +717,15 @@ def test_ground_only_hold_in_a_mixed_roster_does_not_dispatch_an_empty_aircraft_
     try:
         session = relay_server.runtime.sessions[SESSION]
         _wait_for(lambda: _mixed_ready(session), "mixed readiness")
+        _wait_for(
+            lambda: any(
+                drone["drone_id"] == GROUND_ID
+                and drone["membership"] == "ready"
+                and drone["selectable"] is True
+                for drone in session.current_state()["drones"]
+            ),
+            "selectable ground state",
+        )
         time.sleep(0.5)
         roster_version = session.current_state()["roster_version"]
         time.sleep(0.5)
