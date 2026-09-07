@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass
 
 from .botshell import DEFAULT_PATH, BotShell
-from .camera import Camera
+from .camera import Camera, V4LSource
 from .lidar import Lidar, discover
 from .models import GroundStatus, RangeScan
 from .odometry import BASE_MM, Odometry
@@ -491,17 +491,34 @@ def from_environment(*, key: str = "") -> OhmniDevice:
         spotter_present=os.environ.get("SWEEP_SPOTTER") == "1",
     )
     media_host = os.environ.get("SWEEP_MEDIA_HOST")
-    camera = (
-        Camera(
-            media_host,
-            int(os.environ["SWEEP_DEVICE_UNIT"]),
-            key,
-            os.environ.get("SWEEP_FFMPEG", "/data/local/sweep/ffmpeg"),
-        )
-        if media_host
-        else None
-    )
+    camera = _camera_from_environment(media_host, key) if media_host else None
     return OhmniDevice(config, camera=camera)
+
+
+def _camera_from_environment(media_host: str, key: str) -> Camera:
+    if not key:
+        raise ValueError("camera publishing requires a node key")
+    try:
+        input_fps = os.environ["SWEEP_CAMERA_INPUT_FPS"]
+        source = V4LSource(
+            device=os.environ["SWEEP_CAMERA_DEVICE"],
+            input_format=os.environ["SWEEP_CAMERA_INPUT_FORMAT"],
+            input_fps=None if input_fps == "native" else int(input_fps),
+            width=int(os.environ["SWEEP_CAMERA_WIDTH_PX"]),
+            height=int(os.environ["SWEEP_CAMERA_HEIGHT_PX"]),
+        )
+        device_id = int(os.environ["SWEEP_DEVICE_UNIT"])
+    except KeyError as error:
+        raise ValueError(f"camera publishing requires {error.args[0]}") from error
+    except ValueError as error:
+        raise ValueError("camera publishing configuration is invalid") from error
+    return Camera(
+        media_host,
+        device_id,
+        key,
+        os.environ.get("SWEEP_FFMPEG", "/data/local/sweep/ffmpeg"),
+        source,
+    )
 
 
 def build() -> OhmniDevice:
