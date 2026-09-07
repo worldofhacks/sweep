@@ -411,8 +411,8 @@ def test_confirmed_console_ground_velocity_uses_signed_relay_command_lifecycle(
         session = relay_server.runtime.sessions[SESSION]
         _wait_for(
             lambda: (
-                session.registry.ready_ground_identity(GROUND_ID, time.time_ns() // 1_000_000)
-                is not None
+                bool(session.current_state()["drones"])
+                and session.current_state()["drones"][0]["membership"] == "ready"
             ),
             "ground readiness",
         )
