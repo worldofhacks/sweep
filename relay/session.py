@@ -2639,7 +2639,6 @@ _DRONE_STATE_KEYS = frozenset(
         "telemetry",
         "membership_history",
         "membership_history_truncated",
-        "ground_readiness",
         "camera_capabilities",
         "node_status",
         "video",
@@ -2818,8 +2817,11 @@ def _bounded_control_projection_snapshot(value: object, field: str) -> object:
 
 
 def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]:
-    missing = _DRONE_STATE_KEYS - set(drone)
-    unknown = set(drone) - _DRONE_STATE_KEYS
+    expected = _DRONE_STATE_KEYS
+    if drone.get("node_type") == "ground":
+        expected = expected | {"ground_readiness"}
+    missing = expected - set(drone)
+    unknown = set(drone) - expected
     if missing or unknown:
         detail = []
         if missing:
@@ -2846,7 +2848,7 @@ def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]
         not isinstance(home_pose, Mapping) or set(home_pose) != {"x", "y", "z"}
     ):
         raise AuditLogError("drone home_pose fields do not match the bounded projection")
-    ground_readiness = drone["ground_readiness"]
+    ground_readiness = drone.get("ground_readiness")
     if ground_readiness is not None and (
         not isinstance(ground_readiness, Mapping)
         or set(ground_readiness) != {"source_id"}
@@ -2856,7 +2858,7 @@ def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]
         )
     ):
         raise AuditLogError("drone ground_readiness fields do not match the bounded projection")
-    projection = {key: drone[key] for key in _DRONE_STATE_KEYS - _VOLATILE_DRONE_KEYS}
+    projection = {key: drone[key] for key in expected - _VOLATILE_DRONE_KEYS}
     for report, timestamp in _TIMESTAMPED_DRONE_REPORTS.items():
         value = projection.get(report)
         if value is None and report != "video":

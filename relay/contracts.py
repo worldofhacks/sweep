@@ -1320,7 +1320,7 @@ def acknowledgement_event(
         if (
             not isinstance(run_id, str)
             or not run_id
-            or len(run_id) > 256
+            or len(run_id) > 128
             or run_id != run_id.strip()
             or not run_id.isprintable()
             or not isinstance(epoch, int)

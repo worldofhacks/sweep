@@ -472,9 +472,7 @@ class FleetRegistry:
             )
             record.accepted_pose_at = t
 
-    def clear_ground_pose_observation(
-        self, *, drone_id: int, connection_epoch: int
-    ) -> None:
+    def clear_ground_pose_observation(self, *, drone_id: int, connection_epoch: int) -> None:
         with self._lock:
             record = self._require_current(drone_id, connection_epoch)
             if record.node_type is not NodeType.GROUND:
@@ -929,7 +927,7 @@ class FleetRegistry:
                     else self._media_evidence(record.drone_id, now_ms)
                 ),
             ),
-            "ground_readiness": ground_readiness,
+            **({"ground_readiness": ground_readiness} if ground_readiness is not None else {}),
         }
 
     def _remember(
