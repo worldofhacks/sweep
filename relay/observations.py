@@ -295,6 +295,7 @@ class SourceBinding:
     source_id: str
     node_type: NodeType
     allowed_frames: tuple[str, ...]
+    allowed_payload_kinds: tuple[str, ...]
     world_map_id: str | None = None
     world_map_version: str | None = None
     world_physical_datum: str | None = None
@@ -323,6 +324,19 @@ class SourceBinding:
         if not frames or len(frames) > 32 or len(set(frames)) != len(frames):
             _error("invalid_source_binding", "binding allowed frames must be unique and bounded")
         object.__setattr__(self, "allowed_frames", frames)
+        if not isinstance(self.allowed_payload_kinds, tuple):
+            _error("invalid_source_binding", "binding allowed payload kinds must be a tuple")
+        payload_kinds = tuple(self.allowed_payload_kinds)
+        if (
+            not payload_kinds
+            or len(payload_kinds) > len(_PAYLOAD_KINDS)
+            or len(set(payload_kinds)) != len(payload_kinds)
+            or any(kind not in _PAYLOAD_KINDS for kind in payload_kinds)
+        ):
+            _error(
+                "invalid_source_binding", "binding payload kinds must be known, unique, and bounded"
+            )
+        object.__setattr__(self, "allowed_payload_kinds", payload_kinds)
         if not isinstance(self.allowed_clock_mapping_ids, tuple):
             _error("invalid_source_binding", "binding clock mappings must be a tuple")
         mappings = tuple(
@@ -366,6 +380,8 @@ class SourceBinding:
             _error(
                 "source_binding_mismatch", "observation does not match its authenticated binding"
             )
+        if submission.payload["kind"] not in self.allowed_payload_kinds:
+            _error("payload_not_authorized", "source binding does not authorize this payload kind")
         return self.require_frame(submission.frame, submission, frames)
 
     def require_frame(
@@ -477,7 +493,7 @@ class FramedPose:
 
 Payload = Mapping[str, object]
 _PAYLOAD_KINDS = frozenset(
-    {"aircraft_telemetry", "pose", "range_scan", "camera_frame", "tag_observation", "status"}
+    {"telemetry", "pose", "range_scan", "camera_frame", "tag_observation", "status"}
 )
 
 
@@ -489,11 +505,11 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
     ):
         _error("invalid_payload", "payload kind is unknown")
     kind = raw["kind"]
-    if kind == "aircraft_telemetry":
+    if kind == "telemetry":
         value = _exact(
             raw,
             frozenset({"kind", "position", "velocity", "battery", "link", "pos_quality", "state"}),
-            "aircraft telemetry",
+            "telemetry",
         )
         position = FramedVector.parse(value["position"])
         velocity_raw = _exact(
@@ -508,7 +524,7 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
             "z_m_s": _number(velocity_raw["z_m_s"], "z_m_s"),
         }
         if position.frame != envelope_frame or velocity["frame"] != envelope_frame:
-            _error("payload_frame_mismatch", "aircraft payload vectors must use the envelope frame")
+            _error("payload_frame_mismatch", "telemetry vectors must use the envelope frame")
         result: dict[str, object] = {
             "kind": kind,
             "position": position.to_mapping(),
@@ -596,22 +612,99 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
             "calibration_id": _text(value["calibration_id"], "calibration_id"),
         }
     if kind == "tag_observation":
-        fields = frozenset({"kind", "tag_id", "family", "image_id", "tag_pose", "covariance_m2"})
+        fields = frozenset(
+            {
+                "kind",
+                "family",
+                "tag_id",
+                "image_id",
+                "pose_accepted",
+                "tag_pose",
+                "covariance_m2",
+                "reason",
+                "size_m",
+                "corners_px",
+                "pixel_frame",
+                "reprojection_rms_px",
+            }
+        )
         value = _exact(raw, fields, "tag observation")
-        tag_id = _text(value["tag_id"], "tag_id")
-        pose = FramedPose.parse(value["tag_pose"])
-        if pose.parent_frame != envelope_frame or pose.child_frame != f"tag:{tag_id}":
+        if value["family"] != "tag36h11":
+            _error("invalid_payload", "tag family must be tag36h11")
+        tag_id = _integer(value["tag_id"], "tag_id", maximum=586)
+        if type(value["pose_accepted"]) is not bool:
+            _error("invalid_payload", "tag pose_accepted must be boolean")
+        pose_accepted = value["pose_accepted"]
+        reason = value["reason"]
+        reasons = frozenset(
+            {
+                "pose",
+                "ambiguous",
+                "unconfigured_tag",
+                "duplicate_tag",
+                "tag_too_small",
+                "reprojection_or_cheirality",
+            }
+        )
+        if reason not in reasons or (reason == "pose") != pose_accepted:
+            _error("invalid_payload", "tag reason must describe whether pose was accepted")
+        tag_pose = value["tag_pose"]
+        if (tag_pose is not None) != pose_accepted:
+            _error("invalid_payload", "tag_pose must be present exactly when pose is accepted")
+        pose = None if tag_pose is None else FramedPose.parse(tag_pose)
+        if pose is not None and (
+            pose.parent_frame != envelope_frame or pose.child_frame != f"tag:{tag_id}"
+        ):
             _error("payload_frame_mismatch", "tag pose must be camera-to-declared-tag")
+        size = value["size_m"]
+        if size is None:
+            if pose_accepted:
+                _error("invalid_payload", "accepted tag pose requires tag size")
+        else:
+            size = _number(size, "tag size")
+            if size <= 0:
+                _error("invalid_payload", "tag size must be positive")
         covariance = value["covariance_m2"]
-        if not isinstance(covariance, list | tuple) or len(covariance) != 9:
-            _error("invalid_payload", "tag covariance must contain nine entries")
+        if covariance is not None:
+            if pose is None:
+                _error("invalid_payload", "tag covariance requires an accepted pose")
+            if not isinstance(covariance, list | tuple) or len(covariance) != 9:
+                _error("invalid_payload", "tag covariance must contain nine entries")
+            covariance = [_number(item, "tag covariance") for item in covariance]
+            _positive_semidefinite_3x3(covariance)
+        corners = value["corners_px"]
+        if not isinstance(corners, list | tuple) or len(corners) != 4:
+            _error("invalid_payload", "tag corners must contain four pixel pairs")
+        parsed_corners: list[list[float]] = []
+        for corner in corners:
+            if not isinstance(corner, list | tuple) or len(corner) != 2:
+                _error("invalid_payload", "tag corners must contain four pixel pairs")
+            parsed_corners.append(
+                [
+                    _number(coordinate, "tag corner", maximum=MAX_IMAGE_DIMENSION_PX)
+                    for coordinate in corner
+                ]
+            )
+        if value["pixel_frame"] not in {"camera", "rectified_camera"}:
+            _error("invalid_payload", "tag pixel_frame is unknown")
+        rms = value["reprojection_rms_px"]
+        if rms is not None:
+            rms = _number(rms, "reprojection_rms_px", maximum=MAX_IMAGE_DIMENSION_PX)
+            if rms < 0:
+                _error("invalid_payload", "reprojection_rms_px must be non-negative")
         return {
             "kind": kind,
+            "family": "tag36h11",
             "tag_id": tag_id,
-            "family": _text(value["family"], "family"),
             "image_id": _text(value["image_id"], "image_id"),
-            "tag_pose": pose.to_mapping(),
-            "covariance_m2": [_number(item, "tag covariance") for item in covariance],
+            "pose_accepted": pose_accepted,
+            "tag_pose": None if pose is None else pose.to_mapping(),
+            "covariance_m2": covariance,
+            "reason": reason,
+            "size_m": size,
+            "corners_px": parsed_corners,
+            "pixel_frame": value["pixel_frame"],
+            "reprojection_rms_px": rms,
         }
     value = _exact(raw, frozenset({"kind", "code", "detail", "capabilities"}), "status")
     capabilities = value["capabilities"]
@@ -623,6 +716,25 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
         "detail": _text(value["detail"], "status detail", 512),
         "capabilities": [_text(item, "capability", 64) for item in capabilities],
     }
+
+
+def _positive_semidefinite_3x3(covariance: list[float]) -> None:
+    a, b, c, _, d, e, _, _, f = covariance
+    scale = max(1.0, max(abs(value) for value in covariance))
+    tolerance = 1e-9 * scale**3
+    if (
+        abs(b - covariance[3]) > tolerance
+        or abs(c - covariance[6]) > tolerance
+        or abs(e - covariance[7]) > tolerance
+        or a < -tolerance
+        or d < -tolerance
+        or f < -tolerance
+        or a * d - b * b < -tolerance
+        or a * f - c * c < -tolerance
+        or d * f - e * e < -tolerance
+        or a * d * f + 2 * b * c * e - a * e * e - d * c * c - f * b * b < -tolerance
+    ):
+        _error("invalid_payload", "tag covariance must be symmetric positive semidefinite")
 
 
 _SUBMISSION_FIELDS = frozenset(
@@ -869,7 +981,7 @@ def _validate_payload_frames(
 ) -> None:
     payload = submission.payload
     kind = payload["kind"]
-    if kind == "aircraft_telemetry":
+    if kind == "telemetry":
         binding.require_frame(str(payload["position"]["frame"]), submission, frames)  # type: ignore[index]
         binding.require_frame(str(payload["velocity"]["frame"]), submission, frames)  # type: ignore[index]
     elif kind == "pose":
@@ -888,7 +1000,7 @@ def _validate_payload_frames(
                 "payload_frame_mismatch",
                 "camera evidence requires a right-down-forward camera frame",
             )
-        if kind == "camera_frame":
+        if kind == "camera_frame" or payload["tag_pose"] is None:
             return
         pose = payload["tag_pose"]  # type: ignore[assignment]
         binding.require_frame(str(pose["parent_frame"]), submission, frames)  # type: ignore[index]
