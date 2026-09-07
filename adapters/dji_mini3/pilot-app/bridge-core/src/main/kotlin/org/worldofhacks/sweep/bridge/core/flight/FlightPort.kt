@@ -50,6 +50,8 @@ enum class FlightReason(val wire: String, val retryable: Boolean) {
     ALREADY_AIRBORNE("already_airborne", false),
     AIRCRAFT_UNAVAILABLE("aircraft_unavailable", true),
     VIRTUAL_STICK_UNAVAILABLE("virtual_stick_unavailable", true),
+    LOCAL_HEIGHT_UNAVAILABLE("local_height_unavailable", true),
+    VERTICAL_CEILING_EXCEEDED("vertical_ceiling_exceeded", false),
     TAKEOFF_FAILED("takeoff_failed", true),
     TAKEOFF_TIMEOUT("takeoff_timeout", true),
     LANDING_FAILED("landing_failed", true),

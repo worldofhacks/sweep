@@ -2,6 +2,7 @@ package org.worldofhacks.sweep.bridge
 
 import android.app.Application
 import android.os.Build
+import android.os.SystemClock
 import dji.sdk.keyvalue.key.DJIKey
 import dji.sdk.keyvalue.key.KeyTools
 import dji.sdk.keyvalue.key.ProductKey
@@ -18,6 +19,8 @@ import kotlinx.coroutines.flow.StateFlow
 import org.worldofhacks.sweep.bridge.flight.DjiFlightPort
 import org.worldofhacks.sweep.bridge.flight.FlightExecutor
 import org.worldofhacks.sweep.bridge.flight.FlightNode
+import org.worldofhacks.sweep.bridge.core.flight.FlightConfig
+import org.worldofhacks.sweep.bridge.core.flight.SupervisedVerticalConfig
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
 import org.worldofhacks.sweep.bridge.node.CaptureAlignmentCollector
@@ -215,7 +218,16 @@ internal class SdkSession(private val application: Application) :
     // takeover signals attach when ProbeAircraft attaches (SDK registered), and the flight
     // controller's failsafe setting is read, never changed, on every product connection.
     private val port = DjiFlightPort { name, detail -> model.event(name, detail) }
-    private val flightExecutor = FlightExecutor(port, probe, fallback = probe, log = { line -> model.event("Flight", line) })
+    private val flightExecutor = FlightExecutor(
+        port,
+        probe,
+        fallback = probe,
+        config = FlightConfig(
+            supervisedVertical = if (BuildConfig.SUPERVISED_VERTICAL) SupervisedVerticalConfig() else null,
+        ),
+        monotonicNowMs = SystemClock::elapsedRealtime,
+        log = { line -> model.event("Flight", line) },
+    )
     override val flight: FlightNode = FlightNode(
         flightExecutor,
         probe,

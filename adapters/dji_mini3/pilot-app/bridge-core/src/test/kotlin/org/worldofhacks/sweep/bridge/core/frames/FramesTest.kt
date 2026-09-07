@@ -10,6 +10,7 @@ import org.worldofhacks.sweep.bridge.core.Fixtures
 import org.worldofhacks.sweep.bridge.core.Fixtures.obj
 import org.worldofhacks.sweep.bridge.core.Fixtures.string
 import org.worldofhacks.sweep.bridge.core.json.Json
+import org.worldofhacks.sweep.bridge.core.json.JsonFloat
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonValue
 import org.worldofhacks.sweep.bridge.core.signing.Signing
@@ -683,6 +684,28 @@ class FramesTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             status.body.copy(authorityChangeReason = "Not Snake")
+        }
+    }
+
+    @Test
+    fun `node status accepts only a finite explicitly sourced local height`() {
+        val base = NodeStatusFrame.parse(wire("node_status"))
+        val evidence = LocalHeight(1.8, LocalHeight.Source.FLIGHT_CONTROLLER_ALTITUDE, 0)
+        val withHeight = base.copy(body = base.body.copy(localHeight = evidence)).toEvent()
+
+        assertEquals(evidence, NodeStatusFrame.parse(withHeight).body.localHeight)
+        assertEquals(JsonFloat(1.8), (withHeight["local_height"] as JsonObject)["z_m"])
+        assertThrows(ContractError::class.java) {
+            NodeStatusFrame.parse(withHeight.with("local_height", Json.json("z_m" to 1.8, "source" to "ultrasonic", "age_ms" to 0)))
+        }
+        assertThrows(ContractError::class.java) {
+            NodeStatusFrame.parse(withHeight.with("local_height", Json.json("z_m" to 1.8, "source" to "flight_controller_altitude", "age_ms" to -1)))
+        }
+        assertThrows(ContractError::class.java) {
+            NodeStatusFrame.parse(withHeight.with("local_height", Json.json("z_m" to 1.8, "source" to "flight_controller_altitude", "age_ms" to 0, "extra" to true)))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            LocalHeight(Double.NaN, LocalHeight.Source.FLIGHT_CONTROLLER_ALTITUDE, 0)
         }
     }
 

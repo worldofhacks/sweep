@@ -39,7 +39,10 @@ class FlightControllerTest {
             get() = events.lastOrNull { it.first == "completed" || it.first == "failed" }
     }
 
-    private class Harness(private val navigationLeaseExpiresAtMs: Long = Long.MAX_VALUE) {
+    private class Harness(
+        private val navigationLeaseExpiresAtMs: Long = Long.MAX_VALUE,
+        private val supervisedVertical: SupervisedVerticalConfig? = null,
+    ) {
         val clock = FakeClock(1_000)
         val model = FakeFlightModel()
         val log = mutableListOf<String>()
@@ -54,6 +57,7 @@ class FlightControllerTest {
             estopLandAfterMs = 2_000,
             yawSettleMs = 200,
             yawMarginMs = 1_000,
+            supervisedVertical = supervisedVertical,
             navigation = NavigationConfig(
                 navigationConfigId = "navigation-a",
                 navigationConfigSha256 = "a".repeat(64),
@@ -79,11 +83,13 @@ class FlightControllerTest {
 
         /** The relay's signed control heartbeat keeps the deadman fed; deadman tests switch it off. */
         var relayAlive = true
+        private var localHeight: LocalHeightFacts? = null
+        private var trackLocalHeight = false
 
         init {
             controller.onStickSent = { _, frame, _ -> frames += frame }
             model.advance(clock.nowMs())
-            controller.updateAircraft(model.facts)
+            updateFacts()
         }
 
         /** Joined with the pilot's Control authority toggle on, as every flight through the relay is. */
@@ -118,7 +124,7 @@ class FlightControllerTest {
             repeat(count) {
                 clock.advance(100)
                 if (relayAlive) controlHeartbeat()
-                controller.updateAircraft(model.facts)
+                updateFacts()
                 controller.tick(clock.nowMs())
             }
         }
@@ -134,7 +140,23 @@ class FlightControllerTest {
         fun hovering(z: Double = 1.2) {
             model.place(zUp = z, flying = true)
             model.advance(clock.nowMs())
-            controller.updateAircraft(model.facts)
+            updateFacts()
+        }
+
+        fun localHeight(zM: Double?, receivedAtMs: Long = clock.nowMs()) {
+            trackLocalHeight = false
+            localHeight = zM?.let { LocalHeightFacts(it, receivedAtMs) }
+            updateFacts()
+        }
+
+        fun trackLocalHeight() {
+            trackLocalHeight = true
+            updateFacts()
+        }
+
+        private fun updateFacts() {
+            if (trackLocalHeight) localHeight = LocalHeightFacts(model.facts.zUp, clock.nowMs())
+            controller.updateAircraft(model.facts.copy(localHeight = localHeight))
         }
 
         fun navigation(
@@ -676,6 +698,166 @@ class FlightControllerTest {
     }
 
     @Test
+    fun `supervised vertical takeoff closes the climb on local height without horizontal motion`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+        h.trackLocalHeight()
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+
+        h.tickMs(7_000)
+
+        assertEquals("completed", takeoff.terminal?.first, takeoff.events.toString())
+        assertTrue(h.model.zUp in 1.75..1.9, "z ${h.model.zUp}")
+        val climbing = h.frames.filter { it.verticalThrottle > 0.0 }
+        assertTrue(climbing.isNotEmpty())
+        assertTrue(climbing.all { it.pitch == 0.0 && it.roll == 0.0 && it.yaw == 0.0 })
+        assertTrue(takeoff.terminal!!.third!!.contains("local height"), takeoff.terminal!!.third!!)
+    }
+
+    @Test
+    fun `supervised vertical estop preempts an active or enabling climb`() {
+        val climbing = Harness(supervisedVertical = SupervisedVerticalConfig())
+        climbing.trackLocalHeight()
+        climbing.join()
+        val takeoff = climbing.run(CommandArgs.Takeoff(zMm = 1_800))
+        climbing.tickMs(3_500)
+        assertEquals("supervised_climb", climbing.controller.status.phase)
+        climbing.estop(true)
+        climbing.tick(1)
+        assertEquals("estop_asserted", takeoff.terminal?.second, takeoff.events.toString())
+        assertEquals(0.0, climbing.frames.last().verticalThrottle)
+
+        val enabling = Harness(supervisedVertical = SupervisedVerticalConfig())
+        enabling.trackLocalHeight()
+        enabling.join()
+        enabling.model.deferEnableTicks = 10
+        val pending = enabling.run(CommandArgs.Takeoff(zMm = 1_800))
+        enabling.tickMs(3_500)
+        assertEquals("enabling_virtual_stick", enabling.controller.status.phase)
+        enabling.estop(true)
+        enabling.tick(3)
+        assertEquals("estop_asserted", pending.terminal?.second, pending.events.toString())
+        assertFalse(enabling.model.virtualStickEnabled)
+        assertTrue(enabling.frames.none { it.verticalThrottle > 0.0 })
+    }
+
+    @Test
+    fun `supervised vertical continues checking height after takeoff completion and hold`() {
+        fun completedHarness(): Harness {
+            val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+            h.trackLocalHeight()
+            h.join()
+            val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+            h.tickMs(7_000)
+            assertEquals("completed", takeoff.terminal?.first, takeoff.events.toString())
+            return h
+        }
+
+        val ceiling = completedHarness()
+        ceiling.localHeight(1.8)
+        ceiling.tick(1)
+        assertEquals("idle", ceiling.controller.status.phase)
+        ceiling.localHeight(2.5908)
+        ceiling.tick(1)
+        assertEquals("landing", ceiling.controller.status.phase)
+        assertEquals("vertical_ceiling_exceeded", ceiling.controller.status.landingReason)
+
+        val stale = completedHarness()
+        stale.localHeight(stale.model.zUp)
+        stale.tickMs(600)
+        assertEquals("landing", stale.controller.status.phase)
+        assertEquals("local_height_unavailable", stale.controller.status.landingReason)
+
+        val held = completedHarness()
+        held.relayAlive = false
+        held.tickMs(600)
+        assertEquals("hold", held.controller.status.watchdog)
+        held.localHeight(held.model.zUp)
+        held.tickMs(600)
+        assertEquals("landing", held.controller.status.phase)
+        assertEquals("local_height_unavailable", held.controller.status.landingReason)
+
+        val disconnected = completedHarness()
+        disconnected.model.connected = false
+        disconnected.tick(1)
+        assertEquals("landing", disconnected.controller.status.phase)
+        assertEquals("authority_lost", disconnected.controller.status.landingReason)
+    }
+
+    @Test
+    fun `supervised vertical disables rotation and bench motion`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+        h.hovering()
+        h.localHeight(1.2)
+        h.join()
+
+        val rotate = h.run(CommandArgs.RotateTo(yawMdeg = 90_000, speedMdegS = 30_000))
+        assertEquals("unsupported", rotate.terminal?.second)
+        val bench = RecordingSink()
+        assertFalse(h.controller.startBench("axis-yaw", StickFrame.NEUTRAL.copy(yaw = 5.0), 1_000, bench))
+        assertEquals("unsupported", bench.terminal?.second)
+        val benchTakeoff = RecordingSink()
+        h.controller.benchTakeoff(1_800, benchTakeoff)
+        assertEquals("unsupported", benchTakeoff.terminal?.second)
+        assertTrue(h.frames.isEmpty())
+    }
+
+    @Test
+    fun `supervised vertical refuses missing height ceilings and goto`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+        h.join()
+
+        val missing = h.run(CommandArgs.Takeoff(zMm = 1_800))
+        assertEquals("local_height_unavailable", missing.terminal?.second)
+        h.localHeight(0.0)
+        val overCeiling = h.run(CommandArgs.Takeoff(zMm = 2_591))
+        assertEquals("vertical_ceiling_exceeded", overCeiling.terminal?.second)
+        h.localHeight(1.8)
+        val alreadyAtTarget = h.run(CommandArgs.Takeoff(zMm = 1_800))
+        assertEquals("vertical_ceiling_exceeded", alreadyAtTarget.terminal?.second)
+        h.localHeight(2.5908)
+        val alreadyAtCeiling = h.run(CommandArgs.Takeoff(zMm = 1_800))
+        assertEquals("vertical_ceiling_exceeded", alreadyAtCeiling.terminal?.second)
+        h.hovering()
+        h.localHeight(1.2)
+        val goto = h.run(CommandArgs.Goto(xMm = 100, yMm = 0, zMm = 1200, speedMmS = 100))
+        assertEquals("unsupported", goto.terminal?.second)
+    }
+
+    @Test
+    fun `supervised vertical lands when local height becomes stale or reaches its ceiling`() {
+        fun climbingHarness(): Pair<Harness, RecordingSink> {
+            val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+            h.trackLocalHeight()
+            h.join()
+            val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+            h.tickMs(3_500)
+            assertEquals("supervised_climb", h.controller.status.phase)
+            return h to takeoff
+        }
+
+        val (stale, staleTakeoff) = climbingHarness()
+        stale.localHeight(stale.model.zUp)
+        stale.tickMs(600)
+        assertEquals("local_height_unavailable", staleTakeoff.terminal?.second, staleTakeoff.events.toString())
+        assertEquals("landing", stale.controller.status.phase)
+        assertFalse(stale.model.virtualStickEnabled)
+
+        val (commandCapped, commandCappedTakeoff) = climbingHarness()
+        commandCapped.localHeight(1.86)
+        commandCapped.tick(1)
+        assertEquals("vertical_ceiling_exceeded", commandCappedTakeoff.terminal?.second, commandCappedTakeoff.events.toString())
+        assertEquals("landing", commandCapped.controller.status.phase)
+
+        val (capped, cappedTakeoff) = climbingHarness()
+        capped.localHeight(2.5908)
+        capped.tick(1)
+        assertEquals("vertical_ceiling_exceeded", cappedTakeoff.terminal?.second, cappedTakeoff.events.toString())
+        assertEquals("landing", capped.controller.status.phase)
+        assertFalse(capped.model.virtualStickEnabled)
+    }
+
+    @Test
     fun `land completes when the aircraft reports landed and is a no-op on the ground`() {
         val h = Harness()
         h.hovering()
@@ -765,16 +947,13 @@ class FlightControllerTest {
         val goto = h.run(CommandArgs.Goto(xMm = 0, yMm = 3000, zMm = 1200, speedMmS = 500))
         assertEquals("enabling_virtual_stick", h.controller.status.phase)
         h.estop(true)
-        // The first tick latches the stop while the loop is still enabling: nothing to cut yet.
+        // The first tick cancels the pending enable, so its later callback cannot start motion.
         h.tick(1)
         assertTrue(h.controller.status.estopLatched)
-        assertEquals("enabling_virtual_stick", h.controller.status.phase)
-        assertNull(goto.terminal)
-        // The enable answers on the next tick and the loop would start the step; the stop,
-        // latched a tick ago, must still cut it before the first frame goes out.
-        h.tick(1)
+        assertEquals("idle", h.controller.status.phase)
         assertEquals("estop_asserted", goto.terminal?.second, goto.events.toString())
-        assertTrue(h.frames.isNotEmpty() && h.frames.all { it.isNeutral }, "frames ${h.frames}")
+        h.tick(1)
+        assertTrue(h.frames.all { it.isNeutral }, "frames ${h.frames}")
         h.tick(4)
         assertTrue(h.frames.all { it.isNeutral }, "frames ${h.frames}")
         assertEquals("idle", h.controller.status.phase)

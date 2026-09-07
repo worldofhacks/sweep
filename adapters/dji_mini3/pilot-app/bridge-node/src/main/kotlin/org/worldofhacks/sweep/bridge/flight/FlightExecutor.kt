@@ -26,6 +26,7 @@ import org.worldofhacks.sweep.bridge.core.flight.FlightReason
 import org.worldofhacks.sweep.bridge.core.flight.FlightSettings
 import org.worldofhacks.sweep.bridge.core.flight.FlightStatus
 import org.worldofhacks.sweep.bridge.core.flight.LinkFacts
+import org.worldofhacks.sweep.bridge.core.flight.LocalHeightFacts
 import org.worldofhacks.sweep.bridge.core.flight.NavigationEvidence
 import org.worldofhacks.sweep.bridge.core.flight.PortResult
 import org.worldofhacks.sweep.bridge.core.flight.ReportSink
@@ -56,6 +57,7 @@ class FlightExecutor(
     private val aircraft: AircraftSource,
     private val fallback: CommandExecutor? = null,
     private val clock: Clock = SystemClock,
+    private val monotonicNowMs: () -> Long = clock::nowMs,
     config: FlightConfig = FlightConfig(),
     private val log: NodeLog = NodeLog { },
 ) : CommandExecutor, AutoCloseable {
@@ -65,7 +67,7 @@ class FlightExecutor(
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
 
     /** The pure loop; only touch it from [post]ed blocks (tests included). */
-    val controller = FlightController(PostingPort(port), clock, config) { line -> log.log("flight: $line") }
+    val controller = FlightController(PostingPort(port), clock, config, monotonicNowMs) { line -> log.log("flight: $line") }
 
     private val _status = MutableStateFlow(controller.status)
     val status: StateFlow<FlightStatus> = _status.asStateFlow()
@@ -223,6 +225,7 @@ class FlightExecutor(
                 vyNorth = snapshot.vy,
                 vzUp = snapshot.vz,
                 yawDeg = snapshot.yawDeg,
+                localHeight = snapshot.localHeight?.let { LocalHeightFacts(it.zM, it.receivedAtMonotonicMs) },
             )
         }
 
