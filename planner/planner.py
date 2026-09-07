@@ -663,6 +663,7 @@ class DeterministicPlanner:
         capture_id = str(intent.args["capture_id"])
         room_id = str(intent.args["room_id"])
         pattern = str(intent.args["pattern"])
+        builder.add(drone_id, CommandOperation.HOVER)
         builder.add(
             drone_id,
             CommandOperation.CAMERA_CAPABILITIES,

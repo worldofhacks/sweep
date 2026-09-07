@@ -910,7 +910,7 @@ class SafetyArbiter:
                 IntentName.LAND_ALL: frozenset({CommandOperation.LAND}),
                 IntentName.ESTOP: frozenset({CommandOperation.ESTOP}),
                 IntentName.CAPTURE_ROOM: _CAMERA_OPERATIONS
-                | frozenset({CommandOperation.ROTATE_TO}),
+                | frozenset({CommandOperation.HOVER, CommandOperation.ROTATE_TO}),
             }
             allowed = expected_operations.get(plan.intent_name)
             if allowed is None:
@@ -1218,15 +1218,18 @@ class SafetyArbiter:
                 snapshot,
                 "capture_room requires one frozen target for every command",
             )
-        if len(plan.commands) < 2:
+        if len(plan.commands) < 3:
             return self._invalid_plan_refusal(
                 plan,
                 snapshot,
                 "capture_room plan is incomplete",
             )
-        capabilities, gimbal = plan.commands[:2]
+        hold, capabilities, gimbal = plan.commands[:3]
         if (
-            capabilities.operation is not CommandOperation.CAMERA_CAPABILITIES
+            hold.operation is not CommandOperation.HOVER
+            or hold.parameters
+            or hold.safety_action
+            or capabilities.operation is not CommandOperation.CAMERA_CAPABILITIES
             or set(capabilities.parameters) != {"capture_id", "pattern", "room_id"}
             or gimbal.operation is not CommandOperation.SET_GIMBAL_PITCH
             or set(gimbal.parameters) != {"pitch"}
@@ -1237,12 +1240,13 @@ class SafetyArbiter:
             return self._invalid_plan_refusal(
                 plan,
                 snapshot,
-                "capture_room capability or gimbal step is malformed",
+                "capture_room hold, capability, or gimbal step is malformed",
             )
         pattern = capabilities.parameters.get("pattern")
         if pattern == "pano_360":
             operations = tuple(command.operation for command in plan.commands)
             expected = (
+                CommandOperation.HOVER,
                 CommandOperation.CAMERA_CAPABILITIES,
                 CommandOperation.SET_GIMBAL_PITCH,
                 CommandOperation.CAMERA_READY,
@@ -1253,17 +1257,17 @@ class SafetyArbiter:
                 return self._invalid_plan_refusal(
                     plan,
                     snapshot,
-                    "pano_360 requires the exact five-step camera sequence",
+                    "pano_360 requires the exact hold-and-camera sequence",
                 )
-            capture = plan.commands[3]
+            capture = plan.commands[4]
             if not self._valid_capture_step(capabilities, capture, frame_number=None):
                 return self._invalid_plan_refusal(
                     plan,
                     snapshot,
                     "pano_360 capture metadata is malformed or cross-linked",
                 )
-            if plan.commands[2].parameters or not self._valid_retrieval_step(
-                plan.commands[4], capture
+            if plan.commands[3].parameters or not self._valid_retrieval_step(
+                plan.commands[5], capture
             ):
                 return self._invalid_plan_refusal(
                     plan,
@@ -1272,11 +1276,11 @@ class SafetyArbiter:
                 )
             return None
 
-        if pattern != "reconstruct_8" or len(plan.commands) != 34:
+        if pattern != "reconstruct_8" or len(plan.commands) != 35:
             return self._invalid_plan_refusal(
                 plan,
                 snapshot,
-                "reconstruct_8 requires the exact 34-step camera sequence",
+                "reconstruct_8 requires the exact 35-step hold-and-camera sequence",
             )
         anchor: object | None = None
         pose_tolerance: object | None = None
@@ -1284,7 +1288,7 @@ class SafetyArbiter:
         rotation_tolerances: list[float] = []
         declared_overlaps: list[float] = []
         for frame_index in range(8):
-            offset = 2 + frame_index * 4
+            offset = 3 + frame_index * 4
             rotation, ready, capture, retrieval = plan.commands[offset : offset + 4]
             if (
                 rotation.operation is not CommandOperation.ROTATE_TO

@@ -180,13 +180,14 @@ def test_panorama_plan_preserves_room_association_and_protocol_order() -> None:
 
     assert isinstance(result, Plan)
     assert [command.operation for command in result.commands] == [
+        CommandOperation.HOVER,
         CommandOperation.CAMERA_CAPABILITIES,
         CommandOperation.SET_GIMBAL_PITCH,
         CommandOperation.CAMERA_READY,
         CommandOperation.CAPTURE_PANORAMA,
         CommandOperation.RETRIEVE_MEDIA,
     ]
-    capture = result.commands[3]
+    capture = result.commands[4]
     assert capture.parameters["room_id"] == "room-a"
     assert capture.parameters["capture_id"] == "capture-a"
 
@@ -207,7 +208,7 @@ def test_reconstruct_plan_has_eight_ordered_acknowledged_frames() -> None:
     result = DeterministicPlanner(planning_config()).plan(intent, snapshot)
 
     assert isinstance(result, Plan)
-    assert len(result.commands) == 34
+    assert len(result.commands) == 35
     assert (
         sum(command.operation is CommandOperation.CAPTURE_PHOTO for command in result.commands) == 8
     )
