@@ -241,8 +241,14 @@ class TagLocalizer:
         candidates = {}
         for identifier in identifiers:
             points = map_points(self.tags[identifier], world=self.world)
-            viable = self._pose_candidates(points, pixels_by_id[identifier], [identifier])
-            if viable and viable[0][0] <= 2:
+            viable = [
+                candidate
+                for candidate in self._pose_candidates(
+                    points, pixels_by_id[identifier], [identifier]
+                )
+                if candidate[0] <= 2
+            ]
+            if viable:
                 candidates[identifier] = viable[:2]
         selected, ambiguous = self._largest_pairwise_consensus(candidates)
         inliers = [] if selected is None else sorted(candidate[0] for candidate in selected)
