@@ -29,6 +29,28 @@ def test_native_v4l_rate_does_not_force_a_framerate() -> None:
     assert "-framerate" not in values
 
 
+def test_pts_sidecar_tees_one_passthrough_encoder_without_changing_the_camera_source() -> None:
+    values = command("ffmpeg", "rtsp://private/drone11", SOURCE_11, pts_port=18555)
+
+    assert values[values.index("-timestamps") + 1] == "default"
+    assert "-copyts" in values
+    assert "-r" not in values
+    assert values[values.index("-fps_mode") + 1] == "passthrough"
+    assert values[values.index("-map") + 1] == "0:v:0"
+    assert values[-2] == "tee"
+    output = values[-1]
+    assert "f=rtsp" in output
+    assert "f=nut" in output
+    assert "avoid_negative_ts=disabled" in output
+    assert "tcp\\://127.0.0.1\\:18555?tcp_nodelay=1" in output
+
+
+@pytest.mark.parametrize("port", [0, 80, 65536, True])
+def test_pts_sidecar_refuses_unusable_loopback_ports(port: object) -> None:
+    with pytest.raises(ValueError, match="PTS sidecar port"):
+        command("ffmpeg", "rtsp://private/drone11", SOURCE_11, pts_port=port)  # type: ignore[arg-type]
+
+
 def test_camera_only_reports_publishing_after_current_frame_progress() -> None:
     now = [10.0]
     camera = Camera("media.example", 11, "node-key", "ffmpeg", SOURCE_11, monotonic=lambda: now[0])
@@ -63,3 +85,19 @@ def test_camera_environment_requires_an_explicit_verified_source(
     monkeypatch.delenv("SWEEP_CAMERA_INPUT_FORMAT")
     with pytest.raises(ValueError, match="SWEEP_CAMERA_INPUT_FORMAT"):
         from_environment("media.example", "node-key")
+
+
+def test_camera_environment_enables_the_sidecar_only_when_explicitly_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SWEEP_DEVICE_UNIT", "11")
+    monkeypatch.setenv("SWEEP_CAMERA_DEVICE", "/dev/video1")
+    monkeypatch.setenv("SWEEP_CAMERA_INPUT_FORMAT", "mjpeg")
+    monkeypatch.setenv("SWEEP_CAMERA_INPUT_FPS", "native")
+    monkeypatch.setenv("SWEEP_CAMERA_WIDTH_PX", "640")
+    monkeypatch.setenv("SWEEP_CAMERA_HEIGHT_PX", "480")
+    monkeypatch.setenv("SWEEP_CAMERA_PTS_PORT", "18555")
+
+    camera = from_environment("media.example", "node-key")
+
+    assert "tee" in camera._command

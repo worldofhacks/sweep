@@ -522,3 +522,117 @@ def test_run_pins_inputs_and_writes_a_bounded_create_only_candidate(tmp_path: Pa
     assert result["checkpoint"]["passes"] is True
     with pytest.raises(FileExistsError):
         run(request_path, evidence, output)
+
+
+def test_live_mapper_capture_events_fuse_only_as_unapproved_map_candidates() -> None:
+    import numpy as np
+
+    from perception.ohmni_pts_capture import CapturedFrame
+    from relay.observations import Observation
+    from tools.ohmni_live_tag_mapper import LiveScope, LiveTagMapper, MapperConfig
+
+    class Detector:
+        camera_serial = "ohmni-head-1"
+        width = 640
+        height = 480
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def detect(self, _image: np.ndarray) -> list[dict[str, object]]:
+            tag_id = self.calls // 2
+            self.calls += 1
+            return [
+                {
+                    "tag_id": tag_id,
+                    "pose_accepted": True,
+                    "T_camera_tag": np.array(
+                        [
+                            [1.0, 0.0, 0.0, float(tag_id + 1)],
+                            [0.0, 1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0, 1.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ]
+                    ),
+                    "reason": "pose",
+                    "size_m": 0.16,
+                    "corners_px": [[100.0, 100.0], [120.0, 100.0], [120.0, 120.0], [100.0, 120.0]],
+                    "pixel_frame": "rectified_camera",
+                    "reprojection_rms_px": 0.2,
+                }
+            ]
+
+    captures = (1_000_000, 1_010_000, 1_020_000, 1_030_000)
+    receipts = iter(tuple(capture + offset for capture in captures for offset in (1, 2)))
+    mapper = LiveTagMapper(
+        MapperConfig(
+            session=CAMERA_SCOPE["session"],
+            device_id=CAMERA_SCOPE["device_id"],
+            camera_source_id=CAMERA_SCOPE["source_id"],
+            tag_source_id="ohmni-live-tag",
+            camera_frame="camera",
+            camera_serial="ohmni-head-1",
+            calibration_id=CALIBRATION_ID,
+            clock_id="capture",
+            clock_mapping_id="live-capture",
+            maximum_capture_lag_ns=5_000_000_000,
+            confidence=0.8,
+            covariance_m2=(0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.02),
+        ),
+        Detector(),  # type: ignore[arg-type]
+        receipt_time_ns=receipts.__next__,
+        event_ids=iter(
+            (
+                "camera-one",
+                "tag-one",
+                "camera-two",
+                "tag-two",
+                "camera-three",
+                "tag-three",
+                "camera-four",
+                "tag-four",
+            )
+        ).__next__,
+    )
+    scope = LiveScope(
+        CAMERA_SCOPE["session"], CAMERA_SCOPE["device_id"], CAMERA_SCOPE["connection_epoch"]
+    )
+    mapper_events = [
+        item
+        for capture in captures
+        for item in mapper.observations(
+            scope, CapturedFrame(np.zeros((480, 640, 3), np.uint8), capture)
+        )
+    ]
+    events = [
+        *(_body(f"body-{index}", capture) for index, capture in enumerate(captures)),
+        *(Observation(item, item.t_capture.value // 1_000_000) for item in mapper_events),
+    ]
+    request = _request()
+    request["source_scopes"] = {
+        **SOURCE_SCOPES,
+        "tag": {**CAMERA_SCOPE, "source_id": "ohmni-live-tag"},
+    }
+    calibration = _calibration(
+        _calibration_document(), {"path": "calibration.json", "sha256": "c" * 64}
+    )
+    mount = _mount(_mount_document(), calibration)
+    registration = _registration(_registration_document(), POSE_SCOPE, "odom")
+    registration["vertical_offset_m"] = None
+    result = fuse_observations(
+        events,
+        request=request,
+        calibration=calibration,
+        mount=mount,
+        registration=registration,
+        input_pins={
+            name: {"path": f"{name}.json", "sha256": name[0] * 64}
+            for name in ("observations", "calibration", "mount", "registration", "vertical_datum")
+        },
+    )
+
+    assert result["approval_status"] == "unapproved"
+    assert result["candidate_frame"] == "odom"
+    assert [candidate["tag_id"] for candidate in result["candidates"]] == [0, 1]
+    assert all("T_odom_tag" in candidate for candidate in result["candidates"])
+    assert all("T_world_tag" not in candidate for candidate in result["candidates"])
