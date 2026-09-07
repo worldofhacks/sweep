@@ -28,6 +28,7 @@ class FakeFlightModel(
     @Volatile
     var connected: Boolean = true
     var enableResult: PortResult = PortResult.Ok
+    var disableResult: PortResult = PortResult.Ok
     var takeoffResult: PortResult = PortResult.Ok
     var stopTakeoffResult: PortResult = PortResult.Ok
     var landingResult: PortResult = PortResult.Ok
@@ -40,9 +41,12 @@ class FakeFlightModel(
      * test can put the loop in `enabling_virtual_stick` across ticks.
      */
     var deferEnableTicks: Int = 0
+    var deferDisableTicks: Int = 0
 
     private var pendingEnable: ((PortResult) -> Unit)? = null
     private var pendingEnableTicks = 0
+    private var pendingDisable: ((PortResult) -> Unit)? = null
+    private var pendingDisableTicks = 0
 
     var xEast = 0.0
         private set
@@ -138,10 +142,29 @@ class FakeFlightModel(
     }
 
     override fun disableVirtualStick(onResult: (PortResult) -> Unit) {
-        virtualStickEnabled = false
-        advancedMode = false
-        commanded = BodyVelocity.ZERO
-        onResult(PortResult.Ok)
+        if (deferDisableTicks > 0) {
+            pendingDisable = onResult
+            pendingDisableTicks = deferDisableTicks
+            return
+        }
+        answerDisable(onResult)
+    }
+
+    fun completePendingDisable() {
+        pendingDisable?.let { waiting ->
+            pendingDisable = null
+            answerDisable(waiting)
+        }
+    }
+
+    private fun answerDisable(onResult: (PortResult) -> Unit) {
+        val result = disableResult
+        if (result == PortResult.Ok) {
+            virtualStickEnabled = false
+            advancedMode = false
+            commanded = BodyVelocity.ZERO
+        }
+        onResult(result)
     }
 
     override fun setAdvancedMode(enabled: Boolean) {
@@ -213,6 +236,13 @@ class FakeFlightModel(
             if (pendingEnableTicks <= 0) {
                 pendingEnable = null
                 answerEnable(waiting)
+            }
+        }
+        pendingDisable?.let { waiting ->
+            pendingDisableTicks -= 1
+            if (pendingDisableTicks <= 0) {
+                pendingDisable = null
+                answerDisable(waiting)
             }
         }
         val previous = lastAdvanceMs

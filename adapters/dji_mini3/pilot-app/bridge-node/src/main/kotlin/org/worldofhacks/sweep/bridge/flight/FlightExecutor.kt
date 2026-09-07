@@ -160,6 +160,8 @@ class FlightExecutor(
 
     fun startBench(label: String, frame: StickFrame, durationMs: Long, sink: ReportSink) = post { controller.startBench(label, frame, durationMs, sink) }
 
+    fun qualifyGroundedAuthority(sink: ReportSink) = post { controller.qualifyGroundedAuthority(sink) }
+
     fun stopBench() = post { controller.stopBench() }
 
     fun benchTakeoff(zMm: Long, sink: ReportSink) = post { controller.benchTakeoff(zMm, sink) }
