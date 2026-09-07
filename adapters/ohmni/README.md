@@ -33,6 +33,8 @@ SWEEP_SESSION=replace-with-current-session
 SWEEP_DEVICE_UNIT=9
 SWEEP_NODE_KEY=replace-with-device-key
 SWEEP_ADAPTER_ID=ohmni-9
+SWEEP_RELAY_CONNECT_HOST=192.0.2.10
+SWEEP_RELAY_CLOCK_OFFSET_MS=0
 SWEEP_ODOM_ORIGIN_ID=measured-odom-origin
 # Set all five only when this node is approved to publish video.
 SWEEP_MEDIA_HOST=media-host:8554
@@ -47,6 +49,10 @@ SWEEP_LIDAR_MOUNT_Z_M=0.25
 SWEEP_LIDAR_MOUNT_YAW_DEG=0.00
 ```
 
+Keep `SWEEP_RELAY_URL` at the verified `wss://` hostname. When the robot must dial a numeric address, set `SWEEP_RELAY_CONNECT_HOST` to that IPv4 or IPv6 address. The TCP connection uses the numeric address while TLS and the HTTP Host header use the hostname in `SWEEP_RELAY_URL`.
+
+`SWEEP_RELAY_CLOCK_OFFSET_MS` is a measured relay wall-clock correction, bounded to five minutes. It applies to signed relay envelopes and lease deadlines. It does not alter sensor receipt times or establish a capture-clock mapping.
+
 The lidar transform values are measurements. They must not be copied from this example. Camera publishing is disabled unless `SWEEP_MEDIA_HOST` and every `SWEEP_CAMERA_*` source value are present. The source is an approved V4L node, its exact input format, its native rate (`native`) or a measured integer FPS, and its dimensions. The relay device ID derives the canonical MediaMTX path `drone{id}`; it is never renumbered to a ground-unit path. Current measured configurations are unit 11: `/dev/video1`, `mjpeg`, `native`, 640×480; unit 12: `/dev/video0`, `uyvy422`, `30`, 640×480. These identify a usable image stream only. They do not establish tag identity, camera calibration, pose, or timing.
 
 The publisher reports `publishing` only after ffmpeg reports a decoded frame and reverts to `failed` when progress goes stale. The field media server keeps RTSP on VPS loopback. Each camera uses `adb reverse tcp:8554 tcp:18554`, and its `camera.env` sets `SWEEP_MEDIA_HOST=127.0.0.1:8554`; the media-only publisher credential then stays inside the authenticated ADB tunnel instead of crossing the public network. `camera.env` contains only the media host and the five camera-source settings; `camera.sh` takes the device ID and node key from `node.env` and refuses a changed device ID. Keep `camera.env` mode 600 and use the separate camera process only after the payload that contains it is installed:
@@ -58,6 +64,7 @@ adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/adapters/ohmni/camera.sh stop
 ```
 
 Start the ground runtime only after the qualification checks below:
+
 
 ```sh
 adb -s "$ADB_SERIAL" shell su 0 /data/local/sweep/run.sh start
