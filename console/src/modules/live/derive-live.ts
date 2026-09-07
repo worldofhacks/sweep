@@ -38,8 +38,14 @@ export function deriveStream(drone: RelayAircraftState, at: number, camera?: Med
   let status: MediaStreamStatus = video?.status ?? 'unreported'
   let reason = ''
   const lastFrameAt = video?.last_frame_at ?? null
-  if (!observationCurrent(drone)) {
-    status = drone.membership === 'disconnected' || drone.membership === 'leaving' ? 'offline' : 'unreported'
+  const disconnected = drone.membership === 'disconnected' || drone.membership === 'leaving'
+  const staleGroundStream = drone.node_type === 'ground' && status === 'live' &&
+    drone.client_observation?.state === 'stale'
+  if (disconnected) {
+    status = 'offline'
+    reason = 'Current video unavailable. The device is offline or its relay observation is stale.'
+  } else if (!observationCurrent(drone) && !staleGroundStream) {
+    status = 'unreported'
     reason = 'Current video unavailable. The device is offline or its relay observation is stale.'
   } else if (status === 'live' && (lastFrameAt === null || now < lastFrameAt || now - lastFrameAt > VIDEO_FRESH_MS)) {
     status = 'unreported'

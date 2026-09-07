@@ -110,6 +110,43 @@ describe('current and retained device observations', () => {
     expect(disconnected.aircraft[1].client_observation?.state).toBe('unknown')
     expect(reported.aircraft[1].client_observation).toBeUndefined()
   })
+
+  test('fresh media survives a stale ground pose but expires with the relay-clock estimate', () => {
+    const ground = aircraft({
+      drone_id: 11, node_type: 'ground', device_class: 'ground_vehicle', unit: 11, connection_epoch: 1,
+      membership: 'ready', selectable: false, telemetry: null, last_seen_at: null,
+      video: { status: 'live', last_frame_at: relayNow + 6_000 },
+      ground_readiness: { source_id: 'ohmni-pose' },
+    })
+    const pose: Observation = {
+      v: 1, type: 'observation', event_id: 'stale-ground-pose', session: sessionId, device_id: 11, connection_epoch: 1,
+      source_id: 'ohmni-pose', node_type: 'ground', frame: 'odom', confidence: 0,
+      t_capture: null, t_source_receipt: { clock_id: 'ohmni-ms', unit: 'ms', value: relayNow },
+      clock_mapping_id: null,
+      payload: { kind: 'pose', pose: { parent_frame: 'odom', child_frame: 'base_link', x_m: 0, y_m: 0, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } },
+      t_ingest: relayNow,
+    }
+    const reported = {
+      ...createInitialControlState(sessionId, 16_000),
+      connection: { status: 'connected' as const, transport: 'websocket' as const, changedAt: 16_000 },
+      aircraft: { 11: ground }, latestObservations: { pose },
+      lastStateEvent: { t: relayNow + 6_000, receivedAt: 16_000, rosterVersion: 1, source: 'console' as const },
+    }
+
+    const stalePose = observedControlState(reported, 16_000).aircraft[11]
+    expect(stalePose.client_observation?.state).toBe('stale')
+    expect(deriveStream(stalePose, 16_000).status).toBe('live')
+
+    const agedSnapshot = observedControlState(reported, 22_001).aircraft[11]
+    expect(deriveStream(agedSnapshot, 22_001).status).toBe('unreported')
+
+    const relayUnavailable = observedControlState({
+      ...reported,
+      connection: { ...reported.connection, status: 'disconnected' },
+    }, 16_000).aircraft[11]
+    expect(relayUnavailable.client_observation?.state).toBe('unknown')
+    expect(deriveStream(relayUnavailable, 16_000).status).toBe('unreported')
+  })
 })
 
 function clients(now: () => number) {
