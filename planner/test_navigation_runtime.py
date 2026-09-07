@@ -230,3 +230,17 @@ def test_live_tracking_accepts_progress_and_refuses_departure_from_frozen_segmen
     poses[0] = replace(poses[0], y_mm=1700)
     current = replace_aircraft(current, 1, pose=Position(2.0, 1.7, 1.0))
     assert isinstance(runtime.check_tracking(plan, plan.commands[0], current, poses[0]), Refusal)
+
+
+def test_navigation_execution_uses_an_explicit_bounded_aircraft_limit():
+    frames = tuple(
+        NavigationFrame(drone_id, f"world-{drone_id}", IDENTITY) for drone_id in range(1, 6)
+    )
+
+    with pytest.raises(ValueError, match="unique aircraft frames"):
+        NavigationExecutionConfig("level_1", MOTION, 0.2, 0.05, 500, 0.5, 5000, frames)
+
+    config = NavigationExecutionConfig(
+        "level_1", MOTION, 0.2, 0.05, 500, 0.5, 5000, frames, max_aircraft=5
+    )
+    assert config.max_aircraft == 5

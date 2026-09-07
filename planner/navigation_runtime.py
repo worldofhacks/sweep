@@ -28,7 +28,13 @@ from planner.navigation import (
     Pose,
 )
 from planner.navigation_authorization import NavigationApproval, content_digest
-from planner.navigation_contracts import finite_number, integer, normalized_text, sha256_digest
+from planner.navigation_contracts import (
+    MAX_AIRCRAFT,
+    finite_number,
+    integer,
+    normalized_text,
+    sha256_digest,
+)
 from relay.capabilities import CapabilityProfile
 from relay.control_localization import ControlLocalizationPins, ControlPose
 from relay.intent_v1 import IntentName, IntentV1
@@ -97,6 +103,7 @@ class NavigationExecutionConfig:
     frames: tuple[NavigationFrame, ...]
     wire_config_sha256: str | None = None
     line_zone_id: str | None = None
+    max_aircraft: int = 4
 
     def __post_init__(self) -> None:
         normalized_text(self.floor_id, "floor_id")
@@ -115,13 +122,16 @@ class NavigationExecutionConfig:
             raise ValueError("navigation quality or arrival tolerance is outside its envelope")
         for name in ("position_max_age_ms", "segment_timeout_ms"):
             integer(getattr(self, name), name, minimum=1)
+        integer(self.max_aircraft, "max_aircraft", minimum=1)
+        if self.max_aircraft > MAX_AIRCRAFT:
+            raise ValueError(f"max_aircraft exceeds the {MAX_AIRCRAFT}-aircraft resource limit")
         if (
             not isinstance(self.frames, tuple)
-            or not 1 <= len(self.frames) <= 4
+            or not 1 <= len(self.frames) <= self.max_aircraft
             or any(not isinstance(frame, NavigationFrame) for frame in self.frames)
             or len({frame.drone_id for frame in self.frames}) != len(self.frames)
         ):
-            raise ValueError("navigation requires one through four unique aircraft frames")
+            raise ValueError("navigation requires unique aircraft frames within max_aircraft")
 
     def frame(self, drone_id: int) -> NavigationFrame:
         for frame in self.frames:
