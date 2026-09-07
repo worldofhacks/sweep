@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -231,14 +233,58 @@ def test_publisher_derives_scope_before_sending_canonical_events() -> None:
 
 
 def test_publisher_archives_relay_accepted_camera_tag_pose_and_scan_events(tmp_path) -> None:
-    from relay.observations import Observation
     from tools.ohmni_live_tag_mapper import AcceptedObservationArchive, ArchiveConfig
 
     mapper = _mapper()
     scope = LiveScope("live-12", 12, 9)
+    mapping = ClockMapping(
+        "ohmni12-live",
+        "ohmni12-boot-monotonic",
+        "ns",
+        1_000_000_000,
+        1_000,
+        1,
+        1_000_000,
+        0,
+    )
+    camera_scope = ("live-12", 12, 9, "ohmni-live-camera")
+    tag_scope = ("live-12", 12, 9, "ohmni-live-tag")
+    ingress = ObservationIngress(
+        ObservationConfiguration(
+            bindings=(
+                SourceBinding(
+                    *camera_scope,
+                    "ground",
+                    ("camera",),
+                    ("camera_frame",),
+                    allowed_clock_mapping_ids=(mapping.mapping_id,),
+                    producer_role="localization",
+                ),
+                SourceBinding(
+                    *tag_scope,
+                    "ground",
+                    ("camera", "tag:7", "tag:8"),
+                    ("tag_observation",),
+                    allowed_clock_mapping_ids=(mapping.mapping_id,),
+                    producer_role="localization",
+                ),
+            ),
+            frames=FrameRegistry(
+                (
+                    FrameDeclaration("camera", "camera", "right_down_forward", "m", *camera_scope),
+                    FrameDeclaration("camera", "camera", "right_down_forward", "m", *tag_scope),
+                    FrameDeclaration("tag:7", "tag", "right_up_outward", "m", *tag_scope),
+                    FrameDeclaration("tag:8", "tag", "right_up_outward", "m", *tag_scope),
+                )
+            ),
+            clock_mappings=(mapping,),
+        ),
+        "live-12",
+        0,
+    )
 
     def accepted(submission, ingest: int) -> dict[str, object]:
-        return Observation(submission, ingest).to_mapping()
+        return ingress.accept(submission, now=ingest, producer_role="localization").to_mapping()
 
     def pose() -> dict[str, object]:
         return {
@@ -330,6 +376,7 @@ def test_publisher_archives_relay_accepted_camera_tag_pose_and_scan_events(tmp_p
                 ),
             ]
             self.first = True
+            self.ingest = 1_090
 
         async def recv(self) -> str:
             return self.inbound.pop(0)
@@ -341,7 +388,8 @@ def test_publisher_archives_relay_accepted_camera_tag_pose_and_scan_events(tmp_p
             if self.first:
                 self.first = False
                 self.inbound.extend((json.dumps(pose()), json.dumps(scan())))
-            self.inbound.append(json.dumps(accepted(event, 12)))
+            self.ingest += 10
+            self.inbound.append(json.dumps(accepted(event, self.ingest)))
 
     archive = AcceptedObservationArchive(
         tmp_path / "archive",
@@ -362,6 +410,255 @@ def test_publisher_archives_relay_accepted_camera_tag_pose_and_scan_events(tmp_p
         "range_scan",
     }
     assert all(item.t_ingest is not None for item in observations)
+    assert all(item.submission.connection_epoch == 9 for item in observations)
+    assert {
+        item.t_ingest for item in observations if item.submission.source_id.startswith("ohmni-live")
+    } == {1_100, 1_110, 1_120}
+
+
+def test_publisher_finishes_a_valid_archive_at_the_record_bound(tmp_path) -> None:
+    from relay.observations import Observation, decode_submission
+    from tools.ohmni_live_tag_mapper import AcceptedObservationArchive, ArchiveConfig
+
+    scope = LiveScope("live-12", 12, 9)
+
+    class Socket:
+        def __init__(self) -> None:
+            self.inbound = [
+                json.dumps({"type": "auth.accepted"}),
+                json.dumps(
+                    {
+                        "type": "state",
+                        "session": "live-12",
+                        "drones": [
+                            {
+                                "drone_id": 12,
+                                "node_type": "ground",
+                                "membership": "joined",
+                                "connection_epoch": 9,
+                            }
+                        ],
+                    }
+                ),
+            ]
+            self.sent: list[dict[str, object]] = []
+
+        async def recv(self) -> str:
+            return self.inbound.pop(0)
+
+        async def send(self, message: str) -> None:
+            submission = decode_submission(message)
+            self.sent.append(submission.to_mapping())
+            self.inbound.append(json.dumps(Observation(submission, 12).to_mapping()))
+
+    mapper = _mapper()
+    archive = AcceptedObservationArchive(
+        tmp_path / "archive",
+        scope=scope,
+        mapper=mapper.config,
+        config=ArchiveConfig("ohmni-pose", "ohmni-lidar", "odom", "body", "lidar", max_records=1),
+    )
+    socket = Socket()
+    assert asyncio.run(publish_observations(socket, mapper, (_frame(),), archive=archive)) == 1
+    manifest = archive.finish()
+
+    assert manifest["observations"]["stop_reason"] == "max_records"
+    assert manifest["observations"]["count"] == 1
+    assert len(socket.sent) == 1
+    assert (tmp_path / "archive" / "manifest.json").is_file()
+
+
+def test_publisher_removes_an_archive_after_a_bad_canonical_observation(tmp_path) -> None:
+    from tools.ohmni_live_tag_mapper import AcceptedObservationArchive, ArchiveConfig
+
+    class Socket:
+        def __init__(self) -> None:
+            self.inbound = [
+                json.dumps({"type": "auth.accepted"}),
+                json.dumps(
+                    {
+                        "type": "state",
+                        "session": "live-12",
+                        "drones": [
+                            {
+                                "drone_id": 12,
+                                "node_type": "ground",
+                                "membership": "joined",
+                                "connection_epoch": 9,
+                            }
+                        ],
+                    }
+                ),
+            ]
+
+        async def recv(self) -> str:
+            return self.inbound.pop(0)
+
+        async def send(self, _message: str) -> None:
+            self.inbound.append(json.dumps({"type": "observation"}))
+
+    archive = AcceptedObservationArchive(
+        tmp_path / "archive",
+        scope=LiveScope("live-12", 12, 9),
+        mapper=_mapper().config,
+        config=ArchiveConfig("ohmni-pose", "ohmni-lidar", "odom", "body", "lidar"),
+    )
+    with pytest.raises(LiveMapperError, match="invalid accepted observation"):
+        asyncio.run(publish_observations(Socket(), _mapper(), (_frame(),), archive=archive))
+    assert not (tmp_path / "archive").exists()
+
+
+def test_archive_finishes_at_the_byte_bound_without_exceeding_it(tmp_path) -> None:
+    from relay.observations import Observation
+    from tools.ohmni_live_tag_mapper import (
+        MANIFEST_RESERVE_BYTES,
+        AcceptedObservationArchive,
+        ArchiveConfig,
+    )
+
+    mapper = _mapper()
+    scope = LiveScope("live-12", 12, 9)
+    archive = AcceptedObservationArchive(
+        tmp_path / "archive",
+        scope=scope,
+        mapper=mapper.config,
+        config=ArchiveConfig(
+            "ohmni-pose",
+            "ohmni-lidar",
+            "odom",
+            "body",
+            "lidar",
+            max_bytes=MANIFEST_RESERVE_BYTES,
+        ),
+    )
+    camera = mapper.observations(scope, _frame())[0]
+    assert not archive.observe(Observation(camera, 1_100).to_mapping())
+    manifest = archive.finish()
+
+    assert manifest["observations"]["stop_reason"] == "max_bytes"
+    assert manifest["observations"]["count"] == 0
+    assert (
+        sum(path.stat().st_size for path in (tmp_path / "archive").iterdir())
+        <= MANIFEST_RESERVE_BYTES
+    )
+
+
+def test_publisher_stops_a_silent_frame_reader_at_the_archive_deadline(tmp_path) -> None:
+    from tools.ohmni_live_tag_mapper import (
+        AcceptedObservationArchive,
+        ArchiveConfig,
+        _publish_reader,
+    )
+
+    release = threading.Event()
+    closed: list[bool] = []
+
+    class Frames:
+        def __iter__(self):
+            return self
+
+        def __next__(self) -> CapturedFrame:
+            release.wait()
+            raise StopIteration
+
+    archive = AcceptedObservationArchive(
+        tmp_path / "archive",
+        scope=LiveScope("live-12", 12, 9),
+        mapper=_mapper().config,
+        config=ArchiveConfig("ohmni-pose", "ohmni-lidar", "odom", "body", "lidar", duration_s=0.01),
+    )
+
+    async def exercise() -> int:
+        try:
+            return await _publish_reader(
+                object(),
+                _mapper(),
+                LiveScope("live-12", 12, 9),
+                Frames(),
+                0,
+                1,
+                archive,
+                close_frames=lambda: closed.append(True),
+            )
+        finally:
+            release.set()
+
+    started = time.monotonic()
+    assert asyncio.run(exercise()) == 0
+    assert time.monotonic() - started < 0.5
+    assert closed == [True]
+    assert archive.finish()["observations"]["stop_reason"] == "duration"
+
+
+def test_publisher_stops_a_silent_relay_at_the_archive_deadline(tmp_path) -> None:
+    from tools.ohmni_live_tag_mapper import AcceptedObservationArchive, ArchiveConfig
+
+    class Socket:
+        def __init__(self) -> None:
+            self.inbound = iter(
+                (
+                    json.dumps({"type": "auth.accepted"}),
+                    json.dumps(
+                        {
+                            "type": "state",
+                            "session": "live-12",
+                            "drones": [
+                                {
+                                    "drone_id": 12,
+                                    "node_type": "ground",
+                                    "membership": "joined",
+                                    "connection_epoch": 9,
+                                }
+                            ],
+                        }
+                    ),
+                )
+            )
+
+        async def recv(self) -> str:
+            try:
+                return next(self.inbound)
+            except StopIteration:
+                await asyncio.Future()
+                raise AssertionError("unreachable") from None
+
+        async def send(self, _message: str) -> None:
+            return None
+
+    archive = AcceptedObservationArchive(
+        tmp_path / "archive",
+        scope=LiveScope("live-12", 12, 9),
+        mapper=_mapper().config,
+        config=ArchiveConfig("ohmni-pose", "ohmni-lidar", "odom", "body", "lidar", duration_s=0.01),
+    )
+    started = time.monotonic()
+    assert asyncio.run(publish_observations(Socket(), _mapper(), (_frame(),), archive=archive)) == 0
+    assert time.monotonic() - started < 0.5
+    assert archive.finish()["observations"]["stop_reason"] == "duration"
+
+
+def test_archive_drain_stops_after_its_silent_receive_deadline(tmp_path) -> None:
+    from tools.ohmni_live_tag_mapper import (
+        AcceptedObservationArchive,
+        ArchiveConfig,
+        _drain_archive,
+    )
+
+    class SilentSocket:
+        async def recv(self) -> str:
+            await asyncio.Future()
+            raise AssertionError("unreachable")
+
+    archive = AcceptedObservationArchive(
+        tmp_path / "archive",
+        scope=LiveScope("live-12", 12, 9),
+        mapper=_mapper().config,
+        config=ArchiveConfig("ohmni-pose", "ohmni-lidar", "odom", "body", "lidar"),
+    )
+    started = time.monotonic()
+    asyncio.run(_drain_archive(SilentSocket(), LiveScope("live-12", 12, 9), archive, 0.01))
+    assert time.monotonic() - started < 0.5
+    assert archive.finish()["observations"]["stop_reason"] == "input_exhausted"
 
 
 def test_publisher_spaces_multiple_tag_events_from_one_frame(
