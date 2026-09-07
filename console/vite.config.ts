@@ -1,5 +1,5 @@
 import react from '@vitejs/plugin-react'
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, type Plugin, type ServerOptions } from 'vite'
 import { RELAY_BOOTSTRAP_ENDPOINT, relayFromEnvironment } from './src/relay/bootstrap-endpoint.ts'
 
 const CANONICAL_CONSOLE_PORT = 5173
@@ -50,19 +50,12 @@ function relayBootstrap(): Plugin {
   }
 }
 
-/**
- * Development-only runtime endpoint, ported from PR #68 (feat/m31-media-ingest,
- * console/vite.config.ts). Serves the media configuration from the environment
- * so credentials never enter the bundle; without a complete set of variables it
- * answers 503 and the console runs with playback disabled. Reconcile when #68
- * merges.
- */
 export function expectedServerPort(env: NodeJS.ProcessEnv): number {
   return env.SWEEP_CONSOLE_TEST_MODE === 'm14-browser' ? M14_BROWSER_PORT : CANONICAL_CONSOLE_PORT
 }
 
 export function assertConsoleEndpoint(
-  endpoint: { host?: string; port?: number; strictPort?: boolean },
+  endpoint: Pick<ServerOptions, 'host' | 'port' | 'strictPort'>,
   expectedPort: number,
 ) {
   if (endpoint.port !== expectedPort || !endpoint.strictPort || endpoint.host !== '127.0.0.1') {
