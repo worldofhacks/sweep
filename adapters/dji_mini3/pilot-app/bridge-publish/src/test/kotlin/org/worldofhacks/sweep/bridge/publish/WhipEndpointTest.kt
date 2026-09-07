@@ -22,6 +22,30 @@ class WhipEndpointTest {
     }
 
     @Test
+    fun `an explicit HTTPS origin keeps TLS while port stays a separate setup field`() {
+        assertEquals(
+            "https://sweep.hollowatlas.xyz:443/drone1/whip",
+            WhipEndpoint.whipUrl("wss://relay.local/ws", "https://sweep.hollowatlas.xyz", 443, 1),
+        )
+        assertEquals(
+            "https://[fd7a:115c:a1e0::1]:443/drone2/whep",
+            WhipEndpoint.whepUrl("wss://relay.local/ws", "https://[fd7a:115c:a1e0::1]", 443, 2),
+        )
+        for (invalid in listOf(
+            "http://ground.example",
+            "https://user@ground.example",
+            "https://ground.example:8443",
+            "https://ground.example/path",
+            "https://ground.example?query",
+            "ground.example/path",
+        )) {
+            assertThrows(IllegalArgumentException::class.java) {
+                WhipEndpoint.whipUrl("wss://relay.local/ws", invalid, 443, 1)
+            }
+        }
+    }
+
+    @Test
     fun `hosts are read from any scheme and never include credentials or ports`() {
         assertEquals("10.10.1.60", WhipEndpoint.hostOf("ws://10.10.1.60:8000/ws/demo"))
         assertEquals("relay", WhipEndpoint.hostOf("http://user:pw@relay:1/x?y"))
