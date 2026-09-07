@@ -4,7 +4,6 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToLong
 import kotlin.math.sin
-import org.worldofhacks.sweep.bridge.core.frames.Fields
 import org.worldofhacks.sweep.bridge.core.frames.ObservationSubmission
 import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonFloat
@@ -174,7 +173,7 @@ internal fun canonicalBodyCameraPose(config: NodeConfig, epoch: Int, eventId: St
 data class RigidTransform(val x: Double, val y: Double, val z: Double, val qx: Double, val qy: Double, val qz: Double, val qw: Double) {
     fun compose(right: RigidTransform): RigidTransform {
         val rotated = rotate(right.x, right.y, right.z)
-        val q = quaternionMultiply(qx, qy, qz, qw, right.qx, right.qy, right.qz, right.qw)
+        val q = quaternionMultiply(right.qx, right.qy, right.qz, right.qw)
         return RigidTransform(x + rotated.first, y + rotated.second, z + rotated.third, q[0], q[1], q[2], q[3])
     }
     fun json(parent: String, child: String): JsonObject = Json.json("parent_frame" to parent, "child_frame" to child, "x_m" to x, "y_m" to y, "z_m" to z, "qx" to qx, "qy" to qy, "qz" to qz, "qw" to qw)
@@ -182,6 +181,12 @@ data class RigidTransform(val x: Double, val y: Double, val z: Double, val qx: D
         val tx = 2.0 * (qy * pz - qz * py); val ty = 2.0 * (qz * px - qx * pz); val tz = 2.0 * (qx * py - qy * px)
         return Triple(px + qw * tx + (qy * tz - qz * ty), py + qw * ty + (qz * tx - qx * tz), pz + qw * tz + (qx * ty - qy * tx))
     }
+    private fun quaternionMultiply(rx: Double, ry: Double, rz: Double, rw: Double): DoubleArray = doubleArrayOf(
+        qw * rx + qx * rw + qy * rz - qz * ry,
+        qw * ry - qx * rz + qy * rw + qz * rx,
+        qw * rz + qx * ry - qy * rx + qz * rw,
+        qw * rw - qx * rx - qy * ry - qz * rz,
+    )
     companion object {
         fun parse(value: JsonObject, parent: String, child: String): RigidTransform {
             exact(value, setOf("parent_frame", "child_frame", "x_m", "y_m", "z_m", "qx", "qy", "qz", "qw"), "kinematic transform")
@@ -204,7 +209,7 @@ private fun maxSeparationMs(capture: Long, captureError: Long, receipt: Long, la
 private fun String.isSha256(): Boolean = matches(Regex("[0-9a-f]{64}"))
 private fun exact(value: JsonObject, fields: Set<String>, name: String) { require(value.keys == fields) { "$name fields are invalid" } }
 private fun JsonObject.objectOf(name: String): JsonObject = this[name] as? JsonObject ?: error("$name must be an object")
-private fun JsonObject.string(name: String): String = (this[name] as? JsonString)?.value?.also { require(Fields.isCanonicalPrintable(it, 512)) { "$name is invalid" } } ?: error("$name must be text")
+private fun JsonObject.string(name: String): String = (this[name] as? JsonString)?.value?.also { require(it.isNotEmpty() && it.length <= 512 && it.all { char -> char.code in 32..126 }) { "$name is invalid" } } ?: error("$name must be text")
 private fun JsonObject.integer(name: String): Long = (this[name] as? JsonInt)?.value ?: error("$name must be an integer")
 private fun JsonObject.nonNegativeInt(name: String): Long = integer(name).also { require(it >= 0) { "$name must be non-negative" } }
 private fun JsonObject.positiveInt(name: String): Long = nonNegativeInt(name).also { require(it > 0) { "$name must be positive" } }
@@ -223,11 +228,13 @@ class CaptureAlignmentCollector : CaptureAlignmentSampleSource {
 
     fun recordGimbal(sample: AttitudeSample) = synchronized(lock) { gimbal = sample }
     fun recordBodyAttitude(sample: AttitudeSample) = synchronized(lock) { body = sample }
-    fun recordFrame(ptsMs: Long, receiptMs: Long) = synchronized(lock) {
-        val gimbalSample = gimbal ?: return
-        val bodySample = body ?: return
-        if (frames.size == MAX_PENDING_FRAMES) frames.removeFirst()
-        frames.addLast(CaptureAlignmentSample(ptsMs, receiptMs, gimbalSample, bodySample))
+    fun recordFrame(ptsMs: Long, receiptMs: Long) {
+        synchronized(lock) {
+            val gimbalSample = gimbal ?: return
+            val bodySample = body ?: return
+            if (frames.size == MAX_PENDING_FRAMES) frames.removeFirst()
+            frames.addLast(CaptureAlignmentSample(ptsMs, receiptMs, gimbalSample, bodySample))
+        }
     }
     override fun drain(): List<CaptureAlignmentSample> = synchronized(lock) { buildList { while (frames.isNotEmpty()) add(frames.removeFirst()) } }
     private companion object { const val MAX_PENDING_FRAMES = 32 }

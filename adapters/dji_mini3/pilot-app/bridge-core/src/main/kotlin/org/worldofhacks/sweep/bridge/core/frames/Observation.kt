@@ -175,7 +175,7 @@ private object ObservationPayload {
     }
 
     private fun pose(json: JsonObject, frame: String): JsonObject {
-        val fields = if ("capture_alignment" in json) {
+        val fields = if (json["capture_alignment"] != null) {
             setOf("kind", "pose", "capture_alignment")
         } else {
             setOf("kind", "pose")
@@ -185,7 +185,12 @@ private object ObservationPayload {
         if (pose["parent_frame"] != JsonString(frame)) {
             throw ContractError("payload_frame_mismatch", "pose parent frame must equal the envelope frame")
         }
-        if ("capture_alignment" in json) captureAlignment(json["capture_alignment"])
+        if (json["capture_alignment"] != null) {
+            if (frame != "body" || pose["child_frame"] != JsonString("camera")) {
+                throw ContractError("payload_frame_mismatch", "capture-aligned pose must be body-to-camera")
+            }
+            captureAlignment(json["capture_alignment"])
+        }
         return copyObject(json)
     }
 
@@ -208,9 +213,14 @@ private object ObservationPayload {
         sha256(json["alignment_config_sha256"], "alignment_config_sha256")
         text(json["kinematic_calibration_id"], "kinematic_calibration_id")
         sha256(json["kinematic_calibration_sha256"], "kinematic_calibration_sha256")
-        SourceTime.parse(json["frame_pts"])
-        SourceTime.parse(json["gimbal_receipt"])
-        SourceTime.parse(json["body_attitude_receipt"])
+        val pts = SourceTime.parse(json["frame_pts"])
+        val gimbalReceipt = SourceTime.parse(json["gimbal_receipt"])
+        val bodyReceipt = SourceTime.parse(json["body_attitude_receipt"])
+        if (pts.clockId != "dji_stream_presentation_ms" || pts.unit != "ms" ||
+            gimbalReceipt.clockId != "phone_elapsed_realtime_ms" || gimbalReceipt.unit != "ms" ||
+            bodyReceipt.clockId != "phone_elapsed_realtime_ms" || bodyReceipt.unit != "ms") {
+            throw ContractError(CODE, "capture alignment clocks are invalid")
+        }
         attitude(json["gimbal_attitude"], "gimbal attitude")
         attitude(json["body_attitude"], "body attitude")
         for (name in setOf(
