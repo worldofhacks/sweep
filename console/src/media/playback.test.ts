@@ -35,6 +35,23 @@ describe('Media playback handoff', () => {
     })
   })
 
+  test('plays the explicitly configured camera without changing its device identity', () => {
+    expect(createPlaybackDescriptor({
+      ...credentials, device: { device_class: 'ground_vehicle', unit: 5 }, stream: 'robot-five-rear',
+    })).toEqual({
+      stream: 'robot-five-rear', primary: {
+        protocol: 'whep', url: 'http://ground-station:8889/robot-five-rear/whep',
+        authorization: `Basic ${btoa('console-reader:read-secret')}`,
+      },
+    })
+  })
+
+  test.each(['', '../other', '//other-host', 'https://other-host/video', 'camera?token=x', 'camera%2fother'])('rejects an arbitrary camera path %s', (stream) => {
+    expect(() => createPlaybackDescriptor({
+      ...credentials, device: { device_class: 'ground_vehicle', unit: 5 }, stream,
+    })).toThrow('Invalid configured camera stream name')
+  })
+
   test('a ground vehicle plays its ground path, and any positive unit is accepted', () => {
     expect(
       createPlaybackDescriptor({ device: { device_class: 'ground_vehicle', unit: 2 }, ...credentials })

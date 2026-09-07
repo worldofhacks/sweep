@@ -304,13 +304,18 @@ def test_scan_timestamp_is_volatile_and_no_state_record_follows_a_scan(
     before = session.current_state()
     clock.advance(1)
     session.process_frame(sensor_payload(event_id="scan-1", timestamp=clock()), ground_principal)
+    first_observation = session.current_state()
     clock.advance(_MIN_INTERVAL_MS)
     session.process_frame(sensor_payload(event_id="scan-2", timestamp=clock()), ground_principal)
     after = session.current_state()
 
-    assert before["drones"][0]["sensor"]["last_scan_at"] is None
+    assert before["drones"][0]["sensor"] == {"kind": None, "last_scan_at": None}
+    assert first_observation["drones"][0]["sensor"]["kind"] == "lidar_scan"
     assert after["drones"][0]["sensor"]["last_scan_at"] == clock()
-    assert _material_state_projection(before) == _material_state_projection(after)
+    # The first measured scan establishes the sensor kind. Later scans change
+    # only its volatile timestamp, without inventing evidence from capabilities.
+    assert _material_state_projection(before) != _material_state_projection(first_observation)
+    assert _material_state_projection(first_observation) == _material_state_projection(after)
     assert [event["type"] for event in _audited(session)].count("state") == 1
 
     registry = FleetRegistry(telemetry_freshness_ms=1_000)

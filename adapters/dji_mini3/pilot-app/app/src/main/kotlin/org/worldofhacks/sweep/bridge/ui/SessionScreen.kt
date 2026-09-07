@@ -152,6 +152,10 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
     }
 }
 
+/** The adapter wire contract accepts positive signed-32-bit device IDs. */
+internal fun aircraftDeviceIdFromSetup(raw: String): Int? =
+    raw.trim().toIntOrNull()?.takeIf { it > 0 }
+
 @Composable
 private fun SetupCard(
     setup: SetupSummary,
@@ -164,13 +168,13 @@ private fun SetupCard(
     var droneId by remember(setup.loaded) { mutableStateOf(setup.droneId.toString()) }
     var token by remember { mutableStateOf("") }
     var replaceToken by remember { mutableStateOf(false) }
-    val droneNumber = droneId.trim().toIntOrNull()
+    val droneNumber = aircraftDeviceIdFromSetup(droneId)
     val tokenReady = setup.tokenStored && !replaceToken || token.isNotBlank()
     val disabledReason = when {
         !setup.loaded -> "Loading the encrypted setup"
         !(relayUrl.startsWith("ws://") || relayUrl.startsWith("wss://")) -> "Relay URL must start with ws:// or wss://"
         session.isBlank() -> "Session id is required"
-        droneNumber == null || droneNumber !in 1..4 -> "Aircraft number must be 1 to 4"
+        droneNumber == null -> "Aircraft device ID must be 1 to ${Int.MAX_VALUE}"
         !tokenReady -> "Enter the node token once"
         else -> null
     }
@@ -184,7 +188,7 @@ private fun SetupCard(
                 OutlinedTextField(
                     value = droneId,
                     onValueChange = { droneId = it },
-                    label = { Text("Aircraft (D-0n)") },
+                    label = { Text("Aircraft device ID") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.weight(1f),
@@ -210,7 +214,8 @@ private fun SetupCard(
                 Button(
                     enabled = disabledReason == null,
                     onClick = {
-                        node.saveSetup(relayUrl.trim(), session.trim(), droneNumber ?: 1, token.takeIf { it.isNotBlank() }, connect = true)
+                        val configuredId = droneNumber ?: return@Button
+                        node.saveSetup(relayUrl.trim(), session.trim(), configuredId, token.takeIf { it.isNotBlank() }, connect = true)
                         token = ""
                         replaceToken = false
                     },

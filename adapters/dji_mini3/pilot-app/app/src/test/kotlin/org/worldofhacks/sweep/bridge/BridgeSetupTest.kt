@@ -9,6 +9,15 @@ class BridgeSetupTest {
     private val setup = BridgeSetup("ws://127.0.0.1:8000", "session-a", 2, "dummy-test-token")
 
     @Test
+    fun `stored token alone never implies a default device or demo session`() {
+        assertFalse(SetupSummary(tokenStored = true, loaded = true).complete)
+        assertTrue(SetupSummary(
+            relayUrl = setup.relayUrl, session = setup.session, droneId = setup.droneId,
+            tokenStored = true, loaded = true,
+        ).complete)
+    }
+
+    @Test
     fun `readiness cannot transfer across a changed relay identity or credential`() {
         val replacements = listOf(
             setup.copy(relayUrl = "ws://127.0.0.1:8010"),

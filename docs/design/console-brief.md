@@ -1,20 +1,20 @@
 # Sweep operator console: design brief
 
-This is the input to Claude Design. Paste it whole. It asks for a complete, wired, responsive operator console for Sweep, designed as a boutique studio would design it, with every element the PRD requires. Section 10 is the checklist the result is accepted against. Product source of truth: `docs/prd.md`. Wire contract: `console/src/relay/contract.ts` and PRD Appendices A and B.
+Design requirements for the existing Sweep operator console. Preserve its established tokens, components, and interaction patterns when extending it. Product scope: [PRD](../prd.md) and [modular fleet guide](../modular-fleet.md). Runtime contracts: `console/src/relay/contract.ts` and the relay implementation. Older prototype descriptions below are design context, not permission to create a second console, fixture route, or simulated operator runtime.
 
 ## 1. What you are designing
 
-Sweep lets one person direct a small fleet of indoor drones from a laptop. The operator clicks a control, reviews the exact request the system is about to send, confirms it, and watches the fleet carry it out on live video. Every request is an Intent v1 envelope. A relay validates it, a deterministic planner turns it into per-aircraft commands, and a safety arbiter checks every intent and every command against limits and live state. The console never decides safety. A physical radio-controller pilot stands beside each aircraft and can pause, take over, return, or land at any time, independent of the network.
+Sweep lets one person work with an additive heterogeneous fleet of aerial drones and ground robots from one laptop console. Every request is an Intent v1 envelope validated through the relay, deterministic planner, safety arbiter, and declared vendor capabilities. The current scope includes at least five ground robots, each with two onboard cameras and one LiDAR; every aircraft has one camera and a reported infrared depth/proximity sensor whose model/interface and readings remain unverified. Show class-specific safety controls and actual authority; do not label a robot LiDAR problem as an RC takeover.
 
-The headline workflow today: the operator names a room, selects one hovering aircraft, chooses a capture pattern, clicks Capture room, reviews the plan, confirms, and watches the aircraft collect a panorama or an overlapping photo bundle. Those files become a private AI-generated room world the operator can open from the console. The next workflow, on four aircraft at once: arm, select all, take off, translate together, hold, come home, land all, with a network stop available throughout. Later: a camera wall for four live feeds, detections that ask the operator before anything moves, a room graph and map, spoken and gestured commands into the same request path.
+The console presents every reported device, configured camera, and accepted sensor reading with its current status and exact parent identity. Operators select devices or a supported subset, preview and confirm the applicable request, and inspect live results. Room-world capture remains a capability-specific workflow for a suitable aircraft. Flight actions remain aircraft-only; mixed-fleet horizontal operations, ground peripherals, and camera controls appear only when their actual relay/adapter route supports them. Planned hardware and absent feeds never become live placeholder rows.
 
-**The operator.** A trained person at a ground station, standing or seated, often glancing between the laptop and the room. Hands may be busy. The room is noisy. Mistakes are expensive, so the console must make the current safety state, the selected aircraft, and any pending request unmistakable at a glance, and must never let a click send something the operator has not seen in full.
+**The operator.** A trained person at a ground station, standing or seated, often glancing between the laptop and the room. Hands may be busy. The room is noisy. Mistakes are expensive, so the console must make the current safety state, the selected devices, and any pending request unmistakable at a glance, and must never let a click send something the operator has not seen in full.
 
 **The environment.** A laptop, usually beside a wall of live video. Sometimes a tablet or phone in the operator's hand for a glance at state or to hit stop. Daylight indoor rooms.
 
 ## 2. Design direction
 
-Ignore the current console entirely. Do not reference its colors, layout, or components.
+Extend the current console using its established colors, tokens, layout, and components. Keep a single canonical operator UI.
 
 - **White base, high contrast, editorial.** Off-white or pure white surfaces, near-black type, hairline rules, a precise grid, generous whitespace. It should feel like a printed instrument manual from a good studio, not a dashboard template.
 - **Typography carries the hierarchy.** One text family and one display or numeric family at most, plus a monospace for identifiers and payloads. Large, confident labels for aircraft and states; tabular numerals for every metric.
@@ -22,38 +22,32 @@ Ignore the current console entirely. Do not reference its colors, layout, or com
 - **Density is deliberate.** The Control module is dense and calm. The Live view is mostly picture. Library and Builder are catalog pages. Connectivity is a table. Configuration is a form. Each module has its own rhythm inside one system.
 - **Motion is minimal.** State changes fade or slide briefly. Nothing pulses except a live indicator. Honor reduced-motion preferences.
 - **Copy is plain and specific.** Every refusal, failure, and disabled control states its reason in one sentence. No jargon that the tables in section 6 do not define.
-- **Formats.** Aircraft identifiers render as `D-01` (two-digit, monospace); stream names as `drone1`. Intent ids shorten to the first eight characters, an ellipsis, and the last four, with the full id on hover and in the JSON block. Times are 24-hour HH:MM:SS local in monospace; ages are "4 s ago"; elapsed is m:ss; calendar dates never appear in copy, only inside the session id. Battery, link, and position quality are whole percentages with tabular numerals.
+- **Formats.** Device labels render as `D-01` for aircraft and `G-01` for ground robots; each onboard camera has its own label and explicitly configured stream identity. Intent ids shorten to the first eight characters, an ellipsis, and the last four, with the full id on hover and in the JSON block. Times are 24-hour HH:MM:SS local in monospace; ages are "4 s ago"; elapsed is m:ss; calendar dates never appear in copy, only inside the session id. Battery, link, and position quality are whole percentages with tabular numerals.
 - **Contrast.** Text at WCAG AAA. Controls and non-text indicators at AA minimum. Test every status color on the white base.
 
 ## 3. Information architecture
 
-A single-page application with one persistent shell and six modules. Switching modules never hides safety state and never loses a pending request.
+A single-page application with one persistent shell and the registered modules: Control, Live, Gesture, Speech, Captures, Worlds, Devices, and Map. Switching modules never hides safety state and never loses a pending request.
 
-```
+```text
 Persistent shell (always visible)
-├─ Safety bar: network stop · physical RC status · selected aircraft · active intent or plan · link health · warnings
-├─ Session strip: relay connection · keyboard-stop connection · session id · roster version · fixture banner
-└─ Module navigation
-   ├─ Control / Capture
-   ├─ Live view
-   ├─ Capture library
-   ├─ World Builder
-   ├─ Connectivity
-   └─ Configuration
-Later surfaces (design now, ship later): camera mosaic and focus pane · detections and attention · map and room graph · ledger and health · gesture readout · push-to-talk
+├─ Safety bar: network stop · class-specific authority · selected devices · active request · warnings
+├─ Session strip: real relay/source connections · session id · roster version · build identity
+└─ Control · Live · Gesture · Speech · Captures · Worlds · Devices · Map
+Additional capabilities use the same shell and report unsupported or unreported until integrated.
 ```
 
 ## 4. The persistent shell
 
 Elements, in priority order:
 
-1. **Network stop.** The largest control on every page. It sends `estop`. It is disabled with a stated reason when the console socket is not connected, and it shows "stop active" when the fleet is stopped. Beside it, always: "Physical RC remains primary", the keyboard shortcut Shift+Escape, which travels on a separate authenticated keyboard connection, and the live physical RC status: for each selected aircraft, control authority (Sweep or RC) and RC safety operator present or absent, from `control_authority` and `rc_safety_operator_present`. An RC takeover or an absent safety operator is a state word in the bar, not only a note. While stop is active the control stays enabled and sends `estop` again when pressed; it reads "Stop active" with the time it was raised. There is no console control that clears a stop: it clears only when the relay's state reports `estop: false`, and the shell then shows "Stop cleared" for ten seconds. Never design a resume, reset, or clear-stop control.
-2. **Fleet state.** Armed or disarmed, stop active or clear, mode (indoor), roster version, aircraft ready as "n of m".
-3. **Selected aircraft.** Identifiers of the current selection, or "none selected".
+1. **Network stop.** Keep `estop` visible everywhere with the separate authenticated Shift+Escape keyboard path. Disable sending with a stated reason when the required connection is unavailable. Show the actual relay stop state and allow another stop request while active; only authoritative relay state clears it. Beside the stop, show class-specific independent safety controls: physical RC/operator state for aircraft and actual local stop/spotter/authority state for robots. Report RC takeover only when aircraft telemetry explicitly says so; missing authority or a LiDAR blocker is not an RC takeover. Unknown physical status stays unreported. No console resume, reset, or clear-stop shortcut bypasses that state.
+2. **Fleet state.** Armed or disarmed, stop active or clear, mode (indoor), roster version, devices ready as "n of m", with class counts.
+3. **Selected devices.** Identifiers of the current selection, or "none selected".
 4. **Active intent or plan.** The one request in flight: name, lifecycle state, short intent id, elapsed time. When a request is pending confirmation, the confirm and cancel actions are reachable from the shell itself. When the relay's pending object carries `expires`, show the remaining time as a countdown beside the elapsed time; at zero the preview is invalidated with the reason "confirmation window expired" and the actions disappear.
 5. **Link health.** Relay connection and keyboard-stop connection, each one of connecting, connected, degraded, disconnected. Degraded means the console received a frame it could not parse and dropped it.
 6. **Warnings.** A capped list, newest first, each with severity info, warning, or danger and a one-sentence reason.
-7. **Fixture banner.** When running on fixture data, a persistent banner says so.
+7. **Runtime identity.** Show the canonical build/session and actual connection state. No fixture, showcase, or demo mode is reachable from the operator console.
 
 Design the shell for three states: connected and quiet, connected with a pending confirmation, and disconnected.
 
@@ -61,21 +55,21 @@ Design the shell for three states: connected and quiet, connected with a pending
 
 ### 5.1 Control / Capture
 
-The working page. Left to right or top to bottom: aircraft registry, controls, plan preview, requests.
+The working page. Left to right or top to bottom: device registry, controls, plan preview, requests.
 
-**Aircraft registry.** One row or card per aircraft with: identifier, membership state, connection epoch, flight state, battery, link, position quality, control authority, RC safety operator present, readiness reasons (a list of short codes when not ready), advertised capture patterns, last seen, and a select toggle. Selection rules: only ready and selectable aircraft can be selected; at least one aircraft stays selected once any is; a stale selection is cleared visibly when the roster changes. Departed aircraft move to a "departed this session" list with epoch, time, and reason, and return to the registry on rejoin with a new epoch. Empty state for no aircraft. Skeleton rows while connecting.
+**Device registry.** One row or card per reported aircraft or ground robot with class, unit, and: identifier, membership state, connection epoch, class-appropriate motion state, battery, link, position quality, control authority, physical safety operator/spotter status, readiness reasons (a list of short codes when not ready), advertised capture patterns, last seen, and a select toggle. Selection rules: only currently ready and selectable devices can be motion-selected; an empty selection is explicit; a stale selection is cleared visibly when the roster changes. Departed devices move to a "departed this session" list with epoch, time, and reason, and return to the registry on rejoin with a new epoch. Empty state for no reported devices. Connecting indicators must not invent hardware rows.
 
-**Flight controls.** The full Appendix E set, each a named control with its own enabled and disabled reasons: arm, disarm, select all, takeoff (confirm), land (confirm), land all (confirm), hold, translate with direction and step count, altitude up and down by step, formation next and formation set with the five named formations line, column, circle, grid, V, spacing tighter and wider, come home, sweep (confirm), and the network stop. Show which of these the relay currently accepts and which return unsupported at this milestone, without hiding the latter. At M2.0 the relay accepts `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, `estop`, and `capture_room`; `disarm`, `land`, `altitude`, `formation_next`, `formation_set`, `spacing`, `sweep`, `survey_area`, and `map_area` are refused as `unsupported`, as is any mode other than `indoor`.
+**Class-aware controls.** Aircraft retain the model-specific Appendix E flight set; robots expose only supported ground operations. Every operation has current relay/adapter capability and readiness checks. Each original flight control has its own enabled and disabled reason: arm, disarm, select all, takeoff (confirm), land (confirm), land all (confirm), hold, translate with direction and step count, altitude up and down by step, formation next and formation set with the five named formations line, column, circle, grid, V, spacing tighter and wider, come home, sweep (confirm), and the network stop. Show which of these the relay currently accepts and which return unsupported at this milestone, without hiding the latter. At M2.0 the relay accepts `arm`, `select`, `takeoff`, `translate`, `hold`, `come_home`, `land_all`, `estop`, and `capture_room`; `disarm`, `land`, `altitude`, `formation_next`, `formation_set`, `spacing`, `sweep`, `survey_area`, and `map_area` are refused as `unsupported`, as is any mode other than `indoor`.
 
 **Capture controls.** Room identifier field with inline validation, capture pattern choice between `pano_360` and `reconstruct_8` with the coverage label each produces (full equirectangular versus incomplete vertical coverage), a readiness panel that names the exact blocking reason, and Capture room. Beside it, the capture-readiness guidance mirror: guidance mode (`visual_advisory` or `registered_metric`), pose source, and pass or fail marks for pose, clearance, camera, storage, motion, and image quality, an azimuth coverage compass with unseen, weak, and accepted sectors, the next heading, and the suggested yaw or gimbal delta. In `visual_advisory` mode the UI must never suggest an XYZ move.
 
-**Plan preview and confirmation.** Appears the moment a draft exists. Shows the plan title, roster version it was built against, ordered steps in plain language, the affected aircraft, and the exact Intent v1 JSON in a block that is expanded every time a preview appears and may be collapsed by the operator afterwards. Two actions: Confirm and send, Cancel. The preview is invalidated visibly when the roster changes, the selection changes, an aircraft leaves, or a configuration change lands; the reason is stated and the actions disappear.
+**Plan preview and confirmation.** Appears the moment a draft exists. Shows the plan title, roster version it was built against, ordered steps in plain language, the exact affected devices, and the exact Intent v1 JSON in a block that is expanded every time a preview appears and may be collapsed by the operator afterwards. Two actions: Confirm and send, Cancel. The preview is invalidated visibly when the roster changes, the selection changes, a device leaves or rejoins on a new epoch, or a configuration change lands; the reason is stated and the actions disappear.
 
-**Requests.** The most recent outcome as a card, then a list of recent requests. Each request shows intent name, lifecycle state, short id, target selection, source, the failed request it retries if any, reason and detail, and a timestamp row for every lifecycle state reached. A failed request offers Retry as new intent, disabled with a reason when the source connection is down or the aircraft is no longer ready.
+**Requests.** The most recent outcome as a card, then a list of recent requests. Each request shows intent name, lifecycle state, short id, target selection, source, the failed request it retries if any, reason and detail, and a timestamp row for every lifecycle state reached. A failed request offers Retry as new intent, disabled with a reason when the source connection is down or a target is no longer eligible.
 
 ### 5.2 Live view
 
-The selected aircraft's feed, large. Overlaid or beside it: stream status (live, offline, unreported) with last frame time, health (battery, link, position quality), readiness, guidance mode, and capture progress (ready, capturing, downloading, needs retake, disconnected). Designed to grow into the camera wall: a mosaic of four tiles, later six, each tile with identifier, stream status dot, per-tile battery, link, position, membership, readiness reasons, last frame time, and a Focus action. A focus pane shows the focused tile at size with a center reticle and stream name. Focus follows the operator's selection but survives video loss on the focused aircraft. Degraded states are explicit: no video, stale video, no telemetry, aircraft departed.
+One responsive wall presents the real reported fleet and its explicitly configured onboard cameras, with device and camera identity, live/offline/unreported state, frame age, battery/link/position freshness, membership, readiness reasons, and inspection. Both onboard robot cameras are individually identifiable; neither is a duplicated primary feed. Scale by configured sources without a four- or six-tile product cap. Focus survives video loss and is independent of command selection. Device connection does not imply every camera is live. Expired motion and video labels become unknown/offline on the local clock even when the relay stops sending packets; last-known values are secondary and explicit.
 
 ### 5.3 Capture library
 
@@ -100,12 +94,12 @@ Design these to the same system now so nothing is bolted on later.
 - **Detections and attention.** A detection event carries confidence, class, aircraft, world-position estimate, and time. At or above 0.6 it is shown; at or above 0.8 it promotes its aircraft's feed to focus within one second. The operator marks it real or dismisses it. A detection never emits a command, and the UI says so.
 - **Map and room graph.** Aircraft positions on an occupancy map, the room graph with doorways, candidate versus approved capture poses, the geofence, and the batch plan preview for `map_area`: assignments, routes, poses, and patterns frozen into one confirmation.
 - **Ledger and health.** The session's accepted, refused, and failed requests over time, replay of a session by id, and health metrics: intent latency, telemetry rate, video latency, unsafe-intent count (always zero), per-aircraft battery and link.
-- **Gesture readout.** Camera selection, tracking enabled or disabled (explicit enablement, off by default), a hand-landmark overlay, confidence and dwell feedback, the candidate intent as a preview, confirm and cancel, duplicate suppression indicator, and the enabled gesture-to-intent pairs (first `capture_room`, `hold`, confirm, and cancel) with a note that `estop`, `arm`, `takeoff`, and free-flight motion are not gesture-emittable and stay on the console controls and the physical RC. Distinct states that emit nothing: model failed to load, webcam dropped or unplugged, low confidence, dwell timeout, and duplicate suppressed; each shows the error and that emission is disabled while the network stop and physical RC remain.
+- **Gesture readout.** Camera selection, tracking enabled or disabled (explicit enablement, off by default), a hand-landmark overlay, confidence and dwell feedback, the candidate intent as a preview, confirm and cancel, duplicate suppression indicator, and the enabled gesture-to-intent pairs (Capture/HOLD, opt-in Flight, Fleet motion, and Swarm formations) with per-action capability/readiness and exact targets. Flight drafts require separate confirmation and neutral release; network stop stays manual. Distinct states that emit nothing: model failed to load, webcam dropped or unplugged, low confidence, dwell timeout, and duplicate suppressed; each shows the error and that emission is disabled while the network stop and physical RC remain.
 - **Push-to-talk.** Press and hold Space (with a guard when typing in a field) or a large button. Recording capped at thirty seconds with a visible countdown. Then the transcript, and a voice outcome card: transcribed or refused, the source, the reason, and the plan preview that follows the same confirm-one-intent-at-a-time rule as every other request. Denied microphone permission, empty audio, upload failure, timeout, and rate limit are distinct states that emit nothing. Two more states emit nothing: ambiguous, where the compiler returns options for the selection or location and the operator picks one or cancels; and language disabled, shown when microphone capture or transcription is unavailable or the LLM API is rate-limited or down with no local fallback, with the reason stated. When the local compiler fallback is in use, the outcome card says so.
 
 ## 6. Vocabulary of states
 
-Use these words exactly. The prototype's fixtures must exercise every value.
+Use these words exactly. Isolated tests must exercise every value; actual runtime values come from the relay.
 
 | Domain | Values |
 |---|---|
@@ -173,7 +167,7 @@ Refusal and failure reasons the UI must render with a plain sentence each:
 | Map area (later) | map_area | area_id | yes | non-empty |
 | Network stop, Shift+Escape | estop | none | no | fleet |
 
-**Fixtures.** Provide fixture data that matches the field names above for four and for six aircraft, including: one aircraft not ready with reasons, one degraded stream, one departed and rejoined aircraft with a higher epoch, one refused request, one failed request with retry, one invalidated pending plan, one running and one failed generation job, and a disconnected relay.
+**Isolated test fixtures.** Exercise mixed aerial/ground sets, at least five ground identities, both onboard robot cameras, ground LiDAR, and absent/unverified aerial proximity data, including: one aircraft not ready with reasons, one degraded stream, one departed and rejoined aircraft with a higher epoch, one refused request, one failed request with retry, one invalidated pending plan, one running and one failed generation job, and a disconnected relay.
 
 ## 8. Responsive rules
 
@@ -193,26 +187,26 @@ Refusal and failure reasons the UI must render with a plain sentence each:
 
 ## 10. Deliverables and acceptance checklist
 
-Deliver, as a working React prototype on the fixtures in section 7 with no runtime dependency beyond React:
+Extend the existing React console and verify these requirements through isolated tests and real-data runtime checks:
 
 1. A token sheet as CSS custom properties: color, type scale, spacing, radius, elevation, motion, and breakpoints.
 2. A component set: buttons including the stop variant, status label, metric meter, panel, table, tile, notice, inline confirmation, compass, form controls, empty and skeleton states.
-3. The shell and all six modules in their states.
+3. The existing shell and all registered modules in their actual reported states.
 4. The later surfaces in section 5.7 as designed pages.
-5. A states gallery page showing every value in section 6 rendered.
-6. A responsive demo at 1440, 1024, and 390 px.
+5. Isolated component tests for every state in section 6; no runtime states gallery or fixture route.
+6. Responsive layout checks at 1440, 1024, and 390 px without injecting runtime demo data.
 
 Accepted when every line below is present in the prototype:
 
 - [ ] Network stop on every page, disabled with reason when disconnected, showing stop active
 - [ ] Physical RC primary note, Shift+Escape hint, and live physical RC status (control authority, RC safety operator present) beside the stop
 - [ ] Stop-active state that re-sends on press, clears only from relay state, and no resume or clear-stop control
-- [ ] Armed or disarmed, stop active or clear, mode, roster version, aircraft ready n of m
-- [ ] Selected aircraft in the shell
+- [ ] Armed or disarmed, stop active or clear, mode, roster version, devices ready n of m by class
+- [ ] Exact selected device IDs and class labels in the shell
 - [ ] Active request with lifecycle state and elapsed time in the shell, confirm and cancel reachable
 - [ ] Console and keyboard connection status with all four values
 - [ ] Warnings list with three severities, capped, newest first
-- [ ] Fixture banner
+- [ ] Real relay/session/build identity, with no runtime fixture or showcase route
 - [ ] Registry row with every field in section 5.1, all five membership states, readiness reasons, epoch
 - [ ] Select toggle rules and stale-selection clearing
 - [ ] Departed list with rejoin
@@ -223,7 +217,7 @@ Accepted when every line below is present in the prototype:
 - [ ] Request list with all ten lifecycle states, timestamps per state, retry with new id and retry_of
 - [ ] Every refusal and failure reason in section 6 rendered with a sentence
 - [ ] Live view single feed with stream status, last frame, health, readiness, guidance mode, capture progress
-- [ ] Mosaic of four and of six, focus pane, focus survives video loss, degraded states
+- [ ] Additive mixed-fleet camera wall, both explicitly configured robot cameras, focus survives video loss, per-camera degraded states
 - [ ] Capture library with filters, item metadata, checksums, quality, needs-retake flag, export
 - [ ] World Builder with building, rooms, adjacency, floor-plan reference, bundle selector including the manual three-photo fallback, upload preview, public false badge, all seven job states, retry, provenance, open world
 - [ ] Connectivity table with every column and cell in section 5.5
@@ -239,6 +233,6 @@ Accepted when every line below is present in the prototype:
 ## 11. Constraints
 
 - React only. Plain CSS with custom properties. No component library, no CSS framework, no dark theme.
-- Never render a media URL supplied by an adapter; stream names are derived as `drone{id}`.
+- Never render an arbitrary adapter-supplied media URL; use validated configured camera stream identities and preserve legacy primary paths only when no explicit mapping exists.
 - The console never invents state. When the relay says nothing, the UI says unknown or unreported.
 - Copy is neutral and specific. No marketing language, no dates, no people's names.

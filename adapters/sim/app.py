@@ -1,4 +1,4 @@
-"""ASGI entry point for the production-path two-aircraft simulator gate."""
+"""Test-only ASGI entry point; refuses startup without explicit test-mode settings."""
 
 from adapters.sim.runtime import create_m14_sim_app
 

@@ -70,6 +70,7 @@ def default_media_monitor(settings: RelaySettings, clock: Clock) -> MediaMonitor
         client,
         clock=clock,
         devices=settings.media_devices(),
+        cameras=settings.configured_cameras(),
         poll_interval_ms=settings.media_poll_interval_ms,
         stale_after_ms=settings.media_stale_after_ms,
     )
@@ -244,9 +245,12 @@ class RelayRuntime:
                     control_localization_projector=projector,
                     control_pose_signing_key=self.control_pose_signing_key,
                     media_evidence=self.media_evidence,
+                    media_cameras=self.settings.configured_cameras(),
+                    camera_evidence=self.camera_evidence,
                     devices=self.settings.device_identities(),
                     min_home_position_quality=self.min_home_position_quality,
                     max_home_position_age_ms=self.max_home_position_age_ms,
+                    allow_test_adapters=self.settings.allow_test_adapters,
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
@@ -258,6 +262,11 @@ class RelayRuntime:
         if self.media_monitor is None:
             return None
         return self.media_monitor.evidence(drone_id, now_ms)
+
+    def camera_evidence(self, drone_id: int, camera_id: str, now_ms: int) -> MediaEvidence | None:
+        if self.media_monitor is None:
+            return None
+        return self.media_monitor.camera_evidence(drone_id, camera_id, now_ms)
 
     def replay(self, session_id: str, *, after_sequence: int = 0) -> dict[str, object]:
         """Read active or persisted history without reopening mutable live state."""

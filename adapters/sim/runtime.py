@@ -1,4 +1,4 @@
-"""Deployable two-aircraft simulator composition for the M1.4 gate."""
+"""Opt-in deterministic test composition for the M1.4 gate."""
 
 from __future__ import annotations
 
@@ -32,8 +32,9 @@ from planner.relay_bridge import AutonomyRelayBridge
 from relay.app import create_app
 from relay.auth import Principal, sign_event
 from relay.body_pulse import BODY_PULSE_CAPABILITY
+from relay.runtime_mode import TEST_ADAPTER_CAPABILITY
 from relay.session import Clock, EventIdFactory, RelaySession
-from relay.settings import RelaySettings
+from relay.settings import RelaySettings, SettingsError
 
 
 class SimBridgeFactory:
@@ -351,7 +352,8 @@ class _SimNodeIngress:
         }
         if action == "join":
             event.update(
-                adapter_id=f"sim-{drone_id}", capabilities=["flight", BODY_PULSE_CAPABILITY]
+                adapter_id=f"sim-{drone_id}",
+                capabilities=["flight", BODY_PULSE_CAPABILITY, TEST_ADAPTER_CAPABILITY],
             )
         else:
             event.update(
@@ -414,6 +416,10 @@ def create_m14_sim_app(
     auto_start_nodes: bool = True,
 ) -> FastAPI:
     active_settings = settings or RelaySettings.from_env()
+    if not active_settings.allow_test_adapters:
+        raise SettingsError(
+            "the simulator requires SWEEP_ALLOW_TEST_ADAPTERS=true in an isolated test runtime"
+        )
     now = (clock or _epoch_ms)()
     safety = replace(
         _safety_config(),

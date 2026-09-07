@@ -55,7 +55,7 @@ def test_aircraft_credential_maps_are_bounded_and_reject_bool_ids(tmp_path: Path
             localization_keys={True: ADAPTER_KEY},
             log_dir=tmp_path,
         )
-    with pytest.raises(SettingsError, match="64-aircraft"):
+    with pytest.raises(SettingsError, match="64-device"):
         RelaySettings(
             relay_token=CONSOLE_KEY,
             localization_keys={index: ADAPTER_KEY for index in range(1, 66)},
@@ -112,10 +112,11 @@ def test_invalid_security_or_freshness_configuration_fails(name: str, value: str
         RelaySettings.from_env(environment)
 
 
-def test_bridge_settings_default_to_sim_and_relay_distributed_thresholds() -> None:
+def test_bridge_settings_default_to_remote_and_relay_distributed_thresholds() -> None:
     settings = RelaySettings.from_env({"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode()})
 
-    assert settings.adapter_backend is AdapterBackend.SIM
+    assert settings.adapter_backend is AdapterBackend.REMOTE
+    assert settings.allow_test_adapters is False
     assert settings.command_ttl_ms == 2_000
     assert settings.virtual_stick_hz == 10
     assert settings.node_watchdog_hold_ms == 2_000

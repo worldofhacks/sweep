@@ -1,5 +1,7 @@
 # DJI Mini 3 bridge
 
+This is one vendor-specific aircraft adapter inside Sweep’s [modular aerial/ground platform](../../docs/modular-fleet.md), not a definition of the fleet or its maximum size. Its Mini 3/RC-N1/Android qualifications apply only to that measured combination. Ground robots and their two cameras/LiDAR use their own adapters and evidence. The reported aerial infrared depth/proximity sensor remains unverified until its exact model/interface and readings are established; do not infer LiDAR or collision-clearance capability from this package.
+
 Capability area: Autonomy, with Platform support. Issue #43 (M1.9), Phases B3, B4, C, and E.
 
 One Android phone per DJI Mini 3 and RC-N1 pair runs the pilot app under `pilot-app/`. The
@@ -78,7 +80,9 @@ registration then fails on the phone with a DJI error naming the missing key.
   that must be dropped by the generation fence. Its aircraft is `FakeAircraft`, a kinematic
   fixture with the command semantics of `fake_node.py`; Connect and Disconnect also stand in
   for the aircraft and RC link, so the disconnect semantics below can be shown without
-  hardware. Setup values may arrive as launch extras (fake flavor only, see below).
+  hardware. This flavor is for isolated tests only, declares `test:synthetic`, and is
+  refused by a hardware relay. It cannot publish synthetic video into live media paths.
+  Setup values may arrive as launch extras (fake flavor only, see below).
 - `probe`: `dji-sdk-v5-aircraft` (implementation), `dji-sdk-v5-aircraft-provided`
   (compileOnly), `dji-sdk-v5-networkImp` (runtimeOnly). `Helper.install` runs in
   `Application.attachBaseContext`, `SDKManager.init` starts in `SdkSession`, and
@@ -99,7 +103,7 @@ the Phase E flight loop (both flavors; see below). Rejections use `stale_command
 
 ### Relay
 
-Run the relay from a checkout of PR #108 with the remote adapter backend and a per-drone key
+Use the current canonical relay source with the remote adapter backend and a per-drone key
 (32 characters or more; `openssl rand -hex 32`). The per-drone key is both the node's auth
 token and its HMAC signing key:
 
@@ -107,6 +111,8 @@ token and its HMAC signing key:
 export SWEEP_RELAY_TOKEN=<console token, 32+ characters>
 export SWEEP_ADAPTER_KEYS_JSON='{"1":"<drone 1 key>","2":"<drone 2 key>"}'
 export SWEEP_ADAPTER_BACKEND=remote
+export SWEEP_ALLOW_TEST_ADAPTERS=false
+export SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=false
 export SWEEP_SESSION_LOG_DIR=.sweep/session-logs
 uv run uvicorn relay.app:app --host 127.0.0.1 --port 8000
 ```
@@ -116,9 +122,11 @@ The relay's thresholds (`SWEEP_COMMAND_TTL_MS`, `SWEEP_VIRTUAL_STICK_HZ`,
 `auth.accepted`; the node configures its watchdog and command admission from them and never
 invents its own. Dispatching a command to the node needs the relay's autonomy composition
 (`relay.bridge.build_dispatcher` on the `remote` backend, as
-`relay/tests/test_bridge_roundtrip.py` does in-process); `just fake-node drone_id=2`
-connects the Python fake node beside the phone for a side-by-side comparison in the same
-audit log.
+`relay/tests/test_bridge_roundtrip.py` does in-process). Python fake-node comparisons use
+a separate isolated test relay, session, logs, and credentials, never the phone's hardware
+session. Follow [the explicit test procedure](../../relay/README.md#run-the-relay), which
+requires `SWEEP_ALLOW_TEST_ADAPTERS=true` on the test relay and fake-node process plus
+the fake-node CLI's `--test-only` flag.
 
 ### Phone over USB
 
@@ -129,21 +137,27 @@ No Wi-Fi is needed: `adb reverse` makes the Mac's relay reachable from the phone
 adb reverse tcp:8000 tcp:8000
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 cd adapters/dji_mini3/pilot-app
-./gradlew :app:installFakeDebug
+./gradlew :app:installProbeDebug
 adb shell am start -n org.worldofhacks.sweep.bridge/.MainActivity
 ```
 
 On the Setup card enter the relay URL (`ws://127.0.0.1:8000` over the tunnel, or the Mac's
-LAN address), the session id, the aircraft number (1 to 4), and the node token once; the
+LAN address), a new session id, the configured positive signed-32-bit aircraft ID, and the node token once; the
 token is stored in `EncryptedSharedPreferences`, never logged, never placed in a URL, and
 never shown again in full (Replace token overwrites it). Save and connect starts the
 foreground service, which owns the socket. A stored setup reconnects by itself on the next
-launch. The fake flavor also accepts the values as launch extras so a bench run can be
-scripted; the values go straight into the encrypted store:
+launch. Keep the aircraft ID equal to its class-local unit for legacy `drone{id}` media
+publishing, or explicitly map the real published stream. The ID range does not qualify
+more simultaneous aircraft than the measured hardware acceptance permits.
+
+The fake flavor's launch extras are only for a separately installed test build pointed
+at an isolated test relay with `SWEEP_ALLOW_TEST_ADAPTERS=true`, separate logs/session,
+and test-only credentials. They are not a hardware bring-up step. For example, with an
+explicit test-only USB tunnel on port 18010, the values go straight into the encrypted store:
 
 ```sh
 adb shell am start -n org.worldofhacks.sweep.bridge/.MainActivity \
-  --es relay_url ws://127.0.0.1:8000 --es session bench --ei drone_id 1 --es token "$DRONE1_KEY"
+  --es relay_url ws://127.0.0.1:18010 --es session isolated-protocol-test --ei drone_id 1 --es token "$SWEEP_TEST_NODE_TOKEN"
 ```
 
 ### What to look for
@@ -475,7 +489,8 @@ Order of operations:
 2. Phone: probe flavor registered, RC plugged in, aircraft powered, identity card confirmed
    `DJI_MINI_3`. Save and connect on the Setup card; Connectivity shows `connected,
    authenticated`, the relay thresholds (`stick 10 Hz`, `hold 2000 ms`, `failsafe 10000 ms`
-   for the demo values), and `Membership: ready` once the three readiness toggles are on.
+   only if those are the measured values configured for this hardware run), and
+   `Membership: ready` once the three readiness toggles are on.
 3. Flight card: `Phase: idle`, `virtual stick off`, `Loop deadman: armed` with the same
    thresholds (the probes and every Virtual Stick enable are refused with
    `watchdog_disarmed` until it is), `Control authority: armed`, the failsafe setting line

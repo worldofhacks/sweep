@@ -132,6 +132,7 @@ def test_demo_shared_adapter_token_is_not_used_to_sign_control_pose(
     settings = RelaySettings(
         relay_token=b"console-key-that-is-at-least-32-bytes",
         allow_shared_adapter_token=True,
+        allow_test_adapters=True,
         localization_keys={1: LOCALIZATION_KEY},
         log_dir=tmp_path,
     )

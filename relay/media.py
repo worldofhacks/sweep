@@ -18,16 +18,15 @@ from typing import Protocol
 
 import httpx
 
+from media.streams import CameraStream, validate_camera_mapping
 from planner.models import DeviceClass
 from relay.contracts import DeviceIdentity, Membership, NodeStatusFrame, VideoPublishState
 
 _LOGGER = logging.getLogger(__name__)
 
 VIDEO_STATUSES = ("live", "offline", "unreported")
-# Polled when no device is configured (the sim backend with a shared token).
-DEFAULT_MEDIA_DEVICES: Mapping[int, DeviceIdentity] = MappingProxyType(
-    {unit: DeviceIdentity(DeviceClass.AIRCRAFT, unit) for unit in (1, 2, 3, 4)}
-)
+# Empty configuration means no inferred publishers.
+DEFAULT_MEDIA_DEVICES: Mapping[int, DeviceIdentity] = MappingProxyType({})
 _STREAM_PREFIXES: Mapping[DeviceClass, str] = MappingProxyType(
     {DeviceClass.AIRCRAFT: "drone", DeviceClass.GROUND_VEHICLE: "ground"}
 )
@@ -131,6 +130,7 @@ class MediaEvidence:
 
 
 MediaEvidenceProvider = Callable[[int, int], MediaEvidence | None]
+CameraEvidenceProvider = Callable[[int, str, int], MediaEvidence | None]
 
 
 @dataclass(slots=True)
@@ -144,9 +144,8 @@ class _PathState:
 class MediaMonitor:
     """Polls MediaMTX path readiness on its own task and answers evidence reads at once.
 
-    The poll never runs inside the relay lock or the fan-out: readers get the last completed
-    cycle. A cycle counts only when every path answered; one timeout leaves the previous
-    evidence in place until it ages past ``stale_after_ms`` and the projection degrades.
+    Reads stay outside the relay lock. Each camera retains and expires its own last
+    successful observation, so a failed secondary camera cannot freeze another feed.
     """
 
     def __init__(
@@ -155,6 +154,7 @@ class MediaMonitor:
         *,
         clock: Clock,
         devices: Mapping[int, DeviceIdentity] = DEFAULT_MEDIA_DEVICES,
+        cameras: Mapping[int, tuple[CameraStream, ...]] | None = None,
         poll_interval_ms: int = 1_000,
         stale_after_ms: int = 3_000,
     ) -> None:
@@ -164,13 +164,27 @@ class MediaMonitor:
             raise ValueError("stale_after_ms must be at least poll_interval_ms")
         self._client = client
         self._clock = clock
-        self._streams: dict[int, str] = {
-            drone_id: stream_name(identity.device_class, identity.unit)
-            for drone_id, identity in devices.items()
+        configured = (
+            {
+                device_id: (
+                    CameraStream(
+                        "primary", "Primary", stream_name(identity.device_class, identity.unit)
+                    ),
+                )
+                for device_id, identity in devices.items()
+            }
+            if cameras is None
+            else cameras
+        )
+        self._cameras = validate_camera_mapping(configured, set(devices))
+        self._streams: dict[tuple[int, str], str] = {
+            (device_id, camera.camera_id): camera.stream
+            for device_id, entries in self._cameras.items()
+            for camera in entries
         }
         self._poll_interval_s = poll_interval_ms / 1_000
         self._stale_after_ms = stale_after_ms
-        self._paths: dict[int, _PathState] = {}
+        self._paths: dict[tuple[int, str], _PathState] = {}
         self._reachable: bool | None = None
         self._task: asyncio.Task[None] | None = None
 
@@ -206,7 +220,17 @@ class MediaMonitor:
 
     @property
     def streams(self) -> Mapping[int, str]:
-        """The MediaMTX path polled for each configured device id."""
+        """The primary path for each configured device, retained for existing integrations."""
+        return MappingProxyType(
+            {
+                device_id: entries[0].stream
+                for device_id, entries in self._cameras.items()
+                if entries
+            }
+        )
+
+    @property
+    def camera_streams(self) -> Mapping[tuple[int, str], str]:
         return MappingProxyType(self._streams)
 
     async def poll_once(self) -> bool:
@@ -220,17 +244,20 @@ class MediaMonitor:
             if isinstance(result, asyncio.CancelledError):
                 raise result
         failures = [result for result in results if isinstance(result, Exception)]
-        if failures:
-            self._note_reachable(False, failures[0])
-            return False
-        for drone_id, result in zip(self._streams, results, strict=True):
+        for key, result in zip(self._streams, results, strict=True):
+            if isinstance(result, Exception):
+                continue
             observation = result if isinstance(result, MediaPathObservation) else None
-            self._paths[drone_id] = self._merge(self._paths.get(drone_id), observation, now)
-        self._note_reachable(True, None)
-        return True
+            self._paths[key] = self._merge(self._paths.get(key), observation, now)
+        self._note_reachable(not failures, failures[0] if failures else None)
+        return not failures
 
     def evidence(self, drone_id: int, now_ms: int) -> MediaEvidence | None:
-        state = self._paths.get(drone_id)
+        entries = self._cameras.get(drone_id, ())
+        return None if not entries else self.camera_evidence(drone_id, entries[0].camera_id, now_ms)
+
+    def camera_evidence(self, drone_id: int, camera_id: str, now_ms: int) -> MediaEvidence | None:
+        state = self._paths.get((drone_id, camera_id))
         if state is None:
             return None
         age_ms = now_ms - state.observed_at
@@ -305,3 +332,38 @@ def project_video(
     else:
         status = "offline"
     return {"status": status, "last_frame_at": last_frame_at}
+
+
+def project_camera_video(
+    *,
+    membership: Membership,
+    epoch_started_at: int,
+    now_ms: int,
+    evidence: MediaEvidence | None,
+    legacy_node_status: NodeStatusFrame | None = None,
+) -> dict[str, object]:
+    """One camera's current-epoch evidence; other cameras cannot grant it liveness."""
+    if membership in {Membership.DISCONNECTED, Membership.LEAVING}:
+        return {"status": "offline", "last_frame_at": None}
+    current = evidence
+    if current is not None and (
+        current.observed_at < epoch_started_at
+        or current.last_frame_at is not None
+        and current.last_frame_at < epoch_started_at
+    ):
+        current = None
+    node = legacy_node_status
+    if node is not None and not epoch_started_at <= node.t <= now_ms <= node.t + 5000:
+        node = None
+    result = project_video(
+        membership=membership,
+        node_status=node,
+        node_publishing_at=node.t
+        if node is not None and node.video_publish_state is VideoPublishState.PUBLISHING
+        else None,
+        evidence=current,
+    )
+    frame = result["last_frame_at"]
+    if result["status"] == "live" and (frame is None or not 0 <= now_ms - frame <= 5000):
+        result["status"] = "unreported"
+    return result

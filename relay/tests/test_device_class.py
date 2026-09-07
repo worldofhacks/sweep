@@ -19,9 +19,10 @@ from relay.contracts import (
     parse_membership_request,
     parse_telemetry,
 )
+from relay.fleet_limits import MAX_FLEET_DEVICES
 from relay.session import RelayLimits, RelaySession, _material_state_projection
 from relay.settings import RelaySettings, SettingsError
-from relay.state import MAX_PHYSICAL_DEVICES, FleetRegistry, RegistryError
+from relay.state import FleetRegistry, RegistryError
 from relay.tests.conftest import (
     ADAPTER_KEY,
     CONSOLE_KEY,
@@ -89,18 +90,13 @@ def test_settings_read_device_classes_and_number_units_per_class() -> None:
         settings.device_classes[1] = GROUND  # type: ignore[index]
 
 
-def test_settings_default_to_aircraft_and_the_four_default_media_paths() -> None:
+def test_settings_without_configured_devices_have_no_media_inventory() -> None:
     settings = RelaySettings.from_env({"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode()})
 
     assert settings.device_classes == {}
     assert settings.device_identities() == {}
-    assert {drone_id: identity.unit for drone_id, identity in settings.media_devices().items()} == {
-        1: 1,
-        2: 2,
-        3: 3,
-        4: 4,
-    }
-    assert all(identity.device_class is AIRCRAFT for identity in settings.media_devices().values())
+    assert settings.media_devices() == {}
+    assert settings.configured_cameras() == {}
 
 
 @pytest.mark.parametrize(
@@ -131,6 +127,7 @@ def test_shared_token_requires_aircraft_ids_that_match_their_units() -> None:
     environment = {
         "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
         "SWEEP_ALLOW_SHARED_ADAPTER_TOKEN": "true",
+        "SWEEP_ALLOW_TEST_ADAPTERS": "true",
         "SWEEP_ADAPTER_KEYS_JSON": (
             '{"5":"key-five-that-is-at-least-32-bytes-long",'
             '"7":"key-seven-that-is-at-least-32-bytes-long"}'
@@ -374,45 +371,37 @@ def test_ground_home_pose_clears_only_while_docked_idle_or_stopped() -> None:
     )
 
 
-def test_capacity_is_enforced_per_class_and_the_audit_bound_is_the_sum() -> None:
-    ground_ids = (11, 12, 13, 14, 15)
+def test_capacity_accepts_at_least_five_robots_and_five_aircraft_with_one_total_bound() -> None:
+    ground_ids = tuple(range(101, 106))
     registry = _ground_registry(*ground_ids)
-    for drone_id in range(1, 5):
-        registry.apply_join(
-            parse_membership_request(
-                membership_payload(action="join", event_id=f"join-{drone_id}", drone_id=drone_id)
-            )
-        )
-    for drone_id in ground_ids[:4]:
+    for drone_id in ground_ids:
         _ground_join(registry, f"join-{drone_id}", drone_id=drone_id)
-
-    with pytest.raises(RegistryError) as ground_full:
-        _ground_join(registry, "join-15", drone_id=15)
-    assert ground_full.value.code == "fleet_capacity"
-    assert "ground_vehicle" in ground_full.value.detail
-    with pytest.raises(RegistryError) as aircraft_full:
+    for drone_id in range(1, MAX_FLEET_DEVICES - len(ground_ids) + 1):
         registry.apply_join(
             parse_membership_request(
-                membership_payload(action="join", event_id="join-5", drone_id=5)
+                membership_payload(
+                    action="join",
+                    event_id=f"join-{drone_id}",
+                    drone_id=drone_id,
+                )
             )
         )
-    assert aircraft_full.value.code == "fleet_capacity"
-    assert "aircraft" in aircraft_full.value.detail
-
+    with pytest.raises(RegistryError) as full:
+        registry.apply_join(
+            parse_membership_request(
+                membership_payload(
+                    action="join",
+                    event_id="join-overflow",
+                    drone_id=99,
+                )
+            )
+        )
+    assert full.value.code == "fleet_capacity"
     state = registry.state_event(session=SESSION, t=T0, event_id="state")
-    assert len(state["drones"]) == sum(MAX_PHYSICAL_DEVICES.values()) == 8
-    assert [(drone["device_class"], drone["unit"]) for drone in state["drones"]] == [
-        ("aircraft", 1),
-        ("aircraft", 2),
-        ("aircraft", 3),
-        ("aircraft", 4),
-        ("ground_vehicle", 1),
-        ("ground_vehicle", 2),
-        ("ground_vehicle", 3),
-        ("ground_vehicle", 4),
-    ]
+    assert len(state["drones"]) == MAX_FLEET_DEVICES
+    assert sum(row["device_class"] == "ground_vehicle" for row in state["drones"]) == 5
     projection = _material_state_projection(state)
-    assert '"device_class":"ground_vehicle"' in projection and '"unit":4' in projection
+    assert '"device_class":"ground_vehicle"' in projection and '"unit":5' in projection
     state["drones"].append(dict(state["drones"][0]))
     with pytest.raises(AuditLogError, match="bounded device list"):
         _material_state_projection(state)
@@ -450,7 +439,7 @@ def test_session_and_runtime_thread_the_configured_devices_into_the_registry(
     assert (drones[GROUND_ID]["device_class"], drones[GROUND_ID]["unit"]) == ("ground_vehicle", 1)
     assert drones[GROUND_ID]["flight_state"] == "moving"
     assert drones[GROUND_ID]["telemetry"]["z"] == 0.0
-    assert drones[GROUND_ID]["sensor"] == {"kind": "lidar_scan", "last_scan_at": None}
+    assert drones[GROUND_ID]["sensor"] == {"kind": None, "last_scan_at": None}
 
     refused = session.process_frame(
         membership_payload(

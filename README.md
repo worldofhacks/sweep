@@ -5,16 +5,19 @@ run `python3 tools/console.py start` (or `just console`). See
 [the console operating guide](docs/laptop-console.md) for build identity,
 restart, and the separate relay/video dependencies.
 
-One person creates AI-generated room worlds from guided photos, commands four indoor DJI Mini 3 drones through button controls on a laptop console, cycles aircraft into and out of the live fleet, and sees what the swarm sees. Webcam gesture work and the transcript-to-plan compiler develop against the same intent contracts as the button path; push-to-talk speech follows the M1.E gate. The simulator retains the 4-to-6-drone expansion target.
+Sweep is a modular platform for one operator to work with a heterogeneous fleet of aerial drones and ground robots, their cameras and sensors, and optional room-world capture. Devices join through vendor adapters and declared capabilities; buttons, gestures, and language share the same intent, confirmation, telemetry, and safety path. Adding a device extends the configured fleet rather than creating a separate console.
 
-The first user is a responder who needs eyes inside a building before entry. The three-guided-phone-photo Marble flow is completed feasibility evidence and remains a fallback. The first pending user-visible slice is one end-to-end drone capture: the operator clicks Capture room, reviews the Intent v1 preview, confirms it, and one DJI Mini 3 holds an approved pose while its files create a private Marble room world. The north-star command is “Map this floor.” During the MVP, it sends an operator-present two-drone subset through approved room poses on a supplied occupancy map, then generates a room-by-room visual walkthrough. Physical bring-up uses four Mini 3 aircraft, four RC-N1 controllers, and four benchmarked Android bridge nodes, one node before two and four. The session registry supports live join, readiness, graceful leave, loss, and rejoin. Four to six drones remain in simulation. Spoken language and gestures are additional MVP input sources built at their listed gates; the EMG band remains Future work. Everything is open source.
+The current integration scope includes at least five ground robots, adding at least two to the prior three. Each ground robot has two onboard cameras and one LiDAR. Each aerial drone has one camera and one owner-reported infrared depth/proximity sensor; its exact sensor model, interface, and measurements remain unverified. These are inventory requirements, not claims that every device is connected, calibrated, or ready for control. The operator console displays only real relay data and actual media; missing and expired readings remain unreported or offline. See the [modular fleet integration guide](docs/modular-fleet.md).
 
-Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp-plan.md) for the M0 through M4 delivery sequence.
+The first user is a responder who needs eyes inside a building before entry. Guided photo capture and private Marble room worlds remain one workflow alongside vehicle control, live video, and sensing. Existing Mini 3/RC-N1/Android bench and flight acceptance stages qualify that particular aircraft stack; their one-, two-, and four-aircraft trials do not define the platform's fleet size or qualify other devices. Known-map autonomous traversal still requires its own localization, clearance, and operator-safety evidence. The session registry preserves join, readiness, leave, loss, and rejoin history. Everything is open source.
+
+See [docs/mvp-plan.md](docs/mvp-plan.md) for the delivery sequence and hardware qualification tracks; a milestone definition is not evidence that its hardware exit has passed.
 
 ## Read first
 
 - [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. M0 freezes five contract groups: intent and WebSocket, telemetry, flight and camera adapters, repository layout, and room-world records.
 - [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped work breakdown.
+- [Modular fleet integration](docs/modular-fleet.md): device identity, capabilities, cameras, sensors, freshness, capacity, and commissioning evidence.
 - [Decision records](docs/decisions/): why the scaffold and the architecture look the way they do. The [docs index](docs/README.md) lists everything else.
 - The [pull request template](.github/pull_request_template.md) is the working agreement as a checklist.
 
@@ -26,7 +29,7 @@ Status: M0 (scope and contracts) is in progress; see [docs/mvp-plan.md](docs/mvp
 | [`relay/`](relay/) | Platform | M1 | FastAPI WebSocket intent bus, state, JSONL logging, replay |
 | [`planner/`](planner/) | Autonomy | M1 | Deterministic formations, sweep lanes, allocation, clamping |
 | [`arbiter/`](arbiter/) | Autonomy | M1 | Safety rules, e-stop, battery return |
-| [`adapters/`](adapters/) | Autonomy | M1, M2 | deterministic simulator and DJI Mini 3 bridge contract |
+| [`adapters/`](adapters/) | Autonomy | M1, M2 | Shared device/camera contracts, vendor bridges, and isolated simulator tests |
 | [`media/`](media/) | Platform | M3 | MediaMTX config and stream naming |
 | [`perception/`](perception/) | Interaction | M3 | Detector and world-position estimates |
 | [`language/`](language/) | Interaction, Platform | M4 | Plan compiler, resolvers, prompts, local fallback |
@@ -52,11 +55,11 @@ just console    # single built operator console, http://127.0.0.1:5173
 just media      # MediaMTX via docker compose, in the foreground
 ```
 
-`just --list` shows every recipe. Python runs from the repo root through uv, and modules are invoked as packages, for example `uv run python -m relay.main` once that module exists. Keep uv's default `.venv/` at the repo root (the ignore rules assume it). Copy `.env.example` to `.env` when you need the relay token or the API key; keys never reach the console. `tests/test_layout.py` guards the Appendix D layout: every declared package, including the three `adapters/` subpackages, must resolve from this repo, and no undeclared top-level package may appear.
+`just --list` shows every recipe. Python runs from the repo root through uv; `just relay` starts `relay.main` after the measured deployment settings are configured. Keep uv's default `.venv/` at the repo root (the ignore rules assume it). Copy `.env.example` to the git-ignored `.env` for explicit runtime configuration. Provider and adapter credentials stay server-side; the operator console receives its relay token and media-reader credentials through private runtime configuration, never bundled assets or URLs. `tests/test_layout.py` guards the Appendix D layout: every declared package, including the three `adapters/` subpackages, must resolve from this repo, and no undeclared top-level package may appear.
 
 ## Start here
 
-Contracts are frozen in M0: intent schema and WebSocket topics, telemetry schema, adapter and camera-capability interfaces, live fleet membership, repo layout, and the room-world records (PRD section 8.2). M1 then proves one complete Mini 3 room capture and private Marble result through button-generated Intent v1. M2 adds the second through fourth matching bridge nodes and proves live membership; 4 to 6 remain in simulation. Known-map autonomous multi-room traversal and capture proves one drone before two only after indoor localization and collision-clearance sensing pass their gates. The complete dependency map is in [docs/mvp-plan.md](docs/mvp-plan.md), and any engineer may claim a ready item.
+Start with the shared intent, telemetry, adapter, camera, and membership contracts, then commission one real device and each attached feed or sensor before adding the next. New vehicle families implement declared capabilities through the same checked path; unsupported operations stay unavailable. The delivery plan retains the original Mini 3 room-capture and staged flight acceptance track, while the modular fleet track adds ground robots and their cameras and LiDAR. Simulator scenarios are isolated test evidence and never populate the operator runtime. Known-map autonomous traversal requires separate localization and collision-clearance acceptance.
 
 ## Working agreement
 

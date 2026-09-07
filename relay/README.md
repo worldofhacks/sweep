@@ -1,5 +1,10 @@
 # relay
 
+The relay serves Sweep’s modular aerial/ground fleet and its onboard cameras and sensors.
+[The integration guide](../docs/modular-fleet.md) separates scope, configuration, connected
+inventory, and qualified capabilities. Legacy `drone_id`/`drones` wire names also carry
+ground-device identities. Software capacity does not qualify simultaneous physical operation.
+
 Capability area: Platform. Milestone: M1.
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to shared contracts or the authoritative relay state shape name one change owner and require cross-review.
@@ -19,7 +24,7 @@ The validator makes these schema choices where Appendix A leaves details open:
 - Every displayed field except `retry_of` is required, and extra top-level fields are rejected. Initial requests may omit `retry_of` or set it to null.
 - `t` is a non-negative signed-64-bit integer timestamp in epoch milliseconds. Freshness checks belong to the relay session path.
 - `session` is opaque canonical printable text of at most 512 Unicode code points. `source` and `name` use the same text rule with a 64-code-point ceiling before their exact registries are checked.
-- Drone IDs are unique positive signed-32-bit integers, with at most six per list (the documented simulator ceiling). The current `selection` may be empty; `select.args.ids` may not.
+- Drone IDs are unique positive signed-32-bit integers, with at most 64 per list (the bounded shared device-selection ceiling). The current `selection` may be empty; `select.args.ids` may not.
 - Motion values are finite JSON numbers in planner-owned steps. The validator does not convert them to metres or impose mode bounds.
 - `intent_id` is canonical printable text of at most 128 Unicode code points. A retry gets a new identifier and may link to a different request through a `retry_of` value with that same bound. Formation, room, capture, and area identifiers use the same bound. This function validates the reference shape; the relay lifecycle validates same-session failure, deduplication, and terminal-state semantics.
 - `confirm` records the source's confirmation state. `capture_room` requires confirmation and exactly one selected drone; the arbiter enforces the remaining action-specific checks.
@@ -61,22 +66,36 @@ SWEEP_RELAY_TOKEN=<at-least-32-characters>
 SWEEP_ADAPTER_KEYS_JSON='{"1":"<adapter-1-key-at-least-32-characters>"}'
 SWEEP_DEVICE_CLASSES_JSON='{}'
 SWEEP_LOCALIZATION_KEYS_JSON='{}'
+SWEEP_ALLOW_TEST_ADAPTERS=false
 SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=false
 ```
 
-Single-quote JSON values in `.env`: `just relay` and `just fake-node` read the file with `uv run --env-file`, which strips double quotes from unquoted values.
+Single-quote JSON values in `.env`: `just relay` reads the file with `uv run --env-file`, which strips double quotes from unquoted values. The isolated `just test-fake-node` recipe reads a separately supplied test environment file.
 
-`SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true` is a demo-only fallback. It proves that a frame came from a holder of the shared secret, but cannot prove which aircraft sent it; keep it false for hardware. The freshness settings in `.env.example` are explicit demo values and must be measured and configured for a hardware session.
+`SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true` is an isolated-test fallback and startup also requires `SWEEP_ALLOW_TEST_ADAPTERS=true`. It proves that a frame came from a holder of the shared secret, but cannot prove which device sent it. Hardware sessions keep both flags false and use distinct configured adapter keys. The freshness values in `.env.example` are explicit configuration values, not hardware measurements; verify and configure them for the actual deployment. No test adapter or synthetic roster belongs in the operator session.
 
 `SWEEP_DEVICE_CLASSES_JSON` is an optional object keyed by the same canonical device ID strings whose values are the device class, `aircraft` or `ground_vehicle` (`planner.models.DeviceClass`); every ID in it must also have an adapter key (`device_class_without_key` fails startup), and IDs absent from it are aircraft. The relay derives each configured device's `unit` from it: the 1-based position of the ID among the configured IDs of its class, sorted ascending, so aircraft `{1, 2}` and ground vehicles `{11, 12, 13}` are units 1 and 2 and 1 through 3. Labels (`D-01`, `G-01`), MediaMTX paths (`drone1`, `ground1`), and the console derive from the unit, never from the raw ID, and the unit is stable across reconnects. An ID admitted without a key under the shared-token fallback is an aircraft whose unit is its ID.
 
-Two constraints ride on that numbering. Configure aircraft IDs as 1 through N ascending, so each aircraft's unit equals its ID: the DJI pilot app publishes to `drone{id}` and derives its media password from that name, and the console plays `drone{id}`, while the relay polls and projects `drone{unit}`, so a gapped or offset ID set (say `{2, 3}`) attributes one aircraft's feed to another, leaves the rest blank, and breaks the derived publisher password (`media/README.md`). The relay logs a startup warning naming every aircraft whose unit differs from its ID; the constraint lifts when the app and the console derive the path from the unit. And because an unkeyed ID takes its ID as its unit, `SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true` with any configured key refuses to start (`shared_token_unit_collision`) unless the configured aircraft IDs already satisfy that constraint; otherwise a shared-token joiner could take a configured aircraft's unit, label, and media path.
+The DJI pilot app still publishes its primary feed as `drone{id}` and derives its media
+password from that name. Legacy aircraft configurations therefore keep ID and unit equal;
+explicit camera mappings may instead name the exact real publisher stream. The console
+uses the reported configured stream, falling back to the class/unit legacy path only when
+no camera mapping is supplied. Reordering configured IDs requires reviewing unit labels,
+media paths, and publisher credentials. The shared-token fallback cannot resolve an
+ambiguous configured identity and must stay disabled for hardware.
 
 A ground vehicle joins, reports telemetry, reaches `ready`, and is projected, labelled, selected, and commanded through the same path as an aircraft. `relay/autonomy.py relay_snapshot` reads each device's `device_class` and `unit` and its telemetry `state` in the vocabulary that class reports, so one `FleetSnapshot` carries a mixed session: a ground vehicle has a `drive_state`, a null `flight_state`, and is `mobile` in every drive state but `docked` and `fault`. A device whose class the projection does not name, or whose state is outside its class vocabulary, is excluded until the node reports a state this build understands. `planner/README.md` and `arbiter/README.md` state which intents each class executes and which safety gates change with it. The `sim` adapter backend simulates aircraft only: a ground vehicle in a `sim` session is admitted and projected, but its commands fail closed into a safety hold, so run one on the `remote` backend.
 
-`SWEEP_LOCALIZATION_KEYS_JSON` is an optional, separately generated per-aircraft credential map. It defaults to empty, and every configured relay, adapter, and localization secret must be distinct. `relay.main` enables diagnostic localization only when `SWEEP_CONTROL_LOCALIZATION_JSON` supplies every deployment pin and bound. A projected pose also requires an explicit per-aircraft adapter key; the demo-only shared relay-token fallback is never used to sign one. The pose remains diagnostic and has `flight_approved: false`.
+`SWEEP_LOCALIZATION_KEYS_JSON` is an optional, separately generated per-aircraft credential map. It defaults to empty, and every configured relay, adapter, and localization secret must be distinct. `relay.main` enables diagnostic localization only when `SWEEP_CONTROL_LOCALIZATION_JSON` supplies every deployment pin and bound. A projected pose also requires an explicit per-aircraft adapter key; the isolated-test shared relay-token fallback is never used to sign one. The pose remains diagnostic and has `flight_approved: false`.
 
 The JSON value has these exact top-level fields: `relay_clock_id`, `max_clock_error_ms`, `max_fix_age_ms`, `max_velocity_age_ms`, `max_height_age_ms`, `max_position_uncertainty_p95_m`, and `pins`. Each pin names `drone_id`, `map_id`, `geometry_id`, `camera_calibration_id`, `body_extrinsics_id`, `source_ids`, and a measured `clock_mapping`. The mapping carries `capture_clock_id`, `relay_clock_id`, `capture_reference_s`, `relay_reference_ms`, `milliseconds_per_capture_second`, `max_error_ms`, and `measured: true`. The loader accepts no missing bounds or inferred clock values. A signed producer frame must match these host-owned pins and the measured mapping before the relay emits its separately signed diagnostic pose.
+
+`SWEEP_MEDIA_CAMERAS_JSON` optionally maps each configured device ID to at most eight
+camera records `{camera_id, label, stream}`. It describes actual onboard sources: both
+cameras on a scoped ground robot need separate records and publishers. Explicit streams
+are safe unique names, not arbitrary URLs. Omitted mapping preserves the one legacy
+primary path; an empty camera list means no configured cameras. Per-camera status and
+frame age remain distinct from parent-device connectivity. See [media setup](../media/README.md).
 
 Video settings are optional and read from the same environment. `SWEEP_MEDIA_API_URL` (an HTTP origin such as `http://127.0.0.1:9997`, the loopback port `docker-compose.yml` publishes) with `SWEEP_MEDIA_API_USERNAME` (default `sweep-api`) and `SWEEP_MEDIA_API_PASSWORD` turns on the MediaMTX readiness poll behind the state `video` field; a URL without a password fails startup, and no URL means node claims only. `SWEEP_MEDIA_API_TIMEOUT_MS` (500), `SWEEP_MEDIA_POLL_INTERVAL_MS` (1000), and `SWEEP_MEDIA_STALE_AFTER_MS` (3000, at least the interval) bound the poll. `SWEEP_MEDIA_WEBRTC_ORIGIN`, `SWEEP_MEDIA_READ_USERNAME`, and `SWEEP_MEDIA_READ_PASSWORD`, the values `console/vite.config.ts` serves in development, are served by the relay at `GET /runtime-config.json` behind the relay bearer as `{"media": {"webrtcOrigin", "readerUsername", "readerPassword"}}` so a built console can play; with any of the three unset the endpoint answers 503 `{"media": null}`. The built console reads it cross-origin, so its origin must be listed in `SWEEP_CONSOLE_ORIGINS`.
 
@@ -141,12 +160,24 @@ uv sync --locked
 uv run uvicorn relay.app:app --host 127.0.0.1 --port 8000
 ```
 
-`relay.app:app` is the standalone relay: with no planner/arbiter consumer configured it refuses every intent with `downstream_unavailable`. `relay.main` composes the relay with the planner, arbiter, and the adapters `SWEEP_ADAPTER_BACKEND` selects (see "Autonomy composition" below). It additionally reads `SWEEP_PLANNING_JSON` and `SWEEP_SAFETY_JSON`, plus `SWEEP_SIM_CAMERA_JSON` on the `sim` backend, each a JSON object with exactly that config's fields; `.env.example` carries the CI fixture values as demo values. `just relay` reads `.env` and runs it:
+`relay.app:app` is the standalone relay: with no planner/arbiter consumer configured it refuses every intent with `downstream_unavailable`. `relay.main` composes the relay with the planner, arbiter, and the adapters `SWEEP_ADAPTER_BACKEND` selects (see "Autonomy composition" below). It reads `SWEEP_PLANNING_JSON` and `SWEEP_SAFETY_JSON`, each with the exact config fields and measured values for the actual deployment; `.env.example` leaves these required values empty. Hardware uses `remote`. An isolated test runtime may opt into `sim` with `SWEEP_ALLOW_TEST_ADAPTERS=true` and must additionally supply `SWEEP_SIM_CAMERA_JSON`. `just relay` reads `.env` and runs the configured deployment:
 
 ```bash
 just relay        # uv run --env-file .env python -m relay.main --host 127.0.0.1 --port 8000
-just fake-node    # another terminal; with SWEEP_ADAPTER_BACKEND=remote the console drives it
 ```
+
+For an isolated protocol test only, use a separate relay, log directory, session, and
+test-only credentials. Both that relay and the fake-node process require
+`SWEEP_ALLOW_TEST_ADAPTERS=true`; the fake-node CLI additionally requires `--test-only`.
+The recipe supplies that CLI flag and requires all target arguments explicitly:
+
+```bash
+just test-fake-node /private/path/test.env 1 isolated-protocol-test ws://127.0.0.1:18010
+```
+
+The separate test relay must already be configured and running. Never point this command
+at the operator relay or reuse hardware credentials. Prefer the in-process integration
+tests when a separate process is unnecessary. The old `just fake-node` recipe is removed.
 
 ## Authentication and connection binding
 
@@ -206,7 +237,7 @@ Each state snapshot carries a session-local, increasing `state_sequence`. Consum
 
 The console ignores membership projections older than its current roster or already covered by an authoritative state snapshot. A delayed membership frame cannot undo aircraft readiness, selection, or a preview built against the newer roster.
 
-Every accepted membership transition is immediately followed, in the same ordered publication, by a `state` event. Membership values are exactly `registered`, `ready`, `leaving`, `disconnected`, and `degraded`. A session retains records and membership history for disconnected aircraft, caps physical stable IDs at four per device class (`relay.state.MAX_PHYSICAL_DEVICES`; a fifth aircraft or a fifth ground vehicle is refused `fleet_capacity`), increments `connection_epoch` on rejoin, and increments `roster_version` on membership changes. Join and rejoin do not modify the current selection or accepted plan.
+Every accepted membership transition is immediately followed, in the same ordered publication, by a `state` event. Membership values are exactly `registered`, `ready`, `leaving`, `disconnected`, and `degraded`. A session retains records and membership history for disconnected aircraft, caps total admitted stable device IDs at 64 (`fleet_capacity` refuses excess identities; this is not a hardware qualification limit), increments `connection_epoch` on rejoin, and increments `roster_version` on membership changes. Join and rejoin do not modify the current selection or accepted plan.
 
 `graceful_leave` defaults closed. Integration must provide `leave_authorizer_factory` to `create_app`; its per-session callback receives `(drone_id, connection_epoch, current_state)` and returns true only after the autonomy path proves landed, disarmed, and task-free. Without that approval, the relay emits `graceful_leave_not_authorized`. After approval, the registry atomically removes the aircraft from selection and clears pending confirmation and the accepted prior-roster plan while entering `leaving`. That membership event is followed by a one-shot state carrying `invalidated_intent_ids`, `invalidation_reason: "graceful_leave_roster_change"`, `prior_roster_version`, and `cleared_control_fields`; periodic states do not repeat this transition metadata. A socket closing without an authorized leave is recorded as unexpected loss.
 
@@ -236,7 +267,7 @@ membership_history_truncated, camera_capabilities, node_status, video, sensor
 
 `camera_capabilities` and `node_status` are the node's latest `capabilities` and `node_status` frames (see the node protocol below) without their transport-only fields, or null until the node has sent one in the current connection epoch; a rejoin clears both. They are informational projections for the console and the command wire. Neither changes membership or `control_authority`: only a signed `readiness` frame does that, so a node that loses authority must report it through readiness as well as `node_status`.
 
-`video` is the per-aircraft stream projection the console's Live module plays from, exactly `{"status", "last_frame_at"}` with `status` one of `live`, `offline`, `unreported` and `last_frame_at` a millisecond timestamp or null (mirrored by `MediaStreamState` in `console/src/relay/contract.ts`, which accepts no other keys). Two sources feed it (`relay/media.py`). The node's current-epoch `node_status.video_publish_state` is its own claim: `publishing` is live, `stopped`, `connecting`, and `failed` are offline, and no frame yet is unreported. When `SWEEP_MEDIA_API_URL` is set, a background task reads MediaMTX's `/v3/paths/get/{stream}` for every configured device, `drone{unit}` for aircraft and `ground{unit}` for ground vehicles (`relay.media.stream_name`; the four aircraft paths when no key is configured), every `SWEEP_MEDIA_POLL_INTERVAL_MS` with a `SWEEP_MEDIA_API_TIMEOUT_MS` bound on each request and never inside the session lock or the fan-out; while the last complete read is younger than `SWEEP_MEDIA_STALE_AFTER_MS`, MediaMTX decides `status` (path `online` is live, anything else including a missing path is offline) because it is what the console can actually play. An unreachable, failing, or unconfigured MediaMTX degrades to the node's claim after that window and never upgrades anything to live on its own; a disconnected aircraft's stale claim is offline, or unreported when no frame was ever seen. `last_frame_at` is the newest evidence of frames: the read at which the path's inbound byte count last grew, or the `t` of the node's latest `node_status` that said `publishing`, whichever is later, and it survives a rejoin as history. Nodes resend `node_status` only when it changes, so without the MediaMTX API the age on a live tile counts from the node's claim rather than from a frame.
+`video` is the per-aircraft stream projection the console's Live module plays from, exactly `{"status", "last_frame_at"}` with `status` one of `live`, `offline`, `unreported` and `last_frame_at` a millisecond timestamp or null (mirrored by `MediaStreamState` in `console/src/relay/contract.ts`, which accepts no other keys). Two sources feed it (`relay/media.py`). The node's current-epoch `node_status.video_publish_state` is its own claim: `publishing` is live, `stopped`, `connecting`, and `failed` are offline, and no frame yet is unreported. When `SWEEP_MEDIA_API_URL` is set, a background task reads MediaMTX's `/v3/paths/get/{stream}` for every configured device, `drone{unit}` for aircraft and `ground{unit}` for ground vehicles (`relay.media.stream_name`; only explicitly configured device paths), every `SWEEP_MEDIA_POLL_INTERVAL_MS` with a `SWEEP_MEDIA_API_TIMEOUT_MS` bound on each request and never inside the session lock or the fan-out; while the last complete read is younger than `SWEEP_MEDIA_STALE_AFTER_MS`, MediaMTX decides `status` (path `online` is live, anything else including a missing path is offline) because it is what the console can actually play. An unreachable, failing, or unconfigured MediaMTX degrades to the node's claim after that window and never upgrades anything to live on its own; a disconnected aircraft's stale claim is offline, or unreported when no frame was ever seen. `last_frame_at` is the newest evidence of frames: the read at which the path's inbound byte count last grew, or the `t` of the node's latest `node_status` that said `publishing`, whichever is later, and it survives a rejoin as history. Nodes resend `node_status` only when it changes, so without the MediaMTX API the age on a live tile counts from the node's claim rather than from a frame.
 
 `sensor` mirrors `video` for the scan feed: exactly `{"kind": "lidar_scan", "last_scan_at": int|null}`, where `last_scan_at` is the `t` of the device's latest accepted `sensor` frame in its current connection epoch (volatile in the audit projection) and `kind` is material. A rejoin clears it. The frames themselves reach consoles as `sensor` events (below), never through state.
 
@@ -248,7 +279,7 @@ Server WebSocket event types are `auth.accepted`, `auth.refused`, `membership`, 
 
 ## Node protocol
 
-A bridge node (the phone app, or `adapters.dji_mini3.fake_node` before hardware exists) is an adapter connection. It authenticates with its drone ID and per-aircraft key, sends the signed `join` and `readiness` frames above, streams telemetry, and then speaks the command wire described here. `adapters/README.md` describes the relay-side `RemoteBridgeAdapter` that drives it.
+A bridge node is an adapter connection. A hardware phone app authenticates with its device ID and per-device key, sends the signed `join` and `readiness` frames above, streams telemetry, and then speaks the command wire described here. `adapters.dji_mini3.fake_node` exercises this protocol only in an explicitly isolated test runtime; it is never a hardware substitute in the operator session. `adapters/README.md` describes the relay-side `RemoteBridgeAdapter` that drives the wire.
 
 `auth.accepted` carries a `node` object for adapter connections and null for consoles. It distributes the relay-configured thresholds so no node invents its own:
 
@@ -257,7 +288,7 @@ A bridge node (the phone app, or `adapters.dji_mini3.fake_node` before hardware 
 ```
 
 ```dotenv
-SWEEP_ADAPTER_BACKEND=sim
+SWEEP_ADAPTER_BACKEND=remote
 SWEEP_COMMAND_TTL_MS=2000
 SWEEP_COMMAND_DEADLINE_MS=10000
 SWEEP_VIRTUAL_STICK_HZ=10
@@ -265,7 +296,7 @@ SWEEP_NODE_WATCHDOG_HOLD_MS=2000
 SWEEP_NODE_WATCHDOG_FAILSAFE_MS=10000
 ```
 
-`SWEEP_ADAPTER_BACKEND` selects which adapters `relay.bridge.build_adapters` and `build_dispatcher` construct for a session: `sim` (the deterministic simulator, with an explicit `SimCameraConfig`) or `remote` (one `RemoteBridgeAdapter` over the bridge wire, bounded by `SWEEP_COMMAND_TTL_MS`). The relay itself never dispatches; `relay.autonomy`, the composition `relay.main` runs, calls that factory for each accepted intent. `SWEEP_COMMAND_DEADLINE_MS` bounds one command's total wait regardless of non-terminal progress acknowledgements and must be at least the TTL; at the deadline the adapter returns the last non-terminal acknowledgement and the plan reports `executing`. `SWEEP_VIRTUAL_STICK_HZ` must stay within the documented 5 to 25, and the watchdog values must satisfy `0 <= hold < failsafe`. These are demo values; measure and configure them for a hardware session.
+`SWEEP_ADAPTER_BACKEND` selects which adapters `relay.bridge.build_adapters` and `build_dispatcher` construct for a session: `remote` for hardware (one `RemoteBridgeAdapter` over the bridge wire, bounded by `SWEEP_COMMAND_TTL_MS`), or `sim` only for an explicitly opted-in isolated test runtime with a `SimCameraConfig`. The relay itself never dispatches; `relay.autonomy`, the composition `relay.main` runs, calls that factory for each accepted intent. `SWEEP_COMMAND_DEADLINE_MS` bounds one command's total wait regardless of non-terminal progress acknowledgements and must be at least the TTL; at the deadline the adapter returns the last non-terminal acknowledgement and the plan reports `executing`. `SWEEP_VIRTUAL_STICK_HZ` must stay within the documented 5 to 25, and the watchdog values must satisfy `0 <= hold < failsafe`. The example numbers above are not measured hardware acceptance; measure and configure timing for the actual devices before enabling motion.
 
 ### Control heartbeat (relay to one node)
 
@@ -314,7 +345,7 @@ All node-authored frames carry `drone_id` and `connection_epoch`, rely on the au
 {"v":1,"t":1756700000000,"type":"sensor","event_id":"...","session":"demo","drone_id":11,"connection_epoch":3,"kind":"lidar_scan","pose":{"x":1.2,"y":-0.4,"yaw_deg":87.5},"angle_min_deg":0.0,"angle_increment_deg":1.0,"range_min_m":0.15,"range_max_m":12.0,"ranges_cm":[0,152,151,0]}
 ```
 
-The fake node runs against a live relay with `just fake-node` or `uv run python -m adapters.dji_mini3.fake_node --drone-id 1`; it reads its credential from `--token`, `SWEEP_ADAPTER_KEYS_JSON`, or `SWEEP_RELAY_TOKEN`. `relay/tests/test_bridge_roundtrip.py` starts the relay in-process on the `remote` backend, connects the fake node, and dispatches a safety hold through `build_dispatcher` and the remote adapter end to end.
+The fake node uses the explicitly isolated test procedure under [Run the relay](#run-the-relay). Its credential comes only from `--token` or its exact `SWEEP_ADAPTER_KEYS_JSON` entry; it never falls back to the operator relay token. `relay/tests/test_bridge_roundtrip.py` starts an opted-in relay in-process on the `remote` backend, connects the fake node, and dispatches a safety hold through `build_dispatcher` and the remote adapter end to end.
 
 ## Autonomy composition
 
@@ -334,7 +365,7 @@ Events from one relay operation are committed as a single audit batch. A per-ses
 
 The database holds fencing metadata, not a second copy of the log: one row per record with its operation, the SHA-256 digest of its exact JSONL line, and the line length. The newest non-empty operation's canonical lines are retained until a successor commits, long enough to rebuild a mirror tail the process did not finish writing; a mirror that is damaged inside older history fails closed instead of being rebuilt. Retained bytes are parsed and checked against their sequence, session, event contract, and canonical JSON encoding before recovery. Comparison and repair stream the existing mirror in bounded chunks rather than loading the complete history into memory. A database written by the earlier writer, which stored every event body, is migrated to digest rows on first reopen and vacuumed.
 
-One canonical audit record is limited to 1 MiB on append and before any persisted length can drive a mirror read or retained-body materialization. `pending` and `accepted_plan` each have a 128 KiB canonical projection limit checked before their control operation starts. Four maximum 128 KiB aircraft projections plus both maximum control projections fit below the record ceiling with the state envelope. Legacy JSONL lines, legacy database bodies, and the legacy pending cursor are read with explicit bounds; malformed signed-64 metadata fails closed as `AuditLogError`.
+One canonical audit record is limited to 16 MiB on append and before any persisted length can drive a mirror read or retained-body materialization. `pending` and `accepted_plan` each have a 128 KiB canonical projection limit checked before their control operation starts. Fleet admission, per-device projection, and whole-record ceilings are separate bounds; increasing the number of configured devices does not permit an oversized state or audit record. Legacy JSONL lines, legacy database bodies, and the legacy pending cursor are read with explicit bounds; malformed signed-64 metadata fails closed as `AuditLogError`.
 
 Control projection updates record their pending operation before changing any field. If copying a later field fails, the session rejects further mutations, state reads, and replay, including when a planner callback catches the original exception.
 

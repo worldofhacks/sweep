@@ -93,9 +93,91 @@ test('negotiates WHEP SDP, renders its RTP track, and tears down the session', a
   expect(fetcher).toHaveBeenLastCalledWith('http://localhost:8889/session/1', expect.objectContaining({
     method: 'DELETE',
     headers: { Authorization: descriptor.primary.authorization },
+    redirect: 'error',
   }))
   expect(close).toHaveBeenCalled()
   expect(video.srcObject).toBeNull()
+})
+
+test.each([
+  ['http://localhost:8889', '/session/1', 'http://localhost:8889/session/1'],
+  ['http://localhost:8889', 'session/1', 'http://localhost:8889/drone1/session/1'],
+  ['http://localhost:8889', '//localhost:8889/session/1', 'http://localhost:8889/session/1'],
+  ['https://media.example', 'https://media.example/session/1', 'https://media.example/session/1'],
+])('cleans up a same-origin WHEP session from %s with Location %s', async (origin, location, expectedUrl) => {
+  const playback = createPlaybackDescriptor({
+    device: { device_class: 'aircraft', unit: 1 },
+    webrtcOrigin: origin,
+    readerUsername: 'reader',
+    readerPassword: 'secret',
+  })
+  const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'DELETE'
+      ? new Response('', { status: 200 })
+      : new Response('answer', { status: 201, headers: { Location: location } }),
+  )
+  const session = new WhepPlaybackSession({ createPeerConnection: readyPeer, fetcher })
+  const onState = vi.fn()
+
+  await session.start(renderedVideo(), playback, onState)
+  expect(onState).toHaveBeenLastCalledWith('playing')
+  await session.close()
+
+  expect(fetcher).toHaveBeenCalledTimes(2)
+  expect(fetcher).toHaveBeenLastCalledWith(expectedUrl, expect.objectContaining({
+    method: 'DELETE',
+    headers: { Authorization: playback.primary.authorization },
+    redirect: 'error',
+  }))
+})
+
+test.each([
+  'http://other.example/session/1',
+  '//other.example/session/1',
+  'http://localhost:8890/session/1',
+  'https://localhost:8889/session/1',
+  'ftp://localhost:8889/session/1',
+  'blob:http://localhost:8889/session/1',
+  'http://embedded:credentials@localhost:8889/session/1',
+  'http://[invalid/session/1',
+])('refuses unsafe WHEP Location %s without sending cleanup credentials', async (location) => {
+  const video = renderedVideo()
+  const peer = fakePeer()
+  const fetcher = vi.fn().mockResolvedValue(new Response('answer', {
+    status: 201, headers: { Location: location },
+  }))
+  const session = new WhepPlaybackSession({ createPeerConnection: () => peer, fetcher })
+  const onState = vi.fn()
+
+  await session.start(video, descriptor, onState)
+  await session.close()
+
+  expect(onState).toHaveBeenLastCalledWith('failed', 'WHEP response has an unsafe session location')
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(fetcher).toHaveBeenCalledWith(descriptor.primary.url, expect.objectContaining({ method: 'POST' }))
+  expect(peer.setRemoteDescription).not.toHaveBeenCalled()
+  expect(peer.close).toHaveBeenCalledTimes(1)
+  expect(video.srcObject).toBeNull()
+})
+
+test('a cross-origin Location arriving after close cannot receive cleanup credentials', async () => {
+  let answer: (response: Response) => void = () => undefined
+  const fetcher = vi.fn(() => new Promise<Response>((resolve) => { answer = resolve }))
+  const peer = fakePeer()
+  const session = new WhepPlaybackSession({ createPeerConnection: () => peer, fetcher })
+  const onState = vi.fn()
+
+  const started = session.start(renderedVideo(), descriptor, onState)
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
+  await session.close()
+  answer(new Response('late answer', {
+    status: 201, headers: { Location: 'https://other.example/session/1' },
+  }))
+  await started
+
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(onState.mock.calls).toEqual([['connecting']])
+  expect(peer.setRemoteDescription).not.toHaveBeenCalled()
 })
 
 test('reports failed with the refusal detail instead of throwing or falling back', async () => {

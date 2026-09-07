@@ -821,6 +821,11 @@ function projectMembershipEvent(
     membership_history: previous?.membership_history ?? [],
     membership_history_truncated: previous?.membership_history_truncated ?? 0,
     video: previous?.connection_epoch === event.connection_epoch ? previous.video : undefined,
+    cameras: previous?.cameras ?? known?.cameras?.map((camera) => ({
+      ...camera,
+      status: 'unreported' as const,
+      last_frame_at: null,
+    })),
     sensor: previous?.connection_epoch === event.connection_epoch ? previous.sensor : undefined,
   }
 }

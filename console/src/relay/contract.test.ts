@@ -1017,3 +1017,43 @@ describe('map metadata headers', () => {
     expect(parseMapMetadata(read(missing))).toBeNull()
   })
 })
+
+
+describe('explicit device camera inventory', () => {
+  const front = { camera_id: 'front', label: 'Front', stream: 'ground5', status: 'live', last_frame_at: t }
+  const rear = { camera_id: 'rear', label: 'Rear', stream: 'ground5_rear', status: 'unreported', last_frame_at: null }
+  test('preserves separate camera reports and explicit absence without inventing sensors', () => {
+    const event = stateWith([aircraft({ cameras: [front, rear], sensor: { kind: null, last_scan_at: null } })])
+    expect(event?.type).toBe('state')
+    if (event?.type !== 'state') throw new Error('expected state')
+    expect(event.drones[0].cameras).toEqual([front, rear])
+    expect(event.drones[0].sensor?.kind).toBeNull()
+    expect(stateWith([aircraft({ cameras: [] })])?.type).toBe('state')
+  })
+  test.each([
+    null, [front, front], [front, { ...rear, stream: front.stream }],
+    [{ ...front, stream: '../camera' }], [{ ...front, stream: 'https://camera' }],
+    [{ ...front, stream: 'camera\n' }], [{ ...front, camera_id: 'camera\n' }],
+    [{ ...front, label: ' Front' }], [{ ...front, last_frame_at: -1 }],
+    [{ ...front, url: 'http://camera' }],
+    Array.from({ length: 9 }, (_, index) => ({ ...front, camera_id: `cam${index}`, stream: `cam${index}` })),
+  ])('refuses malformed camera inventory %j', (cameras) => {
+    expect(stateWith([aircraft({ cameras })])).toBeNull()
+  })
+})
+
+
+test('state roster accepts 64 configured identities and rejects 65', () => {
+  const roster = Array.from({ length: 64 }, (_, index) => aircraft({ drone_id: index + 1 }))
+  expect(stateWith(roster)?.type).toBe('state')
+  expect(stateWith([...roster, aircraft({ drone_id: 65 })])).toBeNull()
+})
+
+
+test('camera labels align with Python printable Unicode code point limits', () => {
+  const camera = { camera_id: 'front', label: '🚁'.repeat(64), stream: 'ground5', status: 'unreported', last_frame_at: null }
+  expect(stateWith([aircraft({ cameras: [camera] })])?.type).toBe('state')
+  for (const label of ['🚁'.repeat(65), 'Front\u00a0camera', 'Front\u2007camera', 'Front\nCamera']) {
+    expect(stateWith([aircraft({ cameras: [{ ...camera, label }] })])).toBeNull()
+  }
+})

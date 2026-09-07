@@ -1,5 +1,6 @@
 import { motionObservationCurrent } from '../../control/observation'
 import { deriveStream } from '../live/derive-live'
+import { deviceCameras } from '../../media/cameras'
 import { membershipWord } from '../../control/observation'
 import { useState } from 'react'
 import { DeviceTelemetryPanel } from './DeviceTelemetryPanel'
@@ -112,7 +113,7 @@ function DeviceCard({
   const id = formatDeviceId(device)
   const noun = deviceNoun(device.device_class)
   const words = authorityWords(device)
-  const video = deriveStream(device, now)
+  const video = deriveStream(device, now, deviceCameras(device)[0] ?? null)
   const sensor = sensorWord(device, now)
   return (
     <article className="dv-card" aria-label={`${id} device card`}>
@@ -139,6 +140,12 @@ function DeviceCard({
           v={`${video.status} · ${video.lastFrame}`}
           tone={video.tone}
         />
+        {device.cameras !== undefined && deviceCameras(device).map((camera) => {
+          const feed = deriveStream(device, now, camera)
+          return <Row key={camera.camera_id} k={`camera · ${camera.label}`}
+            v={`${feed.status} · ${feed.lastFrame}`} tone={feed.tone} />
+        })}
+        {device.cameras?.length === 0 && <Row k="cameras" v="No cameras configured" tone="muted" />}
         {device.device_class === 'ground_vehicle' && <Row k="sensor" v={sensor.text} tone={sensor.tone} />}
         <Row k="last seen" v={device.last_seen_at === null ? 'unreported' : formatAgo(now, device.last_seen_at)} />
       </dl>

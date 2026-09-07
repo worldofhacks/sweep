@@ -3,7 +3,7 @@
  * Only the WHEP request is carried over; the HLS fallback and its hls.js
  * dependency stay on #68 and are reconciled when that branch merges.
  */
-import type { DeviceClass } from '../relay/contract'
+import { validMediaStreamName, type DeviceClass } from '../relay/contract'
 
 export interface MediaRuntimeConfiguration {
   /** MediaMTX WebRTC origin without path, query, or credentials. */
@@ -20,6 +20,8 @@ export interface StreamDevice {
 
 export interface PlaybackConfiguration extends MediaRuntimeConfiguration {
   device: StreamDevice
+  /** Explicit camera stream provisioned by the relay; never an arbitrary URL. */
+  stream?: string
 }
 
 export interface PlaybackRequest {
@@ -50,7 +52,8 @@ export function createPlaybackDescriptor(config: PlaybackConfiguration): Playbac
     throw new Error('Media reader credentials are required')
   }
 
-  const stream = streamName(config.device)
+  const stream = config.stream ?? streamName(config.device)
+  if (!validMediaStreamName(stream)) throw new Error('Invalid configured camera stream name')
   const authorization = `Basic ${btoa(`${config.readerUsername}:${config.readerPassword}`)}`
   return {
     stream,

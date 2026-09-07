@@ -4,7 +4,7 @@
  */
 import { useMemo, useRef } from 'react'
 import { formatDeviceId } from '../control/state'
-import type { RelayAircraftState } from '../relay/contract'
+import type { DeviceCameraState, RelayAircraftState } from '../relay/contract'
 import { createPlaybackDescriptor, streamName, type PlaybackDescriptor } from './playback'
 import type { MediaRuntime } from './runtime'
 import { usePlayback } from './use-playback'
@@ -14,19 +14,21 @@ export type LivePlayerDevice = Pick<RelayAircraftState, 'drone_id' | 'device_cla
 export interface LivePlayerProps {
   device: LivePlayerDevice
   media: MediaRuntime
+  camera?: Pick<DeviceCameraState, 'camera_id' | 'label' | 'stream'>
 }
 
 /** Mounted only while the relay reports the stream live; unmounting closes the session. */
-export function LivePlayer({ device, media }: LivePlayerProps) {
+export function LivePlayer({ device, media, camera }: LivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const { device_class, unit } = device
+  const cameraStream = camera?.stream
   const descriptor = useMemo<PlaybackDescriptor | Error>(() => {
     try {
-      return createPlaybackDescriptor({ ...media.configuration, device: { device_class, unit } })
+      return createPlaybackDescriptor({ ...media.configuration, device: { device_class, unit }, stream: cameraStream })
     } catch (error) {
       return error instanceof Error ? error : new Error('No playback descriptor')
     }
-  }, [device_class, unit, media.configuration])
+  }, [device_class, unit, media.configuration, cameraStream])
   const playback = usePlayback(
     videoRef,
     descriptor instanceof Error ? null : descriptor,
@@ -36,7 +38,7 @@ export function LivePlayer({ device, media }: LivePlayerProps) {
 
   return (
     <div className="lv-player" data-playback-state={playback.state}>
-      <video ref={videoRef} muted playsInline aria-label={`Live feed ${formatDeviceId(device)}`} />
+      <video ref={videoRef} muted playsInline aria-label={`Live feed ${formatDeviceId(device)}${camera ? ` · ${camera.label}` : ''}`} />
       <p className="visually-hidden" role="status">
         Playback {playback.state}
       </p>

@@ -1,5 +1,7 @@
 # tests
 
+Mixed-fleet tests must cover additive aerial/ground identities, both explicitly configured robot cameras, scoped LiDAR, unknown aerial proximity measurements, stale/lost observations, and epoch-bound control. Fixtures are test-only and never reachable as an operator runtime or browser mode; see the [integration guide](../docs/modular-fleet.md).
+
 Capability area: Platform. Milestone: all.
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence.

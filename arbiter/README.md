@@ -1,5 +1,7 @@
 # arbiter
 
+Safety applies to the modular aerial/ground fleet described in [the integration guide](../docs/modular-fleet.md). Ground LiDAR, aircraft proximity sensing, and attached cameras are different capabilities with different evidence. A reported sensor or live camera never grants motion authority; ground commissioning must prove its required local obstacle-avoidance stop path.
+
 Capability area: Autonomy. Milestone: M1.
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Every arbiter or e-stop change names one change owner and requires cross-review.

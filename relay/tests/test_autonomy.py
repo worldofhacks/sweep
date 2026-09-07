@@ -46,10 +46,10 @@ AUTONOMY_VARIABLES = ("SWEEP_PLANNING_JSON", "SWEEP_SAFETY_JSON", "SWEEP_SIM_CAM
 LOCALIZATION_KEY = b"localization-test-key-32-characters"
 
 
-def _env_example() -> dict[str, str]:
+def _fixture_environment() -> dict[str, str]:
     """Parse the dotenv file the way ``uv run --env-file`` does for single-quoted values."""
     values: dict[str, str] = {}
-    for line in (REPO_ROOT / ".env.example").read_text().splitlines():
+    for line in (REPO_ROOT / "tests/fixtures/autonomy.env").read_text().splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
@@ -74,6 +74,7 @@ def _settings(log_dir: Path, backend: AdapterBackend = AdapterBackend.SIM) -> Re
         adapter_keys={1: ADAPTER_KEY},
         log_dir=log_dir,
         adapter_backend=backend,
+        allow_test_adapters=True,
     )
 
 
@@ -158,8 +159,8 @@ def _autonomy_outcome(socket: WebSocketTestSession, intent_id: str) -> dict[str,
     )
 
 
-def test_env_example_autonomy_values_are_the_ci_fixtures() -> None:
-    config = AutonomyConfig.from_env(_env_example())
+def test_fixture_environment_autonomy_values_are_the_ci_fixtures() -> None:
+    config = AutonomyConfig.from_env(_fixture_environment())
 
     assert config.planning == replace(
         planning_config(),
@@ -174,7 +175,7 @@ def test_env_example_autonomy_values_are_the_ci_fixtures() -> None:
 
 def test_missing_sim_camera_is_allowed_only_off_the_sim_backend(tmp_path: Path) -> None:
     environment = {
-        key: value for key, value in _env_example().items() if key != AUTONOMY_VARIABLES[2]
+        key: value for key, value in _fixture_environment().items() if key != AUTONOMY_VARIABLES[2]
     }
 
     config = AutonomyConfig.from_env(environment)
@@ -213,7 +214,7 @@ def _localization_config(*, measured: bool = True) -> dict[str, object]:
 def test_explicit_measured_localization_config_reaches_the_composed_relay(
     tmp_path: Path, clock: MutableClock, event_ids: EventIds
 ) -> None:
-    environment = _env_example() | {
+    environment = _fixture_environment() | {
         "SWEEP_CONTROL_LOCALIZATION_JSON": json.dumps(_localization_config()),
     }
     config = AutonomyConfig.from_env(environment)
@@ -261,7 +262,7 @@ def test_explicit_measured_localization_config_reaches_the_composed_relay(
 
 
 def test_localization_config_rejects_an_unmeasured_clock_mapping() -> None:
-    environment = _env_example() | {
+    environment = _fixture_environment() | {
         "SWEEP_CONTROL_LOCALIZATION_JSON": json.dumps(_localization_config(measured=False)),
     }
     with pytest.raises(SettingsError, match="clock mapping must be measured"):
@@ -319,7 +320,7 @@ def test_autonomy_composition_threads_one_ungrounded_profile(
 def test_autonomy_config_fails_closed_on_missing_extra_or_gate_disabling_values(
     variable: str, value: str, match: str
 ) -> None:
-    environment = _env_example()
+    environment = _fixture_environment()
     if value == "__unordered_geofence__":
         value = environment[variable].replace('"max_x":10.0', '"max_x":-10.0')
     elif value == "__zero_spacing__":
@@ -677,4 +678,4 @@ def test_localization_config_rejects_duplicate_fields(field: str) -> None:
     assert marker in raw
     raw = raw.replace(marker, f'"{field}": null, {marker}', 1)
     with pytest.raises(SettingsError, match="unique fields"):
-        AutonomyConfig.from_env(_env_example() | {"SWEEP_CONTROL_LOCALIZATION_JSON": raw})
+        AutonomyConfig.from_env(_fixture_environment() | {"SWEEP_CONTROL_LOCALIZATION_JSON": raw})

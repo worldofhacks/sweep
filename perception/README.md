@@ -1,10 +1,12 @@
 # perception
 
+The platform includes aerial and ground devices with explicitly identified onboard cameras and sensors; see the [integration guide](../docs/modular-fleet.md). Associate each observation with its real parent, camera/sensor identity, epoch, timestamp, and calibration. Each scoped ground robot has two cameras and one LiDAR; the aerial infrared depth/proximity sensor is owner-reported but unverified. No absent source or inferred sensor capability becomes perception or clearance evidence.
+
 Capability area: Interaction. Milestone: M3.
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to the detection-event shape name one change owner and require cross-review.
 
-Samples frames at 5 to 10 fps per stream from MediaMTX, runs a small detector (YOLO-class, people and common objects; thermal if mounted), and emits detection events with a world-position estimate from drone pose and camera geometry. Detections go to the relay as events, never as commands. Confidence >= 0.6 is shown, >= 0.8 is auto-promoted to focus, nothing is auto-acted on.
+Samples frames at 5 to 10 fps per stream from MediaMTX, runs a small detector (YOLO-class, people and common objects; thermal if mounted), and emits detection events with a world-position estimate from validated parent-device pose and that camera’s geometry. Detections go to the relay as events, never as commands. Confidence >= 0.6 is shown, >= 0.8 is auto-promoted to focus, nothing is auto-acted on.
 
 PRD: sections 4.8, 5.7.
 

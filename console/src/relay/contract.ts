@@ -22,7 +22,9 @@ export const MAX_INTENT_IDENTIFIER_CODE_POINTS = 128
 export const MAX_INTENT_SESSION_CODE_POINTS = 512
 export const MAX_INTENT_SOURCE_CODE_POINTS = 64
 export const MAX_INTENT_NAME_CODE_POINTS = 64
-export const MAX_INTENT_DRONE_IDS = 10
+/** Shared transport bound with relay.fleet_limits; not a flight qualification limit. */
+export const MAX_FLEET_DEVICES = 64
+export const MAX_INTENT_DRONE_IDS = MAX_FLEET_DEVICES
 export const MAX_INTENT_DRONE_ID = 2_147_483_647
 
 /**
@@ -288,11 +290,21 @@ export interface MediaStreamState {
   last_frame_at: number | null
 }
 
+export interface DeviceCameraState extends MediaStreamState {
+  camera_id: string
+  label: string
+  stream: string
+}
+
+export function validMediaStreamName(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$/.test(value)
+}
+
 export type SensorKind = 'lidar_scan'
 
 /** The relay's per-device sensor projection, mirroring `video`. */
 export interface SensorState {
-  kind: SensorKind
+  kind: SensorKind | null
   last_scan_at: number | null
 }
 
@@ -327,6 +339,8 @@ export interface RelayAircraftState {
   membership_history: unknown[]
   membership_history_truncated: number
   video?: MediaStreamState
+  /** Explicit per-device camera wiring; absent preserves the legacy primary stream. */
+  cameras?: DeviceCameraState[]
   sensor?: SensorState
 }
 
@@ -1095,6 +1109,7 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
     Array.isArray(value.membership_history) &&
     isNonNegativeInteger(value.membership_history_truncated) &&
     isVideoStreamState(value.video) &&
+    isDeviceCameras(value.cameras) &&
     isSensorState(value.sensor)
   )
 }
@@ -1131,12 +1146,30 @@ export function isDeviceTelemetry(value: unknown): value is DeviceTelemetry {
   return isRecord(value) && visit(value, 1) && canonicalJsonByteLength(value) <= MAX_DEVICE_TELEMETRY_BYTES
 }
 
+function isDeviceCameras(value: unknown): value is DeviceCameraState[] | undefined {
+  if (value === undefined) return true
+  if (!Array.isArray(value) || value.length > 8) return false
+  const ids = new Set<string>()
+  const streams = new Set<string>()
+  for (const camera of value) {
+    if (!isRecord(camera) || Object.keys(camera).length !== 5 ||
+      typeof camera.camera_id !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(camera.camera_id) ||
+      typeof camera.label !== 'string' || [...camera.label].length < 1 || [...camera.label].length > 64 ||
+      camera.label.trim() !== camera.label || /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]/u.test(camera.label) || /[^\S ]/u.test(camera.label) ||
+      !validMediaStreamName(camera.stream) || !isVideoStreamState({ status: camera.status, last_frame_at: camera.last_frame_at }) ||
+      ids.has(camera.camera_id) || streams.has(camera.stream)) return false
+    ids.add(camera.camera_id)
+    streams.add(camera.stream)
+  }
+  return true
+}
+
 function isSensorState(value: unknown): value is SensorState | undefined {
   if (value === undefined) return true
   if (!isRecord(value)) return false
   return (
     Object.keys(value).length === 2 &&
-    value.kind === 'lidar_scan' &&
+    (value.kind === null || value.kind === 'lidar_scan') &&
     (value.last_scan_at === null || isNonNegativeInteger(value.last_scan_at))
   )
 }
@@ -1321,6 +1354,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !isNullableRecord(value.pending) ||
       !isNullableRecord(value.accepted_plan) ||
       !Array.isArray(drones) ||
+      drones.length > MAX_FLEET_DEVICES ||
       !drones.every(isRelayAircraftState) ||
       (value.invalidated_intent_ids !== undefined && !isStringArray(value.invalidated_intent_ids)) ||
       (value.invalidation_reason !== undefined &&

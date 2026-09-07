@@ -1,8 +1,11 @@
 # One operator console
 
-Use **http://127.0.0.1:5173/** for the local operator console. Vite uses port 5173
-with `strictPort`, so starting a duplicate process fails instead of silently
-creating another console on a different port.
+Use **http://127.0.0.1:5173/** for the single local operator console. Start the
+verified production build with `python3 tools/console.py start` from the canonical
+checkout. The launcher owns one loopback port and never picks an alternate.
+`python3 tools/console.py status` identifies the exact running build and session.
+See [laptop console operations](laptop-console.md) and
+[modular fleet integration](modular-fleet.md).
 
 The active deployment must pair its relay URL, session ID, and credential with
 the same session used by the real nodes. Check the non-secret URL/session fields
@@ -15,8 +18,8 @@ the actual All devices view. Source availability, browser playback, node
 membership, and motion readiness are separate facts.
 
 When replacing the active build, retain the canonical URL, retire previous UI
-servers, and update the operator's existing preview. An old bookmark may redirect
-to the canonical console; it must not continue serving another build. Coordinate
+servers, and update the operator's existing preview. Ports 5174, 5175 and 5181
+remain closed, including obsolete redirect servers. Coordinate
 the active relay/session with the hardware owner before changing it. A UI upgrade
 does not require restarting robots or the relay.
 
@@ -31,3 +34,19 @@ the console to make controls selectable.
 
 For the verified ground-robot hardware gaps, scan faults and physical checks, see
 [Ohmni LiDAR commissioning](ohmni-lidar-commissioning.md).
+
+## Real data and additive devices
+
+The console starts with an empty roster until its real relay reports authenticated
+devices. Planned inventory, configured credentials and a hardware profile are not
+live membership. Disconnected/stale devices cannot retain a live motion or video
+claim; retained readings are historical evidence. Missing data stays unreported.
+Synthetic adapters and generated camera publishers are excluded from normal
+operation; explicit isolated test fixtures are not operator data sources.
+
+Ground robots in scope have two onboard cameras and one LiDAR each. Aerial drones
+have one camera and one reported infrared depth/proximity sensor; its exact
+interface remains unverified. Multiple cameras belong to their device identity
+and connection epoch, and each stream has independent freshness. Only advertised,
+qualified controls are enabled. Drone sensor data is never labeled LiDAR by
+assuming a sensor type from the presence of a camera.

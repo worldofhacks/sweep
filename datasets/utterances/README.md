@@ -1,5 +1,7 @@
 # Language utterance corpus
 
+This is a versioned test corpus, not an operator-runtime roster. Preserve historical aircraft cases and recorded hashes; add any heterogeneous device/camera/sensor cases through a new reviewed corpus release. Planned robots and feeds must never be injected into live console state.
+
 `transcript_plan_cases.jsonl` is the source for transcript-to-plan evaluation. Each line is one independently parseable case with an identifier, transcript, relay state, compiler context, expected outcome, category, and `live_demo` marker.
 
 Release 2 has 50 cases and SHA-256 `7fcc2097ccedfe84a65e161b9793e803973608f6194b243da15693885cedd458`. It corrects five movement expectations to the aircraft-relative axes and the one-foot default; case IDs stay stable, including the historical `move-left-half-meter` ID for “Go left.” Previous provider artifacts retain their original corpus digest and prompt version. Twenty cases form the live-demo subset. `transcript_plan_responses.synthetic.json` is the matching cached provider-response map used for deterministic development runs. Capture responses omit `capture_id` because the trusted host mints that identifier; the JSONL expectations retain the resulting semantic identifier for comparison with the exact deterministic host-minted value.

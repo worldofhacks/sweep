@@ -1672,7 +1672,12 @@ def test_state_video_follows_mediamtx_while_it_answers_and_the_node_claim_after(
 
     def monitor_factory(settings: RelaySettings, runtime_clock: Clock) -> MediaMonitor:
         monitor = MediaMonitor(
-            media_client, clock=runtime_clock, poll_interval_ms=10, stale_after_ms=100
+            media_client,
+            clock=runtime_clock,
+            poll_interval_ms=10,
+            stale_after_ms=100,
+            devices=settings.media_devices(),
+            cameras=settings.configured_cameras(),
         )
         monitors.append(monitor)
         return monitor

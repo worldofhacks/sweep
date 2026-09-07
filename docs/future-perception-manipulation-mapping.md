@@ -2,6 +2,14 @@
 
 Research checked against official platform documentation, open-source repositories, and peer-reviewed papers.
 
+Platform scope now follows [modular fleet integration](modular-fleet.md): additive
+aerial drones and ground robots, with per-device cameras and sensors. Ground
+robots have two cameras and one LiDAR; aerial drones have one camera and a
+reported infrared depth/proximity sensor (exact interface unverified). Earlier
+airframe-specific research and fixed-size experiments below are qualified examples,
+not a platform capacity claim. Operational observations come from real connected
+hardware; generated room worlds and offline research artifacts are not live facts.
+
 ## Recommendation
 
 Sweep can make **operator-confirmed visual search and offline spatial mapping** the concrete M5 goal. Both extend work already planned for M3: timestamped camera streams, detection events, drone poses, recorded sessions, and operator confirmation. M5 should support commands such as “find an energy drink on the counter” and “find candidates matching a red jacket and backpack,” then show ranked evidence. It should also reconstruct a static room and preserve time-indexed observations across runs.
@@ -46,7 +54,7 @@ The recommended sequence is:
 
 ## Visual search and person-candidate retrieval
 
-The ground station should run the primary perception pipeline. The planned upper bound of six streams sampled at 5 to 10 frames per second would produce 30 to 60 frames per second for detection. M3 currently accepts one source first, so synchronized 4-to-6-source ingestion, color fidelity, frame loss, and radio coexistence are prerequisites for multi-drone search. Once that gate passes, a compact fixed-class detector can run continuously, trackers can bridge detector intervals, and an open-vocabulary model can evaluate selected keyframes or crops after a query arrives. The 4.4 g Crazyflie AI-deck uses a monochrome camera and exposes hardware plus development resources. It does not supply an out-of-box video product, so color-description claims require a separate proven color stream. [Bitcraze AI-deck](https://www.bitcraze.io/products/ai-deck/)
+The ground station should run the primary perception pipeline. Stream count follows the explicitly configured cameras on admitted devices. For capacity planning, N subscribed cameras sampled at f frames per second require N × f detection frames per second; five two-camera ground robots alone contribute ten possible sources, before aircraft. Qualify synchronized ingestion, color fidelity, frame loss, radio coexistence and inference throughput at the actual deployment size before multi-device search. Once that gate passes, a compact fixed-class detector can run continuously, trackers can bridge detector intervals, and an open-vocabulary model can evaluate selected keyframes or crops after a query arrives. The 4.4 g Crazyflie AI-deck uses a monochrome camera and exposes hardware plus development resources. It does not supply an out-of-box video product, so color-description claims require a separate proven color stream. [Bitcraze AI-deck](https://www.bitcraze.io/products/ai-deck/)
 
 Grounding DINO accepts an image and text prompt and returns phrase-associated boxes. It is a credible prototype for “energy drink can” or “person with a red jacket,” but its published zero-shot results do not establish performance on Sweep's rooms, product packaging, aerial views, or people descriptions. Those need a consented local dataset. [Grounding DINO repository](https://github.com/IDEA-Research/GroundingDINO) · [Grounding DINO paper](https://arxiv.org/abs/2303.05499) YOLO-World offers a prompt-then-detect alternative with several published checkpoint sizes and deployment paths. Select exact checkpoints only after measuring parameters, memory, and latency on the ground station. [YOLO-World repository](https://github.com/AILab-CVC/YOLO-World) · [CVPR 2024 paper](https://openaccess.thecvf.com/content/CVPR2024/papers/Cheng_YOLO-World_Real-Time_Open-Vocabulary_Object_Detection_CVPR_2024_paper.pdf)
 
@@ -85,7 +93,7 @@ Manipulation adds a new vehicle capability and safety contract. PX4 supports gri
 
 The manipulation vehicle should publish explicit capabilities and measured limits: maximum payload, loaded and unloaded flight time, gripper type, grasp confirmation signal, center-of-gravity envelope, minimum approach clearance, and allowed object classes. `pickup` should compile into a staged plan with operator confirmations before approach and grasp. Every stage passes through the planner and arbiter, with aborts for stale target pose, low confidence, slip, low battery, link loss, or positioning loss. Tests need a person exclusion zone, propeller and contact protection, a capped approach speed, emergency flight termination, dropped-payload containment, and a rule forbidding pickup, transit, or delivery over people.
 
-A sealed drink can is far beyond the current airframe's payload. Red Bull lists 250, 355, and 473 ml cans and identifies water as the main ingredient. A 250 ml can therefore contains roughly 250 g of liquid before the can itself, which already exceeds the current platform by more than an order of magnitude. This is an inference from the published volume and composition. [Red Bull product sizes](https://www.redbull.com/gb-en/energydrink/products/red-bull-energy-drink)
+A sealed drink can is far beyond the current airframe's payload. Red Bull lists 250, 355, and 473 ml cans and identifies water as the main ingredient. A 250 ml can therefore contains roughly 250 g of liquid before the can itself, which already exceeds the cited Crazyflie payload limit by more than an order of magnitude. This is an inference from the published volume and composition. [Red Bull product sizes](https://www.redbull.com/gb-en/energydrink/products/red-bull-energy-drink)
 
 The staged manipulation evidence should be:
 
@@ -118,7 +126,7 @@ Complete MAP.0 and MAP.1 below. Exit with a repeatable metric room reconstructio
 
 ### M5.4: Operator-confirmed multi-drone search and map history
 
-After the multi-stream prerequisite passes, partition an accepted map or supplied floor plan across 4 to 6 drones. A match promotes a feed and map marker. Unconfirmed detections emit zero flight commands. Confirmed inspection follows the planner and arbiter, maintains a defined stand-off distance, and stays inside the geofence. Exit when at least 18 of 20 randomized searches succeed and five consecutive swarm runs complete safely. Complete MAP.2 and MAP.3 for pose-aided geometry and temporal history.
+After the multi-stream prerequisite passes, partition an accepted map or supplied floor plan across the selected, qualified aerial and ground devices. A match promotes a feed and map marker. Unconfirmed detections emit zero flight commands. Confirmed inspection follows the planner and arbiter, maintains a defined stand-off distance, and stays inside the geofence. Exit when at least 18 of 20 randomized searches succeed and five consecutive swarm runs complete safely. Complete MAP.2 and MAP.3 for pose-aided geometry and temporal history.
 
 ### M5.5: Cross-camera continuity and research spikes
 

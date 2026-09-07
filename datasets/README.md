@@ -1,5 +1,7 @@
 # datasets
 
+These corpora and recordings are isolated evaluation inputs. They never supply operator-runtime devices, telemetry, or video. Add mixed aerial/ground and attached-camera/sensor cases while preserving the identity and provenance of historical recordings; see the [modular fleet guide](../docs/modular-fleet.md).
+
 Capability area: Interaction, with team-contributed cases. Milestone: M1 onward.
 
 Any engineer may claim a ready recording or corpus task and owns it through review, integration, and evidence. Changes that encode shared-contract or safety expectations name one change owner and require cross-review.

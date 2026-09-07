@@ -114,6 +114,7 @@ def _wait_until(predicate, *, what: str) -> None:  # type: ignore[no-untyped-def
 @pytest.fixture
 def relay_server(tmp_path: Path) -> Iterator[RelayServer]:
     settings = RelaySettings(
+        allow_test_adapters=True,
         relay_token=CONSOLE_KEY,
         adapter_keys={1: ADAPTER_KEY},
         log_dir=tmp_path,

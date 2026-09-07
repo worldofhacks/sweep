@@ -1,6 +1,6 @@
 import { membershipWord, motionObservationCurrent, observationCurrent } from '../../control/observation'
 import type { RequestRecord } from '../../control/state'
-import type { DroneId, MediaStreamStatus, RelayAircraftState } from '../../relay/contract'
+import type { DroneId, MediaStreamState, MediaStreamStatus, RelayAircraftState } from '../../relay/contract'
 import type { Tone } from '../../shell/derive'
 import { humanizeCode } from '../../shell/format'
 
@@ -32,9 +32,9 @@ export function formatAge(ageMs: number): string {
 
 export const VIDEO_FRESH_MS = 5_000
 
-export function deriveStream(drone: RelayAircraftState, at: number): StreamView {
+export function deriveStream(drone: RelayAircraftState, at: number, camera?: MediaStreamState | null): StreamView {
   const now = drone.client_observation?.now ?? at
-  const video = drone.video
+  const video = camera === undefined ? drone.video : camera
   let status: MediaStreamStatus = video?.status ?? 'unreported'
   let reason = ''
   const lastFrameAt = video?.last_frame_at ?? null

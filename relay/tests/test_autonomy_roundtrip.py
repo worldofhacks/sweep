@@ -44,6 +44,7 @@ def relay_server(tmp_path: Path) -> Iterator[RelayServer]:
     # dedicated freshness boundaries. Keep durable-audit I/O from turning runner
     # throughput into a one-second scheduling assertion.
     settings = RelaySettings(
+        allow_test_adapters=True,
         relay_token=CONSOLE_KEY,
         adapter_keys=KEYS,
         log_dir=tmp_path,

@@ -241,7 +241,7 @@ describe('Live module focus', () => {
     emitState(clients.console, 'state-focused-video-lost', drones, [1])
     await focusDevice(user)
     const focused = within(await screen.findByRole('region', { name: 'Focused aircraft D-01' }))
-    expect(focused.getByText('drone1')).toBeInTheDocument()
+    expect(focused.getByText('Primary camera')).toBeInTheDocument()
     expect(focused.getByText('No video. The adapter reports the stream offline.')).toBeInTheDocument()
     expect(focused.getAllByText('3 s ago')).toHaveLength(2)
     expect(focused.getByText('offline', { selector: 'dd' })).toHaveClass('tone-warn')
@@ -571,7 +571,7 @@ describe('Live module robot inspection', () => {
 
     await focusDevice(user, 'G-02')
     const focused = within(screen.getByRole('region', { name: 'Focused robot G-02' }))
-    expect(focused.getByText('ground2')).toBeInTheDocument()
+    expect(focused.getByText('Primary camera')).toBeInTheDocument()
     expect(focused.getByLabelText('Live feed G-02')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'All devices' })).not.toBeInTheDocument()
     await returnToWall(user)

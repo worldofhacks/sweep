@@ -1,5 +1,7 @@
 # Camera calibration tools
 
+Calibrate every actual camera and imaging configuration independently, including both onboard cameras on each scoped ground robot. A calibration for one aircraft camera does not qualify another unit or a second robot camera. The [modular fleet guide](../docs/modular-fleet.md) separates equipment scope, current reports, and accepted measurement evidence.
+
 This package creates offline artifacts for a single declared camera pipeline. It does
 not connect to DJI hardware, receive a live feed, prove a camera serial, or satisfy a
 hardware or flight gate.

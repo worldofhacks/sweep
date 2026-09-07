@@ -189,3 +189,5 @@
   text-align: right;
 }
 .lv-none { margin: 12px 0 0; max-width: 48ch; font-size: var(--text-13); color: var(--color-ink-2); }
+.lv-camera-choice { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: var(--text-12); }
+.lv-camera-choice select { min-width: 0; max-width: 100%; flex: 1; padding: 5px 8px; color: var(--color-ink); background: #fff; border: 1px solid var(--color-border-secondary); border-radius: 4px; font: inherit; }

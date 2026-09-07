@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from media.streams import MAX_MEDIA_STREAMS, valid_stream_name
+
 ROOT = Path(__file__).resolve().parents[1]
 BASE_COMPOSE = ROOT / "docker-compose.yml"
 RECORDING_COMPOSE = ROOT / "docker-compose.recording.yml"
@@ -44,8 +46,8 @@ MAX_MANIFEST_BYTES = 8 * 1024**2
 MAX_MEDIA_TOOL_OUTPUT_BYTES = 1024**2
 ARCHIVE_METADATA_BLOCKS = 16
 OWNER_LABEL = "org.worldofhacks.sweep.recording-owner"
-ALLOWED_STREAMS = {f"drone{index}" for index in range(1, 5)}
-MAX_TREE_ENTRIES = MAX_SEGMENTS + len(ALLOWED_STREAMS) + 1
+LEGACY_RECORDING_STREAMS = frozenset(f"drone{index}" for index in range(1, 5))
+MAX_TREE_ENTRIES = MAX_SEGMENTS + MAX_MEDIA_STREAMS + 1
 
 
 class RecordingError(RuntimeError):
@@ -98,6 +100,17 @@ class RunSpec:
     max_duration_seconds: float = DEFAULT_MAX_DURATION_SECONDS
     extra_compose_files: tuple[Path, ...] = ()
     owner_token: str = field(default_factory=lambda: uuid.uuid4().hex, repr=False)
+    streams: frozenset[str] = LEGACY_RECORDING_STREAMS
+    base_compose: Path = BASE_COMPOSE
+    media_config: Path = MEDIA_CONFIG
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.streams, frozenset)
+            or not 1 <= len(self.streams) <= MAX_MEDIA_STREAMS
+            or any(not valid_stream_name(stream) for stream in self.streams)
+        ):
+            raise RecordingError("recording streams must be a bounded explicit set of local names")
 
     @property
     def session_storage_key(self) -> str:
@@ -118,7 +131,7 @@ class RunSpec:
 
     @property
     def compose_files(self) -> tuple[Path, ...]:
-        return (BASE_COMPOSE, RECORDING_COMPOSE, *self.extra_compose_files)
+        return (self.base_compose, RECORDING_COMPOSE, *self.extra_compose_files)
 
 
 @dataclass(frozen=True)
@@ -251,7 +264,7 @@ def _sha256(path: Path) -> str:
 
 
 def _configuration(spec: RunSpec) -> dict[str, str]:
-    values = {"mediamtx": _sha256(MEDIA_CONFIG)}
+    values = {"mediamtx": _sha256(spec.media_config)}
     values.update(
         {
             f"compose[{index}]:{path.name}": _sha256(path)
@@ -1059,6 +1072,7 @@ def _segments_at(
     root_descriptor: int,
     run_dir: Path,
     finalization: FinalizationBudget | None = None,
+    streams: frozenset[str] = LEGACY_RECORDING_STREAMS,
 ) -> list[dict[str, object]]:
     if finalization is not None:
         finalization.checkpoint()
@@ -1071,7 +1085,7 @@ def _segments_at(
         relative = entry.relative
         if relative.suffix.lower() != ".mp4":
             raise RecordingError(f"unexpected file in recording run: {relative.as_posix()}")
-        if len(relative.parts) != 2 or relative.parts[0] not in ALLOWED_STREAMS:
+        if len(relative.parts) != 2 or relative.parts[0] not in streams:
             raise RecordingError(f"unexpected stream path: {relative.as_posix()}")
         files.append(entry)
     if not files:
@@ -1119,16 +1133,17 @@ def _segments(
     run_dir: Path,
     prepared: PreparedRun | None = None,
     finalization: FinalizationBudget | None = None,
+    streams: frozenset[str] = LEGACY_RECORDING_STREAMS,
 ) -> list[dict[str, object]]:
     if prepared is not None:
         prepared.assert_current()
-        result = _segments_at(prepared.run_dir.descriptor, run_dir, finalization)
+        result = _segments_at(prepared.run_dir.descriptor, run_dir, finalization, streams)
         prepared.assert_current()
         return result
     pinned = PinnedDirectory.open(run_dir, "recording run directory")
     try:
         pinned.assert_current()
-        return _segments_at(pinned.descriptor, run_dir, finalization)
+        return _segments_at(pinned.descriptor, run_dir, finalization, streams)
     finally:
         pinned.close()
 
@@ -1516,6 +1531,7 @@ def _archive_plan(
             "elapsed_seconds": round(elapsed_seconds, 3),
             "stop_reason": stop_reason,
             "image": IMAGE_REF,
+            "configured_streams": sorted(spec.streams),
             "configuration_sha256": (
                 configuration if configuration is not None else _configuration(spec)
             ),
@@ -1686,7 +1702,7 @@ def _export(
             for stream in stream_directories:
                 if finalization is not None:
                     finalization.checkpoint()
-                if stream not in ALLOWED_STREAMS:
+                if stream not in spec.streams:
                     raise RecordingError(f"unexpected stream path in archive plan: {stream}")
                 os.mkdir(stream, mode=0o700, dir_fd=staging_descriptor)
             for segment in plan.segments:
@@ -1694,7 +1710,7 @@ def _export(
                     finalization.checkpoint()
                 pinned.assert_current()
                 relative = Path(str(segment["path"]))
-                if len(relative.parts) != 2 or relative.parts[0] not in ALLOWED_STREAMS:
+                if len(relative.parts) != 2 or relative.parts[0] not in spec.streams:
                     raise RecordingError(f"unexpected stream path in archive plan: {relative}")
                 size = segment["size_bytes"]
                 digest = segment["sha256"]
@@ -1917,7 +1933,7 @@ def record(spec: RunSpec) -> Path:
             post_stop_reasons, post_stop_export_safe = _budget_status(spec, prepared, finalization)
             finalization.checkpoint()
             failures.extend(reason for reason in post_stop_reasons if reason not in failures)
-            segments = _segments(spec.run_dir, prepared, finalization)
+            segments = _segments(spec.run_dir, prepared, finalization, spec.streams)
             finalization.checkpoint()
             prepared.assert_current()
             final_reasons, final_export_safe = _budget_status(spec, prepared, finalization)
@@ -1981,6 +1997,9 @@ def _parse(argv: list[str] | None) -> RunSpec:
     parser.add_argument("--min-free-bytes", type=int, default=DEFAULT_MIN_FREE_BYTES)
     parser.add_argument("--poll-interval", type=float, default=0.5)
     parser.add_argument("--max-duration-seconds", type=float, default=DEFAULT_MAX_DURATION_SECONDS)
+    parser.add_argument("--stream", action="append", default=[])
+    parser.add_argument("--base-compose-file", type=Path)
+    parser.add_argument("--media-config", type=Path)
     parser.add_argument("--extra-compose-file", action="append", type=Path, default=[])
     arguments = parser.parse_args(argv)
     _validate_runtime_limits(
@@ -1994,6 +2013,22 @@ def _parse(argv: list[str] | None) -> RunSpec:
     )
     if any(not path.is_file() for path in extra_files):
         raise RecordingError("an extra Compose file is missing or not a regular file")
+    if (arguments.base_compose_file is None) != (arguments.media_config is None):
+        raise RecordingError(
+            "custom recording requires both base Compose and MediaMTX configuration"
+        )
+    if arguments.base_compose_file is not None and not arguments.stream:
+        raise RecordingError("custom recording requires an explicit stream allowlist")
+    base_compose = _absolute_no_symlinks(
+        arguments.base_compose_file or BASE_COMPOSE, "base Compose file"
+    )
+    media_config = _absolute_no_symlinks(
+        arguments.media_config or MEDIA_CONFIG, "MediaMTX configuration"
+    )
+    if not base_compose.is_file() or not media_config.is_file():
+        raise RecordingError("base Compose file or MediaMTX configuration is missing")
+    if len(arguments.stream) != len(set(arguments.stream)):
+        raise RecordingError("recording stream names must be unique")
     return RunSpec(
         run_id=_validate_identifier(arguments.run_id, "run id"),
         session_id=_validate_session_identifier(arguments.session_id),
@@ -2004,6 +2039,9 @@ def _parse(argv: list[str] | None) -> RunSpec:
         poll_interval=arguments.poll_interval,
         max_duration_seconds=arguments.max_duration_seconds,
         extra_compose_files=extra_files,
+        streams=frozenset(arguments.stream) if arguments.stream else LEGACY_RECORDING_STREAMS,
+        base_compose=base_compose,
+        media_config=media_config,
     )
 
 

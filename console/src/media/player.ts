@@ -281,7 +281,7 @@ export class WhepPlaybackSession implements PlaybackSession {
     }).then((response) => {
       const location = response.ok ? response.headers.get('Location') : null
       if (location) {
-        const sessionUrl = new URL(location, descriptor.primary.url).toString()
+        const sessionUrl = resolveSessionLocation(location, descriptor.primary.url)
         if (this.isCurrent(attempt)) attempt.sessionUrl = sessionUrl
         // A server may create its session just before the POST is cancelled.
         else void this.deleteSession(sessionUrl, attempt.authorization)
@@ -317,6 +317,7 @@ export class WhepPlaybackSession implements PlaybackSession {
         this.dependencies.fetcher(sessionUrl, {
           method: 'DELETE',
           headers: { Authorization: authorization },
+          redirect: 'error',
           signal: abort.signal,
         }),
         DELETE_TIMEOUT_MS,
@@ -328,6 +329,20 @@ export class WhepPlaybackSession implements PlaybackSession {
       abort.abort()
     }
   }
+}
+
+function resolveSessionLocation(location: string, endpoint: string): string {
+  try {
+    const session = new URL(location, endpoint)
+    if ((session.protocol === 'http:' || session.protocol === 'https:')
+      && session.origin === new URL(endpoint).origin
+      && !session.username && !session.password) {
+      return session.toString()
+    }
+  } catch {
+    // A malformed server-provided URL must not escape into error details.
+  }
+  throw new Error('WHEP response has an unsafe session location')
 }
 
 function bounded<T>(promise: Promise<T>, timeoutMs: number, message: string, signal?: AbortSignal): Promise<T> {

@@ -1,8 +1,9 @@
 """Fake bridge node: a WebSocket client that behaves like the phone app on the wire.
 
-Run it against a relay from the repo root:
+Run only against an explicitly configured, isolated test relay:
 
-    uv run python -m adapters.dji_mini3.fake_node --drone-id 1
+    SWEEP_ALLOW_TEST_ADAPTERS=true uv run python -m adapters.dji_mini3.fake_node \
+        --test-only --drone-id 1 --session fixture-session --relay ws://127.0.0.1:18000
 
 The node authenticates as an adapter, sends a signed join and readiness, streams
 telemetry, publishes capabilities, node_status, and capture_readiness, verifies every
@@ -38,6 +39,7 @@ from relay.contracts import (
     NodeAcknowledgementReason,
     parse_command,
 )
+from relay.runtime_mode import TEST_ADAPTER_CAPABILITY
 
 _LOGGER = logging.getLogger(__name__)
 _STARTUP_TIMEOUT_S = 10.0
@@ -69,6 +71,12 @@ class FakeNodeConfig:
     slow_ack_delay_s: float = 0.0
 
     def __post_init__(self) -> None:
+        # Caller-supplied capabilities cannot remove synthetic provenance.
+        object.__setattr__(
+            self,
+            "capabilities",
+            tuple(dict.fromkeys((*self.capabilities, TEST_ADAPTER_CAPABILITY))),
+        )
         if self.drone_id <= 0:
             raise ValueError("drone_id must be a positive integer")
         if not self.token:
@@ -589,32 +597,37 @@ def _token_from_environment(drone_id: int) -> str:
     key = keys.get(str(drone_id)) if isinstance(keys, dict) else None
     if isinstance(key, str) and key:
         return key
-    shared = os.environ.get("SWEEP_RELAY_TOKEN", "")
-    if shared:
-        return shared
     raise SystemExit(
         "no credential: pass --token, or set SWEEP_ADAPTER_KEYS_JSON for this drone, "
-        "or SWEEP_RELAY_TOKEN with SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true on the relay"
+        "using credentials belonging only to the isolated test runtime"
     )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> FakeNodeConfig:
     parser = argparse.ArgumentParser(
         prog="python -m adapters.dji_mini3.fake_node",
-        description="Run a fake bridge node against a relay so the console shows a real "
-        "registry entry before any hardware exists.",
+        description="Run a synthetic bridge only against an isolated test relay. "
+        "Hardware sessions refuse its test:synthetic provenance marker.",
     )
-    parser.add_argument("--relay", default="ws://127.0.0.1:8000", help="relay WebSocket origin")
-    parser.add_argument("--session", default="demo", help="relay session ID")
+    parser.add_argument(
+        "--test-only", action="store_true", help="acknowledge the isolated test runtime"
+    )
+    parser.add_argument("--relay", required=True, help="explicit test relay WebSocket origin")
+    parser.add_argument("--session", required=True, help="explicit isolated test session ID")
     parser.add_argument("--drone-id", type=int, required=True, help="stable positive drone ID")
     parser.add_argument(
         "--token",
         default=None,
-        help="adapter credential; defaults to SWEEP_ADAPTER_KEYS_JSON or SWEEP_RELAY_TOKEN",
+        help="test adapter credential; defaults only to its SWEEP_ADAPTER_KEYS_JSON entry",
     )
     parser.add_argument("--adapter-id", default=None, help="adapter_id sent in the signed join")
     parser.add_argument("--telemetry-hz", type=float, default=10.0, help="telemetry rate")
     args = parser.parse_args(argv)
+    if not args.test_only or os.environ.get("SWEEP_ALLOW_TEST_ADAPTERS", "").lower() != "true":
+        parser.error(
+            "requires --test-only and SWEEP_ALLOW_TEST_ADAPTERS=true "
+            "in an isolated test environment"
+        )
     return FakeNodeConfig(
         relay_url=args.relay.rstrip("/"),
         session=args.session,

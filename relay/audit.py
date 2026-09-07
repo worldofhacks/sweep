@@ -23,10 +23,10 @@ _FORBIDDEN_KEYS = frozenset(
 _LOGGER = logging.getLogger(__name__)
 LIVE_REPLAY_TIMEOUT_SECONDS = 1.0
 _MIRROR_READ_BUFFER = 1 << 20
-# Four maximum 128 KiB aircraft projections plus both maximum 128 KiB control
-# projections remain below this ceiling, leaving space for the state envelope.
-# The same bound applies before any persisted length can drive a sized read.
-MAX_AUDIT_RECORD_BYTES = 1 << 20
+# The 64-device registry can retain up to 128 KiB per material device row plus
+# two 128 KiB control projections. This aggregate ceiling leaves envelope headroom;
+# the same bound applies before any persisted length can drive a sized read.
+MAX_AUDIT_RECORD_BYTES = 16 << 20
 _MAX_SQLITE_INTEGER = (1 << 63) - 1
 _MAX_PENDING_CURSOR_BYTES = len(str(_MAX_SQLITE_INTEGER)) + 1
 _RECORDS_TABLE = (

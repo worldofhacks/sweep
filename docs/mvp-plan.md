@@ -1,12 +1,24 @@
 # Sweep MVP delivery plan
 
-This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble while gesture work proceeds against the same frozen input contracts. The transcript-to-plan compiler begins against two-drone sim and relay state; push-to-talk capture may begin after M1.E. M2 scales real hardware control to four Mini 3 nodes with live session membership. Real known-map autonomous indoor traversal becomes ready after M2.0. The lanes converge for the composed walkthrough and recorded demo.
+This plan retains the M0–M4 dependency map and the original DJI room-capture/flight qualification track while adding a current modular-fleet integration track. Sweep is an additive platform for aerial drones, ground robots, and their onboard cameras and sensors. Fixed one-, two-, and four-Mini-3 trials below qualify that model-specific hardware stack; they are not a platform fleet limit or evidence that the listed exits have passed.
 
 The MVP targets a live technical demonstration. Production governance and operations move to F.6. All hardware-safety gates remain in the active milestones.
 
 Interaction, Autonomy, and Platform define coordination and module boundaries. Any engineer may claim a ready item and own it through review, integration, and acceptance evidence.
 
 Dynamic claiming has one safety exception. Changes to shared contracts or safety-critical code have one named change owner per change and require cross-review before merge. This applies to Intent v1, the adapter interface, relay state shape, the arbiter, e-stop, and safety-relevant planner paths.
+
+## Modular fleet integration track
+
+Current scope: at least five ground robots, adding at least two to the prior three, with two onboard cameras and one LiDAR on each robot. Each aerial drone has one camera and an owner-reported infrared depth/proximity sensor; identify its model and interface and validate its readings before making proximity or clearance claims. The cameras are attached resources of their parent devices, not extra motion targets. The [integration guide](modular-fleet.md) defines identity, capability, media, sensor, freshness, and evidence boundaries.
+
+- **Provision additive identity and capacity.** Keep one console/session path, distinct credentials, explicit aircraft/ground classes, bounded configured capacity, stable command IDs, and connection epochs. Software admission and selection capacity is separate from measured physical operating capacity.
+- **Integrate each real onboard source.** Give both robot cameras their own explicit mapping and status, verify every ground LiDAR, and integrate the aerial infrared sensor only through a verified interface. An absent second camera stays unconfigured or unreported; it must not display a copy of the primary feed.
+- **Expose truthful capability-aware control.** Preserve class-specific motion gates, exact preview targets, confirmation, cancellation, epoch invalidation, and unsupported states. Hardware ownership or a schema field does not prove implemented control.
+- **Commission incrementally.** Prove each new adapter/unit and each sensor/video failure path with recorded hardware evidence before simultaneous operation. Ground motion requires accepted local obstacle avoidance with usable LiDAR; the aerial sensor does not inherit that LiDAR requirement.
+- **Keep the operator runtime real.** Only authenticated, current relay state and actual media populate the console. Connection loss expires current states even without another packet. Unit fixtures, recorded gesture inputs, and simulator scenarios remain isolated tests.
+
+Done when the explicit configured inventory accommodates the scoped additions, the console attributes every reported device/camera/sensor correctly, missing feeds and stale readings remain honest, and hardware acceptance records identify exactly which units and capabilities have been qualified. No planned unit is manufactured as a live roster row.
 
 ## Dependency map
 
@@ -37,7 +49,7 @@ flowchart TD
     m0 --> gesturedev[Gesture implementation against frozen input interfaces]
     gesturedev --> gesture[Integrated and accepted gesture producer]
     controls --> gesture
-    m20 --> scale[Four-node hardware and 4-to-6-drone sim scope]
+    m20 --> scale[DJI-specific staged flight qualification]
     m20 --> video[M3 video and sensor console]
     m20 --> localization[Real indoor localization and clearance gate]
     rooms --> knownmap[Known-map autonomous traversal and capture]
@@ -64,7 +76,7 @@ Subtask IDs are stable historical identifiers referenced by existing issues. Rem
 
 **M0.1: Freeze the MVP boundary and capability areas**
 Capability area: team. Dependencies: none.
-Scope: approve the four DJI Mini 3 and RC-N1 sets on hand, paired with four Android bridge nodes, as the physical core MVP; retain 4 to 6 drones in simulation; make console buttons the reference producer for early intent-to-action testing while webcam gesture work proceeds against the same contracts; build the transcript-to-plan compiler against two-drone sim and relay state; stage push-to-talk capture after M1.E; move the Band to Future; and adopt dynamic task claiming with the contract and safety exception above.
+Scope: approve the modular aerial/ground fleet boundary above and preserve the original four-Mini-3/RC-N1/Android qualification configuration; keep 4–6-aircraft scenarios as isolated simulation evidence; make console buttons the reference producer for early intent-to-action testing while webcam gesture work proceeds against the same contracts; build the transcript-to-plan compiler against two-drone sim and relay state; stage push-to-talk capture after M1.E; move the Band to Future; and adopt dynamic task claiming with the contract and safety exception above.
 Done when: the PRD has one milestone scheme, every core deliverable has a capability area and dependency boundary, and no optional input blocks M1 through M4.
 
 **M0.2: Draft and freeze executable contracts**
@@ -91,7 +103,7 @@ Three guided phone photos have created one Marble room world. Preserve the photo
 
 **M1.1: Build relay state, logging, and replay**
 Capability area: Platform. Dependencies: M0.2.
-Scope: first establish one authenticated WebSocket session and a live aircraft registry keyed by stable `drone_id`. The registry carries a monotonic `roster_version`, a connection epoch per aircraft, and `registered`, `ready`, `leaving`, `disconnected`, or `degraded` state. Signed join, readiness, graceful-leave, and unexpected-loss events update the registry. Up to four physical aircraft may register, disconnect, and rejoin without restarting the session. A joined node becomes selectable after identity, adapter capabilities, telemetry freshness, home pose, control authority, and RC-safety-operator presence pass. State fan-out, append-only JSONL, and backend replay use the same contract.
+Scope: first establish one authenticated WebSocket session and a live device registry keyed by stable `drone_id` (the compatibility field for both classes). The registry carries a monotonic `roster_version`, a connection epoch per aircraft, and `registered`, `ready`, `leaving`, `disconnected`, or `degraded` state. Signed join, readiness, graceful-leave, and unexpected-loss events update the registry. Configured aerial and ground devices may register, disconnect, and rejoin within bounded software capacity without restarting the session. A joined node becomes motion-selectable after identity, declared capabilities, telemetry freshness, pose, control authority, and its class-specific safety gates pass. State fan-out, append-only JSONL, and backend replay use the same contract.
 Done when: the checkpoint path authenticates the console and keyboard sources, logs every accepted or refused intent, acknowledgement, membership event, roster version, and connection epoch, derives canonical state and selection from current adapter telemetry, and preserves the history of disconnected aircraft. Join leaves current selection and accepted plan unchanged; the next dispatch applies roster-version validation. Reconnection increments the aircraft's connection epoch. Backend replay later reproduces the ordered intent, membership, and state history; replay UI is outside M2.0.
 
 **M1.2: Build the deterministic autonomy and safety path**
@@ -111,7 +123,7 @@ Done when: the workflow passes in simulation, a deliberate geofence violation is
 
 **M1.5: Expand the sim path to the full scripted mission**
 Capability area: Autonomy with Interaction and Platform integration. Dependencies: M1.4, M2.0.
-Scope: add the formation, altitude, spacing, and sweep behaviors deferred by M2.0; the formation library carries the four MVP shapes — line, column, wedge, and diamond — with sequential, non-crossing transitions; expand the simulator and console from two drones to 4 to 6; run Appendix E through the production path.
+Scope: add the formation, altitude, spacing, and sweep behaviors deferred by M2.0; the formation library carries the four MVP shapes — line, column, wedge, and diamond — with sequential, non-crossing transitions; retain the 4–6-aircraft simulator scenario as a test of the shared path; the console renders the actual configured mixed fleet; run Appendix E through the production path.
 Done when: 4 to 6 simulated drones complete Appendix E in under three minutes and the log contains zero unsafe intents.
 
 **M1.9: Prove one DJI Mini 3 bridge node**
@@ -132,7 +144,7 @@ The selected camera mode must have a measured horizontal field of view that sati
 
 The pending room-world slice uses Mini 3 capture in an empty, static room. World Labs says accepted jobs usually take about five minutes, so every room is an asynchronous job.
 
-The output is an AI-generated room world. It carries no claim about hidden geometry, measurements, inventory, or safety. Every demo request sets `public: false` and uses disposable data from an empty staged room. People and pets remain outside the M1 capture set. Production access governance and retention policy move to post-demo hardening.
+The output is an AI-generated room world. It carries no claim about hidden geometry, measurements, inventory, or safety. Capture inputs are actual photos from an operator-authorized space. Before external upload, the operator reviews the selected photos and explicitly confirms the destination and privacy setting; every generation request sets `public: false`, and the retention policy is disclosed. Empty staged rooms with no people or pets remain the M1 hardware qualification boundary. These privacy requirements apply to the real capture workflow from its first deployment.
 
 #### Follow-on speech scope
 
@@ -144,7 +156,7 @@ The Whisper path needs browser recording plus a relay endpoint because the API a
 
 The 50 reviewed cases test transcript-to-plan behavior in CI. Microphone recognition evidence comes from the separate 20-utterance, two-speaker live run through the real browser capture path. Synthetic transcripts cannot satisfy speech acceptance.
 
-### M2: Hardware control MVP
+### M2: DJI hardware qualification track
 
 **M2.0: Pass the two-drone walking-skeleton checkpoint**
 M2.0 is the next control checkpoint after the M1 one-drone room-world exit. It spans M1.1 through M1.4, M2.1 and M2.2, and the selected-feed slice of M3.1 while remaining within the M0 through M4 milestone series.
@@ -210,7 +222,7 @@ Delivery levels — M3A through M3C are the committed Phase 1; M3D is the comple
 - M3A, mapping MVP: one launch and return zone, one validated route from the lobby along the Level 1 corridor spine to the kitchen, with connectors into the 113 open floor and the 110 atrium; formation boxes in the kitchen and the atrium; and only the rooms and connector geometry touching that route. Record the corrected 113 transitions — west side ↔ mezzanine, east side ↔ north hallway — but stop autonomous coverage at their boundaries. Done when held-out map checkpoints are within 0.10 m of measured locations, three or more tags are detected through the actual Mini 3 live stream at the intended distance and speed, and a hand-carried camera traverses the lobby-to-kitchen route with no unhandled localization gap over 500 ms.
 - M3B, localization proof: one drone completes five lobby-to-kitchen route, hold, and return rehearsals with p95 position error at or below 0.25 m, and covering the active tag set or loading a wrong map version commands hold before further translation.
 - M3C, Phase 1 formation exit: two drones fly the accepted route, then demonstrate two formation shapes — line and column — one held in the kitchen box and one in the atrium box, entering and leaving each box sequentially with separation held throughout. The atrium box is committed only if its measured stepped-seating and ceiling bounds pass during M3A; the fallback is both formations in the kitchen box with the atrium remaining lane-only.
-- M3D, complete MVP: four drones repeat the lobby-to-kitchen autonomous flight, then demonstrate four formation shapes — line, column, wedge, and diamond — in the accepted boxes with sequential, non-crossing transitions and no separation violations. Depends on the M2.4 four-node acceptance.
+- M3D, DJI flight-track completion: four Mini 3 drones repeat the lobby-to-kitchen autonomous flight, then demonstrate four formation shapes — line, column, wedge, and diamond — in the accepted boxes with sequential, non-crossing transitions and no separation violations. Depends on the M2.4 four-node acceptance.
 - M3E, stretch (time permitting): autonomous search detection inside the mapped Phase 1 area — a coverage-tracked sweep of the approved route and boxes that emits detection events through the M3.3 operator-confirmation path. Detections never emit motion; autonomous approach, following, and escort remain excluded.
 Explicit cuts: no automatic ARKit tag mapper, no full placement optimizer, no autonomous north-hallway or mezzanine flight, no stair transit or Level 2 flight, no dynamic avoidance, and no escort behavior. `capture_room` and Marble jobs no longer gate the M3 flight and formation exits; capture attaches to accepted routes through M3.4 afterward.
 Done when: M3A through M3C acceptance passes with calibration, latency-calibration, registration, and validator artifacts preserved, and injected stale or missing data commands hold — that is the Phase 1 exit. M3D acceptance completes the MVP. Until M3B passes, `map_area` returns `unsupported`. This structure supersedes the earlier wall-only placement and the per-direction staged-approach clearance gate: three of the five protected directions are physically unobservable by this aircraft, so clearance certification is deterministic map-plus-pose evidence rather than sensing trials. [DJI Virtual Stick obstacle-avoidance support](https://developer.dji.com/api-reference-v5/Components/IVirtualStickManager/IVirtualStickManager.html) · [Mini 3 sensing specifications](https://www.dji.com/mini-3/specs)
@@ -220,7 +232,7 @@ Owner decision: add floor metadata to the validated room graph, associate each t
 **M3.1: Establish media ingest and recording**
 Capability area: Platform with Interaction integration. Dependencies: M1.1 and one camera source. The M2.0 slice also depends on M2.2.
 Scope: first keep one selected live feed visible through the M2.0 run. After the checkpoint, configure MediaMTX ingest, WebRTC and MJPEG serving, recording, stream naming, and latency measurement.
-Done when: M2.0 can display the selected feed throughout its run. Full M3.1 exits when one source also streams and records reliably within the latency budget, then four Mini 3 nodes meet the same gate together. Five-to-six-source hardware remains Future work.
+Done when: M2.0 can display the selected feed throughout its run. Full M3.1 exits when one source also streams and records reliably within the latency budget, then four Mini 3 nodes meet the same gate together. The modular media track additionally covers both onboard cameras on each scoped ground robot; larger source counts require measured bandwidth and hardware evidence, not a fixed four-feed product layout.
 
 **M3.2: Build the camera and sensor dashboard**
 Capability area: Interaction. Dependencies: M1.3, M3.1.
@@ -278,9 +290,9 @@ Capability area: Interaction with Platform registration support. Dependencies: M
 Scope: add an EMG band through a source-specific producer, registry entry, shared conformance runner, and per-intent accuracy gates. Begin with the most important reliable mappings, then expand toward full Intent v1 coverage as each pair qualifies.
 Done when: every enabled EMG and intent pair clears its frozen risk-scaled threshold, real source events pass Intent v1 conformance, and the same safety path works without relay, planner, arbiter, or adapter redesign.
 
-**F.2: Extend vehicle portability**
+**F.2: Qualify additional vehicle families beyond the current integration scope**
 Capability area: Autonomy with Platform eval support. Dependencies: working M2 evidence and the capability/action eval harness.
-Scope: expand beyond the four-aircraft MVP when additional hardware plus staffing, RF, video, positioning, and clearance evidence supports it. Evolve capability contracts and add one evidence-backed vehicle adapter at a time.
+Scope: continue adding vendor families beyond the current aerial/ground integration track when hardware access, staffing, RF, video, positioning, and clearance evidence support them. Evolve capability contracts and qualify one adapter at a time; the current ground-robot and onboard-camera/LiDAR scope is not deferred to this future item.
 Done when: unsupported behavior returns a typed refusal and no input or model calls an adapter directly.
 
 **F.3: Automate spatial capture and exploration**

@@ -21,6 +21,7 @@ from tests.autonomy_fixtures import camera_config, make_snapshot, safety_config
 
 def _settings(log_dir: Path, backend: AdapterBackend = AdapterBackend.SIM) -> RelaySettings:
     return RelaySettings(
+        allow_test_adapters=True,
         relay_token=CONSOLE_KEY,
         adapter_keys={1: ADAPTER_KEY},
         log_dir=log_dir,

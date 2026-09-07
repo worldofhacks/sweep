@@ -5,6 +5,13 @@ scanner does not by itself qualify motion. The current robot adapter grants
 authority only while its local LiDAR clearance checks pass. Console Arm cannot
 repair absent hardware, unknown scan sectors, or an obstruction.
 
+The owner-declared ground profile is two onboard cameras and one LiDAR per
+robot, with at least five ground robots now in scope. Commission each installed
+scanner separately; the historical three-node capture below is not current fleet
+inventory. Aircraft instead have one camera and a reported infrared
+depth/proximity sensor; this LiDAR procedure applies only to ground robots.
+See [modular fleet integration](modular-fleet.md).
+
 ## Verified baseline — 2026-09-06, 23:22 UTC
 
 All three deployed nodes and readers matched `d806a71` byte for byte. A passive
@@ -15,7 +22,7 @@ commands were sent.
 | --- | --- | --- | --- |
 | G-01 | A2M8, firmware 1.25, startup health good | Nearest nonzero return 14 cm in all 53 frames; only 9–10 of 12 sectors observed; sectors 30–89° empty throughout and 0–29° empty in 52 frames | Check the scan plane for obstructions and mounting interference; investigate intermittent stream corruption |
 | G-02 | A2M8, firmware 1.25, startup health good | Nearest return 17 cm; all 12 sectors observed in all 53 frames | Identify and clear the close return; investigate the less frequent stream fault |
-| G-03 | No LiDAR USB adapter or expansion hub detected; hardware handoff records no kit installed | No scans | Install and commission a compatible scanner kit with its USB/power hardware |
+| G-03 | No LiDAR USB adapter or expansion hub detected in this historical inspection | No scans | Verify the installed scanner, powered hub and serial identity, then commission its live scan |
 
 These are **sensor angles**, not measured robot headings. Mounting yaw has not
 been qualified. A 14 cm return is below the published 15 cm measurement minimum:
@@ -53,9 +60,9 @@ coverage persisted outside these recovery intervals.
    with the active hardware owner so only one process owns the scanner. Recheck
    longer than the previous few-minute failure intervals after changing one
    component at a time.
-5. G-03 needs its own scanner kit for three robots to have LiDAR concurrently.
-   Moving a kit from another robot only moves the hardware gap. Verify the
-   adapter by USB identity and confirm the A2M8 model and healthy scan stream;
+5. Resolve G-03's historically missing scanner enumeration using the actual
+   installed hardware. Repeat the check for every additional ground robot. Verify
+   each adapter by USB identity, confirm its model and healthy scan stream;
    never substitute the FT230X wheel UART for a missing LiDAR port.
 
 ## Driver follow-up

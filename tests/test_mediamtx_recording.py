@@ -900,6 +900,7 @@ def test_catchable_signal_during_finalization_does_not_interrupt_export(
         _run_dir: Path,
         _prepared: recording.PreparedRun,
         finalization: recording.FinalizationBudget,
+        _streams: frozenset[str],
     ) -> list[dict[str, object]]:
         assert signal.getsignal(signal.SIGTERM) is not original_handler
         assert (
@@ -1111,6 +1112,7 @@ def test_record_finalization_deadline_is_fail_closed_at_exact_boundary_and_plus_
         _run_dir: Path,
         _prepared: recording.PreparedRun,
         finalization: recording.FinalizationBudget,
+        _streams: frozenset[str],
     ) -> list[dict[str, object]]:
         clock[0] = finalization.deadline + offset
         finalization.checkpoint()
@@ -1204,6 +1206,7 @@ def test_post_validation_budget_scan_cannot_publish_at_or_after_deadline(
         _run_dir: Path,
         _prepared: recording.PreparedRun,
         finalization: recording.FinalizationBudget,
+        _streams: frozenset[str],
     ) -> list[dict[str, object]]:
         clock[0] = finalization.deadline - 0.001
         return _fixture_segments(spec)

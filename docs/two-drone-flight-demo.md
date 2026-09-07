@@ -1,4 +1,10 @@
-# Two-phone flight gesture demo
+# Two-aircraft flight qualification
+
+This model-specific qualification is one adapter path within the
+[modular drone and ground-robot platform](modular-fleet.md); two aircraft is the
+size of this exercise, not a platform fleet limit. It uses real connected
+aircraft, not demo data. Each aerial drone has one camera and a reported infrared
+depth/proximity sensor; sensor model and integration must be verified separately.
 
 This slice connects one Android bridge per Mini 3 / RC-N1 pair and lets the console
 target D-01, D-02, or both. It adds a bounded **body-forward / body-backward pulse**;
@@ -53,8 +59,9 @@ separate from completing a physical two-aircraft flight.
 
    Use `SWEEP_ADAPTER_BACKEND=remote` and distinct configured credentials. The
    standalone `relay.app:app` does not dispatch commands. For the local console,
-   load that same environment into Vite so `/relay-bootstrap.json` supplies the
-   matching session/token at runtime. Keep the console on loopback.
+   configure the private `.sweep/console/runtime.json` for that exact real session
+   and use `python3 tools/console.py start` at the repository root.
+   Keep the single console at `http://127.0.0.1:5173/`.
 
 The session must match on the console and both phones. A relay restart closes
 the previous session; choose a new session and update both phones before

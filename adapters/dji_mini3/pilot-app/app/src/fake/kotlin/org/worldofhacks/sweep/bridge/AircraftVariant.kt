@@ -9,8 +9,8 @@ import org.worldofhacks.sweep.bridge.session.AircraftSession
 
 /** Fake flavor: no DJI dependency, nothing to install, a simulated session drives the screen. */
 object AircraftVariant {
-    /** Mirrors `adapters/dji_mini3/fake_node.py` so the console shows the same registry entry. */
-    val capabilities: List<String> = listOf("flight", "body_pulse_v1", "pano_360", "reconstruct_8")
+    /** Always identifies synthetic telemetry; a hardware relay refuses it before admission. */
+    val capabilities: List<String> = listOf("test:synthetic", "flight", "body_pulse_v1", "pano_360", "reconstruct_8")
 
     fun installSdk(application: Application) = Unit
 

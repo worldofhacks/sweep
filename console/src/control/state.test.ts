@@ -117,6 +117,32 @@ function withPendingCapture(): ControlState {
 }
 
 describe('control reducer fleet lifecycle', () => {
+  test.each([{ cameras: [] }, { cameras: [
+    { camera_id: 'front', label: 'Front', stream: 'robot-front', status: 'live' as const, last_frame_at: t },
+    { camera_id: 'rear', label: 'Rear', stream: 'robot-rear', status: 'offline' as const, last_frame_at: t - 6000 },
+  ] }])('preserves explicit camera configuration through membership transitions: %j', ({ cameras }) => {
+    const configured = drone({ cameras, video: { status: 'live', last_frame_at: t } })
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event', event: stateEvent('configured', 1, [configured], [1]),
+    })
+    const event: Extract<RelayServerEvent, { type: 'membership' }> = {
+      v: 1, t: t + 2, type: 'membership', event_id: 'changed', session, roster_version: 2,
+      action: 'readiness', drone_id: 1, connection_epoch: 1, membership: 'ready',
+      readiness_reasons: [], adapter_id: 'adapter-1', capabilities: ['flight'],
+      provenance: 'adapter_signature', reason: null,
+    }
+    state = controlReducer(state, { type: 'relay_event', event })
+    expect(state.aircraft[1].cameras).toEqual(cameras)
+    state = controlReducer(state, { type: 'relay_event', event: {
+      ...event, t: t + 3, event_id: 'rejoined', roster_version: 3,
+      action: 'join', connection_epoch: 2, membership: 'registered',
+    } })
+    expect(state.aircraft[1].cameras).toEqual(cameras.map((camera) => ({
+      ...camera, status: 'unreported', last_frame_at: null,
+    })))
+    expect(state.aircraft[1].video).toBeUndefined()
+  })
+
   test('keeps the formation and spacing the relay reports, and nothing before the first frame', () => {
     const initial = createInitialControlState(session, t)
     expect(initial.formation).toBeNull()

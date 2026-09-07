@@ -1,6 +1,6 @@
 # Sweep (working name): PRD, architecture, and division of labor
 
-Version 0.6. Delivery is organized into three capability areas: Interaction, Autonomy, and Platform. Engineers claim ready work per task; capability areas coordinate module boundaries and review. Status: M0 scope and contracts in progress.
+Version 0.7. Sweep is a modular platform for heterogeneous aerial drones, ground robots, and their onboard cameras and sensors. Delivery remains organized into Interaction, Autonomy, and Platform capability areas. The M0–M4 history and model-specific qualification tracks below are retained; their fixed DJI test counts do not define platform capacity or imply completed hardware acceptance.
 
 This document answers every item in the Pre-Search Checklist. Section headers carry the checklist numbers so nothing is skipped, and Appendix F is a crosswalk from each question to the section that answers it.
 
@@ -8,9 +8,11 @@ This document answers every item in the Pre-Search Checklist. Section headers ca
 
 ## 0. Summary
 
-One person clicks Capture room, reviews and confirms the resulting Intent v1 request, and one DJI Mini 3 holds an operator-approved pose while its files create a private AI-generated Marble room world with provenance and visible job state. The completed three-guided-phone-photo flow remains fallback evidence; M1 begins with drone capture. The north-star command is “Map this floor.” It resolves against a supplied occupancy map and room graph for a bounded 3-to-5-room, single-floor indoor test area. Four Mini 3 and RC-N1 sets are on hand. The physical MVP uses four aircraft with four Android bridge nodes and supports live aircraft join, leave, and rejoin. Four to six drones remain in simulation; physical expansion beyond four belongs to Future.
+One person uses a shared console to select and control a changing fleet of aerial drones and ground robots, inspect their live telemetry, and view their cameras and sensors. Devices are added through explicit identity, vendor adapters, and declared capabilities. The current scope includes at least five ground robots, adding at least two to the prior three; each ground robot has two onboard cameras and one LiDAR. Each aerial drone has one onboard camera and one owner-reported infrared depth/proximity sensor, whose exact model, interface, and measurements remain unverified. These are scope requirements, not a claim of connected or qualified hardware. The operator runtime uses only real relay data and actual feeds; unavailable or expired observations remain unreported or offline. The [modular fleet integration guide](modular-fleet.md) defines this boundary.
 
-This MVP is a live technical proof. It prioritizes visible capability breadth, one recorded end-to-end proof for each headline workflow, and every safety control required around real aircraft. Production access governance, retention policy, multi-user administration, operational reporting, and deployment automation move to post-demo hardening. Room captures use empty staged spaces and disposable demo data.
+Confirmed room capture and private AI-generated Marble worlds remain one workflow. The original Mini 3 capture slice, completed three-guided-phone-photo fallback evidence, and supplied-map “Map this floor” mission remain qualified by their recorded evidence and safety gates. The original one-, two-, and four-aircraft DJI qualification stages are a vendor-specific track within the broader platform.
+
+This MVP is a live technical proof. It prioritizes visible capability breadth, one recorded end-to-end proof for each headline workflow, and every safety control required around real devices. Room captures use actual photos from operator-authorized spaces; staged, empty rooms remain a hardware qualification condition where specified. The operator reviews the selected media and explicitly confirms any external upload, with the destination, privacy setting, and retention policy disclosed. Private generation requests use `public: false`. Multi-user administration, operational reporting, and deployment automation remain later work.
 
 The product has four parts: an input-agnostic **intent contract**, an **autonomy and safety core** that executes intents across a swarm and refuses unsafe ones, an **operator console** that shows the swarm and its cameras, and a separate **room-world path** that turns captured photos into private Marble worlds. Human phone capture does not emit Intent v1. Drone acquisition uses `capture_room`, the pilot-assisted `survey_area`, and the autonomous `map_area` through the same validated boundary, then hands pose-anchored media downstream. Marble output never supplies safety geometry or flight state. M1 registers the console button and keyboard safety sources. Webcam gesture work proceeds beside the button-first path once the shared contracts freeze. The transcript-to-plan compiler starts against relay state and the two-drone simulator; push-to-talk capture follows M1.E. Future wearable producers join through the same source registry and conformance suite. Everything is open source.
 
@@ -18,14 +20,14 @@ The product has four parts: an input-agnostic **intent contract**, an **autonomy
 
 ## 1. Problem, users, and value
 
-**Problem.** Directing several drones at once is a full-time job with a controller in both hands. The people who most need several drones (a firefighter clearing a structure, a facility manager verifying an alarm, a SAR lead sweeping a warehouse) cannot give up their hands, their voice, or their attention to do it.
+**Problem.** Directing several mobile devices and following their camera and sensor feeds can consume an operator’s hands and attention. Responders and facility operators need one clear view of heterogeneous equipment, current readiness, and the exact targets of each request without learning a separate control surface for each vendor.
 
 **Users.**
 - Primary: first responders sweeping or mapping a building before entry (fire, SAR, hazmat). Indoors, hands full, noisy, time-critical.
 - Secondary: facility operators verifying incidents and people who want a room-by-room visual walkthrough of a house, office, warehouse, or plant.
 - Tertiary: swarm researchers and educators who want a human interface on top of a documented vehicle adapter without rewriting the intent and safety core.
 
-**Value.** A person can preserve an explorable visual impression of each room with three photos, then return to the room worlds from one project. For flight, intent arrives in under a second without occupying the operator's hands, four drones can join one live session, and the safety core validates every command.
+**Value.** One operator can inspect and direct compatible aerial and ground devices through the same validated intent path, add equipment without creating a second console, and tell current observations from missing or last-known data. Room-world capture remains an optional workflow with preserved source photos and provenance. Every hardware and latency claim requires evidence for the deployed configuration.
 
 ---
 
@@ -34,15 +36,15 @@ The product has four parts: an input-agnostic **intent contract**, an **autonomy
 **Goals (capstone scope).**
 1. A one-drone vertical slice that takes confirmed `capture_room` intent through the planner, arbiter, Mini 3 bridge, pose-anchored capture, World API job with `public: false`, and visible room world.
 2. A building project that preserves room names, source provenance, generation status, links to completed room worlds, and the proven manual three-photo fallback.
-3. Button control of four physical DJI Mini 3 drones with live session membership, with 4 to 6 drones proven in simulation through the same Intent v1 contract. Webcam gesture work and the transcript-to-plan compiler develop against that contract in parallel; push-to-talk speech follows the M1.E gate.
-4. Live video from the drones in the console, with detections, focus-by-selection, and attention promotion.
+3. Capability-aware control of an additive aerial and ground fleet with live membership, including at least five ground robots with two cameras and one LiDAR each. Aircraft carry one camera and the reported infrared depth/proximity sensor pending identification and validation. Buttons, webcam gestures, and language share Intent v1, exact selection, confirmation, and safety checks.
+4. Live video from each explicitly configured onboard camera, per-device and per-camera health, sensor state, focus-by-selection, and supported detection/attention workflows.
 5. Natural-language commands resolved into the same intents, with plan preview and confirmation.
 6. A safety core (geofence, altitude and spacing limits, confirmations, e-stop, battery return) that no input path can bypass.
-7. A runnable public repository with the console, relay, planner, adapters, demo fixtures, evals, and room-world capture path.
+7. A runnable public repository with the console, relay, planner, vendor adapters, isolated test fixtures and evals, and room-world capture path; no synthetic operator-runtime fallback.
 
 **Extension goals.** An EMG band can become a registered input source after the core MVP. Automated multi-room registration, a branded multi-room splat viewer, metric mapping, time-indexed rescans, Atlas integration, and autonomous exploration of an initially unmapped area also remain Future work. These items do not block M1 through M4.
 
-**Non-goals.** Outdoor swarm flight, lethal or surveillance use, face or person identification, autonomous flight without an operator present, autonomous exploration of an initially unmapped area, more than six drones, metric or as-built reconstruction from Marble, automatic room registration, factual inventory from generated content, use of Marble geometry for planning, geofencing, collision avoidance, or safety, production access-control verification, retention and deletion governance, multi-user administration, and deployment automation.
+**Non-goals.** Outdoor swarm flight, lethal or surveillance use, face or person identification, autonomous flight without an operator present, autonomous exploration of an initially unmapped area, simultaneous operation beyond the deployment’s qualified capacity, metric or as-built reconstruction from Marble, automatic room registration, factual inventory from generated content, use of Marble geometry for planning, geofencing, collision avoidance, or safety, production access-control verification, retention and deletion governance, multi-user administration, and deployment automation.
 
 **Success metrics.**
 
@@ -50,7 +52,7 @@ The product has four parts: an input-agnostic **intent contract**, an **autonomy
 |---|---|
 | Gesture intent recall on the scripted run | ≥ 95% |
 | Gesture to intent latency | < 150 ms |
-| Intent to first drone motion (indoor, 1 to 4 physical drones) | < 300 ms; command RTT, jitter, and drops reported separately |
+| Intent to first device motion (per qualified indoor configuration) | < 300 ms; command RTT, jitter, and drops reported separately |
 | NL utterance to plan preview | < 2 s; plan exact-match accuracy ≥ 85% on the gold set |
 | Unsafe intents emitted (fail geofence, limits, or confirmation rules) | 0, enforced by schema and arbiter |
 | Video glass-to-glass latency (laptop) | measured < 300 ms WebRTC, < 500 ms MJPEG; report aircraft-to-controller, Android processing, and LAN segments |
@@ -60,8 +62,8 @@ The product has four parts: an input-agnostic **intent contract**, an **autonomy
 | World API demo boundary | every request explicitly sets `public: false`; the World Labs API key appears in 0 browser bundles or logs |
 | Multi-room walkthrough | 1 project with 3 to 5 rooms opens every successful room world and produces an operator-reviewed MP4 that visits each room once |
 | “Map this floor” known-map autonomous multi-room traversal and capture | 1 recorded two-drone run covers every reachable room with no occupied-cell, clearance, or separation violation and no manual flight correction |
-| Scripted mission (arm, take off, formation, sweep, come home, land) | completes hands-free in < 3 minutes with 4 to 6 simulated drones and four physical Mini 3 nodes |
-| Live fleet membership | 1 running session accepts up to 4 physical nodes; landed and disarmed leave/rejoin preserves history, increments roster and connection epochs, invalidates stale work, and leaves unaffected aircraft stable |
+| Original DJI scripted-flight qualification (arm, take off, formation, sweep, come home, land) | Target: < 3 minutes with the four-Mini-3 test configuration; 4–6-aircraft simulator scenarios remain separate test evidence |
+| Live mixed-fleet membership | Add configured devices within bounded software capacity; exercise at least five ground identities plus aircraft, class-appropriate leave/rejoin, camera and sensor attribution, fresh epochs, invalidation, and unaffected-device stability; hardware evidence required separately |
 | Demo completion | 1 recorded pass per flight workflow with no safety intervention |
 
 The demo-first acceptance profile requires one recorded pass for each flight workflow and a 20-utterance live language set. Repeatability and broad language evaluation move to [F.6 in the delivery plan](mvp-plan.md#f6-harden-the-proof-for-production-use). Every geofence, arbiter, e-stop, separation, clearance, and physical-RC gate remains active.
@@ -75,14 +77,14 @@ The demo-first acceptance profile requires one recorded pass for each flight wor
 - **Domain:** custom, public safety and facility operations, indoor first.
 - **Use cases supported:** a drone-captured AI-generated room world, the completed three-photo fallback, and a room-by-room visual walkthrough; building sweep before entry (search lanes, person and heat detection, map of covered area); incident verification (fly to a zone, look, report); formation and repositioning; come home and land; training and demo runs in a simulator.
 - **Verification requirements:** every intent is validated against the geofence, altitude ceiling, spacing minimum, battery reserve, and drone state before execution; takeoff, sweep, `capture_room`, `survey_area`, `map_area`, and land-all require operator confirmation; detections are shown with confidence and require operator confirmation before the swarm acts on them; language plans are previewed before execution; the e-stop is always live.
-- **Data sources:** three human-captured room photos per room, explicit room adjacency, an optional floor-plan reference, drone telemetry (position, altitude, battery, state), the indoor positioning system, drone camera streams, an optional occupancy map, and the gesture and language event logs. Later: OpenStreetMap and Home Assistant for the facility mode.
+- **Data sources:** authenticated device telemetry, explicitly configured onboard cameras, ground LiDAR, validated aerial proximity readings when available, the indoor positioning system, optional occupancy maps, and gesture/language event logs; room capture additionally uses source photos, explicit room adjacency, and an optional floor-plan reference. Later: OpenStreetMap and Home Assistant for the facility mode.
 
 ### 3.2 (2) Scale and performance
 
-- **Query volume:** one operator; roughly 10 gesture intents per minute during active control, 1 to 2 language commands per minute, Virtual Stick commands at 5 to 25 Hz, measured telemetry rate per aircraft, four physical video streams, and 4 to 6 simulated drones.
-- **Latency:** gesture to intent under 150 ms; intent to drone motion under 300 ms; language to plan preview under 2 s; measured WebRTC video under 300 ms; network-stop propagation under 100 ms. Physical RC intervention is measured separately as the independent path.
-- **Concurrency:** one operator, up to three observers on the console, one swarm.
-- **World-generation latency:** generation is asynchronous and usually takes about five minutes. The operator can capture the next room while earlier jobs run.
+- **Query volume:** one operator; roughly 10 gesture intents per minute during active control and 1 to 2 language commands per minute. Measure telemetry, camera bandwidth, and sensor rates per device and for the complete deployed inventory. DJI Virtual Stick remains a vendor-specific 5-to-25 Hz requirement. The scoped ground inventory includes at least ten camera feeds and five LiDARs; configured capacity does not assert that those sources are online or that the LAN supports them simultaneously.
+- **Latency:** gesture to intent under 150 ms; intent to device motion under 300 ms; language to plan preview under 2 s; measured WebRTC video under 300 ms; network-stop propagation under 100 ms. Independent physical intervention is measured separately for each vehicle class.
+- **Concurrency:** one operator, up to three observers on the console, one shared fleet within measured physical capacity.
+- **World-generation latency:** generation is asynchronous; the operator can capture the next room while earlier jobs run.
 
 ### 3.3 (3) Reliability requirements
 
@@ -104,25 +106,30 @@ The demo-first acceptance profile requires one recorded pass for each flight wor
 
 ### 4.1 System overview
 
-```
-INPUT SOURCES                     INTENT BUS                 AUTONOMY AND SAFETY                 DRONES
-┌────────────────┐               ┌──────────┐               ┌──────────────────────┐          ┌──────────┐
-│ console buttons│──intents────► │          │──intents────► │ planner (deterministic│──cmds──► │ sim      │
-│ + keyboard stop│               │ WebSocket│               │ formations, sweep,    │          │ DJI Mini 3 Android
-├────────────────┤               │ relay    │               │ allocation, geofence) │          │ bridge nodes │
-│ future sources │──intents────► │ + state  │               │ safety arbiter        │          └────┬─────┘
-├────────────────┤               │ fan-out  │◄──telemetry── │ (validates everything)│◄──telemetry───┘
-│ language and   │──intents────► │          │               │ optional plan compiler│
-│ gesture inputs │◄──state─────  └──────────┘               └──────────────────────┘
-└────────────────┘                     │
-                                       ▼
-                     ┌───────────────────────────────────┐
-                     │ console: map, video mosaic, focus, │◄──streams── media server (MediaMTX)
-                     │ detections, ledger, health         │◄──events──  perception (detector)
-                     └───────────────────────────────────┘
+```mermaid
+flowchart LR
+    inputs[Buttons · gestures · language] -->|Intent v1| relay[Authenticated relay and live registry]
+    relay -->|Validated intent| planner[Deterministic planner]
+    planner --> arbiter[Safety checks before dispatch]
+    arbiter -->|Typed checked commands| adapters[Vendor adapters]
+    adapters --> aerial[Aerial drones]
+    adapters --> ground[Ground robots]
+    aerial -->|Telemetry and capabilities| relay
+    ground -->|Telemetry and capabilities| relay
+    aerial --> cameras[Explicit onboard cameras]
+    ground --> cameras
+    aerial --> sensors[Verified sensor interfaces]
+    ground --> sensors
+    cameras --> media[Media service]
+    sensors -->|Accepted sensor events| relay
+    relay --> console[One operator console]
+    media --> console
 ```
 
-Every arrow labeled "intents" carries the same JSON schema (Appendix A). Every arrow labeled "cmds" is adapter-specific and never exposed to inputs.
+The scoped aerial infrared depth/proximity interface remains unverified. The sensor path
+above describes the integration boundary, not a claim that every interface is implemented.
+
+Inputs emit the shared intent schema (Appendix A). Only checked planner commands cross the adapter boundary; input producers never call vendor APIs directly. Simulator scenarios exercise these contracts in isolated tests and are absent from the operator runtime.
 
 The world-generation path is separate from flight state and control:
 
@@ -150,10 +157,10 @@ The backend holds the World API key. The completed human-phone fallback enters t
 | Planner | Python | Autonomy | Deterministic formations, sweep lanes, translate, altitude, come home, known-map room assignment and routes, capture sequences, and geofence clamping. M1 onward. |
 | Safety arbiter | Python | Autonomy | Validates every intent and planned command against limits and state; owns e-stop and battery return. M1. |
 | Plan compiler (LLM) | Python | Platform | Turns language into an ordered list of intents using structured output; never touches commands. Work begins against the M1.1 relay-state and M1.2 two-drone sim interfaces, with acceptance in M4. M1.5, M2.0, and hardware sit outside its readiness gate. |
-| Swarm adapters | Python | Autonomy | `sim` in M1 implements the flight and camera contracts. Existing `crazyswarm2` and `mavlink` packages remain inactive placeholder stubs; neither is an accepted hardware implementation. |
-| DJI Mini 3 pilot app and bridge nodes | Android, DJI Mobile SDK | Autonomy with Platform | Four DJI-specific nodes, each paired with one Mini 3 and RC-N1. M1.9 proves one exact phone, aircraft, controller, firmware, and MSDK combination before duplication. The local pilot app renders low-latency FPV and `visual_advisory` capture guidance. Nodes execute only authenticated planner and arbiter work, reject stale or out-of-order Virtual Stick commands locally, report telemetry and camera capabilities, relay live video, download media, and preserve physical RC takeover. No generic network-edge abstraction is added. |
+| Device adapters | Vendor-specific node code and shared Python contracts | Autonomy | Adapt declared aerial/ground operations, cameras, and sensors to the checked relay path. `sim` provides isolated flight/camera tests; `crazyswarm2` and `mavlink` remain inactive stubs, not qualified hardware implementations. |
+| DJI Mini 3 pilot app and bridge nodes | Android, DJI Mobile SDK | Autonomy with Platform | Vendor-specific aircraft nodes, each paired with one Mini 3 and RC-N1; the original four-node qualification track is retained. M1.9 proves one exact phone, aircraft, controller, firmware, and MSDK combination before duplication. The local pilot app renders low-latency FPV and `visual_advisory` capture guidance. Nodes execute only authenticated planner and arbiter work, reject stale or out-of-order Virtual Stick commands locally, report telemetry and camera capabilities, relay live video, download media, and preserve physical RC takeover. Vendor SDK behavior stays inside the adapter; other vehicle families use the shared identity and capability boundary. |
 | Simulator | Python | Autonomy | Kinematic flight plus a concrete simulated camera implementation with deterministic panorama and component-frame fixtures and injectable capability, camera, and download failures. It uses the same negotiated interfaces as hardware and runs in CI before bring-up. |
-| Media server | MediaMTX | Platform | Ingest drone video, serve WebRTC and MJPEG, and record. M3. |
+| Media server | MediaMTX | Platform | Ingest explicitly configured aerial/ground camera streams, serve supported playback formats, and record selected sources; camera identities and health remain distinct. M3. |
 | Perception | Python, ONNX or PyTorch | Interaction | Detector on sampled frames per stream; emits detection events with world-position estimates. M3. |
 | Console dashboard | JS | Interaction | Map, cameras, sensor state, focus, attention, ledger, and health. Grows from the webcam prototype. |
 | Room capture and catalog | JS | Interaction | Creates rooms, previews and confirms drone capture, shows generation status and recovery, opens completed room worlds, and retains the proven manual fallback. M1 through M4. |
@@ -193,7 +200,7 @@ Internal tools (deterministic Python, callable by the plan compiler through sche
 | `capture_room(room_id, capture_id, pattern)` | exactly one selected drone plus an approved pose; `pano_360` or `reconstruct_8` | pose-anchored full equirectangular panorama or incomplete-vertical-coverage image set, according to the requested pattern | unsupported camera or pattern, stale telemetry, motion, storage, capture, link, or positioning failure → hold and alert |
 | `map_area(area_id)` | selected swarm plus supplied occupancy map and room graph | collision-checked routes and scheduled room-capture tasks | missing map, unreachable room, unsafe route, capacity, link, or positioning failure → refuse or hold and alert |
 
-External dependencies: the World Labs World API for room generation, the OpenAI Whisper API and plan-compiler LLM API for language, MediaPipe model download (once), MediaMTX (local), the Android DJI Mobile SDK, four Mini 3 and RC-N1 pairs, four benchmarked Android phones, shared indoor localization, and independent collision-clearance sensing. `WLT-Api-Key` and `OPENAI_API_KEY` stay in the backend environment. Future input producers and vehicle families may add source-specific SDKs after their access gates pass.
+External dependencies vary by adapter: the World Labs World API for optional room generation, transcription and plan-compiler services for language, MediaPipe for gestures, MediaMTX for configured cameras, vendor SDKs or transports for each vehicle family, and accepted localization/clearance sensors. The DJI track uses the pinned Mini 3/RC-N1/Android combination. Ground robots require their actual two-camera and LiDAR interfaces; the reported aerial infrared depth/proximity interface is unverified. Credentials remain outside browser bundles. New vehicle families require source-specific access and hardware acceptance before control is enabled.
 
 Mock versus real: the `sim` adapter is the mock and it is a first-class target. Every feature is built and tested against sim first; hardware is a configuration flag.
 
@@ -241,13 +248,13 @@ See Appendix A. Rules: intents are the only thing inputs may emit; the planner i
 
 ### 5.2 Relay
 
-FastAPI with a WebSocket endpoint. Responsibilities: authenticate sources with a shared token (loopback and LAN only), stamp intents, log to JSONL, forward to the planner, hold the authoritative state, fan out state and telemetry at 10 Hz to consoles, expose `/metrics` and `/session/<id>` for replay. Runs as a single process; restart-safe because the state is rebuilt from the adapter's telemetry.
+FastAPI authenticates source-bound inputs and individually credentialed device adapters, validates envelopes, logs outcomes, routes checked work, and fans out authoritative state and telemetry. Device IDs and classes come from explicit configuration, not a simulated fallback. A process restart closes prior live sessions; logs remain history, and devices must establish current membership and fresh epochs before new work. The executable relay contracts and settings define exact bounds.
 
-The authoritative fleet registry is keyed by stable `drone_id` and carries a monotonic `roster_version`, a connection epoch per aircraft, and `registered`, `ready`, `leaving`, `disconnected`, or `degraded` state. Signed join, readiness, graceful-leave, and unexpected-loss events update it. Identity, capabilities, fresh telemetry, home pose, control authority, and RC-safety-operator presence gate readiness. Joining leaves current selection and accepted plan unchanged; the next dispatch applies roster-version validation. Graceful removal requires landed, disarmed, task-free state; it atomically clears selection and invalidates pending confirmations or plans built against the previous roster. Unexpected or airborne loss remains visible and takes the configured hold or fail-safe path. Reconnection increments the connection epoch, and prior-epoch commands or acknowledgements are refused.
+The authoritative mixed-fleet registry is keyed by stable `drone_id`, a legacy field shared by both classes, and carries `device_class`, class-local `unit`, monotonic `roster_version`, connection epochs, and registered/ready/leaving/disconnected/degraded membership. Identity, declared capabilities, current telemetry, pose, control authority, and class-specific safety evidence gate motion readiness. Joining cannot silently retarget a selection or plan; dispatch and confirmation recheck roster, epoch, and eligibility. Graceful leave follows the class-appropriate stopped/task-free rule. Loss remains visible and invokes the configured local hold/stop/fail-safe behavior. Prior-epoch commands and acknowledgements are refused.
 
 ### 5.3 Planner
 
-Deterministic and unit-tested: formations (line, column, circle, grid, V) around a center with spacing; translate; altitude; sweep lanes (lawnmower per drone with lane assignment by current position); come home with staggered pads and a second call to land; hold; select; `capture_room`; and `map_area`. Fleet size comes from the live aircraft registry. Planner expansion, arbiter checks, telemetry fan-out, adapter dispatch, and console selection iterate the selected registered aircraft. Every accepted plan records `roster_version`; dispatch refuses a stale roster. Spacing checks cover every ready airborne aircraft, including aircraft outside the command selection. Known-map area capture resolves the room graph and approved capture poses, assigns rooms, plans collision-checked routes, and schedules capture tasks. The demo uses deterministic fixed slots and nearest available aircraft. Everything is clamped to the mode's box before it becomes a command.
+Deterministic and unit-tested: formations (line, column, circle, grid, V) around a center with spacing; translate; altitude; sweep lanes (lawnmower per drone with lane assignment by current position); come home with staggered pads and a second call to land; hold; select; `capture_room`; and `map_area`. Fleet size comes from the live device registry. Planner expansion, arbiter checks, telemetry fan-out, adapter dispatch, and console selection use exact registered IDs with class- and capability-specific behavior. Aircraft-only operations never become ground commands. Every accepted plan records `roster_version`; dispatch refuses a stale roster. Spacing checks cover every ready airborne aircraft, including aircraft outside the command selection. Known-map area capture resolves the room graph and approved capture poses, assigns rooms, plans collision-checked routes, and schedules capture tasks. The demo uses deterministic fixed slots and nearest available aircraft. Everything is clamped to the mode's box before it becomes a command.
 
 ### 5.4 Modes
 
@@ -263,15 +270,15 @@ Runs on every intent and every planned command. Checks: armed state, network sto
 
 ### 5.6 Adapters
 
-The core MVP has two concrete implementations of the flight and camera contracts. `sim` is kinematic and deterministic, with capture fixtures and injected failures. The DJI-specific Android node connects one Mini 3 through one RC-N1 and the pinned Mobile SDK release. It receives authenticated planner and arbiter work, streams Virtual Stick commands at a tested rate within DJI's documented 5-to-25 Hz range, rejects out-of-order commands and commands older than the frozen local TTL, reports measured telemetry, and relays camera media and live video. Each node has a watchdog that stops network control on relay or LAN loss while preserving the physical RC path. There is no generic edge-agent or protobuf layer until a second networked hardware implementation exists. ROS 2 and MAVLink vehicles remain Future work. [DJI Virtual Stick tutorial](https://developer.dji.com/doc/mobile-sdk-tutorial/en/tutorials/virtual-stick.html)
+Shared adapter contracts connect vendor-specific aerial and ground implementations to one checked control path. The DJI Android bridge is one aircraft implementation with model-specific SDK, Virtual Stick, watchdog, camera, and physical-RC requirements. A ground adapter declares ground motion, onboard cameras, LiDAR, and any genuinely implemented peripherals; it must prove local obstacle-avoidance and stop behavior before motion qualification. The reported aerial infrared depth/proximity sensor requires its own verified measurement interface. `sim` supplies isolated deterministic flight/camera tests, while inactive ROS 2/MAVLink packages are not accepted hardware. Neither a package nor a capability claim replaces hardware evidence.
 
 ### 5.7 Media and perception
 
-MediaMTX ingests each drone's stream and serves WebRTC and MJPEG; each stream is named by drone id. Perception samples frames at 5 to 10 fps per stream, runs a small detector (YOLO-class, people and common objects; thermal if a thermal camera is mounted), and emits detection events with a world-position estimate from the drone pose and camera geometry. Detections go to the relay as events, never as commands.
+MediaMTX ingests explicitly configured onboard camera streams and serves supported playback/recording paths. Each camera has a parent device ID, camera ID, label, safe stream name, and independent live/offline/unreported state; both robot cameras must be separately attributable. Legacy primary paths remain compatible when no mapping is supplied. Perception uses the actual camera’s geometry, validated parent pose, epoch, timestamps, and measurement uncertainty. Detections are events for operator review, never commands. MJPEG requires its separate gateway; a stream endpoint does not prove capture or control capability.
 
 ### 5.8 Console
 
-The web prototype grows into the persistent operator console: button controls, plan preview, ledger, video, capture library, World Builder, connectivity, configuration, map, focus, attention, and health. Gesture and microphone surfaces join later. It is a static web app; all state comes from the relay.
+The existing static web console has one canonical operator URL and one persistent shell for Control, Live, Gesture, Speech, Captures, Worlds, Devices, and Map. It renders reported devices and configured cameras without fixed fleet slots, preserves exact selected IDs, shows operation-specific support/readiness, and distinguishes stale or missing readings from current ones. All live state comes from the relay and actual media. Fixtures, recorded scenarios, and showcase pages are isolated from the operator runtime.
 
 ### 5.9 Optional input extensions
 
@@ -326,6 +333,8 @@ The Android app publishes readiness and media metadata through the relay. The la
 
 ## 6. Delivery milestones
 
+The stages below retain the original DJI room-capture and indoor-flight qualification program. Fixed aircraft counts describe those model-specific trials, not the size or classes of the modular platform. The [modular fleet integration track](mvp-plan.md#modular-fleet-integration-track) runs alongside them. A defined exit is not a completed hardware result.
+
 This section defines product outcomes and acceptance gates. Task order and dependencies live in [the MVP delivery plan](mvp-plan.md).
 
 ### Completed precursor: manual room capture
@@ -347,7 +356,7 @@ Three guided phone photos have produced one Marble room world. Preserve the phot
 - Boundaries: the drone begins armed and hovering at an operator-approved pose in an empty, static room. `capture_room` is the only hardware capture intent accepted in this slice; `map_area` stays `unsupported`. `pano_360` requires a verified full equirectangular artifact. `reconstruct_8` is a separately confirmed fallback labeled as incomplete vertical coverage. Marble remains downstream of flight, and the physical RC-N1 safety operator remains independent of the network stop.
 - Exit: one button-generated `capture_room` request passes schema validation, preview, confirmation, planner, arbiter, and the proven Mini 3 bridge. The pilot app shows local FPV, `visual_advisory` coverage and quality gates, capture progress, and pilot-approved clearance without XYZ guidance. The laptop shell exposes Control, Live view, Capture library, World Builder, Connectivity, and Configuration modules at their M1 depth while keeping safety and active-plan state persistent. The aircraft holds the approved pose, collects the requested capture pattern, downloads and associates every file, and creates one Marble room world with `public: false` linked to the correct room, capture, operation, world, assets, and timestamps. The UI shows queued, running, succeeded, failed, and timed-out states with retry. Injected invalid intent, stale command, telemetry, camera, download, link, bridge, and World API failures produce the specified refusal, hold, or recovery behavior while physical RC control remains available.
 
-### M2: Hardware control MVP (delivery-gated)
+### M2: DJI hardware qualification track (delivery-gated)
 
 - Entry: M1's one-drone room-world exit and two-drone button-to-sim safety path are green; the first Mini 3 bridge node is proven; a guarded flight space and one RC safety operator per active aircraft are booked.
 - Scheduling: webcam gesture work proceeds beside M1.3 once the shared input contracts freeze. The transcript-to-plan compiler proceeds against M1.1 relay state and the M1.2 two-drone simulator, while push-to-talk capture may begin after M1.E. Hardware safety work takes priority until M2.0 passes. After M2.0, indoor autonomy, the third and fourth physical nodes, and the 4-to-6-drone simulator expansion may proceed concurrently with the active input lanes.
@@ -364,7 +373,7 @@ Three guided phone photos have produced one Marble room world. Preserve the phot
 - Entry: M2.0 is green. Its one selected live feed provides the narrow media proof. Recording, multi-stream work, detector prototyping, and the active gesture and language lanes run concurrently; relay and console integration wait for their shared contracts. `map_area` remains `unsupported` until shared indoor localization and collision-clearance sensing pass the M3 gate.
 - Deliverables: expand the M2.0 selected-feed proof into four-node MediaMTX ingest, WebRTC/MJPEG serving, recording, detection events, and measured latency (Platform); add the live camera mosaic, focus-by-selection, telemetry and sensor state, detector, attention promotion, and operator confirmation in the console (Interaction); use tag36h11 AprilTags, detected through `pupil-apriltags` or `cv2.aruco` on the live 1280×720/30 downlink, as the shared indoor localization source, with hybrid placement: floor tags in formation zones read near-nadir from the flight band, and 24–30 cm wall tags along route tubes. The Mini 3's controllable gimbal range is -90° to +60°, which does not point far enough upward to reliably view ceiling-mounted tags, so ceiling placement stays excluded. Each tag fix is fused per drone in an EKF with delayed-measurement replay against MSDK-velocity dead reckoning, using per-configuration calibrated video latency and camera calibration for every camera and imaging configuration used as localization evidence. Prove localization and deterministic map-plus-pose clearance before exposing `map_area`; then preview and confirm it through the operator console, navigate one drone and then two through approved room poses on a supplied occupancy map, partition known room targets, attach every completed capture bundle to the room catalog, and submit the accepted run to per-room World API jobs with `public: false` (Autonomy with Platform and Interaction support).
 - Known-map autonomous flight boundary: the approved Phase 1 area on Level 1 — the lobby, the corridor spine to the kitchen (the open floor of 113 beside the kitchen counter), and the 110 atrium — with open doors, static empty space, no stairs, no people or pets, guarded aircraft, a known launch and return zone, a Sweep operator present, and one physical RC safety operator per active aircraft. Phase 1 commits two drones demonstrating two formation shapes in the kitchen and atrium boxes; the complete MVP commits four drones repeating the same autonomous flight and demonstrating four formation shapes — line, column, wedge, and diamond — with autonomous search detection in the mapped area as time-permitting stretch. Capture no longer gates the flight and formation exits. Before `map_area`, the operator imports or creates the occupancy map, marks and validates the room graph and approved capture poses, and approves the geofence. That supplied map and the positioning system drive pathfinding. Marble remains downstream of capture. For multi-floor identity, add floor metadata to the validated room graph, associate each tag with its graph floor, and keep one flat building-wide tag-ID namespace. Do not reserve fixed ID ranges per floor; dense floors may need 50 or more tags and exhaust an assigned range.
-- Exit: the control panel shows four live cameras, telemetry, sensor events, and membership state; the operator can focus a drone by selection; a detection promotes its feed within one second; every physical source meets the measured latency budget; and the known-map autonomous multi-room traversal and capture workflow passes once on camera. Before hardware acceptance, shared localization holds p95 error at or below 0.25 m with no unhandled update gap over 500 ms across five mapped-route rehearsals; static clearance is certified deterministically from the validated scan-derived map, route tubes, and per-zone altitude bands checked against the fused pose plus a stopping envelope, with dynamic intrusion handled by the detection-and-operator-confirmation path — three of the five protected directions are physically unobservable by this aircraft, so no sensing-trial gate applies — and covering the active tag set, loading a wrong map version, or injected stale data commands hold. Every reachable room receives one complete pose-anchored capture bundle, no path crosses an occupied cell or minimum-clearance boundary, no separation violation occurs, every aircraft returns or executes its configured fail-safe, no manual flight correction is needed, and the room catalog has no missing, duplicate, or cross-linked captures. For the accepted run, each bundle becomes a successful World API job with `public: false` linked to the same room and its returned room world.
+- Exit: the original DJI qualification run shows its four real camera feeds, telemetry, sensor events, and membership state; the modular console includes every explicitly configured onboard camera with its own current status; the operator can focus a drone by selection; a detection promotes its feed within one second; every physical source meets the measured latency budget; and the known-map autonomous multi-room traversal and capture workflow passes once on camera. Before hardware acceptance, shared localization holds p95 error at or below 0.25 m with no unhandled update gap over 500 ms across five mapped-route rehearsals; static clearance is certified deterministically from the validated scan-derived map, route tubes, and per-zone altitude bands checked against the fused pose plus a stopping envelope, with dynamic intrusion handled by the detection-and-operator-confirmation path — three of the five protected directions are physically unobservable by this aircraft, so no sensing-trial gate applies — and covering the active tag set, loading a wrong map version, or injected stale data commands hold. Every reachable room receives one complete pose-anchored capture bundle, no path crosses an occupied cell or minimum-clearance boundary, no separation violation occurs, every aircraft returns or executes its configured fail-safe, no manual flight correction is needed, and the room catalog has no missing, duplicate, or cross-linked captures. For the accepted run, each bundle becomes a successful World API job with `public: false` linked to the same room and its returned room world.
 
 ### M4: Language, gesture, and final proof of concept
 
@@ -372,10 +381,10 @@ Three guided phone photos have produced one Marble room world. Preserve the phot
 - Deliverables: `resolve_selection` and `resolve_location` with ambiguity handling (Autonomy); the 20-utterance live language gate, cached eval, and local compiler fallback (Platform with team-contributed cases); speech hardening and a webcam gesture producer that passes the shared Intent v1 conformance suite (Interaction with Platform); hardware language acceptance when M2 is open; operator-assisted Studio Compose placement and doorway review for the room worlds generated from M3's accepted drone run; a Studio Record MP4 that visits each room once and is stored in the same building project; failure drills, adversarial tests, a short run guide, demo script, and recorded reel (team).
 - Exit: the 20-utterance live language set passes; unsafe-intent count is zero; ambiguity produces clarification without emission; the gesture producer completes one recorded `capture_room` path with the shared `intent_id` lifecycle; one accepted language or gesture producer completes the indoor known-map capture through the same planner, arbiter, adapter, localization, clearance, geofence, separation, and physical-RC safety path; each flight workflow has one recorded pass; every doorway transition in the composed walkthrough is reviewed; the MP4 is stored before the Studio session ends; the public repository is reproducible from the run guide and the demo reel is complete. Hardware claims require recorded hardware evidence.
 
-### Future: Optional inputs and vehicle portability
+### Future: Optional inputs and additional vehicle families
 
 - EMG band: proceed after the direct-host API gate passes; require real-device events through the shared conformance suite and safety path.
-- Vehicle portability: evolve capability contracts and add adapters from evidence produced by working vehicles and the capability/action evals.
+- Additional vehicle families: continue beyond the current aerial/ground integration scope using evidence from working vehicles and capability/action evals. The scoped ground robots and their onboard cameras/LiDAR are current work, not deferred portability.
 - Spatial capture: add automatic multi-room registration, a branded Spark renderer, metric alignment through SLAM, photogrammetry, or LiDAR, time-indexed rescans, and Atlas integration.
 - Autonomous exploration: explore an initially unmapped area only after onboard VIO plus depth or LiDAR produces a conventional occupancy map with its own accuracy and safety acceptance. Marble remains a presentation layer.
 - Description-guided search: add one confirmed `search_area {area_id, query_id}` outcome intent backed by a stored, bounded `perception_query` for person or object attributes. Perception emits candidate, progress, and completion events with provenance; it never emits motion. Face identity, autonomous following, and autonomous approach remain excluded, and a person validates every candidate.
@@ -411,10 +420,10 @@ Three guided phone photos have produced one Marble room world. Preserve the phot
 ### 7.2 (12) Security considerations
 
 - **Prompt injection:** the plan compiler's only untrusted input is the operator's utterance, and its output is schema-constrained to intents that the arbiter re-validates. Detection labels, stream names, and any text that arrives from devices are treated as data and never pass through the compiler as instructions.
-- **Demo data boundary:** room photos and generated worlds leave the ground-station LAN for World Labs processing. MVP capture uses disposable data from empty staged rooms, requires an explicit upload action, and requests `public: false`. Flight video and logs stay on the LAN. After M1.E, microphone audio passes through the relay to the OpenAI Whisper API, and only the transcript plus swarm state reaches the plan compiler.
+- **Captured-data and upload boundary:** use real, operator-authorized source photos and preserve their provenance. Selected room photos leave the ground-station LAN for World Labs processing only after the operator reviews the selection and explicitly confirms upload; disclose the destination and retention policy and request `public: false`. Returned room worlds remain labelled AI-generated and cannot establish measured or safety facts. Vehicle video and logs stay on the LAN unless separately authorized for export. When speech is enabled, disclose and explicitly authorize microphone capture and upload through the relay to the OpenAI Whisper API; only the transcript plus fleet state reaches the plan compiler. Privacy controls apply to real captured data from the first deployment.
 - **API key management:** `OPENAI_API_KEY` and the World Labs key used in the `WLT-Api-Key` header are loaded into the backend from a git-ignored `.env`; neither reaches the console, logs, or repository. The console calls only Sweep's backend.
 - **Access:** the relay accepts registered sources with a shared token over LAN or loopback. Source-specific credentials and licenses stay outside the relay and repository.
-- **Audit logging:** ordered JSONL per session preserves the evidence needed to replay and explain the demo.
+- **Audit logging:** ordered JSONL per session preserves the evidence needed to replay and explain the run.
 
 ### 7.3 (13) Testing strategy
 
@@ -429,11 +438,11 @@ Three guided phone photos have produced one Marble room world. Preserve the phot
 - **Documentation:** provide a short sim quickstart, the exact demo runbook, and the hardware configuration used for recorded evidence.
 - **Presentation:** capture the room-world walkthrough, formation transitions, live safety refusals, and input handoffs in the demo reel.
 
-### 7.5 (15) Demo runtime
+### 7.5 (15) Live operator runtime
 
 - **Runtime:** the ground station is a laptop; `docker compose` brings up the relay, MediaMTX, and perception; the console is served locally. Room generation is a cloud dependency and keeps a local job record through outages.
 - **CI:** GitHub Actions runs deterministic tests and evals for the demonstrated paths.
-- **Monitoring:** the console health strip and recorded run log expose latencies, refusals, battery state, and degraded drones during the demo.
+- **Monitoring:** the console health strip and recorded run log expose latencies, refusals, battery state, and degraded aerial/ground devices. Only actual connected sources can be current; disconnected or expired observations remain last known, offline, or unreported. Test fixtures and recorded scenarios never populate the operator runtime.
 
 ### 7.6 (16) Iteration planning
 
@@ -499,7 +508,7 @@ Engineers claim ready work from [the MVP delivery plan](mvp-plan.md). Contract, 
 | The Mini 3 stack lacks the required capture artifact | high | high | accept `pano_360` only after a full equirectangular result; otherwise use confirmed `reconstruct_8` with incomplete vertical coverage or retain phone capture |
 | The expanded known-map autonomy capstone exceeds the delivery window | high | high | preserve the completed human-capture fallback and land the M1 drone room-world slice plus the M2.0 safety skeleton first; if capacity slips, cut known-map multi-room autonomy before weakening either accepted slice |
 | Generated room content is mistaken for measured evidence | medium | high | label every artifact class, keep source photos beside the result, and exclude Marble output from factual and flight-safety decisions |
-| Demo room data is exposed | low | medium | use disposable data from empty staged rooms, require explicit upload, request `public: false`, and keep credentials server-side |
+| Captured room data is exposed | low | medium | capture only operator-authorized spaces, review the selected real media before explicit upload, disclose destination and retention, request `public: false`, and keep provider credentials server-side |
 | Whisper API latency, rate limits, or outage block the later language path | medium | medium | keep the accepted button producer available; cap recordings at 30 seconds; test timeout and rate-limit handling; run the 20-utterance smoke set before integration |
 | Concurrent indoor-autonomy and input work exceeds team capacity | high | high | freeze shared contracts first; prioritize the visible input lane; schedule hardware work in booked blocks; serialize shared console and safety-critical changes through one owner and cross-review |
 | Language produces plausible but wrong plans | medium | medium | preview and confirm; schema; gold set; unsafe rate stays zero by construction |
@@ -539,6 +548,8 @@ M2.0 exercises the existing `arm`, `select`, `takeoff`, `translate`, `hold`, `co
 
 ## Appendix B: Telemetry v1
 
+The example below is an aircraft sample. The current shared wire retains `drone`/`drone_id` compatibility names for both device classes; exact required fields and enums live in `relay/contracts.py`. Per-camera status and accepted sensor frames stay attached to their parent identity and epoch. An infrared proximity sensor must not be encoded as LiDAR without a matching verified contract.
+
 ```json
 {"v":1,"t":1756700000000,"type":"telemetry","drone":3,"x":1.2,"y":-0.4,"z":1.0,"vx":0,"vy":0,"vz":0,
  "battery":0.72,"state":"hovering","link":0.95,"pos_quality":0.9}
@@ -559,7 +570,7 @@ class SwarmAdapter(Protocol):
     def telemetry(self) -> Iterator[Telemetry]: ...
 ```
 
-Camera capture is a negotiated capability beside the flight interface. M1 supplies a concrete simulated implementation with deterministic full-panorama and eight-frame fixtures plus injected unsupported, camera, and download failures. M2 supplies the second concrete implementation only after the selected hardware stack passes its access spike.
+Camera capture is a negotiated capability distinct from motion and live playback. The signatures below preserve the original aircraft capture design; current executable protocols are in `adapters/protocols.py`. Every vendor implementation must report actual support and typed failures. Isolated panorama/photo fixtures prove contract behavior only; each physical camera pipeline needs its own access and qualification evidence.
 
 ```python
 class CameraCapture(Protocol):
@@ -581,7 +592,7 @@ sweep/
   relay/            FastAPI relay, schemas, logging, replay
   planner/          formations, sweep, allocation, modes
   arbiter/          safety rules, e-stop, battery return
-  adapters/         deterministic sim and DJI Mini 3 bridge contract
+  adapters/         shared device/camera contracts, vendor bridges, isolated sim tests
   calibration/      offline camera intrinsics and latency artifacts
   media/            MediaMTX config, stream naming
   perception/       detector, world-position estimate
@@ -594,6 +605,8 @@ sweep/
 ```
 
 ## Appendix E: Scripted mission (the acceptance test)
+
+This is the retained DJI-specific scripted-flight acceptance scenario, not a platform-wide fleet limit or a ground-robot procedure.
 
 Use the console controls to select all aircraft, arm, confirm takeoff, set the circle formation, translate right twice, increase altitude one step, confirm and complete a sweep, come home, confirm land-all, and disarm. Every request keeps one `intent_id` through draft, pending confirmation, sent, accepted or refused, executing, and completed or failed states. Pass: all steps execute on four connected Mini 3 bridge nodes with zero unsafe intents, no manual flight correction, and a total duration under three minutes. The same test runs on 4 to 6 simulated drones. Later language and gesture producers must pass the same mission without changing the downstream intent, planner, arbiter, or adapter behavior.
 

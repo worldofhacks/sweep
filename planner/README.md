@@ -1,5 +1,7 @@
 # planner
 
+The planner serves an additive heterogeneous fleet through the class-aware snapshot and declared capabilities; see the [integration guide](../docs/modular-fleet.md). Global device IDs, exact selections, and epochs remain authoritative. Camera/sensor resources are attached to their parent device and do not become extra motion targets. Model-specific two-/four-aircraft geometry acceptance is separate from software fleet capacity.
+
 Capability area: Autonomy. Milestone: M1.
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to safety-relevant planner paths name one change owner and require cross-review.

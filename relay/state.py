@@ -10,6 +10,7 @@ from math import isfinite
 from threading import RLock
 from types import MappingProxyType
 
+from media.streams import CameraStream, validate_camera_mapping
 from planner.models import DeviceClass, DriveState, FlightState
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import (
@@ -20,18 +21,19 @@ from relay.contracts import (
     MembershipRequest,
     NodeStatusFrame,
     SensorFrame,
-    SensorKind,
     TelemetryV1,
     VideoPublishState,
 )
-from relay.media import MediaEvidenceProvider, project_video
-
-# Stable physical ids a session admits, enforced per class in ``apply_join``. The audit
-# projector bounds the drone list by the sum.
-MAX_PHYSICAL_DEVICES: Mapping[DeviceClass, int] = MappingProxyType(
-    {DeviceClass.AIRCRAFT: 4, DeviceClass.GROUND_VEHICLE: 4}
+from relay.fleet_limits import MAX_FLEET_DEVICES
+from relay.media import (
+    CameraEvidenceProvider,
+    MediaEvidenceProvider,
+    project_camera_video,
+    project_video,
+    stream_name,
 )
-MAX_PHYSICAL_AIRCRAFT = MAX_PHYSICAL_DEVICES[DeviceClass.AIRCRAFT]
+
+# Stable registered IDs remain bounded independently of the devices' classes.
 DEFAULT_MEMBERSHIP_HISTORY_LIMIT = 8
 MAX_MEMBERSHIP_HISTORY_LIMIT = 64
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
@@ -110,6 +112,7 @@ class _AircraftRecord:
     membership: Membership
     joined_at: int
     updated_at: int
+    media_epoch_started_at: int = 0
     device_class: DeviceClass = DeviceClass.AIRCRAFT
     unit: int = 0
     identity_verified: bool = True
@@ -143,6 +146,8 @@ class FleetRegistry:
         telemetry_freshness_ms: int,
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         media_evidence: MediaEvidenceProvider | None = None,
+        media_cameras: Mapping[int, tuple[CameraStream, ...]] | None = None,
+        camera_evidence: CameraEvidenceProvider | None = None,
         membership_history_limit: int = DEFAULT_MEMBERSHIP_HISTORY_LIMIT,
         devices: Mapping[int, DeviceIdentity] | None = None,
         min_home_position_quality: float = 0.0,
@@ -188,12 +193,20 @@ class FleetRegistry:
         self._media_evidence = media_evidence
         self.membership_history_limit = membership_history_limit
         configured = {} if devices is None else dict(devices)
+        if len(configured) > MAX_FLEET_DEVICES:
+            raise ValueError(f"configured fleet exceeds {MAX_FLEET_DEVICES} device IDs")
         if any(
             type(drone_id) is not int or drone_id <= 0 or not isinstance(identity, DeviceIdentity)
             for drone_id, identity in configured.items()
         ):
             raise ValueError("devices must map positive device ids to DeviceIdentity values")
         self._devices: Mapping[int, DeviceIdentity] = MappingProxyType(configured)
+        self._media_cameras = (
+            None
+            if media_cameras is None
+            else validate_camera_mapping(media_cameras, set(configured))
+        )
+        self._camera_evidence = camera_evidence
         self._aircraft: dict[int, _AircraftRecord] = {}
         self._roster_version = 0
         self._state_sequence = 0
@@ -294,17 +307,10 @@ class FleetRegistry:
             record = self._aircraft.get(request.drone_id)
             rejoining = record is not None
             if record is None:
-                limit = MAX_PHYSICAL_DEVICES[identity.device_class]
-                occupied = sum(
-                    1
-                    for existing in self._aircraft.values()
-                    if existing.device_class is identity.device_class
-                )
-                if occupied >= limit:
+                if len(self._aircraft) >= MAX_FLEET_DEVICES:
                     raise RegistryError(
                         "fleet_capacity",
-                        f"session already contains {limit} stable "
-                        f"{identity.device_class.value} IDs",
+                        f"session already contains {MAX_FLEET_DEVICES} stable device IDs",
                     )
                 record = _AircraftRecord(
                     drone_id=request.drone_id,
@@ -314,6 +320,7 @@ class FleetRegistry:
                     membership=Membership.REGISTERED,
                     joined_at=request.t,
                     updated_at=request.t,
+                    media_epoch_started_at=request.t,
                     device_class=identity.device_class,
                     unit=identity.unit,
                 )
@@ -326,6 +333,7 @@ class FleetRegistry:
                 record.adapter_id = request.adapter_id
                 record.capabilities = request.capabilities
                 record.connection_epoch += 1
+                record.media_epoch_started_at = request.t
                 record.membership = Membership.REGISTERED
                 record.updated_at = request.t
                 record.identity_verified = True
@@ -802,6 +810,11 @@ class FleetRegistry:
         pos_quality = None if telemetry is None else telemetry["pos_quality"]
         return {
             "drone_id": record.drone_id,
+            **(
+                {"cameras": self._camera_states(record, now_ms)}
+                if self._media_cameras is not None
+                else {}
+            ),
             "device_class": record.device_class.value,
             "unit": record.unit,
             "connection_epoch": record.connection_epoch,
@@ -841,14 +854,31 @@ class FleetRegistry:
                 ),
             ),
             "sensor": {
-                "kind": (
-                    SensorKind.LIDAR_SCAN.value
-                    if record.sensor is None
-                    else record.sensor.kind.value
-                ),
+                "kind": (None if record.sensor is None else record.sensor.kind.value),
                 "last_scan_at": None if record.sensor is None else record.sensor.t,
             },
         }
+
+    def _camera_states(self, record: _AircraftRecord, now_ms: int) -> list[dict[str, object]]:
+        assert self._media_cameras is not None
+        legacy_path = stream_name(record.device_class, record.unit)
+        return [
+            {
+                **camera.to_dict(),
+                **project_camera_video(
+                    membership=record.membership,
+                    epoch_started_at=record.media_epoch_started_at,
+                    now_ms=now_ms,
+                    evidence=None
+                    if self._camera_evidence is None
+                    else self._camera_evidence(record.drone_id, camera.camera_id, now_ms),
+                    legacy_node_status=record.node_status
+                    if camera.camera_id == "primary" and camera.stream == legacy_path
+                    else None,
+                ),
+            }
+            for camera in self._media_cameras.get(record.drone_id, ())
+        ]
 
     def _remember(
         self,

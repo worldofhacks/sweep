@@ -50,6 +50,7 @@ class Harness:
         self.clock = Clock()
         self.event_ids = EventIds()
         settings = RelaySettings(
+            allow_test_adapters=True,
             relay_token=CONSOLE_KEY,
             adapter_keys=ADAPTER_KEYS,
             log_dir=tmp_path,

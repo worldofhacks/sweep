@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import Lock, RLock
 
+from media.streams import MAX_CAMERAS_PER_DEVICE, CameraStream
 from planner.models import CommandOperation, DeviceClass
 from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event, verify_event_signature
@@ -54,6 +55,7 @@ from relay.control_localization import (
     LocalizationProjectionError,
 )
 from relay.control_localization_contracts import session_identifier
+from relay.fleet_limits import MAX_FLEET_DEVICES
 from relay.intent_v1 import (
     MAX_INTENT_IDENTIFIER_CHARS,
     REGISTERED_SOURCES,
@@ -63,10 +65,10 @@ from relay.intent_v1 import (
     RejectedIntent,
     validate_intent,
 )
-from relay.media import MediaEvidenceProvider
+from relay.media import CameraEvidenceProvider, MediaEvidenceProvider
+from relay.runtime_mode import TEST_ADAPTER_CAPABILITY
 from relay.state import (
     MAX_MEMBERSHIP_HISTORY_LIMIT,
-    MAX_PHYSICAL_DEVICES,
     FleetRegistry,
     MembershipTransition,
     RegistryError,
@@ -305,15 +307,21 @@ class RelaySession:
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         relay_clock_id: str = "unix_epoch_ms",
         media_evidence: MediaEvidenceProvider | None = None,
+        media_cameras: Mapping[int, tuple[CameraStream, ...]] | None = None,
+        camera_evidence: CameraEvidenceProvider | None = None,
         devices: Mapping[int, DeviceIdentity] | None = None,
         min_home_position_quality: float = 0.0,
         max_home_position_age_ms: int | None = None,
+        allow_test_adapters: bool = False,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
         self.session_id = session_identifier(session_id)
         self.audit_log = audit_log
         self.limits = limits
+        if type(allow_test_adapters) is not bool:
+            raise ValueError("allow_test_adapters must be a boolean")
+        self._allow_test_adapters = allow_test_adapters
         self.clock = clock or _epoch_ms
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
         self.leave_authorizer = leave_authorizer
@@ -335,6 +343,8 @@ class RelaySession:
             telemetry_freshness_ms=limits.telemetry_freshness_ms,
             capability_profile=capability_profile,
             media_evidence=media_evidence,
+            media_cameras=media_cameras,
+            camera_evidence=camera_evidence,
             membership_history_limit=limits.state_membership_history,
             devices=devices,
             min_home_position_quality=min_home_position_quality,
@@ -1993,10 +2003,14 @@ class RelaySession:
             self._ensure_projection_usable()
             return {**self._metrics, "roster_version": self.registry.roster_version}
 
-    def _apply_membership(
-        self, request: MembershipRequest, *, now_ms: int
-    ) -> MembershipTransition:
+    def _apply_membership(self, request: MembershipRequest, *, now_ms: int) -> MembershipTransition:
         if request.action is MembershipAction.JOIN:
+            if TEST_ADAPTER_CAPABILITY in request.capabilities and not self._allow_test_adapters:
+                raise RegistryError(
+                    "test_adapter_disabled",
+                    "synthetic adapters cannot join a hardware session; use an isolated "
+                    "runtime with SWEEP_ALLOW_TEST_ADAPTERS=true for deterministic tests",
+                )
             return self.registry.apply_join(request)
         if request.action is MembershipAction.READINESS:
             return self.registry.apply_readiness(request, now_ms=now_ms)
@@ -2716,7 +2730,7 @@ def _material_state_projection(state: Mapping[str, object]) -> str:
         raise AuditLogError(f"material state is not JSON-native: {error}") from None
 
 
-_MAX_PROJECTED_DEVICES = sum(MAX_PHYSICAL_DEVICES.values())
+_MAX_PROJECTED_DEVICES = MAX_FLEET_DEVICES
 
 
 def _material_drones_projection(value: object) -> list[dict[str, object]]:
@@ -2787,7 +2801,7 @@ def _bounded_control_projection_snapshot(value: object, field: str) -> object:
 
 def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]:
     missing = _DRONE_STATE_KEYS - set(drone)
-    unknown = set(drone) - _DRONE_STATE_KEYS
+    unknown = set(drone) - _DRONE_STATE_KEYS - {"cameras"}
     if missing or unknown:
         detail = []
         if missing:
@@ -2815,6 +2829,43 @@ def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]
     ):
         raise AuditLogError("drone home_pose fields do not match the bounded projection")
     projection = {key: drone[key] for key in _DRONE_STATE_KEYS - _VOLATILE_DRONE_KEYS}
+    if "cameras" in drone:
+        cameras = drone["cameras"]
+        if not isinstance(cameras, list) or len(cameras) > MAX_CAMERAS_PER_DEVICE:
+            raise AuditLogError("device cameras must be a bounded list")
+        projected_cameras = []
+        camera_ids: set[str] = set()
+        camera_streams: set[str] = set()
+        for camera in cameras:
+            if not isinstance(camera, Mapping) or set(camera) != {
+                "camera_id",
+                "label",
+                "stream",
+                "status",
+                "last_frame_at",
+            }:
+                raise AuditLogError("camera fields do not match the bounded projection")
+            try:
+                CameraStream(camera["camera_id"], camera["label"], camera["stream"])
+            except ValueError:
+                raise AuditLogError("camera identity is outside the bounded projection") from None
+            if not isinstance(camera["status"], str) or camera["status"] not in {
+                "live",
+                "offline",
+                "unreported",
+            }:
+                raise AuditLogError("camera status is outside the bounded projection")
+            if camera["camera_id"] in camera_ids or camera["stream"] in camera_streams:
+                raise AuditLogError("camera identities must be unique")
+            camera_ids.add(camera["camera_id"])
+            camera_streams.add(camera["stream"])
+            frame_at = camera["last_frame_at"]
+            if frame_at is not None and (type(frame_at) is not int or frame_at < 0):
+                raise AuditLogError("camera frame timestamp is outside the bounded projection")
+            projected_cameras.append(
+                {key: value for key, value in camera.items() if key != "last_frame_at"}
+            )
+        projection["cameras"] = projected_cameras
     for report, timestamp in _TIMESTAMPED_DRONE_REPORTS.items():
         value = projection.get(report)
         if value is None and report in _NULLABLE_DRONE_REPORTS:

@@ -1,14 +1,16 @@
 # adapters
 
+Sweep uses these shared boundaries for a modular aerial/ground fleet and attached cameras and sensors. See the [integration guide](../docs/modular-fleet.md). Vendor-specific implementations must declare what they actually support; an adapter name or test fixture is not hardware qualification. The operator runtime never substitutes the simulator for a disconnected device.
+
 Capability area: Autonomy. Milestones: M1 (`sim`), M2 (hardware).
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to the adapter interface name one change owner and require cross-review.
 
-The accepted MVP has two concrete implementations (PRD Appendix C):
+The current package inventory below distinguishes shared implementations from hardware acceptance (PRD Appendix C):
 
 | Package | Target | Milestone |
 |---|---|---|
-| `sim/` | Kinematic deterministic flight and camera fixtures for registry sizes 1–4 now, then 4–6; the first-class CI implementation before hardware | M1 |
+| `sim/` | Kinematic deterministic flight and camera fixtures; historical 1–6-aircraft cases are isolated CI evidence, not a product fleet limit | M1 |
 | `dji_mini3/` | one Android node per Mini 3 and RC-N1 pair via the DJI Mobile SDK, proven on one exact hardware combination before duplication; the relay-side remote adapter and a fake node land first | M2 |
 
 ## Frozen protocols and dispatch
@@ -52,10 +54,11 @@ own last authenticated activity in `NodeWatchdogState`; elapsed local time cause
 and then the configured adapter failsafe without depending on a relay loss callback or
 sending a central command to a disconnected node. Roster reconciliation's
 `LossResponse` is audit/integration metadata, while #17/M1.4 owns production runtime
-wiring. Run `uvicorn adapters.sim.app:app` with the normal relay environment variables
-to exercise the deployable two-aircraft simulator composition. Configure credentials for
-simulated drones 1 and 2; each new relay session registers both signed nodes and streams
-their telemetry at the relay cadence. It binds the production relay, autonomy controller,
+wiring. `adapters.sim.app:app` is an isolated test entry point, requires
+`SWEEP_ALLOW_TEST_ADAPTERS=true`, and must use a separate test environment, relay endpoint,
+session, log directory, and test-only credentials. It never belongs behind the operator
+console. Its two-aircraft composition registers signed test nodes 1 and 2 and streams
+their synthetic telemetry at the relay cadence. It binds the shared relay, autonomy controller,
 arbiter, simulator, explicit safety enrichment, and the configured hold-then-failsafe
 watchdog. `SimCamera`
 provides a full 2:1 equirectangular `pano_360`, an acknowledged-yaw `reconstruct_8`
@@ -67,8 +70,7 @@ matching capture/drone/epoch identity. Simulation dimensions, pose/gimbal tolera
 gimbal bounds, timing, storage, watchdog timing, and loss behavior are explicit
 configuration rather than claimed hardware defaults.
 
-Hardware is a configuration choice behind these protocols; every earned feature is
-built and tested against `sim` first.
+Vendor hardware integrates behind these contracts. Test supported semantics in isolation before hardware commissioning; the aircraft simulator does not qualify or impersonate a ground adapter.
 
 ## Remote bridge adapter
 
@@ -110,11 +112,15 @@ Camera capabilities, captures, and retrievals require the node's `capabilities` 
 adapter fails closed. `telemetry()` yields nothing because node telemetry reaches the
 relay registry directly over the node socket.
 
-`adapters.dji_mini3.fake_node` behaves like the phone on the wire without hardware:
-`just fake-node` connects one to a running relay so the console shows a real registry
-entry, and `relay/tests/test_bridge_roundtrip.py` dispatches through `build_dispatcher`
-on the `remote` backend to drive it end to end; `relay/tests/test_autonomy_roundtrip.py`
-runs the M2.0 workflow from console intents through `relay.autonomy` to two fake nodes.
+`adapters.dji_mini3.fake_node` exercises the phone wire without hardware only in an
+isolated test runtime. Use the explicit `just test-fake-node` procedure in
+[relay setup](../relay/README.md#run-the-relay): the relay and fake-node environment
+require `SWEEP_ALLOW_TEST_ADAPTERS=true`, and the CLI also requires `--test-only` (the
+recipe supplies it). Test-only credentials, an explicit test relay/session, and separate
+logs are required; never connect a fake to the operator relay. The in-process
+`relay/tests/test_bridge_roundtrip.py` dispatches through `build_dispatcher` on the
+`remote` backend end to end; `relay/tests/test_autonomy_roundtrip.py` runs the M2.0
+workflow from test intents through `relay.autonomy` to two fake nodes.
 
 The existing `crazyswarm2/` and `mavlink/` packages remain inactive placeholder stubs. They are not accepted hardware implementations and do not drive an abstraction change until a concrete second hardware integration is specified and proven.
 

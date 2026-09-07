@@ -2,9 +2,11 @@
 
 This is the input to Claude Design. Paste it whole. It asks for a complete, wired pilot instrument for Sweep's DJI Mini 3 node, designed as a boutique studio would design it, with every element the PRD requires. Section 10 is the checklist the result is accepted against. Product source of truth: `docs/prd.md`. Wire contract: `relay/contracts.py`, `relay/state.py`, `adapters/protocols.py`, the bridge frame plan on issue #43, and PRD Appendices A and B.
 
+This brief is specifically for the DJI Mini 3/RC-N1 Android adapter within Sweep’s modular aerial/ground platform. Its aircraft, RC, SDK, and qualification details do not apply to ground robots or define total fleet size. The [modular fleet guide](../modular-fleet.md) governs additive identity, cameras, sensors, and live-data boundaries. Prototype fixtures below are isolated test assets and must not join or populate an operator session.
+
 ## 1. What you are designing
 
-Sweep lets one person direct a small fleet of indoor drones from a laptop. Every request is an Intent v1 envelope; a relay validates it, a deterministic planner turns it into per-aircraft commands, and a safety arbiter checks every intent and every command against limits and live state. The pilot app is the far end of that path: an Android app on the phone clamped to a DJI RC-N1 controller, one phone per Mini 3, four phones in the full fleet. It registers the DJI Mobile SDK, verifies that the connected aircraft is a Mini 3, renders the live feed with capture guidance drawn locally, joins the relay as an authenticated adapter, declares readiness, streams telemetry at 10 Hz, admits signed commands, drives Virtual Stick at a tested rate, runs a watchdog, captures and downloads media, publishes video to the ground station, and records a bench log. It executes only work already issued through the planner and arbiter. It is not a parallel command path, it never decides safety, and it has no stop button of its own: the physical RC in the pilot's hands is the stop.
+Sweep lets one person work with a heterogeneous aerial and ground fleet from one laptop console. Every request is an Intent v1 envelope; a relay validates it, a deterministic planner turns it into per-aircraft commands, and a safety arbiter checks every intent and every command against limits and live state. The pilot app is the far end of that path: an Android app on the phone clamped to a DJI RC-N1 controller, one phone per Mini 3, with four phones in the original DJI-specific qualification configuration. It registers the DJI Mobile SDK, verifies that the connected aircraft is a Mini 3, renders the live feed with capture guidance drawn locally, joins the relay as an authenticated adapter, declares readiness, streams telemetry at 10 Hz, admits signed commands, drives Virtual Stick at a tested rate, runs a watchdog, captures and downloads media, publishes video to the ground station, and records a bench log. It executes only work already issued through the planner and arbiter. It is not a parallel command path, it never decides safety, and it has no stop button of its own: the physical RC in the pilot's hands is the stop.
 
 The headline workflow today: the pilot enters the relay address, session, aircraft number, and node token once; the app registers, confirms the aircraft and controller identity, and joins; the pilot places the aircraft at a clear, central hover point and flips three readiness toggles; the node shows ready on the laptop; the operator confirms `capture_room`; commands arrive; the phone shows the next yaw and gimbal target on a coverage compass; the aircraft captures, the files download with checksums, and one capture bundle goes back. The next workflow: arm, takeoff, translate, hold, come home, and land all through the same command path, with the network stop reaching the node, the watchdog holding on relay loss, and RC takeover proven at every step.
 
@@ -225,7 +227,7 @@ Reasons the node attaches to a failed acknowledgement, a capture result, or a me
 | node_status | virtual stick enabled, control authority and change reason, watchdog state, video publish state, phone battery, thermal | strip, Connectivity |
 | media_file, capture_bundle | the fields in section 5.5 | Capture |
 
-**Fixtures.** Provide fixture data shaped like these frames for: a fresh install; a registered-offline start; a wrong aircraft; a node degraded with three readiness reasons; a ready node; a capture of each pattern with progress, one file failing retrieval, and a Needs retake with two missing sectors; a `pano_360` returning unsupported; every admission outcome; a watchdog hold and a failsafe; an RC takeover mid-translate; network stop active; relay disconnected with reconnect attempts; a rejoin with epoch 2; a publish failure; a thermal status of severe during the bench.
+**Isolated fixtures.** Provide test data shaped like these frames for: a fresh install; a registered-offline start; a wrong aircraft; a node degraded with three readiness reasons; a ready node; a capture of each pattern with progress, one file failing retrieval, and a Needs retake with two missing sectors; a `pano_360` returning unsupported; every admission outcome; a watchdog hold and a failsafe; an RC takeover mid-translate; network stop active; relay disconnected with reconnect attempts; a rejoin with epoch 2; a publish failure; a thermal status of severe during the bench.
 
 ## 8. Device rules
 
@@ -244,14 +246,14 @@ Reasons the node attaches to a failed acknowledgement, a capture result, or a me
 
 ## 10. Deliverables and acceptance checklist
 
-Deliver, as a clickable Compose prototype on the fixtures in section 7 with no dependency beyond Jetpack Compose and Material 3:
+Validate this DJI-specific Compose design with the isolated fixtures in section 7; no fake aircraft or telemetry may enter an operator runtime:
 
 1. A token sheet as Compose-ready values: color, type scale, spacing, radius, elevation, motion, scrim opacity, and the two grounds.
 2. A component set: strip, status label, metric meter, reticle, compass, delta arrow, capture pill, quality check row, toggle with consequence, command card, table, notice, JSON block, empty and skeleton states.
 3. All eight screens in their states.
 4. The later `registered_metric` panel as a designed component.
 5. A states gallery screen showing every value in section 6 rendered.
-6. A landscape demo at 2400 by 1080 and a check at 1600 by 720.
+6. Isolated landscape layout checks at 2400 by 1080 and 1600 by 720.
 
 Accepted when every line below is present in the prototype:
 

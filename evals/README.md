@@ -1,5 +1,7 @@
 # evals
 
+Evaluate the modular aerial/ground fleet, device lifecycle, explicit onboard camera identity, ground LiDAR, and unavailable/unverified sensor states against [the integration guide](../docs/modular-fleet.md). Synthetic and recorded inputs remain isolated tests; hardware acceptance records name the actual model/unit/configuration and never promote planned equipment into the live inventory.
+
 Capability area: Platform. Milestone: M1 onward.
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes that encode shared-contract or safety expectations name one change owner and require cross-review.
@@ -9,7 +11,7 @@ Four gold sets (PRD section 4.7):
 1. Gesture: recorded webcam sessions with hand-labeled intent timestamps.
 2. Language: 200 utterances with gold intent sequences.
 3. Simulator scenarios: ten scripted missions with pass/fail assertions on final state and safety log.
-4. Hardware acceptance: the scripted mission on real drones, five consecutive passes before any demo.
+4. Hardware acceptance: class- and model-specific recorded runs on actual devices, following the current PRD and delivery-plan gates. Historical repetition counts remain evidence for the trial that specified them.
 
 Sets 1 to 3 run in CI on every merge. Every bug becomes a scenario or a gold-set item before it is fixed.
 

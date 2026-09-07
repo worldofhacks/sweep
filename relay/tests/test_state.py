@@ -21,15 +21,17 @@ def _ready(registry: FleetRegistry, event_id: str, timestamp: int) -> None:
     registry.apply_readiness(request)
 
 
-def test_registry_accepts_four_stable_ids_and_rejects_a_fifth() -> None:
+def test_registry_accepts_bounded_stable_ids_and_rejects_overflow() -> None:
     registry = FleetRegistry(telemetry_freshness_ms=1_000)
 
-    for drone_id in range(1, 5):
+    from relay.fleet_limits import MAX_FLEET_DEVICES
+
+    for drone_id in range(1, MAX_FLEET_DEVICES + 1):
         _join(registry, drone_id, f"join-{drone_id}")
 
-    assert registry.roster_version == 4
+    assert registry.roster_version == MAX_FLEET_DEVICES
     with pytest.raises(RegistryError) as error:
-        _join(registry, 5, "join-5")
+        _join(registry, MAX_FLEET_DEVICES + 1, "join-overflow")
     assert error.value.code == "fleet_capacity"
 
 
@@ -432,7 +434,7 @@ def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
     assert drone["node_status"] is None
     # The console contract accepts exactly these two keys (contract.ts isVideoStreamState).
     assert drone["video"] == {"status": "unreported", "last_frame_at": None}
-    assert drone["sensor"] == {"kind": "lidar_scan", "last_scan_at": None}
+    assert drone["sensor"] == {"kind": None, "last_scan_at": None}
     # An unconfigured id is an aircraft whose unit is the id itself.
     assert drone["device_class"] == "aircraft"
     assert drone["unit"] == 1

@@ -1,11 +1,13 @@
 import { membershipWord } from '../../control/observation'
 import { deviceNoun, formatDeviceId } from '../../control/state'
 import { LivePlayer } from '../../media/LivePlayer'
+import { useCameraChoice } from '../../media/cameras'
 import type { MediaRuntime } from '../../media/runtime'
 import type { DroneId, RelayAircraftState } from '../../relay/contract'
 import { isReady, membershipTone } from '../../shell/derive'
 import { formatPercent } from '../../shell/format'
 import { deriveReadiness, deriveStream } from './derive-live'
+import { CameraChoice } from './CameraChoice'
 
 export interface MosaicProps {
   devices: RelayAircraftState[]
@@ -87,7 +89,8 @@ function Tile({
 }) {
   const id = formatDeviceId(drone)
   const noun = deviceNoun(drone.device_class)
-  const stream = deriveStream(drone, now)
+  const { cameras, camera, choose } = useCameraChoice(drone)
+  const stream = deriveStream(drone, now, camera)
   const readiness = deriveReadiness(drone)
   // Mounted only while the relay says live; unmounting closes the WHEP session.
   const plays = stream.status === 'live' && media !== undefined
@@ -101,8 +104,9 @@ function Tile({
       : undefined)
   return (
     <article className={`lv-tile is-${stream.status}`} aria-label={`${id} camera tile`}>
+      <CameraChoice device={drone} cameras={cameras} camera={camera} now={now} onChoose={choose} />
       <div className="lv-visual">
-        {plays && <LivePlayer key={`${drone.drone_id}:${drone.connection_epoch}`} device={drone} media={media} />}
+        {plays && camera && <LivePlayer key={`${drone.drone_id}:${drone.connection_epoch}:${camera.camera_id}:${camera.stream}`} device={drone} media={media} camera={drone.cameras === undefined ? undefined : camera} />}
         <div className="lv-bar">
           <span>{id}</span>
           <span className="lv-bar-status">

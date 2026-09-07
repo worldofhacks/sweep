@@ -56,6 +56,14 @@ The token is sent only in the first WebSocket frame; it is never placed in a URL
 UI, or included in console logging. Without the full bootstrap, the sources remain visibly
 disconnected and network controls are unavailable.
 
+## Modular inventory
+
+Sweep is additive: the current scope includes at least five ground robots, each with two
+onboard cameras and one LiDAR, plus aircraft with one camera and a reported infrared
+depth/proximity sensor pending identification and validation. Scope does not create live rows.
+Only actual relay-reported devices and explicitly configured onboard cameras appear; an
+unconfigured second camera is never duplicated from the primary feed. [Integration guide](../docs/modular-fleet.md).
+
 ## Device classes
 
 Every device the relay reports carries `device_class` (`aircraft` or `ground_vehicle`) and `unit`,
@@ -89,12 +97,9 @@ reducer records only `sensor.last_scan_at`, mirroring the relay's projection. `M
 
 The Live module's single wall and device inspection use the authoritative device ID, class, unit, connection
 epoch, telemetry, membership, readiness reasons, and a closed media status with a last-frame
-timestamp. The console derives the stream name from the class and unit, `drone{unit}` for aircraft
-and `ground{unit}` for ground vehicles (`streamName` in `src/media/playback.ts`), and does not
-render adapter-provided media URLs. `All devices` is the default for every roster: its responsive
-wall has exactly one tile per reported device, adds new joins automatically, and keeps known
-offline feeds visible. There are no empty hardware slots or six-device display cap; it supports
-the configured four-aircraft/four-robot capacity. Focus opens local device inspection with
+timestamp. The console uses explicitly reported camera IDs, labels, safe configured stream names, and per-camera status. With no camera mapping it retains one legacy primary stream, `drone{unit}` for aircraft or `ground{unit}` for robots. It never renders an arbitrary adapter-provided media URL. `All devices` is the default for every roster: its responsive
+wall has one tile per reported device with selection among its explicitly configured onboard cameras, adds new joins automatically, and keeps known offline states visible. An empty configured-camera list remains empty. There are no empty hardware slots or six-device display cap; it supports
+the configured bounded mixed-fleet inventory. Focus opens local device inspection with
 a Back to All devices action; no extra wall modes or command selection changes are needed. With device IDs
 `1,2,11,12,13` configured as two aircraft and three robots, the paths are `drone1`, `drone2`,
 `ground1`, `ground2`, `ground3`; command envelopes retain the global IDs. One console uses one
@@ -280,8 +285,7 @@ separately authenticated keyboard connection.
 Control › Swarm chips add or remove one device from the current selection. **Only** selects
 one device; **Select aircraft**, **Select robots**, and **Select all ready** select a class
 or the full ready roster. The relay remains authoritative: a selection change invalidates
-an older movement preview. Intent selections support up to ten ids (six simulated aircraft
-plus four robots); physical capacity remains a relay concern.
+an older movement preview. Intent selections support up to 64 configured device IDs; measured physical operating capacity and model-specific qualification remain separate concerns.
 
 Gesture starts with Capture / HOLD. **Fleet motion** is an explicit opt-in profile:
 point up → north, Victory → east, closed fist → south, I love you → west, open palm → hold.
@@ -298,7 +302,7 @@ C2 formation controls remain disabled unless the relay advertises them. The simu
 C2 release restriction remains in force for real hardware.
 
 Map reads the authenticated occupancy PNG and displays reported fresh robot LiDAR scans.
-LiDAR diagnostics apply to ground robots; the drones in this fleet do not have LiDAR.
+Each scoped ground robot has one LiDAR. Each aircraft has an owner-reported infrared depth/proximity sensor whose model/interface and readings remain unverified; it must not be presented as LiDAR.
 After two seconds without a scan, the live overlay disappears and the device reports stale
 coverage. The historical occupancy raster is retained by the relay. Devices without lidar
 report unavailable coverage; no return, no hardware, or a stale feed never means clear.
@@ -324,29 +328,23 @@ peripherals remain explicit in the adapter's controls report; no nonexistent com
 is implied. Commands includes confirmed bounded forward/backward body pulses, gated by the
 relay capability, selected aircraft's `body_pulse_v1` claim, arm state and airborne state.
 
-The custom JSON contract mirrors `nodekit/telemetry.py`: 16 KiB, depth four including the
-root, at most 4096 values, 128 keys per object, 512 items per list and characters per string,
-64-character snake_case keys, and finite JSON-safe numbers. It carries display facts only.
+The browser can inspect optional custom JSON within its bounded parser: 16 KiB, depth four including the root, at most 4096 values, 128 keys per object, 512 items per list and characters per string, 64-character snake_case keys, and finite JSON-safe numbers. This is display support. The deployed relay and node must explicitly implement the same field before any such data can arrive; a frontend contract does not extend the backend wire protocol.
 
 
 ### Connected device controls
 
-Each Devices card has controls appropriate to its reported class and capabilities. Robot
-peripherals use one explicit connected target without changing the fleet motion selection,
-so speech, base lights and the local safety-page message remain usable while a robot is
-motion-blocked or the session is disarmed. Every action opens a confirmation preview bound
-to the target's current connection epoch; capability withdrawal, disconnect or rejoin
-invalidates that preview. The relay and node recheck those guards before adapter I/O.
+The console includes capability-gated UI contracts for per-device robot peripherals and
+single-aircraft camera operations. These controls require matching implemented relay and
+node routes in the deployed build; they are not evidence that paused adapter/backend work
+has been integrated. Missing route, capability, current status, or readiness remains unsupported
+or unavailable. See [the modular integration guide](../docs/modular-fleet.md).
 
-Neck tilt is bounded to vendor position 300–650 (512 forward) and requires fresh local
-enable status, a nominal watchdog, and no network stop. The adapter additionally requires
-the robot enabled, undocked and a spotter present; it never auto-wakes the neck. Base lights
-use fixed device 20 with integer HSV 0–255. Speech and safety-page messages are at most 240
-printable characters; an empty screen message clears it. The screen's STOP and spotter
-controls remain visible. Vendor acknowledgements report submission, with requested state
-and unverified physical readback labeled in telemetry.
+When the route is available, the UI targets one explicit connected device without changing
+fleet motion selection, previews the bounded action, and binds confirmation to the device’s
+current epoch. Disconnect, capability loss, or rejoin prevents confirmation. Robot neck/light/
+speech/screen arguments and aircraft photo/gimbal arguments remain typed and bounded; no
+arbitrary vendor command is exposed. Model-specific numeric arguments are not portable to
+another vendor without an adapter contract and hardware evidence.
 
-Aircraft cards separately expose camera mode, a single photo and bounded gimbal pitch when
-the connected bridge reports actual support and fresh camera readiness. These controls do
-not promise panorama capture or media retrieval. All missing capabilities remain visible
-as unsupported; robot LiDAR readiness never gates aircraft flight or camera control.
+Robot LiDAR readiness never becomes an aircraft flight or camera prerequisite. A playable
+camera feed does not promise panorama capture, gimbal control, or media retrieval.

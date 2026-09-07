@@ -28,7 +28,7 @@ data class BridgeSetup(
 data class SetupSummary(
     val relayUrl: String = BridgeSetupStore.DEFAULT_RELAY_URL,
     val session: String = BridgeSetupStore.DEFAULT_SESSION,
-    val droneId: Int = 1,
+    val droneId: Int = 0,
     val tokenStored: Boolean = false,
     val tokenLength: Int = 0,
     val loaded: Boolean = false,
@@ -52,10 +52,10 @@ class BridgeSetupStore(context: Context) {
         return BridgeSetup(
             relayUrl = prefs.getString(KEY_RELAY_URL, DEFAULT_RELAY_URL) ?: DEFAULT_RELAY_URL,
             session = prefs.getString(KEY_SESSION, DEFAULT_SESSION) ?: DEFAULT_SESSION,
-            droneId = prefs.getInt(KEY_DRONE_ID, 1),
+            droneId = prefs.getInt(KEY_DRONE_ID, 0),
             token = token,
             localizationPins = localizationPins(),
-        )
+        ).takeIf { it.relayUrl.isNotBlank() && it.session.isNotBlank() && it.droneId > 0 && it.token.isNotBlank() }
     }
 
     fun summary(): SetupSummary {
@@ -63,7 +63,7 @@ class BridgeSetupStore(context: Context) {
         return SetupSummary(
             relayUrl = prefs.getString(KEY_RELAY_URL, DEFAULT_RELAY_URL) ?: DEFAULT_RELAY_URL,
             session = prefs.getString(KEY_SESSION, DEFAULT_SESSION) ?: DEFAULT_SESSION,
-            droneId = prefs.getInt(KEY_DRONE_ID, 1),
+            droneId = prefs.getInt(KEY_DRONE_ID, 0),
             tokenStored = !token.isNullOrEmpty(),
             tokenLength = token?.length ?: 0,
             loaded = true,
@@ -111,8 +111,8 @@ class BridgeSetupStore(context: Context) {
     }
 
     companion object {
-        const val DEFAULT_RELAY_URL = "ws://127.0.0.1:8000"
-        const val DEFAULT_SESSION = "demo"
+        const val DEFAULT_RELAY_URL = ""
+        const val DEFAULT_SESSION = ""
         private const val FILE_NAME = "bridge-setup"
         private const val KEY_RELAY_URL = "relay_url"
         private const val KEY_SESSION = "session"

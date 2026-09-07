@@ -12,10 +12,11 @@ from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import urlsplit
 
+from media.streams import CameraStream, parse_camera_mapping, validate_camera_mapping
 from planner.models import DeviceClass
 from relay.auth import StaticCredentialResolver
 from relay.contracts import DeviceIdentity
-from relay.media import DEFAULT_MEDIA_DEVICES
+from relay.fleet_limits import MAX_FLEET_DEVICES
 from relay.session import RelayLimits
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,6 +43,8 @@ class RelaySettings:
     relay_token: bytes = field(repr=False)
     adapter_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     allow_shared_adapter_token: bool = False
+    # Explicit opt-in for isolated test runtimes; never a hardware launch default.
+    allow_test_adapters: bool = False
     localization_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     # Device class per configured id; ids absent here are aircraft.
     device_classes: Mapping[int, DeviceClass] = field(default_factory=dict)
@@ -52,7 +55,7 @@ class RelaySettings:
     telemetry_freshness_ms: int = 1_000
     transcript_upload_timeout_ms: int = DEFAULT_TRANSCRIPT_UPLOAD_TIMEOUT_MS
     fanout_hz: int = 10
-    adapter_backend: AdapterBackend = AdapterBackend.SIM
+    adapter_backend: AdapterBackend = AdapterBackend.REMOTE
     command_ttl_ms: int = 2_000
     command_deadline_ms: int = 10_000
     virtual_stick_hz: int = 10
@@ -66,6 +69,8 @@ class RelaySettings:
     media_api_timeout_ms: int = 500
     media_poll_interval_ms: int = 1_000
     media_stale_after_ms: int = 3_000
+    # Optional explicit camera wiring; omitted devices retain their legacy primary path.
+    media_cameras: Mapping[int, tuple[CameraStream, ...]] = field(default_factory=dict)
     # The console's media bootstrap served at GET /runtime-config.json; incomplete means 503.
     media_webrtc_origin: str | None = None
     media_read_username: str | None = None
@@ -86,8 +91,10 @@ class RelaySettings:
             ("adapter", adapter_keys),
             ("localization", localization_keys),
         ):
-            if len(keys) > 64:
-                raise SettingsError(f"{label} credentials exceed the 64-aircraft limit")
+            if len(keys) > MAX_FLEET_DEVICES:
+                raise SettingsError(
+                    f"{label} credentials exceed the {MAX_FLEET_DEVICES}-device limit"
+                )
             if any(
                 type(drone_id) is not int
                 or not 1 <= drone_id <= 2**31 - 1
@@ -129,6 +136,11 @@ class RelaySettings:
                 "SWEEP_ADAPTER_KEYS_JSON does not configure"
             )
         object.__setattr__(self, "device_classes", MappingProxyType(device_classes))
+        try:
+            camera_mapping = validate_camera_mapping(self.media_cameras, set(adapter_keys))
+        except ValueError as error:
+            raise SettingsError(str(error)) from None
+        object.__setattr__(self, "media_cameras", MappingProxyType(camera_mapping))
         if self.allow_shared_adapter_token and adapter_keys:
             # An ID admitted without a key is an aircraft whose unit is its ID
             # (``relay.state.FleetRegistry.device_identity``), which agrees with the
@@ -160,6 +172,16 @@ class RelaySettings:
             raise SettingsError("state fan-out is frozen at 10 Hz")
         if not isinstance(self.adapter_backend, AdapterBackend):
             raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote")
+        if type(self.allow_test_adapters) is not bool:
+            raise SettingsError("SWEEP_ALLOW_TEST_ADAPTERS must be true or false")
+        if not self.allow_test_adapters and (
+            self.adapter_backend is AdapterBackend.SIM or self.allow_shared_adapter_token
+        ):
+            raise SettingsError(
+                "sim and shared-token adapters require SWEEP_ALLOW_TEST_ADAPTERS=true "
+                "in an isolated test runtime; hardware sessions use remote adapters "
+                "with distinct per-device credentials"
+            )
         if not 5 <= self.virtual_stick_hz <= 25:
             raise SettingsError("SWEEP_VIRTUAL_STICK_HZ must be within the documented 5 to 25")
         if self.command_deadline_ms < self.command_ttl_ms:
@@ -192,6 +214,7 @@ class RelaySettings:
             )
         if self.media_webrtc_origin is not None and not _is_origin(self.media_webrtc_origin):
             raise SettingsError("SWEEP_MEDIA_WEBRTC_ORIGIN must be an explicit HTTP(S) origin")
+        self.configured_cameras()
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> RelaySettings:
@@ -213,6 +236,10 @@ class RelaySettings:
             allow_shared_adapter_token=_boolean(
                 values.get("SWEEP_ALLOW_SHARED_ADAPTER_TOKEN", "false"),
                 "SWEEP_ALLOW_SHARED_ADAPTER_TOKEN",
+            ),
+            allow_test_adapters=_boolean(
+                values.get("SWEEP_ALLOW_TEST_ADAPTERS", "false"),
+                "SWEEP_ALLOW_TEST_ADAPTERS",
             ),
             device_classes=_device_classes(
                 values.get("SWEEP_DEVICE_CLASSES_JSON", "{}"), "SWEEP_DEVICE_CLASSES_JSON"
@@ -240,7 +267,7 @@ class RelaySettings:
                 ),
                 "SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS",
             ),
-            adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
+            adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "remote")),
             command_ttl_ms=_positive_integer(
                 values.get("SWEEP_COMMAND_TTL_MS", "2000"), "SWEEP_COMMAND_TTL_MS"
             ),
@@ -276,6 +303,9 @@ class RelaySettings:
             ),
             media_stale_after_ms=_positive_integer(
                 values.get("SWEEP_MEDIA_STALE_AFTER_MS", "3000"), "SWEEP_MEDIA_STALE_AFTER_MS"
+            ),
+            media_cameras=_media_cameras_config(
+                values.get("SWEEP_MEDIA_CAMERAS_JSON", "{}"), set(adapter_keys)
             ),
             media_webrtc_origin=_optional(values.get("SWEEP_MEDIA_WEBRTC_ORIGIN")),
             media_read_username=_optional(values.get("SWEEP_MEDIA_READ_USERNAME")),
@@ -336,10 +366,29 @@ class RelaySettings:
         return MappingProxyType(dict(sorted(identities.items())))
 
     def media_devices(self) -> Mapping[int, DeviceIdentity]:
-        """The devices the media monitor polls: every configured one, else the four default
-        aircraft paths when no key is configured."""
-        identities = self.device_identities()
-        return identities if identities else DEFAULT_MEDIA_DEVICES
+        """Poll configured identities only; an empty configuration invents no devices."""
+        return self.device_identities()
+
+    def configured_cameras(self) -> Mapping[int, tuple[CameraStream, ...]]:
+        """Explicit cameras plus the existing primary path for legacy configured devices."""
+        from relay.media import stream_name
+
+        devices = self.device_identities()
+        result = {
+            device_id: self.media_cameras.get(
+                device_id,
+                (
+                    CameraStream(
+                        "primary", "Primary", stream_name(identity.device_class, identity.unit)
+                    ),
+                ),
+            )
+            for device_id, identity in devices.items()
+        }
+        try:
+            return MappingProxyType(validate_camera_mapping(result, set(devices)))
+        except ValueError as error:
+            raise SettingsError(str(error)) from None
 
     def media_runtime_config(self) -> dict[str, str] | None:
         """The console's media bootstrap, or ``None`` until every value is configured."""
@@ -378,6 +427,17 @@ class RelaySettings:
             "watchdog_hold_ms": self.node_watchdog_hold_ms,
             "watchdog_failsafe_ms": self.node_watchdog_failsafe_ms,
         }
+
+
+def _media_cameras_config(
+    raw: str, configured_ids: set[int]
+) -> dict[int, tuple[CameraStream, ...]]:
+    try:
+        return parse_camera_mapping(json.loads(raw), configured_ids)
+    except (TypeError, ValueError):
+        raise SettingsError(
+            "SWEEP_MEDIA_CAMERAS_JSON must contain bounded cameras for configured device IDs"
+        ) from None
 
 
 def _credential_keys(raw: str, name: str) -> dict[int, bytes]:

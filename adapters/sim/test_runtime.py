@@ -7,6 +7,7 @@ from relay.settings import RelaySettings
 def test_m14_sim_arbiter_uses_configured_relay_freshness(tmp_path) -> None:
     app = create_m14_sim_app(
         RelaySettings(
+            allow_test_adapters=True,
             relay_token=b"m14-simulator-freshness-test-key",
             log_dir=tmp_path,
             telemetry_freshness_ms=250,

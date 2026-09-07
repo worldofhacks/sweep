@@ -12,6 +12,7 @@ from relay.capabilities import (
     CapabilityProfile,
     IntentName,
 )
+from relay.fleet_limits import MAX_FLEET_DEVICES
 
 
 class Mode(StrEnum):
@@ -57,15 +58,14 @@ class RejectedIntent:
 
 type ValidationResult = AcceptedIntent | RejectedIntent
 
-# Intent v1 addresses the current four-aircraft physical fleet and the documented
-# four-to-six-aircraft simulator. Identifiers remain comfortably within the audit
-# reserve even under Unicode JSON escaping; timestamps and aircraft IDs match the
-# signed 64-bit epoch and Android Int domains used by the transport peers.
+# Intent v1 shares the bounded heterogeneous registry capacity. Identifier and
+# timestamp bounds match the signed transport and Android Int domains; physical
+# mission geometry remains qualified separately from registry admission.
 MAX_INTENT_IDENTIFIER_CHARS = 128
 MAX_INTENT_SESSION_CHARS = 512
 MAX_INTENT_SOURCE_CHARS = 64
 MAX_INTENT_NAME_CHARS = 64
-MAX_INTENT_DRONE_IDS = 6
+MAX_INTENT_DRONE_IDS = MAX_FLEET_DEVICES
 MAX_INTENT_DRONE_ID = (1 << 31) - 1
 MAX_INTENT_TIMESTAMP = (1 << 63) - 1
 

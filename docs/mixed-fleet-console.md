@@ -1,8 +1,19 @@
-# Mixed-fleet console checkpoint
+# Mixed-fleet console and integration evidence
 
-The `codex/mixed-fleet-console` integration combines the two-drone bridge/readiness
-work with class-aware relay, console, and autonomy changes. It is an integration
-checkpoint, not physical flight or ground-motion acceptance.
+Sweep is a modular platform for adding aerial drones, ground robots and their
+cameras/sensors to one authenticated live session and one laptop console. See
+[modular fleet integration](modular-fleet.md) for the current device contract and
+[the laptop console guide](laptop-console.md) for the canonical runtime.
+
+Current owner-declared scope includes at least five ground robots: the original
+three plus at least two additional units. Each ground robot has two onboard
+cameras and one LiDAR. Each aerial drone has one camera and a reported infrared
+depth/proximity sensor whose exact interface still needs verification. These are
+hardware profiles, not a list of connected or motion-qualified devices.
+
+The earlier `codex/mixed-fleet-console` work combined bridge/readiness and
+class-aware relay, console and autonomy changes. The dated evidence below is an
+integration checkpoint, not physical flight or ground-motion acceptance.
 
 ## Live wall
 
@@ -13,11 +24,14 @@ A tile's **Focus** button opens that device's inspection view; **Back to All dev
 returns to the wall. Focus is local to the console and does not send a command.
 Inspection closes the wall's playback sessions; returning opens the currently live
 feeds again.
-The supported registry and media configuration cover four aircraft and four
-ground vehicles. Each deployment still provisions individual publisher keys.
+The registry admits a bounded configured fleet of up to 64 devices across both
+classes. This is a software limit, not a qualification for simultaneous physical
+motion or video throughput. Each deployment provisions individual device keys
+and explicit camera streams; adding a camera does not add another motion target.
 
-For the two-drone/three-robot setup, configure the following identities in one
-relay session:
+The historical two-drone/three-robot setup used the following identities and
+primary camera paths. Do not load this table as a live roster or assume it covers
+the additional robots and second onboard cameras:
 
 | Device ID | Class | Unit | Media path |
 | --- | --- | --- | --- |
@@ -27,8 +41,8 @@ relay session:
 | 12 | ground_vehicle | 2 | ground2 |
 | 13 | ground_vehicle | 3 | ground3 |
 
-Selection and signed commands retain the global device ID. Tiles derive media
-paths from the authenticated class/unit mapping. Source availability alone does
+Selection and signed commands retain the global device ID. Tiles use the explicitly configured per-camera streams. The legacy primary
+stream derives from class/unit only when no camera mapping is configured. Source availability alone does
 not prove browser playback: the player waits for an actual frame, detects a
 visible three-second video stall, and reconnects failed sessions independently.
 See [console playback](../console/README.md#live-playback) for timing and cleanup.
@@ -56,7 +70,7 @@ through its own RC/aircraft, current-epoch telemetry, camera publisher, and genu
 operator/control-authority readiness. Positive GPS quality alone does not qualify
 a common indoor world frame or physical clearance.
 
-The ground hardware package remains owned by its active implementation lane.
+The separate ground hardware package remains an integration dependency.
 Before deploying it, verify measured stop completion after acknowledgments,
 qualified pose/frame evidence, calibrated motion, local deadman behavior, and
 collision protection. Do not adopt the temporary flight-state shim, hard-coded

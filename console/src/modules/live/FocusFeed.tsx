@@ -3,12 +3,13 @@ import { DeviceTelemetryPanel } from '../devices/DeviceTelemetryPanel'
 import type { RequestRecord } from '../../control/state'
 import { deviceNoun, formatDeviceId } from '../../control/state'
 import { LivePlayer } from '../../media/LivePlayer'
-import { streamName } from '../../media/playback'
+import { useCameraChoice } from '../../media/cameras'
 import type { MediaRuntime } from '../../media/runtime'
-import type { RelayAircraftState } from '../../relay/contract'
+import type { DeviceCameraState, RelayAircraftState } from '../../relay/contract'
 import { membershipTone, type Tone } from '../../shell/derive'
 import { formatPercent } from '../../shell/format'
 import { deriveCaptureProgress, deriveReadiness, deriveStream } from './derive-live'
+import { CameraChoice } from './CameraChoice'
 
 export interface FocusFeedProps {
   focused: RelayAircraftState | null
@@ -25,13 +26,15 @@ interface Row {
 
 /** The focused device at size, its stream label bar, and the nine state rows. */
 export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
+  const { cameras, camera, choose } = useCameraChoice(focused)
   const id = focused ? formatDeviceId(focused) : 'none'
   const noun = focused ? deviceNoun(focused.device_class) : 'device'
   return (
     <section data-two="1" aria-label={`Focused ${noun} ${id}`}>
       <div className="lv-column">
+        {focused && <CameraChoice device={focused} cameras={cameras} camera={camera} now={now} onChoose={choose} />}
         {focused ? (
-          <Feed drone={focused} now={now} media={media} />
+          <Feed drone={focused} now={now} media={media} camera={camera} />
         ) : (
           <div className="lv-feed is-unreported">
             <div className="lv-feed-reticle" aria-hidden="true" />
@@ -49,9 +52,8 @@ export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
           </div>
         )}
         <p className="lv-stream-note">
-          Stream names are derived as <span className="mono">drone{'{unit}'}</span> for aircraft and{' '}
-          <span className="mono">ground{'{unit}'}</span> for robots. No adapter-supplied media URL is
-          ever rendered.
+          Each camera uses its configured stream and reports its own freshness.
+          Switching cameras changes this view only; it does not select or command another device.
         </p>
         <h3 className="lv-h3">Detections</h3>
         <p className="lv-det-copy">
@@ -68,7 +70,7 @@ export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
         <p className="lv-id">{id}</p>
         {focused ? (
           <dl className="lv-rows">
-            {deriveRows(focused, requests, now).map((row) => (
+            {deriveRows(focused, requests, now, camera).map((row) => (
               <div className="lv-row" key={row.key}>
                 <dt>{row.key}</dt>
                 <dd className={`tone-${row.tone}`}>{row.value}</dd>
@@ -95,22 +97,24 @@ function Feed({
   drone,
   now,
   media,
+  camera,
 }: {
   drone: RelayAircraftState
   now: number
   media?: MediaRuntime
+  camera: DeviceCameraState | null
 }) {
-  const stream = deriveStream(drone, now)
+  const stream = deriveStream(drone, now, camera)
   const plays = stream.status === 'live' && media !== undefined
   return (
     <div className={`lv-feed is-${stream.status}`}>
-      {plays ? (
-        <LivePlayer key={`${drone.drone_id}:${drone.connection_epoch}`} device={drone} media={media} />
+      {plays && camera ? (
+        <LivePlayer key={`${drone.drone_id}:${drone.connection_epoch}:${camera.camera_id}:${camera.stream}`} device={drone} media={media} camera={drone.cameras === undefined ? undefined : camera} />
       ) : (
         <div className="lv-feed-reticle" aria-hidden="true" />
       )}
       <div className="lv-feed-bar">
-        <span>{streamName(drone)}</span>
+        <span>{camera?.label ?? 'No camera configured'}</span>
         <span className="lv-bar-status">
           <span aria-hidden="true" className={`lv-dot is-${stream.status}`} />
           {stream.status}
@@ -128,8 +132,8 @@ function Feed({
   )
 }
 
-function deriveRows(drone: RelayAircraftState, requests: RequestRecord[], now: number): Row[] {
-  const stream = deriveStream(drone, now)
+function deriveRows(drone: RelayAircraftState, requests: RequestRecord[], now: number, camera: DeviceCameraState | null): Row[] {
+  const stream = deriveStream(drone, now, camera)
   const readiness = deriveReadiness(drone)
   const capture = deriveCaptureProgress(requests, drone.drone_id)
   return [
