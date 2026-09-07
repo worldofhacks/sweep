@@ -130,6 +130,13 @@ class RelaySettings:
         if self.observation_configuration is not None:
             for binding in self.observation_configuration.bindings:
                 if (
+                    binding.producer_role == "localization"
+                    and binding.device_id not in localization_keys
+                ):
+                    raise SettingsError(
+                        "localization observation binding requires a device credential"
+                    )
+                if (
                     binding.device_id not in adapter_keys
                     or binding.node_type
                     != node_types.get(binding.device_id, NodeType.AIRCRAFT).value

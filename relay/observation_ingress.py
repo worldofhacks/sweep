@@ -111,12 +111,18 @@ class ObservationIngress:
         self._watermarks: dict[tuple[int, int, str], tuple[SourceTime, int]] = {}
         self._event_ids: set[tuple[int, int, str, str]] = set()
 
-    def accept(self, submission: ObservationSubmission, *, now: int) -> Observation:
+    def accept(
+        self, submission: ObservationSubmission, *, now: int, producer_role: str = "adapter"
+    ) -> Observation:
         key = (submission.device_id, submission.connection_epoch, submission.source_id)
         binding = self.bindings.get(key)
         if binding is None:
             raise ObservationError(
                 "source_not_configured", "observation source has no host binding"
+            )
+        if binding.producer_role != producer_role:
+            raise ObservationError(
+                "source_role_mismatch", "observation source belongs to another authenticated role"
             )
         observation = ingest(
             submission,
