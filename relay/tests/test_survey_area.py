@@ -416,6 +416,44 @@ def test_completion_removes_published_artifact_when_audit_commit_fails(tmp_path,
     assert "survey-audit" in lifecycle._runs
 
 
+@pytest.mark.parametrize(
+    "relative", ["recording/observations.jsonl", "occupancy/occupancy.png", "pose_path.json"]
+)
+@pytest.mark.parametrize("damage", ["changed", "missing", "fifo"])
+def test_candidate_reload_refuses_damaged_evidence_without_blocking(tmp_path, relative, damage):
+    from relay.observations import Observation
+
+    session, lifecycle, adapter, _clock = _session(tmp_path)
+    _start(session, "reload-evidence")
+    accepted = session.process_observation(_scan("reload-scan"), adapter)
+    lifecycle.accepted_observation(Observation.parse(accepted[0]))
+    session.process_frame(
+        _lifecycle("reload-evidence", "survey-reload-evidence", "complete", "complete"),
+        Principal("console", None, CONSOLE_KEY),
+    )
+    candidate_id = _candidate_id(SESSION, "reload-evidence", "survey-reload-evidence")
+    path = lifecycle.candidates.root / candidate_id / relative
+    path.unlink()
+    if damage == "changed":
+        path.write_bytes(b"changed")
+    elif damage == "fifo":
+        os.mkfifo(path)
+    with pytest.raises(ValueError, match="artifact"):
+        lifecycle.candidates.load(candidate_id)
+
+
+def test_maximum_length_intent_id_has_a_cancellable_run_id(tmp_path):
+    session, lifecycle, _adapter, _clock = _session(tmp_path)
+    intent_id = "s" * 128
+    _start(session, intent_id)
+    run = lifecycle._runs[intent_id]
+    cancelled = session.process_frame(
+        _lifecycle(intent_id, run.run_id, "cancel", "cancel-long"),
+        Principal("console", None, CONSOLE_KEY),
+    )
+    assert cancelled[0]["status"] == "invalidated"
+
+
 def test_websocket_survey_completion_publishes_rendered_occupancy_candidate(tmp_path):
     clock = MutableClock()
     settings = RelaySettings(

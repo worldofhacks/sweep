@@ -169,7 +169,7 @@ class SurveyCandidateRegistry:
             raise SurveyLifecycleError(
                 "survey_candidate_too_large", "survey candidate exceeds the storage bound"
             )
-        final = self.root / candidate.candidate_id
+        final = self._candidate_path(candidate.candidate_id)
         if final.exists() or final.is_symlink():
             raise SurveyLifecycleError(
                 "survey_candidate_exists", "survey candidate identity already exists"
@@ -210,6 +210,21 @@ class SurveyCandidateRegistry:
                 temporary / "tag_candidates.json",
                 {"v": 1, "type": "survey_tag_candidates", "candidates": []},
             )
+            artifact_paths = (
+                "recording/recording.json",
+                "recording/observations.jsonl",
+                "occupancy/manifest.json",
+                "occupancy/occupancy.png",
+                "pose_path.json",
+                "tag_candidates.json",
+            )
+            files = {}
+            for relative in artifact_paths:
+                encoded = _read_regular(temporary, relative, MAX_SURVEY_CANDIDATE_BYTES)
+                files[relative] = {
+                    "bytes": len(encoded),
+                    "sha256": hashlib.sha256(encoded).hexdigest(),
+                }
             manifest = {
                 **candidate.to_mapping(),
                 "artifacts": {
@@ -220,6 +235,7 @@ class SurveyCandidateRegistry:
                 },
                 "recording": recording,
                 "occupancy": grid,
+                "files": files,
             }
             _write_create_only(temporary / "candidate.json", manifest)
             os.rename(temporary, final)
@@ -270,8 +286,19 @@ class SurveyCandidateRegistry:
             raise SurveyLifecycleError(
                 "invalid_candidate", "stored candidate artifact paths are invalid"
             )
-        for relative in expected.values():
-            _read_regular(directory, relative, MAX_SURVEY_CANDIDATE_BYTES)
+        files = candidate.get("files")
+        if not isinstance(files, dict) or set(files) != {
+            *expected.values(),
+            "recording/observations.jsonl",
+            "occupancy/occupancy.png",
+        }:
+            raise SurveyLifecycleError(
+                "invalid_candidate", "stored candidate file inventory is invalid"
+            )
+        for relative, metadata in files.items():
+            encoded = _read_regular(directory, relative, MAX_SURVEY_CANDIDATE_BYTES)
+            if metadata != {"bytes": len(encoded), "sha256": hashlib.sha256(encoded).hexdigest()}:
+                raise SurveyLifecycleError("invalid_candidate", "stored candidate artifact changed")
         return candidate
 
     def _candidate_path(self, candidate_id: str) -> Path:
@@ -305,6 +332,8 @@ def _read_regular(root: Path, relative: str, limit: int) -> bytes:
     parts = relative.split("/")
     if not parts or any(not part or part in {".", ".."} for part in parts):
         raise SurveyLifecycleError("invalid_candidate", "stored candidate path is invalid")
+    directory = None
+    descriptor = None
     try:
         directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         for part in parts[:-1]:
@@ -313,11 +342,16 @@ def _read_regular(root: Path, relative: str, limit: int) -> bytes:
             )
             os.close(directory)
             directory = next_directory
-        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+        descriptor = os.open(
+            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+        )
     except OSError as error:
         raise SurveyLifecycleError(
             "invalid_candidate", "stored candidate artifact is missing"
         ) from error
+    finally:
+        if directory is not None:
+            os.close(directory)
     try:
         mode = os.fstat(descriptor).st_mode
         if not stat.S_ISREG(mode):
@@ -332,8 +366,6 @@ def _read_regular(root: Path, relative: str, limit: int) -> bytes:
         except OSError:
             pass
         raise
-    finally:
-        os.close(directory)
     if len(raw) > limit:
         raise SurveyLifecycleError(
             "survey_candidate_too_large", "stored candidate exceeds the storage bound"
@@ -355,7 +387,7 @@ def _read_json_regular(path: Path, limit: int) -> dict[str, object]:
         return output
 
     try:
-        value = json.loads(raw, object_pairs_hook=unique)
+        value = json.loads(raw, object_pairs_hook=unique, parse_constant=_reject_constant)
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as error:
         if isinstance(error, SurveyLifecycleError):
             raise
@@ -365,6 +397,10 @@ def _read_json_regular(path: Path, limit: int) -> dict[str, object]:
     if not isinstance(value, dict):
         raise SurveyLifecycleError("invalid_candidate", "stored candidate must be an object")
     return value
+
+
+def _reject_constant(value: str) -> None:
+    raise SurveyLifecycleError("invalid_candidate", f"invalid JSON constant {value}")
 
 
 @dataclass(slots=True)
@@ -412,7 +448,11 @@ class SurveyAreaLifecycle:
             )
         run = _Run(
             intent,
-            f"survey-{intent.intent_id}",
+            (
+                f"survey-{intent.intent_id}"
+                if len(intent.intent_id) <= MAX_INTENT_IDENTIFIER_CHARS - 7
+                else f"survey-{hashlib.sha256(intent.intent_id.encode()).hexdigest()}"
+            ),
             device_id,
             identity.connection_epoch,
             identity.to_event(),
