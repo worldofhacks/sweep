@@ -876,9 +876,7 @@ class RelaySession:
                             pending.intent.selection[0] if survey_result is not None else None
                         ),
                         connection_epoch=(
-                            survey_result["connection_epoch"]
-                            if survey_result is not None
-                            else None
+                            survey_result["connection_epoch"] if survey_result is not None else None
                         ),
                         result=survey_result,
                     )
