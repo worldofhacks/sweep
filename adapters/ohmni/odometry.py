@@ -8,11 +8,12 @@ import threading
 import time
 from dataclasses import dataclass
 
-from .botshell import BotShell
+from .paired_encoder import EncoderStreamUnavailable
 
 TICKS_PER_MM = 16384 * (30 / 11) / (math.pi * 150.5)
 BASE_MM = 332.0
 MAX_SAMPLE_GAP_S = 0.35  # Under half a motor wrap at the measured 0.18 m/s cap.
+ENCODER_READ_TIMEOUT_S = 0.15
 
 
 def encoder_delta(previous: int, current: int) -> int:
@@ -40,7 +41,7 @@ class Pose:
 
 
 class Odometry:
-    def __init__(self, shell: BotShell, launch: tuple[float, float, float]) -> None:
+    def __init__(self, shell: object, launch: tuple[float, float, float]) -> None:
         self.shell = shell
         self.pose = Pose(*launch)
         self._previous: tuple[int, int] | None = None
@@ -90,11 +91,18 @@ class Odometry:
         while not self._stop.is_set():
             started = time.monotonic()
             try:
-                text = self.shell.command("apos 0", expected=r"apos 0\s*=\s*\d+\s*\n")
-                text += self.shell.command("apos 1", expected=r"apos 1\s*=\s*\d+\s*\n")
-                pair = encoder_pair(text)
+                if hasattr(self.shell, "read_pair"):
+                    sample = self.shell.read_pair(ENCODER_READ_TIMEOUT_S)
+                    pair = None if sample is None else (sample.left, sample.right)
+                else:
+                    text = self.shell.command("apos 0", expected=r"apos 0\s*=\s*\d+\s*\n")
+                    text += self.shell.command("apos 1", expected=r"apos 1\s*=\s*\d+\s*\n")
+                    pair = encoder_pair(text)
                 if pair is not None:
                     self.update(pair, time.monotonic())
+            except EncoderStreamUnavailable:
+                self.lost = True
+                self.pose = Pose(self.pose.x, self.pose.y, self.pose.yaw_deg)
             except OSError:
                 pass  # snapshot freshness independently withdraws position quality.
             self._stop.wait(max(0.001, 0.1 - (time.monotonic() - started)))

@@ -20,11 +20,13 @@ from .camera import from_environment as camera_from_environment
 from .lidar import Lidar, discover
 from .models import GroundStatus, RangeScan
 from .odometry import BASE_MM, Odometry
+from .paired_encoder import PairedEncoderStream, default_socket_path
 
 
 @dataclass(frozen=True)
 class Config:
     socket_path: str = DEFAULT_PATH
+    paired_encoder_socket: str = default_socket_path()
     launch: tuple[float, float, float] = (0.0, 0.0, 0.0)
     lidar_offset_deg: float | None = None
     lidar_angle_sign: int | None = None
@@ -82,7 +84,7 @@ class OhmniDevice:
         # each own a socket; no battery wait can delay wheel STOP or encoder sampling.
         self.drive_shell = shell_factory(config.socket_path)
         self.battery_shell = shell_factory(config.socket_path)
-        self.odometry = Odometry(shell_factory(config.socket_path), config.launch)
+        self.odometry = Odometry(PairedEncoderStream(config.paired_encoder_socket), config.launch)
         self.camera = camera
         port = lidar_discover()
         self.lidar = (
@@ -484,6 +486,7 @@ def from_environment(*, key: str = "") -> OhmniDevice:
     sign = os.environ.get("SWEEP_LIDAR_ANGLE_SIGN")
     config = Config(
         socket_path=os.environ.get("SWEEP_BOTSHELL", DEFAULT_PATH),
+        paired_encoder_socket=os.environ.get("SWEEP_PAIRED_ENCODER_SOCKET", default_socket_path()),
         launch=tuple(
             float(os.environ.get(f"SWEEP_HOME_{axis}", "0")) for axis in ("X", "Y", "YAW_DEG")
         ),
