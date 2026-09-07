@@ -186,6 +186,4 @@ def _command_frame():
     from relay.contracts import parse_command
 
     runtime, _ = _runtime_for_local_test()
-    return parse_command(
-        _command(runtime, operation=CommandOperation.GROUND_VELOCITY, seq=1)
-    )
+    return parse_command(_command(runtime, operation=CommandOperation.GROUND_VELOCITY, seq=1))

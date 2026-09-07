@@ -436,7 +436,7 @@ def test_console_stop_sends_a_signed_terminal_ground_stop_while_the_robot_is_mov
                     and frame.get("source") == "autonomy"
                     and frame.get("status") == "completed"
                 ),
-        )
+            )
         assert terminal["command_id"] is None
         assert device.status().state != "moving"
         records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]

@@ -1215,11 +1215,7 @@ def _aggregate_stop_results(
         refusal=refusal,
         degraded_aircraft=tuple(
             sorted(
-                {
-                    drone_id
-                    for result in (ground, aircraft)
-                    for drone_id in result.degraded_aircraft
-                }
+                {drone_id for result in (ground, aircraft) for drone_id in result.degraded_aircraft}
             )
         ),
     )
