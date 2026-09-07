@@ -11,9 +11,12 @@ import shutil
 import tempfile
 import time
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
+import cv2
 import numpy as np
 
 from perception.camera_tags import CameraTagDetector, read_calibration
@@ -36,6 +39,9 @@ MAX_SELECTED_FRAMES = 10_000
 REPORT_RESERVE_BYTES = 2 * 1024 * 1024
 DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_OUTPUT_BYTES = 256 * 1024 * 1024
+MAX_IDENTIFIER_CHARS = 128
+MAX_SESSION_CHARS = 512
+MAX_CONNECTION_EPOCH = 2**63 - 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,21 +52,25 @@ class SmokeConfig:
     source_id: str
     camera_serial: str
     camera_frame: str
-    tag_sizes_m: dict[int, float]
+    tag_sizes_m: Mapping[int, float]
     every_nth: int = 1
     max_frames: int = MAX_SELECTED_FRAMES
     max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES
     allow_synthetic_calibration: bool = False
 
     def __post_init__(self) -> None:
-        for name in ("session", "source_id", "camera_serial", "camera_frame"):
-            value = getattr(self, name)
-            if type(value) is not str or not value or value != value.strip() or len(value) > 128:
-                raise ValueError(f"{name} must be 1 through 128 characters")
+        _identifier(self.session, "session", MAX_SESSION_CHARS)
+        for name in ("source_id", "camera_serial", "camera_frame"):
+            _identifier(getattr(self, name), name)
+        if self.camera_frame == "world":
+            raise ValueError("camera_frame must remain source-scoped and local")
         if type(self.device_id) is not int or not 1 <= self.device_id <= 2_147_483_647:
             raise ValueError("device_id must be a positive signed 32-bit integer")
-        if type(self.connection_epoch) is not int or self.connection_epoch < 1:
-            raise ValueError("connection_epoch must be a positive integer")
+        if (
+            type(self.connection_epoch) is not int
+            or not 1 <= self.connection_epoch <= MAX_CONNECTION_EPOCH
+        ):
+            raise ValueError("connection_epoch must be a positive signed 63-bit integer")
         if type(self.every_nth) is not int or self.every_nth < 1:
             raise ValueError("every_nth must be a positive integer")
         if type(self.max_frames) is not int or not 1 <= self.max_frames <= MAX_SELECTED_FRAMES:
@@ -75,7 +85,7 @@ class SmokeConfig:
         if type(self.allow_synthetic_calibration) is not bool:
             raise ValueError("allow_synthetic_calibration must be boolean")
         if (
-            not isinstance(self.tag_sizes_m, dict)
+            not isinstance(self.tag_sizes_m, Mapping)
             or not 1 <= len(self.tag_sizes_m) <= MAX_TAG_SIZES
         ):
             raise ValueError(f"declare from one through {MAX_TAG_SIZES} tag sizes")
@@ -89,7 +99,19 @@ class SmokeConfig:
             normalized[identifier] = size
         if len(normalized) != len(self.tag_sizes_m):
             raise ValueError("tag IDs must be unique")
-        object.__setattr__(self, "tag_sizes_m", normalized)
+        object.__setattr__(self, "tag_sizes_m", MappingProxyType(normalized))
+
+
+def _identifier(value: object, name: str, maximum: int = MAX_IDENTIFIER_CHARS) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or not value.isprintable()
+        or len(value) > maximum
+    ):
+        raise ValueError(f"{name} must be canonical printable text")
+    return value
 
 
 def _canonical(submission: ObservationSubmission) -> bytes:
@@ -103,38 +125,24 @@ def _canonical(submission: ObservationSubmission) -> bytes:
 
 def _quaternion(rotation: np.ndarray) -> tuple[float, float, float, float]:
     matrix = np.asarray(rotation, dtype=float)
-    if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
+    if (
+        matrix.shape != (3, 3)
+        or not np.isfinite(matrix).all()
+        or not np.allclose(matrix.T @ matrix, np.eye(3), rtol=0, atol=1e-6)
+        or not math.isclose(float(np.linalg.det(matrix)), 1.0, rel_tol=0, abs_tol=1e-6)
+    ):
         raise ValueError("detector returned an invalid pose rotation")
-    trace = float(np.trace(matrix))
-    if trace > 0:
-        scale = math.sqrt(trace + 1.0) * 2
-        qw = 0.25 * scale
-        qx = (matrix[2, 1] - matrix[1, 2]) / scale
-        qy = (matrix[0, 2] - matrix[2, 0]) / scale
-        qz = (matrix[1, 0] - matrix[0, 1]) / scale
-    elif matrix[0, 0] > matrix[1, 1] and matrix[0, 0] > matrix[2, 2]:
-        scale = math.sqrt(1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2]) * 2
-        qw = (matrix[2, 1] - matrix[1, 2]) / scale
-        qx = 0.25 * scale
-        qy = (matrix[0, 1] + matrix[1, 0]) / scale
-        qz = (matrix[0, 2] + matrix[2, 0]) / scale
-    elif matrix[1, 1] > matrix[2, 2]:
-        scale = math.sqrt(1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2]) * 2
-        qw = (matrix[0, 2] - matrix[2, 0]) / scale
-        qx = (matrix[0, 1] + matrix[1, 0]) / scale
-        qy = 0.25 * scale
-        qz = (matrix[1, 2] + matrix[2, 1]) / scale
-    else:
-        scale = math.sqrt(1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1]) * 2
-        qw = (matrix[1, 0] - matrix[0, 1]) / scale
-        qx = (matrix[0, 2] + matrix[2, 0]) / scale
-        qy = (matrix[1, 2] + matrix[2, 1]) / scale
-        qz = 0.25 * scale
-    quaternion = np.asarray((qx, qy, qz, qw), dtype=float)
-    norm = float(np.linalg.norm(quaternion))
-    if not np.isfinite(norm) or norm == 0:
+    rotation_vector = cv2.Rodrigues(matrix)[0].reshape(3)
+    angle = float(np.linalg.norm(rotation_vector))
+    quaternion = np.concatenate(
+        (
+            rotation_vector * (0.5 * np.sinc(angle / (2 * math.pi))),
+            [math.cos(angle / 2)],
+        )
+    )
+    if not np.isfinite(quaternion).all():
         raise ValueError("detector returned an invalid pose quaternion")
-    return tuple((quaternion / norm).tolist())  # type: ignore[return-value]
+    return tuple(quaternion.tolist())  # type: ignore[return-value]
 
 
 def _validate_submission(
@@ -240,6 +248,20 @@ def _write_bytes(stream, encoded: bytes, *, total: int, maximum: int) -> int:
         raise ValueError("camera smoke observations exceed the output byte cap")
     stream.write(line)
     return total + len(line)
+
+
+def _run_hash(metadata: Mapping[str, object]) -> str:
+    recording = metadata.get("recording")
+    if not isinstance(recording, Mapping):
+        raise ValueError("capture metadata has no recording identity")
+    values = [
+        metadata.get("run_id"),
+        recording.get("frames_sha256"),
+        recording.get("frame_index_sha256"),
+    ]
+    if not all(type(value) is str for value in values):
+        raise ValueError("capture metadata has an invalid recording identity")
+    return hashlib.sha256(json.dumps(values, separators=(",", ":")).encode()).hexdigest()
 
 
 def _report(
@@ -349,17 +371,16 @@ def run_smoke(
     detector = CameraTagDetector(
         calibration,
         camera_serial=config.camera_serial,
-        tag_sizes_m=config.tag_sizes_m,
+        tag_sizes_m=dict(config.tag_sizes_m),
         allow_synthetic=config.allow_synthetic_calibration,
     )
     with open_capture(capture_dir) as capture:
         _require_capture_identity(capture, calibration, config)
         output.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
+        reserved_output = False
         try:
-            run_hash = hashlib.sha256(
-                f"{capture.metadata['run_id']}:{capture.metadata['recording']['frames_sha256']}".encode()
-            ).hexdigest()
+            run_hash = _run_hash(capture.metadata)
             receipt_clock_id = f"capture-receipt:{run_hash[:32]}"
             observation_hash = hashlib.sha256()
             observation_count = 0
@@ -493,10 +514,20 @@ def run_smoke(
                 stream.write(encoded_report)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, output)
+            try:
+                os.mkdir(output)
+            except FileExistsError as error:
+                raise ValueError(f"output already exists: {output}") from error
+            reserved_output = True
+            for name in ("observations.jsonl", "report.json"):
+                os.replace(temporary / name, output / name)
+            os.rmdir(temporary)
+            reserved_output = False
             return report
         except BaseException:
             shutil.rmtree(temporary, ignore_errors=True)
+            if reserved_output:
+                shutil.rmtree(output, ignore_errors=True)
             raise
 
 
