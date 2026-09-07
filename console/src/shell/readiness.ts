@@ -27,7 +27,7 @@ export function readinessNotes(
   if (drone.pos_quality === 0) {
     notes.push({
       code: null,
-      text: capabilityProfile === 'supervised_vertical'
+      text: capabilityProfile === 'supervised_vertical' && drone.device_class !== 'ground_vehicle'
         ? SUPERVISED_VERTICAL_ZERO_POSITION_QUALITY_HELP
         : ZERO_POSITION_QUALITY_HELP,
     })
