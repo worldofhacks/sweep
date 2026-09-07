@@ -5,7 +5,7 @@ const fs = require('fs');
 const FIRST_LIMIT = 32;
 const LATEST_LIMIT = 64;
 const DATA_LIMIT = 32;
-const ENCODER_ADDRESSES = new Set([58, 59]);
+const TRACE_ADDRESSES = new Set([58, 59, 107]);
 
 function monotonicNs() {
   const now = process.hrtime();
@@ -29,10 +29,13 @@ function EncoderTrace(serial, snapshotPath) {
   this._first = [];
   this._latest = [];
   this._fault = null;
+  this._lastNormalReadDiagnostic = null;
   this._flushPending = false;
   this._writePending = false;
   this._wireSend = serial.sendCustom.bind(serial);
+  this._wireSendBatteryQuery = serial.sendBatteryQuery.bind(serial);
   this._onResponse = this._recordResponse.bind(this);
+  this._onCoreResponse = this._recordCoreResponse.bind(this);
 }
 
 EncoderTrace.prototype.installWireObserver = function () {
@@ -40,14 +43,24 @@ EncoderTrace.prototype.installWireObserver = function () {
     this._recordSend('wire_send_custom', sid, command, payload);
     return this._wireSend(sid, command, payload);
   };
+  this._serial.sendBatteryQuery = () => {
+    this._record({ type: 'wire_send_battery_query', monotonic_ns: monotonicNs() });
+    return this._wireSendBatteryQuery();
+  };
   this._serial.on('servo_response', this._onResponse);
+  this._serial.on('core_response', this._onCoreResponse);
 };
 
 EncoderTrace.prototype.installCallObserver = function () {
   const sendCustom = this._serial.sendCustom.bind(this._serial);
+  const sendBatteryQuery = this._serial.sendBatteryQuery.bind(this._serial);
   this._serial.sendCustom = (sid, command, payload) => {
     this._recordSend('send_custom_call', sid, command, payload);
     return sendCustom(sid, command, payload);
+  };
+  this._serial.sendBatteryQuery = () => {
+    this._record({ type: 'send_battery_query_call', monotonic_ns: monotonicNs() });
+    return sendBatteryQuery();
   };
 };
 
@@ -57,6 +70,12 @@ EncoderTrace.prototype.snapshot = function () {
     type: 'sweep_encoder_trace',
     first: this._first.slice(),
     latest: this._latest.slice(),
+    last_normal_read_diagnostic: this._lastNormalReadDiagnostic === null ? null : {
+      type: this._lastNormalReadDiagnostic.type,
+      monotonic_ns: this._lastNormalReadDiagnostic.monotonic_ns,
+      key: this._lastNormalReadDiagnostic.key,
+      outstanding: this._lastNormalReadDiagnostic.outstanding,
+    },
     fault: this._fault === null ? null : {
       reason: this._fault.reason,
       poll_id: this._fault.poll_id,
@@ -81,8 +100,26 @@ EncoderTrace.prototype.recordFault = function (reason, pollId, pendingSide) {
   this._scheduleFlush();
 };
 
+EncoderTrace.prototype.recordDiagnostic = function (diagnostic) {
+  const record = {
+    type: diagnostic.type,
+    monotonic_ns: monotonicNs(),
+    key: diagnostic.key,
+    outstanding: diagnostic.outstanding,
+  };
+  if (diagnostic.type === 'normal_read_expired' || diagnostic.type === 'normal_read_key_limit') {
+    this._lastNormalReadDiagnostic = {
+      type: record.type,
+      monotonic_ns: record.monotonic_ns,
+      key: record.key,
+      outstanding: record.outstanding,
+    };
+  }
+  this._record(record);
+};
+
 EncoderTrace.prototype._recordSend = function (type, sid, command, payload) {
-  if (command !== 4 || !payload || !ENCODER_ADDRESSES.has(payload[0])) return;
+  if (command !== 4 || !payload || !TRACE_ADDRESSES.has(payload[0])) return;
   const record = { type: type, monotonic_ns: monotonicNs(), sid: sid, command: command };
   recordData(payload, record);
   if (record.bytes.length) record.address = record.bytes[0];
@@ -91,10 +128,15 @@ EncoderTrace.prototype._recordSend = function (type, sid, command, payload) {
 };
 
 EncoderTrace.prototype._recordResponse = function (message) {
-  if (!message || !ENCODER_ADDRESSES.has(message.addr)) return;
+  if (!message || !TRACE_ADDRESSES.has(message.addr)) return;
   const record = { type: 'servo_response', monotonic_ns: monotonicNs(), sid: message.sid, address: message.addr };
   recordData(message.data, record);
   this._record(record);
+};
+
+EncoderTrace.prototype._recordCoreResponse = function (message) {
+  if (!message || (message.type !== 'battery' && message.type !== 'battery_new')) return;
+  this._record({ type: 'core_response', monotonic_ns: monotonicNs(), response_type: message.type });
 };
 
 EncoderTrace.prototype._record = function (record) {

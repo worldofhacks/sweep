@@ -18,6 +18,8 @@ class FakeSerial extends EventEmitter {
   sendCustom(sid, command, payload) {
     this.requests.push({ sid, command, payload: Buffer.from(payload) });
   }
+
+  sendBatteryQuery() {}
 }
 
 async function wait(ms) {
@@ -51,6 +53,44 @@ async function testTraceKeepsFirstEncoderFailureAfterStartupTraffic() {
       assert.strictEqual(snapshot.latest[63].int32_le, 99);
     await wait(40);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(directory, 'trace.json'), 'utf8')), snapshot);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+async function testTraceRecordsNormalReadDiagnostics() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sweep-normal-read-trace-'));
+  const serial = new FakeSerial();
+  const trace = new EncoderTrace(serial, path.join(directory, 'trace.json'));
+  try {
+    trace.installWireObserver();
+    trace.installCallObserver();
+    serial.sendCustom(4, 4, Buffer.from([107, 1]));
+    serial.sendBatteryQuery();
+    serial.emit('servo_response', { sid: 4, addr: 107, data: Buffer.from([1]) });
+    serial.emit('core_response', { type: 'battery_new' });
+    trace.recordDiagnostic({
+      type: 'normal_read_expired',
+      key: '0:59',
+      outstanding: { pending: [], expired: ['0:59'] },
+    });
+    for (let value = 0; value < 100; value += 1) {
+      serial.sendCustom(value % 2, 4, Buffer.from([59, 4]));
+      serial.emit('servo_response', { sid: value % 2, addr: 59, data: Buffer.alloc(4) });
+    }
+    const snapshot = trace.snapshot();
+    const entries = snapshot.first;
+    assert(entries.some((entry) => entry.type === 'wire_send_custom' && entry.address === 107));
+    assert(entries.some((entry) => entry.type === 'wire_send_battery_query'));
+    assert(entries.some((entry) => entry.type === 'core_response' && entry.response_type === 'battery_new'));
+    assert(entries.some((entry) => entry.type === 'normal_read_expired' && entry.key === '0:59'));
+    assert(!snapshot.latest.some((entry) => entry.type === 'normal_read_expired'));
+    assert.deepStrictEqual(snapshot.last_normal_read_diagnostic, {
+      type: 'normal_read_expired',
+      monotonic_ns: snapshot.last_normal_read_diagnostic.monotonic_ns,
+      key: '0:59',
+      outstanding: { pending: [], expired: ['0:59'] },
+    });
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -181,6 +221,7 @@ async function testPluginRecordsActualSamplerTimeout() {
 
 Promise.resolve()
   .then(testTraceKeepsFirstEncoderFailureAfterStartupTraffic)
+  .then(testTraceRecordsNormalReadDiagnostics)
   .then(testPluginUsesExistingOwnerAndWaitsForModelStart)
   .then(testPluginFreezesEncoderTraceWhenSamplerFails)
   .then(testPluginRecordsActualSamplerTimeout)
