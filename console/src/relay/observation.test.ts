@@ -76,10 +76,20 @@ describe('observation v1 console mirror', () => {
     ['frame', (value: Record<string, unknown>) => { value.frame = [] }],
     ['payload kind', (value: Record<string, unknown>) => { (value.payload as Record<string, unknown>).kind = {} }],
     ['source clock unit', (value: Record<string, unknown>) => { ((value.t_source_receipt as Record<string, unknown>).unit) = [] }],
+    ['capture time', (value: Record<string, unknown>) => { value.t_capture = {} }],
     ['tag reason', (value: Record<string, unknown>) => { value.payload = { kind: 'tag_observation', family: 'tag36h11', tag_id: 42, image_id: 'frame-001', pose_accepted: false, tag_pose: null, covariance_m2: null, reason: [], size_m: null, corners_px: [[100, 200], [120, 200], [120, 220], [100, 220]], pixel_frame: 'camera', reprojection_rms_px: null } }],
   ])('rejects malformed %s containers', (_, mutate) => {
     const value = observation()
     mutate(value)
     expect(parseObservation(value)).toBeNull()
+  })
+
+  test('does not treat malformed nullable tag fields as absent', () => {
+    const tag = observation({
+      kind: 'tag_observation', family: 'tag36h11', tag_id: 42, image_id: 'frame-001', pose_accepted: false,
+      tag_pose: {}, covariance_m2: [], reason: 'ambiguous', size_m: {},
+      corners_px: [[100, 200], [120, 200], [120, 220], [100, 220]], pixel_frame: 'camera', reprojection_rms_px: null,
+    })
+    expect(parseObservation(tag)).toBeNull()
   })
 })

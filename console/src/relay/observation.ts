@@ -315,7 +315,7 @@ function tagObservationPayload(value: unknown, frame: string): TagObservationPay
   const rms = result.reprojection_rms_px === null ? null : number(result.reprojection_rms_px, 16_384)
   const corners = cornersPx(result.corners_px)
   const covariance = covarianceM2(result.covariance_m2)
-  if (tagId === null || !imageId || !reason || !pixelFrame || !corners || (rms === null && result.reprojection_rms_px !== null) || (rms !== null && rms < 0)) return null
+  if (tagId === null || !imageId || !reason || !pixelFrame || !corners || (tagPose === null && result.tag_pose !== null) || (size === null && result.size_m !== null) || (covariance === null && result.covariance_m2 !== null) || (rms === null && result.reprojection_rms_px !== null) || (rms !== null && rms < 0)) return null
   if (result.pose_accepted !== (reason === 'pose') || (tagPose !== null) !== result.pose_accepted || (tagPose && (tagPose.parent_frame !== frame || tagPose.child_frame !== `tag:${tagId}`))) return null
   if ((size === null && result.pose_accepted) || (size !== null && size <= 0) || (covariance !== null && tagPose === null)) return null
   return freeze({ kind: 'tag_observation', family: 'tag36h11', tag_id: tagId, image_id: imageId, pose_accepted: result.pose_accepted, tag_pose: tagPose, covariance_m2: covariance, reason, size_m: size, corners_px: corners, pixel_frame: pixelFrame, reprojection_rms_px: rms })
@@ -380,7 +380,7 @@ export function parseObservation(value: unknown): Observation | null {
   const receipt = sourceTime(result.t_source_receipt)
   const mapping = result.clock_mapping_id === null ? null : text(result.clock_mapping_id)
   const ingest = integer(result.t_ingest)
-  if (!eventId || !session || deviceId === null || epoch === null || !sourceId || !nodeType || !frame || confidence === null || !receipt || mapping === null && result.clock_mapping_id !== null || ingest === null) return null
+  if (!eventId || !session || deviceId === null || epoch === null || !sourceId || !nodeType || !frame || confidence === null || (capture === null && result.t_capture !== null) || !receipt || mapping === null && result.clock_mapping_id !== null || ingest === null) return null
   if (capture && (capture.clock_id !== receipt.clock_id || capture.unit !== receipt.unit || capture.value > receipt.value)) return null
   const parsedPayload = payload(result.payload, frame)
   if (!parsedPayload) return null
