@@ -91,6 +91,7 @@ def test_owner_install_reads_and_rehashes_through_one_root_shell_route(tmp_path:
     push_call = next(index for index, (args, _) in enumerate(calls) if args[2] == "push")
     assert source_call < rehash_call < push_call
     assert f"= {source_sha} ]" in install
+    assert "[ ! -e $disabled ]" in install
     assert "chown 1000:1000 $target $module" in install
     assert "chmod 600 $target $module" in install
     assert "chcon u:object_r:system_app_data_file:s0 $target $module" in install
@@ -117,12 +118,19 @@ def test_owner_rollback_pins_and_restores_both_reviewed_representations(tmp_path
     rollback = next(
         script for _, script in calls if "telebot_node.js.sweep-owner-encoder.disabled" in script
     )
-    assert f"{CRLF_PATCHED_SHA}) reference_sha={CRLF_REFERENCE_SHA}" in rollback
-    assert f"{LF_PATCHED_SHA}) reference_sha={LF_REFERENCE_SHA}" in rollback
+    assert (
+        f"{CRLF_PATCHED_SHA}) patched_sha={CRLF_PATCHED_SHA}; reference_sha={CRLF_REFERENCE_SHA}"
+        in rollback
+    )
+    assert (
+        f"{LF_PATCHED_SHA}) patched_sha={LF_PATCHED_SHA}; reference_sha={LF_REFERENCE_SHA}"
+        in rollback
+    )
     assert "sha256sum $backup" in rollback
     assert "chown 1000:1000 $target" in rollback
     assert "chmod 600 $target" in rollback
     assert "chcon u:object_r:system_app_data_file:s0 $target" in rollback
+    assert "rm $module $node_dir/telebot_node.js.sweep-owner-encoder.disabled" in rollback
 
 
 def test_owner_rollback_pins_current_sampler_module() -> None:
@@ -200,5 +208,6 @@ def test_owner_rollback_restores_the_matching_reviewed_source_representation(
         check=True,
     )
     assert target.read_bytes() == source
-    assert (remote / "telebot_node.js.sweep-owner-encoder.disabled").read_bytes() == patched
+    assert not (remote / "telebot_node.js.sweep-owner-encoder.disabled").exists()
+    assert not module.exists()
     assert not backup.exists()

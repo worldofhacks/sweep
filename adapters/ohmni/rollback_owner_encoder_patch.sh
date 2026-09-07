@@ -31,8 +31,8 @@ module=\$node_dir/sweep_paired_encoder_sampler.js
 [ -f \$target ]
 [ -f \$module ]
 case "\$(sha256sum \$target | cut -d ' ' -f 1)" in
-  $crlf_patched_sha) reference_sha=$crlf_reference_sha ;;
-  $lf_patched_sha) reference_sha=$lf_reference_sha ;;
+  $crlf_patched_sha) patched_sha=$crlf_patched_sha; reference_sha=$crlf_reference_sha ;;
+  $lf_patched_sha) patched_sha=$lf_patched_sha; reference_sha=$lf_reference_sha ;;
   *) echo 'Installed vendor source does not match a reviewed owner patch.' >&2; exit 1 ;;
 esac
 [ "\$(sha256sum \$module | cut -d ' ' -f 1)" = $module_sha ]
@@ -45,5 +45,7 @@ chcon $vendor_context \$target
 [ "\$(sha256sum \$target | cut -d ' ' -f 1)" = \$reference_sha ]
 [ "\$(stat -c '%u:%g:%a' \$target)" = $vendor_owner:$vendor_mode ]
 [ "\$(ls -Zd \$target | awk '{print \$1}')" = $vendor_context ]
+[ "\$(sha256sum \$node_dir/telebot_node.js.sweep-owner-encoder.disabled | cut -d ' ' -f 1)" = \$patched_sha ]
+rm \$module \$node_dir/telebot_node.js.sweep-owner-encoder.disabled
 EOF
 printf '%s\n' 'Vendor source restored. Restart the vendor service only through a separately reviewed operation.'

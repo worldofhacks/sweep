@@ -46,3 +46,7 @@ The vendor Node owns paired drive-encoder reads and publishes bounded records th
 A confirmed `come_home` for a selected ground node can dispatch an approved return only when the relay is configured with `SWEEP_GROUND_RETURN_ID`. The node requires `SWEEP_RETURN_APPROVAL_FILE`, `SWEEP_RETURN_APPROVAL_KEY_FILE`, and `SWEEP_ODOM_ORIGIN_ID`; it refuses the command when any is absent.
 
 The separate external approval binds the session, device ID, connection epoch, odometry origin, source registration, pose source, frame, exact measured geometry bytes, and world-to-odometry transform. Its fixed corridor footprints must be simple and provide clearance for the full robot, stopping distance, and one forward pulse. Each turn and forward pulse rechecks the active external grant, qualified current pose, current full scan, clearance, and remaining approved chord. The controller never replans, reverses, or treats an acknowledgement as arrival. It completes only after a measured final pose satisfies the approved tolerance.
+
+## Handback
+
+Before replacing a payload or installing the owner encoder patch, create a private per-robot handback capture. [The handback procedure](HANDBACK.md) records the original vendor source and metadata, the pre-existing Sweep inventory, and ADB reverse mappings, then defines the verified restoration and normal-app handover checks.
