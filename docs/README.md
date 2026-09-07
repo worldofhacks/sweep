@@ -12,5 +12,6 @@ Maintained throughout M0 through M4.
 - `../RESEARCH/DJI_MINI_3_INDOOR_AUTOPILOT_2026_09_02.md`: documented Mini 3 telemetry, bundled flight behavior, and the additional software and sensing required for indoor autonomy.
 - `../RESEARCH/DJI_MINI_3_CAPTURE_GUIDANCE_DISPLAY_2026_09_02.md`: the Android pilot guidance, laptop display modules, capture-quality gates, and measured-FOV capture rule.
 - `decisions/`: decision records (scaffold choices, the architecture review).
+- `ohmni-encoder-sampler-evidence.md`: measured serial encoder-pair loss and the qualified sampler required before ground motion.
 
 Arriving in later milestones: build guide (hardware bring-up, positioning calibration), the intent contract as generated schema docs, the demo script, and session reports from hardware runs.
