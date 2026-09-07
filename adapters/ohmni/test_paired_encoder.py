@@ -243,5 +243,5 @@ def test_field_confirmed_forward_and_counterclockwise_sequences_use_observed_enc
         odometry.update(pair, index / 10)
 
     pose = odometry.snapshot(0.8)
-    assert pose.x > 0.08
-    assert pose.yaw_deg > 10
+    assert 0.08 < pose.x < 0.10
+    assert 10 < pose.yaw_deg < 15
