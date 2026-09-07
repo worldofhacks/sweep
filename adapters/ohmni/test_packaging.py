@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import tarfile
 import zipfile
 from pathlib import Path
@@ -30,6 +31,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (root / "adapters" / "ohmni" / name).write_text(
             "secret" if name == "node.env" else "# runtime\n"
         )
+    (root / "adapters" / "ohmni" / "run.sh").chmod(0o700)
     (root / "planner").mkdir()
     for name in ("__init__.py", "models.py"):
         (root / "planner" / name).write_text("# runtime\n")
@@ -70,6 +72,26 @@ def test_payload_carries_the_musl_runtime_and_excludes_private_node_configuratio
     assert "relay/contracts.py" in names
     assert "run.sh" in names
     assert not any(name.endswith("node.env") or "test_runtime" in name for name in names)
+
+
+def test_payload_is_reproducible_despite_source_directory_mtime_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = _fixture(tmp_path, monkeypatch)
+    root = tmp_path / "repo"
+    first = tmp_path / "first.tar"
+    second = tmp_path / "second.tar"
+
+    build_payload.build(artifacts, first)
+    directories = (root / "adapters", root / "adapters" / "ohmni", root / "planner", root / "relay")
+    for directory in directories:
+        os.utime(directory, (2_000_000_000, 2_000_000_000))
+    build_payload.build(artifacts, second)
+
+    assert first.read_bytes() == second.read_bytes()
+    with tarfile.open(second) as archive:
+        assert archive.getmember("run.sh").mode == 0o755
+        assert archive.getmember("adapters/ohmni/runtime.py").mode == 0o644
 
 
 def test_payload_refuses_an_artifact_that_changed_after_manifest_verification(
