@@ -7,7 +7,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tools.ohmni_lidar_self_calibration import fit_capture, predicted_raw_transform, run
+from tools.ohmni_lidar_self_calibration import (
+    _local_segments,
+    fit_capture,
+    predicted_raw_transform,
+    run,
+)
 
 MOUNT = (-0.395, 0.395, 0.18)
 
@@ -110,6 +115,8 @@ def test_fits_asymmetric_synthetic_capture_for_each_angle_handedness(
     assert result["candidate"]["angle_sign"] == sign
     assert result["candidate"]["offset_deg"] == pytest.approx(offset_deg, abs=1.0)
     assert result["metrics"]["offset_uncertainty_deg"] <= 2.0
+    assert result["metrics"]["offset_uncertainty_method"] == "local_curvature_ratio"
+    assert result["metrics"]["residual_retained_fraction"] == 0.8
     assert result["metrics"]["held_out_rms_m"] < 0.02
 
 
@@ -235,6 +242,35 @@ def test_refuses_sparse_scan_support_without_attempting_geometry_eigendecomposit
     assert result["refusal_reasons"] == ["sparse_scan_support"]
     assert result["metrics"]["registration_skipped"] is True
     assert result["metrics"]["geometry_eigenvalues_m2"] == []
+
+
+def test_refuses_sparse_held_out_scans_before_residual_scoring() -> None:
+    capture = _capture()
+    for stage in capture["stages"].values():
+        for revolution in stage["revolutions"][-2:]:
+            revolution["points"] = [{"angle_deg": 0.0, "distance_mm": 1_000.0, "quality": 0.0}]
+
+    result = fit_capture(capture)
+
+    assert result["approval_status"] == "refused"
+    assert result["refusal_reasons"] == ["sparse_held_out_scan_support"]
+    assert result["metrics"]["held_out_point_counts"] == {
+        "baseline": 0,
+        "after_forward": 0,
+        "after_yaw": 0,
+    }
+    assert "candidate" not in result
+
+
+def test_local_segments_exclude_a_short_angle_range_discontinuity() -> None:
+    angles = np.radians((0.0, 1.0, 1.0, 2.0))
+    radii = np.array((1.0, 1.0, 1.0, 4.0))
+    points = np.column_stack((radii * np.cos(angles), radii * np.sin(angles)))
+
+    starts, ends = _local_segments(points)
+
+    assert starts == pytest.approx(points[:1])
+    assert ends == pytest.approx(points[1:2])
 
 
 def test_normalizes_an_equivalent_offset_at_the_wrap_boundary() -> None:

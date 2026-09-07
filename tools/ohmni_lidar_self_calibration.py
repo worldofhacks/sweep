@@ -8,6 +8,7 @@ import json
 import math
 import os
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -21,8 +22,12 @@ WHEEL_DIAMETER_MM = 152.4
 STAGE_NAMES = ("baseline", "after_forward", "after_yaw")
 SCANS_PER_STAGE = 10
 MAX_POINTS_PER_SCAN = 2_000
-MAX_STAGE_POINTS = 120
+MAX_STAGE_POINTS = 360
 MIN_STAGE_POINTS = 80
+MIN_LOCAL_SEGMENTS = 32
+MAX_LOCAL_ANGLE_GAP_DEG = 1.5
+LOCAL_SEGMENT_RANGE_SLACK_M = 0.05
+LOCAL_SEGMENT_RANGE_SCALE = 3.0
 MIN_TRANSLATION_M = 0.04
 MIN_YAW_RAD = 0.1
 MAX_ENCODER_REVOLUTION_DELTA_S = 2.0
@@ -31,6 +36,8 @@ MAX_STAGE_YAW_DRIFT_DEG = 0.1
 MAX_RMS_M = 0.12
 MAX_HELD_OUT_RMS_M = 0.15
 MAX_OFFSET_UNCERTAINTY_DEG = 5.0
+RESIDUAL_RETAINED_FRACTION = 0.8
+OFFSET_UNCERTAINTY_METHOD = "local_curvature_ratio"
 MIN_GEOMETRY_RANK = 0.03
 MAX_INPUT_BYTES = 8 * 1024 * 1024
 MAX_OUTPUT_BYTES = 512 * 1024
@@ -346,7 +353,25 @@ def predicted_raw_transform(
 
 def _bounded_points(scans: Sequence[Mapping[str, object]], *, held_out: bool) -> np.ndarray:
     selected = scans[-2:] if held_out else scans[:-2]
-    points = np.concatenate([np.asarray(scan["points"], dtype=float) for scan in selected])
+    samples = np.concatenate([np.asarray(scan["points"], dtype=float) for scan in selected])
+    angles = np.mod(np.arctan2(samples[:, 1], samples[:, 0]), 2 * math.pi)
+    radii = np.hypot(samples[:, 0], samples[:, 1])
+    bins = np.floor(angles * MAX_STAGE_POINTS / (2 * math.pi)).astype(int)
+    points = []
+    for index in range(MAX_STAGE_POINTS):
+        selected = bins == index
+        if np.any(selected):
+            angle = float(np.median(angles[selected]))
+            radius = float(np.median(radii[selected]))
+            points.append((radius * math.cos(angle), radius * math.sin(angle)))
+    return np.asarray(points, dtype=float).reshape(-1, 2)
+
+
+def _complete_revolution_points(
+    scans: Sequence[Mapping[str, object]], *, held_out: bool
+) -> np.ndarray:
+    scan = scans[-1] if held_out else scans[0]
+    points = np.asarray(scan["points"], dtype=float)
     if len(points) > MAX_STAGE_POINTS:
         points = points[np.linspace(0, len(points) - 1, MAX_STAGE_POINTS, dtype=int)]
     return points
@@ -361,33 +386,121 @@ def _nearest_squared(source: np.ndarray, target: np.ndarray) -> np.ndarray:
     return np.concatenate(results)
 
 
-def _robust_mean_squared(source: np.ndarray, target: np.ndarray) -> float:
-    distances = np.concatenate((_nearest_squared(source, target), _nearest_squared(target, source)))
-    keep = max(1, int(len(distances) * 0.8))
+@dataclass(frozen=True)
+class _ScanGeometry:
+    points: np.ndarray
+    segment_starts: np.ndarray
+    segment_ends: np.ndarray
+    surface_supported: bool
+
+
+def _local_segments(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    angles = np.mod(np.arctan2(points[:, 1], points[:, 0]), 2 * math.pi)
+    order = np.argsort(angles)
+    ordered = points[order]
+    ordered_angles = angles[order]
+    next_points = np.roll(ordered, -1, axis=0)
+    next_angles = np.roll(ordered_angles, -1)
+    angle_gaps = np.mod(next_angles - ordered_angles, 2 * math.pi)
+    ranges = np.hypot(ordered[:, 0], ordered[:, 1])
+    next_ranges = np.roll(ranges, -1)
+    radial_difference = np.abs(next_ranges - ranges)
+    expected_step = (ranges + next_ranges) * np.sin(angle_gaps / 2)
+    connected = (
+        (angle_gaps > 0)
+        & (angle_gaps <= math.radians(MAX_LOCAL_ANGLE_GAP_DEG))
+        & (
+            radial_difference
+            <= LOCAL_SEGMENT_RANGE_SLACK_M + LOCAL_SEGMENT_RANGE_SCALE * expected_step
+        )
+    )
+    return ordered[connected], next_points[connected]
+
+
+def _scan_geometry(scans: Sequence[Mapping[str, object]], *, held_out: bool) -> _ScanGeometry:
+    points = _bounded_points(scans, held_out=held_out)
+    segment_starts, segment_ends = _local_segments(points)
+    return _ScanGeometry(
+        points,
+        segment_starts,
+        segment_ends,
+        len(segment_starts) >= MIN_LOCAL_SEGMENTS,
+    )
+
+
+def _complete_scan_geometry(
+    scans: Sequence[Mapping[str, object]], *, held_out: bool
+) -> _ScanGeometry:
+    points = _complete_revolution_points(scans, held_out=held_out)
+    segment_starts, segment_ends = _local_segments(points)
+    return _ScanGeometry(points, segment_starts, segment_ends, False)
+
+
+def _transformed_geometry(
+    geometry: _ScanGeometry, rotation: np.ndarray, translation: np.ndarray
+) -> _ScanGeometry:
+    return _ScanGeometry(
+        geometry.points @ rotation.T + translation,
+        geometry.segment_starts @ rotation.T + translation,
+        geometry.segment_ends @ rotation.T + translation,
+        geometry.surface_supported,
+    )
+
+
+def _nearest_segment_squared(
+    points: np.ndarray, starts: np.ndarray, ends: np.ndarray
+) -> np.ndarray:
+    direction = ends - starts
+    length_squared = np.sum(direction * direction, axis=1)
+    results: list[np.ndarray] = []
+    for start in range(0, len(points), 64):
+        chunk = points[start : start + 64]
+        projected = np.sum((chunk[:, None, :] - starts[None, :, :]) * direction[None, :, :], axis=2)
+        fraction = np.clip(projected / length_squared[None, :], 0.0, 1.0)
+        closest = starts[None, :, :] + fraction[:, :, None] * direction[None, :, :]
+        squared = np.sum((chunk[:, None, :] - closest) ** 2, axis=2)
+        results.append(np.min(squared, axis=1))
+    return np.concatenate(results)
+
+
+def _robust_mean_squared(source: _ScanGeometry, target: _ScanGeometry) -> float:
+    if source.surface_supported and target.surface_supported:
+        distances = np.concatenate(
+            (
+                _nearest_segment_squared(source.points, target.segment_starts, target.segment_ends),
+                _nearest_segment_squared(target.points, source.segment_starts, source.segment_ends),
+            )
+        )
+    else:
+        distances = np.concatenate(
+            (
+                _nearest_squared(source.points, target.points),
+                _nearest_squared(target.points, source.points),
+            )
+        )
+    keep = max(1, int(len(distances) * RESIDUAL_RETAINED_FRACTION))
     return float(np.mean(np.partition(distances, keep - 1)[:keep]))
 
 
 def _score_offset(
-    baseline: Mapping[str, object],
-    stages: Sequence[Mapping[str, object]],
+    baseline: _ScanGeometry,
+    baseline_pose: Mapping[str, float],
+    stages: Sequence[tuple[Mapping[str, object], _ScanGeometry]],
     mount: Sequence[float],
     sign: int,
     offset_deg: float,
-    *,
-    held_out: bool,
 ) -> float:
-    base = _bounded_points(baseline["revolutions"], held_out=held_out)  # type: ignore[arg-type]
     scores = []
-    for stage in stages:
+    for stage, raw_geometry in stages:
         rotation, translation = predicted_raw_transform(
-            baseline["pose"],
+            baseline_pose,
             stage["pose"],
             mount,
             sign,
             offset_deg,  # type: ignore[arg-type]
         )
-        raw = _bounded_points(stage["revolutions"], held_out=held_out)  # type: ignore[arg-type]
-        scores.append(_robust_mean_squared(raw @ rotation.T + translation, base))
+        transformed = _transformed_geometry(raw_geometry, rotation, translation)
+        scores.append(_robust_mean_squared(transformed, baseline))
     return float(np.mean(scores))
 
 
@@ -426,22 +539,58 @@ def _candidate(
 ) -> dict[str, object]:
     baseline = stages["baseline"]
     changed = [stages["after_forward"], stages["after_yaw"]]
-    base_fit = _bounded_points(baseline["revolutions"], held_out=False)  # type: ignore[arg-type]
-    changed_fit = {
-        name: _bounded_points(stages[name]["revolutions"], held_out=False)  # type: ignore[arg-type]
-        for name in ("after_forward", "after_yaw")
+    fit_geometries = {
+        "baseline": _scan_geometry(baseline["revolutions"], held_out=False),  # type: ignore[arg-type]
+        **{
+            name: _scan_geometry(stages[name]["revolutions"], held_out=False)  # type: ignore[arg-type]
+            for name in ("after_forward", "after_yaw")
+        },
     }
+    held_out_geometries = {
+        "baseline": _scan_geometry(baseline["revolutions"], held_out=True),  # type: ignore[arg-type]
+        **{
+            name: _scan_geometry(stages[name]["revolutions"], held_out=True)  # type: ignore[arg-type]
+            for name in ("after_forward", "after_yaw")
+        },
+    }
+    if any(not geometry.surface_supported for geometry in fit_geometries.values()):
+        fit_geometries = {
+            "baseline": _complete_scan_geometry(baseline["revolutions"], held_out=False),  # type: ignore[arg-type]
+            **{
+                name: _complete_scan_geometry(stages[name]["revolutions"], held_out=False)  # type: ignore[arg-type]
+                for name in ("after_forward", "after_yaw")
+            },
+        }
+    if any(not geometry.surface_supported for geometry in held_out_geometries.values()):
+        held_out_geometries = {
+            "baseline": _complete_scan_geometry(baseline["revolutions"], held_out=True),  # type: ignore[arg-type]
+            **{
+                name: _complete_scan_geometry(stages[name]["revolutions"], held_out=True)  # type: ignore[arg-type]
+                for name in ("after_forward", "after_yaw")
+            },
+        }
+    baseline_fit = fit_geometries["baseline"]
+    changed_fit = {name: fit_geometries[name] for name in ("after_forward", "after_yaw")}
+    baseline_held_out = held_out_geometries["baseline"]
+    changed_held_out = {name: held_out_geometries[name] for name in ("after_forward", "after_yaw")}
     point_counts = {
-        "baseline": len(base_fit),
-        **{name: len(points) for name, points in changed_fit.items()},
+        "baseline": len(baseline_fit.points),
+        **{name: len(geometry.points) for name, geometry in changed_fit.items()},
+    }
+    held_out_point_counts = {
+        "baseline": len(baseline_held_out.points),
+        **{name: len(geometry.points) for name, geometry in changed_held_out.items()},
     }
     refusals = _motion_refusals(stages)
     refusals.extend(reason for stage in stages.values() for reason in stage["quality_refusals"])
     if any(count < MIN_STAGE_POINTS for count in point_counts.values()):
         refusals.append("sparse_scan_support")
         rank, eigenvalues, weak_geometry_normal = 0.0, [], []
+    elif any(count < MIN_STAGE_POINTS for count in held_out_point_counts.values()):
+        refusals.append("sparse_held_out_scan_support")
+        rank, eigenvalues, weak_geometry_normal = 0.0, [], []
     else:
-        rank, eigenvalues, weak_geometry_normal = _geometry_rank(base_fit)
+        rank, eigenvalues, weak_geometry_normal = _geometry_rank(baseline_fit.points)
     if not refusals and rank < MIN_GEOMETRY_RANK:
         refusals.append("single_surface_geometry")
     initial_metrics = {
@@ -450,6 +599,7 @@ def _candidate(
         "weak_geometry_normal": weak_geometry_normal,
         "stage_timing": {name: stages[name]["timing"] for name in STAGE_NAMES},
         "point_counts": point_counts,
+        "held_out_point_counts": held_out_point_counts,
     }
     if refusals:
         return {
@@ -457,12 +607,27 @@ def _candidate(
             "metrics": {"registration_skipped": True, **initial_metrics},
         }
     mount_xy = (mount["x_m"], mount["y_m"])
+    fit_stages = [
+        (stage, changed_fit[name])
+        for name, stage in zip(("after_forward", "after_yaw"), changed, strict=True)
+    ]
+    held_out_stages = [
+        (stage, changed_held_out[name])
+        for name, stage in zip(("after_forward", "after_yaw"), changed, strict=True)
+    ]
     coarse: list[tuple[float, int, float]] = []
     for sign in (-1, 1):
         for offset in np.arange(-180.0, 180.0, 1.0):
             coarse.append(
                 (
-                    _score_offset(baseline, changed, mount_xy, sign, float(offset), held_out=False),
+                    _score_offset(
+                        baseline_fit,
+                        baseline["pose"],  # type: ignore[arg-type]
+                        fit_stages,
+                        mount_xy,
+                        sign,
+                        float(offset),
+                    ),
                     sign,
                     float(offset),
                 )
@@ -474,7 +639,12 @@ def _candidate(
         refined.append(
             (
                 _score_offset(
-                    baseline, changed, mount_xy, best_coarse[1], float(offset), held_out=False
+                    baseline_fit,
+                    baseline["pose"],  # type: ignore[arg-type]
+                    fit_stages,
+                    mount_xy,
+                    best_coarse[1],
+                    float(offset),
                 ),
                 best_coarse[1],
                 float(offset),
@@ -482,12 +652,26 @@ def _candidate(
         )
     refined.sort()
     fit_score, sign, offset = refined[0]
-    held_out_score = _score_offset(baseline, changed, mount_xy, sign, offset, held_out=True)
+    held_out_score = _score_offset(
+        baseline_held_out,
+        baseline["pose"],  # type: ignore[arg-type]
+        held_out_stages,
+        mount_xy,
+        sign,
+        offset,
+    )
     best_rms = math.sqrt(fit_score)
     held_out_rms = math.sqrt(held_out_score)
     step = 0.25
     nearby = [
-        _score_offset(baseline, changed, mount_xy, sign, offset + delta, held_out=False)
+        _score_offset(
+            baseline_fit,
+            baseline["pose"],  # type: ignore[arg-type]
+            fit_stages,
+            mount_xy,
+            sign,
+            offset + delta,
+        )
         for delta in (-step, step)
     ]
     curvature = max((nearby[0] + nearby[1] - 2.0 * fit_score) / (step * step), 1e-12)
@@ -504,10 +688,17 @@ def _candidate(
     if competing[0] <= fit_score * 1.10:
         refusals.append("competing_offset_basin")
     per_stage_offsets: list[float] = []
-    for stage in changed:
+    for name, stage in zip(("after_forward", "after_yaw"), changed, strict=True):
         local = min(
             (
-                _score_offset(baseline, [stage], mount_xy, sign, candidate_offset, held_out=False),
+                _score_offset(
+                    baseline_fit,
+                    baseline["pose"],  # type: ignore[arg-type]
+                    [(stage, changed_fit[name])],
+                    mount_xy,
+                    sign,
+                    candidate_offset,
+                ),
                 candidate_offset,
             )
             for candidate_offset in np.arange(offset - 5.0, offset + 5.001, 0.25)
@@ -536,6 +727,8 @@ def _candidate(
             "offset_hessian_m2_per_deg2": [[curvature]],
             "offset_hessian_eigenvalues_m2_per_deg2": [curvature],
             "offset_uncertainty_deg": uncertainty,
+            "offset_uncertainty_method": OFFSET_UNCERTAINTY_METHOD,
+            "residual_retained_fraction": RESIDUAL_RETAINED_FRACTION,
         },
     }
 
@@ -568,7 +761,8 @@ def fit_capture(value: object, *, source_sha256: str | None = None) -> dict[str,
 
 
 def run(input_path: Path, output_path: Path) -> dict[str, object]:
-    payload = input_path.read_bytes()
+    with input_path.open("rb") as source:
+        payload = source.read(MAX_INPUT_BYTES + 1)
     _require(len(payload) <= MAX_INPUT_BYTES, "capture exceeds the input byte limit")
     document = parse_document(payload, str(input_path))
     result = fit_capture(document, source_sha256=hashlib.sha256(payload).hexdigest())

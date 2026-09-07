@@ -23,10 +23,12 @@ r_0 = R(sign × delta_yaw) × r_i
          + (R(delta_yaw) - I) × mount)
 ```
 
-The fitter evaluates both signs across the full offset circle, then refines the best offset at 0.1 degree. It scores only the transform predicted by encoder pose and mount. A trimmed symmetric nearest-point residual handles outliers; it does not run free ICP. The first eight revolutions fit the candidate and the final two score it independently.
+The fitter evaluates both signs across the full offset circle, then refines the best offset at 0.1 degree. It scores only the transform predicted by encoder pose and mount. Each fit and held-out set is median-aggregated into 360 raw-angle bins. Adjacent returns form local segments only when their angle and range are continuous. A trimmed symmetric point-to-segment residual retains the closest 80 percent of bidirectional distances on supported surfaces. When any stage lacks enough local segments, the scorer preserves one complete revolution from every stage and uses the nearest-point fallback for sparse reflectors. It does not run free ICP. The first eight revolutions fit the candidate and the final two score it independently.
+
+`fit_rms_m` and `held_out_rms_m` report that retained residual. `offset_uncertainty_deg` uses the local score-curvature ratio recorded as `offset_uncertainty_method: "local_curvature_ratio"`; it is an objective-shape diagnostic, not a statistical confidence interval or measured calibration accuracy. Field review remains necessary before any setting is accepted.
 
 ## Gates
 
-The tool refuses missing motion, unchanged encoder values, sparse points, near-collinear scan geometry, stale encoder-to-revolution timing, drift outside the stage bound, zero odometry quality, poor fit or held-out residual, broad offset uncertainty, a competing sign or offset basin, and incompatible forward and yaw offsets. Scan angles must be in the RPLIDAR 0 through 360 degree range. Invalid or out-of-range raw returns are discarded before fitting.
+The tool refuses missing motion, unchanged encoder values, sparse fit or held-out points, near-collinear scan geometry, stale encoder-to-revolution timing, drift outside the stage bound, zero odometry quality, poor fit or held-out residual, broad offset uncertainty, a competing sign or offset basin, and incompatible forward and yaw offsets. Scan angles must be in the RPLIDAR 0 through 360 degree range. Invalid or out-of-range raw returns are discarded before fitting.
 
 The synthetic tests cover arbitrary offsets with both signs, the raw-to-body inverse and mount arc, a single-wall ambiguity, bad encoder pose, zero motion, and create-only provenance output. A physical capture remains subject to separate review before any setting reaches the robot.
