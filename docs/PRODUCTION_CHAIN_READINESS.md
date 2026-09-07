@@ -1,38 +1,43 @@
 # Sweep production-chain readiness
 
-At the 14:35 UTC checkpoint on 2026-09-07, the first physical supervised
-hover attempt has failed. The aircraft lifted and hovered at about 1.1 m, but
-Sweep lost Virtual Stick authority before reaching the 1.8 m target. The operator
-landed it with the controller. The phone subsequently reported landed at 0.0 m;
-network stop is latched. The session arm flag remains true. Another flight requires
-fresh local readiness and a supervised test of the repaired authority transition.
+At the 15:21 UTC checkpoint on 2026-09-07, neither physical flight nor wheel
+acceptance has passed. The first supervised hover failed during the Virtual Stick
+ownership transition; the operator landed with the controller. A repaired phone
+build is installed, but a second flight test has not occurred.
 
-The composed service remains live on loopback port 18794 under
-`sweep-field-20260907-v1`; the public `/field/` route uses that service. The older
-observer process remains on port 18793 for rollback. Neither service was restarted.
-At 14:29 UTC the phone received supervised APK `eb137e73`, SHA-256
-`b81e3422ac877436773f15bbc0f6de4345d1a3bf08070060957c674ea7af9c7d`,
-verified from the installed package. It rejoined at epoch 4 with stop preserved.
-The local control and RC-presence switches reset, video is connecting, and current
-local height is unavailable. A second physical flight test has not occurred.
+The console now points to session `sweep-field-20260907-v2` through `/field-v2/`,
+served on loopback port 18795 by `sweep-supervised-relay-v2`. Its source is the
+previous live release plus the reviewed replay-deadline fix. Authenticated state
+reports `armed: false` and no selected devices. Public console assets and bootstrap
+match the staged artifacts. The previous v1 relay remains on 18794 under `/field/`,
+with the older observer on 18793 for rollback.
 
-The preceding APK `296cc180` height-polling fix passed a 30-second stationary
-check: all 30 samples reported
-0.0 m with effective ages from -192 to 183 ms, within the configured clock-skew and
-freshness bounds. This check supplies height evidence only.
+The phone received APK `c386f4cb`, SHA-256
+`88bdd5827734e90fb82fd21617d9ee0d1b898e0d9dab0b8f8e5ef56a4d972e0d`,
+verified against the installed package. It includes stationary height polling,
+pending SDK-authority handling, and local supervised gimbal pitch controls.
+The combined source passed 184 core, 51 bridge-node, and 39 app tests. The phone joined v2 at epoch 1 with arming off. Fresh physical readiness
+and the grounded gimbal check remain pending.
 
-World navigation, wheel motion, and mapping acceptance remain pending. Ohmni 11
-is unavailable. Ohmni 12 became unreachable at about 14:29 UTC; ADB reconnection
-was refused. Its last inspection found the vendor owner and camera publisher
-running, while the Sweep runtime had exited after the relay interruption. Its
-owner encoder patch has not been installed. A private handback capture preserves
-its original vendor source, metadata, and
-recorded Sweep changes. The first installer attempt failed because ADB could not
-write into the root-owned staging directory, before vendor source mutation.
-[#300](https://github.com/worldofhacks/sweep/pull/300) now transfers the reviewed
-payloads through the root shell and verifies their bytes and permissions. Its
-repair passed 78 adapter tests and an independent run of all 7 installer tests;
-application to the robot and the 60-second encoder qualification remain pending.
+The earlier APK `296cc180` height fix passed a 30-second stationary check:
+all 30 samples reported 0.0 m with effective ages from -192 to 183 ms, within
+the clock-skew and freshness bounds. This supplies height evidence only.
+
+Ohmni 12 is unavailable; the operator returned to Ohmni 11. Before modification,
+Ohmni 11's vendor source, metadata, process state, and Sweep inventory were saved.
+A private archive preserves 23 source/configuration files, each checked against
+its recorded hash. The encoder installer then verified the patched source,
+sampler, original backup, permissions, and SELinux context without restarting
+the vendor process.
+
+After the operator's normal reboot, the vendor source on disk had reverted to
+its original hash. The sampler module remained, but its socket refused the
+qualification connection; zero encoder pairs were accepted. A single vendor
+native process was present. Sweep runtime and camera publisher remain stopped.
+The vendor code provides a plugin directory outside extracted assets; an owner
+plugin is being prepared and reviewed. Boot persistence and encoder qualification
+are unresolved. Each robot has its
+own backup and change record; no wheel command has been issued.
 
 ## Observed field behavior
 
@@ -48,11 +53,11 @@ the requested takeoff/hold/land sequence. The bounded command record is
 A separate full-history request after the flight failure exposed a relay defect:
 replay scanned the roughly 415 MB audit log under its storage lock without checking
 the live replay deadline during the scan. Phone heartbeats and reconnects stalled.
-The phone recovered at connection epoch 3 before the later app update. A reviewed
-source fix in [#302](https://github.com/worldofhacks/sweep/pull/302) checks the deadline
-while reading and validating each record. Its main-based head `bc80cf8d` passed
-190 audit, rollback, and session tests. Deployment and its recovery check remain
-pending. Avoid the full-history endpoint on this live process.
+The phone recovered at connection epoch 3 before later app updates. The fix in
+[#302](https://github.com/worldofhacks/sweep/pull/302) checks the deadline while
+reading and validating each record; its main-based head `bc80cf8d` passed 190
+audit, rollback, and session tests. It is now deployed in v2. Large-log recovery
+remains unqualified, and the older v1 process still has the defect.
 
 At 13:58 UTC, a landed camera check saved 20 D-01 frames at 1280×720, with 18
 distinct image hashes. No tag36h11 ID decoded. The floor tags were visible at a
@@ -123,11 +128,11 @@ selection. The command record and screenshots remain valid browser integration
 evidence; the driver run is not reported as a wholly passing harness. It provides
 no physical flight evidence.
 
-The owner-side encoder sampler in #298 has not been installed. It waits for
-vendor servo initialization before polling and withdraws an existing stream when
-reinitialization begins. Restarting the vendor process enables wheel torque and
-initializes the neck, so activation requires a supervised normal robot reboot. A
-60-second uninterrupted stationary recording must pass before ground motion.
+The owner-side encoder sampler in #298 was installed on Ohmni 11, but the
+normal reboot restored the original vendor source and left the sampler inactive.
+The startup path is under investigation. The sampler must wait for completed
+servo initialization and withdraw its stream during reinitialization. A 60-second
+uninterrupted stationary recording must pass before ground motion.
 
 The lidar-frame fix in #295 prevents a second rotation of scans that already use
 body-relative angles. The operator estimates Ohmni 11's sensor is about 24 inches
@@ -183,7 +188,7 @@ The stationary-height polling fix is published as [#299](https://github.com/worl
 stacked on #297. Its head `1d87e3dce6aecf5c6d813ece33effe8dc417c8f4` passed all five
 CI jobs at the 14:13 UTC check; local validation passed 46 bridge-node tests and 39
 app tests. The Virtual Stick transition repair is published in [#301](https://github.com/worldofhacks/sweep/pull/301),
-head `183725070f24d080c38067afe9cedcbf8132e8f7`. It waits for confirmed SDK
+authority-only head `faf25bb6ae7667bf26360c2593a7c71c914451ba`. It waits for confirmed SDK
 control ownership before starting the supervised climb and handles timeout,
 cancellation, and late callbacks. Local source validation passed 184 core, 46
 bridge-node, and 39 app tests. The installed APK includes it; hardware verification
