@@ -2,6 +2,7 @@ package org.worldofhacks.sweep.bridge.node
 
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import java.io.File
 import kotlin.math.abs
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -13,10 +14,12 @@ import org.worldofhacks.sweep.bridge.core.frames.AcknowledgementFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusFrame
+import org.worldofhacks.sweep.bridge.core.frames.ObservationSubmission
 import org.worldofhacks.sweep.bridge.core.frames.PhoneThermalState
 import org.worldofhacks.sweep.bridge.core.frames.TelemetryFrame
 import org.worldofhacks.sweep.bridge.core.frames.VideoPublishState
 import org.worldofhacks.sweep.bridge.core.json.JsonBool
+import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonInt
 import org.worldofhacks.sweep.bridge.core.json.JsonNull
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
@@ -117,6 +120,35 @@ class RelayLinkTest {
 
     private fun StubRelay.acks(commandId: String): List<String> =
         frames("acknowledgement") { it.str("command_id") == commandId }.map { it.str("status") }
+
+    @Test
+    fun `configured telemetry reaches the socket as a source scoped observation without capture time`() {
+        StubRelay(key).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            val configured = config(stub).copy(observationSource = ObservationSourceConfig("dji-telemetry", "dji_enu", "phone_snapshot_wall_ms"))
+            RelayLink(configured, aircraft, aircraft, phone, timing = timing).use { link ->
+                link.start()
+                val wire = stub.awaitFrame("observation")
+                val parsed = ObservationSubmission.parse(wire).toEvent()
+                assertEquals(wire, parsed)
+                assertEquals(JsonString("aircraft"), parsed["node_type"])
+                assertEquals(JsonString("dji_enu"), parsed["frame"])
+                assertEquals(JsonString("dji-telemetry"), parsed["source_id"])
+                assertEquals(JsonNull, parsed["t_capture"])
+                assertEquals(JsonNull, parsed["clock_mapping_id"])
+                assertFalse("t_ingest" in parsed.keys)
+                val payload = parsed["payload"] as JsonObject
+                assertEquals(JsonString("telemetry"), payload["kind"])
+                assertEquals(JsonString("dji_enu"), (payload["velocity"] as JsonObject)["frame"])
+                assertEquals(1, stub.frames("auth").size)
+                assertTrue(stub.frames("telemetry").isNotEmpty())
+                File("build/interop/phone-observation.json").apply {
+                    parentFile.mkdirs()
+                    writeText(Json.canonical(wire))
+                }
+            }
+        }
+    }
 
     /**
      * The link's clock, frozen until the test steps it: the watchdog and admission read it,

@@ -68,6 +68,12 @@ jobs:
       # Pure-JVM modules only; the Android module is skipped by settings.gradle.kts when no SDK
       # location resolves, so no Android SDK is installed here.
       - run: ./gradlew --no-daemon :bridge-core:test :bench:test :bridge-node:test :bridge-publish:test
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv run python -m tools.check_phone_observation adapters/dji_mini3/pilot-app/bridge-node/build/interop/phone-observation.json
+        working-directory: .
 
   android-unit:
     name: android-unit

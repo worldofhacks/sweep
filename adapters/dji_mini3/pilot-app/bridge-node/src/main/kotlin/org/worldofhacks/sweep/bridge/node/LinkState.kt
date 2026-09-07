@@ -19,6 +19,7 @@ data class NodeConfig(
     val adapterId: String,
     val capabilities: List<String>,
     val localizationPins: LocalizationPins? = null,
+    val observationSource: ObservationSourceConfig? = null,
 ) {
     init {
         require(relayUrl.startsWith("ws://") || relayUrl.startsWith("wss://")) { "relay URL must start with ws:// or wss://" }
