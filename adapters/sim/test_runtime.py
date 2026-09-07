@@ -113,11 +113,11 @@ def test_c1_four_aircraft_simulator_fully_joins_the_registry(tmp_path: Path) -> 
     assert all(drone["membership"] == "ready" for drone in state["drones"])
 
 
-def test_c1_rejects_an_oversized_custom_initial_snapshot(tmp_path: Path) -> None:
+def test_simulator_rejects_a_custom_snapshot_above_its_configured_count(tmp_path: Path) -> None:
     settings = RelaySettings(relay_token=b"r" * 32, log_dir=tmp_path)
 
-    with pytest.raises(ValueError, match="C1 simulator supports at most 4 aircraft"):
-        create_m14_sim_app(settings, initial_snapshot=_initial_snapshot(1_000, 5))
+    with pytest.raises(ValueError, match="SWEEP_SIM_AIRCRAFT_COUNT"):
+        create_m14_sim_app(settings, initial_snapshot=_initial_snapshot(1_000, 3))
 
 
 def test_failed_initial_join_closes_ingress_without_registering_partial_session(

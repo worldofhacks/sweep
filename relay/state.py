@@ -33,23 +33,12 @@ _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
 _FORMATIONS = frozenset(FORMATION_NAMES)
 
 
-def aircraft_limit_for_profile(
-    capability_profile: CapabilityProfile,
-    *,
-    physical_aircraft_limit: int = DEFAULT_PHYSICAL_AIRCRAFT,
-) -> int:
-    """Return the registry capacity advertised by one capability profile."""
-    if (
-        type(physical_aircraft_limit) is not int
-        or not 1 <= physical_aircraft_limit <= MAX_PHYSICAL_AIRCRAFT
-    ):
-        raise ValueError(
-            f"physical_aircraft_limit must be an integer from 1 through {MAX_PHYSICAL_AIRCRAFT}"
-        )
+def aircraft_limit_for_profile(capability_profile: CapabilityProfile) -> int:
+    """Return the default registry capacity for one capability profile."""
     return (
         MAX_SIMULATED_AIRCRAFT
         if capability_profile.supports(IntentName.FORMATION_SET)
-        else physical_aircraft_limit
+        else DEFAULT_PHYSICAL_AIRCRAFT
     )
 
 
@@ -138,7 +127,7 @@ class FleetRegistry:
         media_evidence: MediaEvidenceProvider | None = None,
         membership_history_limit: int = DEFAULT_MEMBERSHIP_HISTORY_LIMIT,
         node_types: Mapping[int, NodeType] | None = None,
-        physical_aircraft_limit: int = DEFAULT_PHYSICAL_AIRCRAFT,
+        aircraft_limit: int | None = None,
     ) -> None:
         if telemetry_freshness_ms <= 0:
             raise ValueError("telemetry_freshness_ms must be positive")
@@ -153,9 +142,14 @@ class FleetRegistry:
             )
         self.telemetry_freshness_ms = telemetry_freshness_ms
         self.capability_profile = capability_profile
-        self.aircraft_limit = aircraft_limit_for_profile(
-            capability_profile, physical_aircraft_limit=physical_aircraft_limit
-        )
+        if aircraft_limit is None:
+            self.aircraft_limit = aircraft_limit_for_profile(capability_profile)
+        elif type(aircraft_limit) is int and 1 <= aircraft_limit <= MAX_SIMULATED_AIRCRAFT:
+            self.aircraft_limit = aircraft_limit
+        else:
+            raise ValueError(
+                f"aircraft_limit must be an integer from 1 through {MAX_SIMULATED_AIRCRAFT}"
+            )
         self._media_evidence = media_evidence
         self.membership_history_limit = membership_history_limit
         configured_node_types = {} if node_types is None else dict(node_types)

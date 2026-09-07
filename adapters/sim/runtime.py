@@ -35,7 +35,6 @@ from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import IntentName
 from relay.session import Clock, EventIdFactory, RelaySession
 from relay.settings import CapabilityRelease, RelaySettings
-from relay.state import aircraft_limit_for_profile
 
 
 class SimBridgeFactory:
@@ -457,12 +456,8 @@ def create_m14_sim_app(
     starting = initial_snapshot or _initial_snapshot(
         now, active_settings.effective_sim_aircraft_count
     )
-    profile_limit = aircraft_limit_for_profile(active_settings.capability_profile)
-    if len(starting.aircraft) > profile_limit:
-        raise ValueError(
-            f"the {active_settings.capability_release.value.upper()} simulator supports at most "
-            f"{profile_limit} aircraft"
-        )
+    if len(starting.aircraft) > active_settings.effective_sim_aircraft_count:
+        raise ValueError("the simulator initial snapshot exceeds SWEEP_SIM_AIRCRAFT_COUNT")
     if (
         active_settings.capability_profile.supports(IntentName.FORMATION_SET)
         and not 4 <= len(starting.aircraft) <= 32
