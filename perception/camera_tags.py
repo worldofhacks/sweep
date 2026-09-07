@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+from collections.abc import Mapping
 from pathlib import Path
 
 import cv2
@@ -42,7 +43,7 @@ class CameraTagDetector:
         calibration: dict[str, object],
         *,
         camera_serial: str,
-        tag_sizes_m: dict[int, float],
+        tag_sizes_m: Mapping[int, float],
         allow_synthetic: bool = False,
     ):
         version = calibration.get("schema_version")
@@ -131,7 +132,7 @@ class CameraTagDetector:
         ):
             raise ValueError("invalid camera intrinsics")
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
-        if not isinstance(tag_sizes_m, dict) or not 1 <= len(tag_sizes_m) <= MAX_TAGS_PER_FRAME:
+        if not isinstance(tag_sizes_m, Mapping) or not 1 <= len(tag_sizes_m) <= MAX_TAGS_PER_FRAME:
             raise ValueError("declare between one and 64 tag sizes")
         self.tag_sizes = {}
         for identifier, size_m in tag_sizes_m.items():

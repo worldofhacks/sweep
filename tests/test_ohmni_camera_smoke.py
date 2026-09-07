@@ -125,6 +125,51 @@ def _smoke_config(**changes):
     return SmokeConfig(**values)
 
 
+def test_camera_smoke_configuration_copies_tag_sizes_and_bounds_identifiers():
+    sizes = {7: 0.3}
+    config = _smoke_config(tag_sizes_m=sizes)
+    sizes[7] = 0.4
+
+    assert config.tag_sizes_m[7] == 0.3
+    with pytest.raises(TypeError):
+        config.tag_sizes_m[7] = 0.4
+    for changes in (
+        {"session": "x" * 513},
+        {"source_id": "bad\nsource"},
+        {"camera_serial": "x" * 129},
+        {"camera_frame": "world"},
+        {"connection_epoch": 2**63},
+    ):
+        with pytest.raises(ValueError):
+            _smoke_config(**changes)
+
+
+def test_camera_smoke_quaternion_is_stable_at_zero_and_half_turn():
+    from tools.ohmni_camera_smoke import _quaternion
+
+    assert _quaternion(np.eye(3)) == pytest.approx((0, 0, 0, 1))
+    half_turn = np.diag((-1.0, 1.0, -1.0))
+    qx, qy, qz, qw = _quaternion(half_turn)
+
+    assert (qx, qz, qw) == pytest.approx((0, 0, 0), abs=1e-6)
+    assert abs(qy) == pytest.approx(1.0)
+    with pytest.raises(ValueError, match="rotation"):
+        _quaternion(np.diag((2.0, 1.0, 1.0)))
+
+
+def test_camera_smoke_hashes_the_raw_and_receipt_index_identities():
+    from tools.ohmni_camera_smoke import _run_hash
+
+    first = {
+        "run_id": "run",
+        "recording": {"frames_sha256": "a" * 64, "frame_index_sha256": "b" * 64},
+    }
+    second = copy.deepcopy(first)
+    second["recording"]["frame_index_sha256"] = "c" * 64
+
+    assert _run_hash(first) != _run_hash(second)
+
+
 @pytest.mark.parametrize("model", ["pinhole", "fisheye"])
 def test_camera_smoke_writes_canonical_local_submissions_and_diagnostics(
     tmp_path, monkeypatch, model
