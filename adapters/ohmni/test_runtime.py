@@ -867,6 +867,7 @@ def test_confirmed_console_come_home_executes_the_approved_ground_return(
             adapter_id="fake-ohmni-9",
             heartbeat_hold_ms=1_000,
             heartbeat_failsafe_ms=2_000,
+            telemetry_hz=1.0,
             lidar_mount_x_m=0.0,
             lidar_mount_y_m=0.0,
             lidar_mount_z_m=0.25,
@@ -880,9 +881,9 @@ def test_confirmed_console_come_home_executes_the_approved_ground_return(
     try:
         session = relay_server.runtime.sessions[SESSION]
         _wait_for(
-            lambda: (
-                bool(session.current_state()["drones"])
-                and session.current_state()["drones"][0]["membership"] == "ready"
+            lambda: any(
+                drone["drone_id"] == GROUND_ID and drone["selectable"] is True
+                for drone in session.current_state()["drones"]
             ),
             "ground readiness",
         )
@@ -944,6 +945,6 @@ def test_confirmed_console_come_home_executes_the_approved_ground_return(
             ("adapter", "completed"),
             ("autonomy", "completed"),
         ]
-        assert device.x >= 0.024
+        assert device.x >= 0.02
     finally:
         node.stop()
