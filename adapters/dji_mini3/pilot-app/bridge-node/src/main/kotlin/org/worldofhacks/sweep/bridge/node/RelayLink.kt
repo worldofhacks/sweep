@@ -424,19 +424,16 @@ class RelayLink(
             log.log("dropping navigation route authorization without enabled navigation setup")
             return
         }
-        val pins = config.localizationPins ?: run {
-            log.log("dropping navigation route authorization without localization pins")
-            return
-        }
         val current = _state.value
         val relayNow = admission.relayNowMs()
         val identityMatches = navigation.enabled && current.authenticated && current.joined &&
-            authorization.session == config.session && authorization.droneId == config.droneId &&
-            authorization.connectionEpoch == current.connectionEpoch && authorization.navigationConfigId == navigation.navigationConfigId &&
-            authorization.mapId == pins.mapId && authorization.geometryId == pins.geometryId &&
-            authorization.cameraCalibrationId == pins.cameraCalibrationId && authorization.bodyExtrinsicsId == pins.bodyExtrinsicsId
+            authorization.session == config.session && authorization.deviceId == config.droneId &&
+            authorization.connectionEpoch == current.connectionEpoch && current.relayOffsetMs != null &&
+            (current.authRoundTripMs?.div(2) ?: Long.MAX_VALUE) <= authorization.maxClockErrorMs &&
+            authorization.clockLeaseId == navigation.clockLeaseId && authorization.expiresAtMs <= navigation.clockLeaseExpiresAtMs &&
+            relayNow < navigation.clockLeaseExpiresAtMs && navigationPinsMatch(authorization, navigation)
         if (!identityMatches || !effectiveAuthority(aircraft.snapshot.value) || !authorization.verifies(config.key) ||
-            authorization.seq <= lastNavigationAuthorizationSeq || authorization.t > relayNow + RELAY_EVENT_FUTURE_SKEW_MS ||
+            authorization.seq <= lastNavigationAuthorizationSeq || !timeWithinClockBudget(authorization.t, relayNow, authorization.trackingTimeoutMs, authorization.maxClockErrorMs) ||
             authorization.expiresAtMs <= relayNow || authorization.expiresAtMs - authorization.t > navigation.maxAuthorizationLifetimeMs
         ) {
             log.log("dropping invalid, stale, or replayed navigation route authorization")
@@ -453,10 +450,6 @@ class RelayLink(
             log.log("dropping navigation pose without enabled navigation setup")
             return
         }
-        val pins = config.localizationPins ?: run {
-            log.log("dropping navigation pose without localization pins")
-            return
-        }
         val authorization = _state.value.navigationAuthorization ?: run {
             log.log("dropping navigation pose without route authorization")
             return
@@ -468,17 +461,17 @@ class RelayLink(
         val fixTime = pose.fixTimeMs
         val uncertainty = pose.positionUncertaintyMm
         val identityMatches = navigation.enabled && current.authenticated && current.joined &&
-            pose.session == config.session && pose.droneId == config.droneId && pose.connectionEpoch == current.connectionEpoch &&
+            pose.session == config.session && pose.deviceId == config.droneId && pose.connectionEpoch == current.connectionEpoch &&
             pose.commandId == authorization.commandId && pose.routeId == authorization.routeId &&
-            pose.navigationConfigId == navigation.navigationConfigId && pose.mapId == pins.mapId && pose.geometryId == pins.geometryId &&
-            pose.cameraCalibrationId == pins.cameraCalibrationId && pose.bodyExtrinsicsId == pins.bodyExtrinsicsId
+            poseMatchesAuthorization(pose, authorization)
         val observationFresh = !ready || (poseTime != null && fixTime != null && uncertainty != null &&
             poseTime <= relayNow + RELAY_EVENT_FUTURE_SKEW_MS && fixTime <= relayNow + RELAY_EVENT_FUTURE_SKEW_MS &&
-            relayNow - poseTime <= navigation.poseFreshnessMs && relayNow - fixTime <= navigation.poseFreshnessMs &&
+            timeWithinClockBudget(poseTime, relayNow, authorization.poseFreshnessMs, authorization.maxClockErrorMs) &&
+            timeWithinClockBudget(fixTime, relayNow, authorization.poseFreshnessMs, authorization.maxClockErrorMs) &&
             uncertainty <= authorization.maxPositionUncertaintyMm)
         if (!identityMatches || !effectiveAuthority(aircraft.snapshot.value) || !pose.verifies(config.key) ||
             pose.seq <= lastNavigationPoseSeq || pose.seq <= authorization.seq || pose.t > relayNow + RELAY_EVENT_FUTURE_SKEW_MS ||
-            relayNow - pose.t > navigation.poseFreshnessMs || authorization.expiresAtMs <= relayNow || !observationFresh
+            !timeWithinClockBudget(pose.t, relayNow, authorization.poseFreshnessMs, authorization.maxClockErrorMs) || authorization.expiresAtMs <= relayNow || !observationFresh
         ) {
             log.log("dropping invalid, stale, or replayed navigation pose")
             return
@@ -486,8 +479,8 @@ class RelayLink(
         lastNavigationPoseSeq = pose.seq
         val freshUntil = if (ready) {
             clock.nowMs() + minOf(
-                navigation.poseFreshnessMs - (relayNow - poseTime!!),
-                navigation.poseFreshnessMs - (relayNow - fixTime!!),
+                authorization.poseFreshnessMs - maxOf(relayNow - poseTime!!, 0),
+                authorization.poseFreshnessMs - maxOf(relayNow - fixTime!!, 0),
                 authorization.expiresAtMs - relayNow,
             )
         } else {
@@ -495,6 +488,33 @@ class RelayLink(
         }
         update { it.copy(navigationPose = pose, navigationPoseFreshUntilMs = freshUntil) }
     }
+
+
+    private fun navigationPinsMatch(
+        authorization: NavigationRouteAuthorization,
+        navigation: NavigationAdmissionConfig,
+    ): Boolean =
+        authorization.navigationConfigId == navigation.navigationConfigId &&
+            authorization.navigationConfigSha256 == navigation.navigationConfigSha256 &&
+            authorization.mapVersion == navigation.mapVersion && authorization.mapSha256 == navigation.mapSha256 &&
+            authorization.geometrySha256 == navigation.geometrySha256 &&
+            authorization.cameraCalibrationSha256 == navigation.cameraCalibrationSha256 &&
+            authorization.bodyExtrinsicsSha256 == navigation.bodyExtrinsicsSha256 &&
+            authorization.worldTransformSha256 == navigation.worldTransformSha256 &&
+            authorization.controlSourceIds == navigation.controlSourceIds
+
+    private fun poseMatchesAuthorization(pose: NavigationPose, authorization: NavigationRouteAuthorization): Boolean =
+        pose.commandId == authorization.commandId && pose.routeId == authorization.routeId &&
+            pose.connectionEpoch == authorization.connectionEpoch && pose.clockLeaseId == authorization.clockLeaseId &&
+            pose.navigationConfigId == authorization.navigationConfigId &&
+            pose.navigationConfigSha256 == authorization.navigationConfigSha256 && pose.mapVersion == authorization.mapVersion &&
+            pose.mapSha256 == authorization.mapSha256 && pose.geometrySha256 == authorization.geometrySha256 &&
+            pose.cameraCalibrationSha256 == authorization.cameraCalibrationSha256 &&
+            pose.bodyExtrinsicsSha256 == authorization.bodyExtrinsicsSha256 &&
+            pose.worldTransformSha256 == authorization.worldTransformSha256 && pose.controlSourceIds == authorization.controlSourceIds
+
+    private fun timeWithinClockBudget(timeMs: Long, relayNowMs: Long, freshnessMs: Long, errorMs: Long): Boolean =
+        timeMs <= relayNowMs + errorMs && relayNowMs - timeMs <= freshnessMs + errorMs
 
     private fun onAuthAccepted(json: JsonObject, receivedAtMs: Long) {
         val accepted = parseOrLog("auth.accepted") { AuthAccepted.parse(json) } ?: return
@@ -918,26 +938,23 @@ class RelayLink(
 
     private fun admitNavigationGoto(command: CommandFrame, goto: CommandArgs.Goto): Boolean {
         val navigation = navigationAdmission ?: return false
-        val pins = config.localizationPins ?: return false
         val authorization = _state.value.navigationAuthorization ?: return false
         val pose = _state.value.navigationPose ?: return false
         val now = clock.nowMs()
         val relayNow = admission.relayNowMs()
         return navigation.enabled && effectiveAuthority(aircraft.snapshot.value) &&
             authorization.verifies(config.key) && pose.verifies(config.key) &&
-            authorization.session == config.session && authorization.droneId == config.droneId &&
-            authorization.connectionEpoch == _state.value.connectionEpoch &&
-            authorization.navigationConfigId == navigation.navigationConfigId &&
-            authorization.mapId == pins.mapId && authorization.geometryId == pins.geometryId &&
-            authorization.cameraCalibrationId == pins.cameraCalibrationId && authorization.bodyExtrinsicsId == pins.bodyExtrinsicsId &&
+            authorization.session == config.session && authorization.deviceId == config.droneId &&
+            authorization.connectionEpoch == _state.value.connectionEpoch && _state.value.relayOffsetMs != null &&
+            (_state.value.authRoundTripMs?.div(2) ?: Long.MAX_VALUE) <= authorization.maxClockErrorMs &&
+            authorization.clockLeaseId == navigation.clockLeaseId && authorization.expiresAtMs <= navigation.clockLeaseExpiresAtMs &&
+            relayNow < navigation.clockLeaseExpiresAtMs && navigationPinsMatch(authorization, navigation) &&
             authorization.commandId == command.commandId && authorization.routeId == goto.navigationRouteId &&
             authorization.expiresAtMs > relayNow &&
-            goto.xMm == authorization.targetXMm && goto.yMm == authorization.targetYMm && goto.zMm == authorization.targetZMm &&
+            listOf(goto.xMm, goto.yMm, goto.zMm) == authorization.target() &&
             goto.speedMmS <= authorization.maxSpeedMmS && pose.status == NavigationPose.Status.READY &&
             pose.commandId == authorization.commandId && pose.routeId == authorization.routeId &&
-            pose.connectionEpoch == authorization.connectionEpoch && pose.navigationConfigId == authorization.navigationConfigId &&
-            pose.mapId == authorization.mapId && pose.geometryId == authorization.geometryId &&
-            pose.cameraCalibrationId == authorization.cameraCalibrationId && pose.bodyExtrinsicsId == authorization.bodyExtrinsicsId &&
+            poseMatchesAuthorization(pose, authorization) &&
             _state.value.navigationPoseFreshUntilMs?.let { now < it } == true
     }
 

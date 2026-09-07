@@ -9,6 +9,7 @@ import org.worldofhacks.sweep.bridge.core.admission.FakeClock
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
 import org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization
+import org.worldofhacks.sweep.bridge.core.frames.NavigationSegment
 
 /**
  * The control loop against the kinematic fixture and a stepped clock: acknowledgement
@@ -38,7 +39,7 @@ class FlightControllerTest {
             get() = events.lastOrNull { it.first == "completed" || it.first == "failed" }
     }
 
-    private class Harness {
+    private class Harness(private val navigationLeaseExpiresAtMs: Long = Long.MAX_VALUE) {
         val clock = FakeClock(1_000)
         val model = FakeFlightModel()
         val log = mutableListOf<String>()
@@ -55,10 +56,16 @@ class FlightControllerTest {
             yawMarginMs = 1_000,
             navigation = NavigationConfig(
                 navigationConfigId = "navigation-a",
-                mapId = "map-a",
-                geometryId = "geometry-a",
-                cameraCalibrationId = "camera-a",
-                bodyExtrinsicsId = "body-a",
+                navigationConfigSha256 = "a".repeat(64),
+                mapVersion = "map-v1",
+                mapSha256 = "a".repeat(64),
+                geometrySha256 = "a".repeat(64),
+                cameraCalibrationSha256 = "a".repeat(64),
+                bodyExtrinsicsSha256 = "a".repeat(64),
+                worldTransformSha256 = "a".repeat(64),
+                controlSourceIds = listOf("tag-source"),
+                clockLeaseId = "lease-1",
+                clockLeaseExpiresAtMs = navigationLeaseExpiresAtMs,
                 poseFreshnessMs = 500,
                 authorizationLifetimeMs = 3_000,
                 lossLandAfterMs = 300,
@@ -142,56 +149,25 @@ class FlightControllerTest {
         ) {
             val now = clock.nowMs()
             val authorization = NavigationRouteAuthorization(
-                t = now,
-                expiresAtMs = expiresAtMs,
-                eventId = "route-event",
-                session = "session-a",
-                droneId = 1,
-                connectionEpoch = 1,
-                commandId = commandId,
-                routeId = routeId,
-                seq = 1,
-                navigationConfigId = "navigation-a",
-                mapId = "map-a",
-                geometryId = "geometry-a",
-                cameraCalibrationId = "camera-a",
-                bodyExtrinsicsId = "body-a",
-                startXMm = 0,
-                startYMm = 0,
-                startZMm = 1_200,
-                targetXMm = 0,
-                targetYMm = 2_000,
-                targetZMm = 1_200,
-                maxSpeedMmS = 300,
-                horizontalToleranceMm = 200,
-                verticalToleranceMm = 200,
-                maxPositionUncertaintyMm = 100,
-                tubeRadiusMm = 300,
-                signature = "0".repeat(64),
+                t = now, expiresAtMs = expiresAtMs, eventId = "route-event", session = "session-a", deviceId = 1,
+                connectionEpoch = 1, commandId = commandId, routeId = routeId, seq = 1,
+                positionFrame = NavigationRouteAuthorization.POSITION_FRAME, clockLeaseId = "lease-1", maxClockErrorMs = 25,
+                navigationConfigId = "navigation-a", navigationConfigSha256 = "a".repeat(64), mapVersion = "map-v1", mapSha256 = "a".repeat(64),
+                geometrySha256 = "a".repeat(64), cameraCalibrationSha256 = "a".repeat(64), bodyExtrinsicsSha256 = "a".repeat(64), worldTransformSha256 = "a".repeat(64),
+                controlSourceIds = listOf("tag-source"), segments = listOf(NavigationSegment(0, 0, 1_200, 0, 2_000, 1_200, 300)),
+                maxSpeedMmS = 300, maxAccelerationMmS2 = 300, maxDecelerationMmS2 = 300, maxPositionUncertaintyMm = 100, maxCrossTrackMm = 300,
+                arrivalHorizontalToleranceMm = 200, arrivalVerticalToleranceMm = 200, poseFreshnessMs = 500, trackingTimeoutMs = 3_000,
+                flightApproved = true, signature = "0".repeat(64),
             )
             val ready = poseStatus == NavigationPose.Status.READY
             val pose = NavigationPose(
-                t = now,
-                eventId = "pose-event",
-                session = "session-a",
-                droneId = 1,
-                connectionEpoch = 1,
-                commandId = commandId,
-                routeId = routeId,
-                seq = 2,
-                navigationConfigId = "navigation-a",
-                mapId = "map-a",
-                geometryId = "geometry-a",
-                cameraCalibrationId = "camera-a",
-                bodyExtrinsicsId = "body-a",
-                poseTimeMs = if (ready) now else null,
-                fixTimeMs = if (ready) now else null,
-                xMm = if (ready) xMm else null,
-                yMm = if (ready) yMm else null,
-                zMm = if (ready) zMm else null,
-                positionUncertaintyMm = if (ready) 50 else null,
-                status = poseStatus,
-                signature = "0".repeat(64),
+                t = now, eventId = "pose-event", session = "session-a", deviceId = 1, connectionEpoch = 1,
+                commandId = commandId, routeId = routeId, seq = 2, positionFrame = NavigationRouteAuthorization.POSITION_FRAME,
+                clockLeaseId = "lease-1", navigationConfigId = "navigation-a", navigationConfigSha256 = "a".repeat(64), mapVersion = "map-v1", mapSha256 = "a".repeat(64),
+                geometrySha256 = "a".repeat(64), cameraCalibrationSha256 = "a".repeat(64), bodyExtrinsicsSha256 = "a".repeat(64), worldTransformSha256 = "a".repeat(64),
+                controlSourceIds = listOf("tag-source"), poseTimeMs = if (ready) now else null, fixTimeMs = if (ready) now else null,
+                xMm = if (ready) xMm else null, yMm = if (ready) yMm else null, zMm = if (ready) zMm else null,
+                positionUncertaintyMm = if (ready) 50 else null, status = poseStatus, flightApproved = true, signature = "0".repeat(64),
             )
             controller.updateNavigation(NavigationEvidence(authorization, pose, freshUntilMs, relayOffsetMs = 0))
         }
@@ -322,6 +298,18 @@ class FlightControllerTest {
         val arrived = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
         assertEquals(listOf("executing", "completed"), arrived.statuses, arrived.events.toString())
         assertFalse(h.model.virtualStickEnabled)
+    }
+
+    @Test
+    fun `private clock lease ends route tracking without another relay frame`() {
+        val h = Harness(navigationLeaseExpiresAtMs = 1_250)
+        h.hovering()
+        h.join()
+        h.navigation(expiresAtMs = 2_500, freshUntilMs = 2_000)
+        val route = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        h.tick(4)
+        assertEquals("navigation_lost", route.terminal?.second, route.events.toString())
+        assertTrue(h.controller.status.phase != "navigating")
     }
 
     @Test
