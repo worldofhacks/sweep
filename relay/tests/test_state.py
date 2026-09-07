@@ -34,18 +34,35 @@ def test_registry_accepts_four_stable_ids_and_rejects_a_fifth() -> None:
     assert error.value.code == "fleet_capacity"
 
 
-def test_c2_simulator_registry_accepts_six_stable_ids_and_rejects_a_seventh() -> None:
+def test_c2_simulator_registry_accepts_thirty_two_stable_ids_and_rejects_another() -> None:
     registry = FleetRegistry(
         telemetry_freshness_ms=1_000,
         capability_profile=C2_CAPABILITY_PROFILE,
     )
-    for drone_id in range(1, 7):
+    for drone_id in range(1, 33):
         _join(registry, drone_id, f"join-{drone_id}")
 
-    assert registry.roster_version == 6
+    assert registry.roster_version == 32
     with pytest.raises(RegistryError) as error:
-        _join(registry, 7, "join-7")
+        _join(registry, 33, "join-33")
     assert error.value.code == "fleet_capacity"
+
+
+def test_configured_physical_registry_capacity_accepts_and_bounds_the_deployment() -> None:
+    registry = FleetRegistry(telemetry_freshness_ms=1_000, physical_aircraft_limit=5)
+
+    for drone_id in range(1, 6):
+        _join(registry, drone_id, f"join-{drone_id}")
+
+    with pytest.raises(RegistryError) as error:
+        _join(registry, 6, "join-6")
+    assert error.value.code == "fleet_capacity"
+
+
+@pytest.mark.parametrize("limit", [0, 33, True])
+def test_physical_registry_capacity_must_be_bounded_integer(limit: int) -> None:
+    with pytest.raises(ValueError, match="physical_aircraft_limit"):
+        FleetRegistry(telemetry_freshness_ms=1_000, physical_aircraft_limit=limit)
 
 
 def test_four_aircraft_can_disconnect_and_rejoin_in_one_session() -> None:

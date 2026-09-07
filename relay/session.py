@@ -65,6 +65,7 @@ from relay.media import MediaEvidenceProvider
 from relay.observation_ingress import ObservationConfiguration, ObservationIngress
 from relay.observations import ObservationError, ObservationSubmission
 from relay.state import (
+    DEFAULT_PHYSICAL_AIRCRAFT,
     MAX_MEMBERSHIP_HISTORY_LIMIT,
     MAX_PHYSICAL_GROUND,
     MAX_SIMULATED_AIRCRAFT,
@@ -298,6 +299,7 @@ class RelaySession:
         media_evidence: MediaEvidenceProvider | None = None,
         node_types: Mapping[int, NodeType] | None = None,
         observation_configuration: ObservationConfiguration | None = None,
+        physical_aircraft_limit: int = DEFAULT_PHYSICAL_AIRCRAFT,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
@@ -334,6 +336,7 @@ class RelaySession:
             media_evidence=media_evidence,
             membership_history_limit=limits.state_membership_history,
             node_types=node_types,
+            physical_aircraft_limit=physical_aircraft_limit,
         )
         self._audit_sampling = _AuditSampling()
         # Values are the last instant when the exact signed event could still pass

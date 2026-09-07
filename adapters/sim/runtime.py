@@ -465,9 +465,9 @@ def create_m14_sim_app(
         )
     if (
         active_settings.capability_profile.supports(IntentName.FORMATION_SET)
-        and not 4 <= len(starting.aircraft) <= 6
+        and not 4 <= len(starting.aircraft) <= 32
     ):
-        raise ValueError("the C2 simulator requires an initial fleet of 4 through 6 aircraft")
+        raise ValueError("the C2 simulator requires an initial fleet of 4 through 32 aircraft")
     safety = replace(
         _safety_config(),
         max_link_age_ms=active_settings.telemetry_freshness_ms,
@@ -549,8 +549,8 @@ class _LocalWatchdog:
 
 
 def _initial_snapshot(now_ms: int, count: int = 2) -> FleetSnapshot:
-    if type(count) is not int or not 1 <= count <= 6:
-        raise ValueError("simulator aircraft count must be an integer from 1 through 6")
+    if type(count) is not int or not 1 <= count <= 32:
+        raise ValueError("simulator aircraft count must be an integer from 1 through 32")
     aircraft = {
         drone_id: AircraftState(
             drone_id=drone_id,
