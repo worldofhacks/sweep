@@ -8,6 +8,7 @@ const BYTES = 2;
 const READ_COMMAND = 4;
 const POLL_INTERVAL_MS = 100;
 const REPLY_TIMEOUT_MS = 100;
+const DEFERRED_REQUEST_GAP_MS = 5;
 const MAX_CLIENTS = 4;
 const MAX_CLIENT_BUFFER_BYTES = 64 * 1024;
 
@@ -30,6 +31,10 @@ function PairedEncoderSampler(serial, socketPath, options) {
   this._serial = serial;
   this._directSendCustom = serial.sendCustom.bind(serial);
   this._deferredRequests = [];
+  this._draining = false;
+  this._deferredDrainTimer = null;
+  this._deferredDrainDone = [];
+  this._scheduleAfterDrainMs = null;
   this._socketPath = socketPath;
   this._clock = options.monotonicNs || monotonicNs;
   this._setTimeout = options.setTimeout || setTimeout;
@@ -51,7 +56,7 @@ function PairedEncoderSampler(serial, socketPath, options) {
 }
 
 PairedEncoderSampler.prototype.isActive = function () {
-  return this._active !== null;
+  return this._active !== null || this._draining;
 };
 
 PairedEncoderSampler.prototype.start = function () {
@@ -69,27 +74,29 @@ PairedEncoderSampler.prototype.stop = function (done) {
     return;
   }
   this._stopped = true;
+  this._scheduleAfterDrainMs = null;
   this._abortActive();
   if (this._timer) {
     this._clearTimeout(this._timer);
     this._timer = null;
   }
-  this._releaseBus();
-  this._serial.sendCustom = this._directSendCustom;
-  this._serial.removeListener('servo_response', this._onServoResponse);
-  this._serial.removeListener('close', this._onSerialClose);
-  const server = this._server;
-  this._server = null;
-  this._clients.forEach(function (client) { client.destroy(); });
-  this._clients = [];
-  if (!server) {
-    this._unlinkSocket();
-    if (done) done();
-    return;
-  }
-  server.close(() => {
-    this._unlinkSocket();
-    if (done) done();
+  this._releaseBus(() => {
+    this._serial.sendCustom = this._directSendCustom;
+    this._serial.removeListener('servo_response', this._onServoResponse);
+    this._serial.removeListener('close', this._onSerialClose);
+    const server = this._server;
+    this._server = null;
+    this._clients.forEach(function (client) { client.destroy(); });
+    this._clients = [];
+    if (!server) {
+      this._unlinkSocket();
+      if (done) done();
+      return;
+    }
+    server.close(() => {
+      this._unlinkSocket();
+      if (done) done();
+    });
   });
 };
 
@@ -128,7 +135,7 @@ PairedEncoderSampler.prototype._removeClient = function (client) {
 };
 
 PairedEncoderSampler.prototype._schedule = function (delayMs) {
-  if (this._stopped || this._failed || this._timer || this._active) return;
+  if (this._stopped || this._failed || this._timer || this._active || this._draining) return;
   this._timer = this._setTimeout(() => {
     this._timer = null;
     this._beginPoll();
@@ -140,12 +147,12 @@ PairedEncoderSampler.prototype.beginInitialization = function () {
   const poll = this._active;
   const wasQualified = this._qualified;
   this._qualified = false;
+  this._scheduleAfterDrainMs = null;
   this._abortActive();
   if (this._timer) {
     this._clearTimeout(this._timer);
     this._timer = null;
   }
-  this._releaseBus();
   if (wasQualified) {
     this._publish({
       v: 1,
@@ -154,17 +161,18 @@ PairedEncoderSampler.prototype.beginInitialization = function () {
       reason: 'serial_reinitializing',
     });
   }
+  this._releaseBus();
 };
 
 PairedEncoderSampler.prototype.activate = function () {
   if (this._stopped || this._failed || this._qualified || !this._serial.opened) return;
   this._qualified = true;
   this._unavailable = null;
-  this._schedule(0);
+  this._scheduleWhenDrainCompletes(0);
 };
 
 PairedEncoderSampler.prototype._beginPoll = function () {
-  if (this._stopped || this._failed || this._active) return;
+  if (this._stopped || this._failed || this._active || this._draining) return;
   if (!this._serial.opened) {
     this._schedule(this._pollIntervalMs);
     return;
@@ -185,17 +193,54 @@ PairedEncoderSampler.prototype._beginPoll = function () {
 
 PairedEncoderSampler.prototype._queueOrSend = function (sid, command, payload) {
   if (isDriveEncoderRequest(sid, command, payload)) return;
-  if (this._active) {
+  if (this._active || this._draining) {
     this._deferredRequests.push({ sid: sid, command: command, payload: Buffer.from(payload) });
     return;
   }
   this._directSendCustom(sid, command, payload);
 };
 
-PairedEncoderSampler.prototype._releaseBus = function () {
-  const deferred = this._deferredRequests;
-  this._deferredRequests = [];
-  deferred.forEach((request) => this._directSendCustom(request.sid, request.command, request.payload));
+PairedEncoderSampler.prototype._releaseBus = function (done) {
+  if (done) this._deferredDrainDone.push(done);
+  if (this._draining) return;
+  if (!this._deferredRequests.length) {
+    this._finishDeferredDrain();
+    return;
+  }
+  this._draining = true;
+  const drain = () => {
+    this._deferredDrainTimer = null;
+    const request = this._deferredRequests.shift();
+    if (request) this._directSendCustom(request.sid, request.command, request.payload);
+    if (request || this._deferredRequests.length) {
+      this._deferredDrainTimer = this._setTimeout(drain, DEFERRED_REQUEST_GAP_MS);
+      return;
+    }
+    this._draining = false;
+    this._finishDeferredDrain();
+  };
+  drain();
+};
+
+PairedEncoderSampler.prototype._scheduleWhenDrainCompletes = function (delayMs) {
+  if (!this._draining) {
+    this._schedule(delayMs);
+    return;
+  }
+  if (this._scheduleAfterDrainMs === null || delayMs < this._scheduleAfterDrainMs) {
+    this._scheduleAfterDrainMs = delayMs;
+  }
+};
+
+PairedEncoderSampler.prototype._finishDeferredDrain = function () {
+  const completions = this._deferredDrainDone;
+  this._deferredDrainDone = [];
+  completions.forEach((complete) => complete());
+  const delayMs = this._scheduleAfterDrainMs;
+  this._scheduleAfterDrainMs = null;
+  if (delayMs !== null && this._qualified && !this._failed && !this._stopped) {
+    this._schedule(delayMs);
+  }
 };
 
 PairedEncoderSampler.prototype._requestSide = function (poll, side) {
@@ -237,8 +282,9 @@ PairedEncoderSampler.prototype._fail = function (reason) {
   if (poll && poll.timeout) this._clearTimeout(poll.timeout);
   this._active = null;
   this._qualified = false;
-  this._releaseBus();
+  this._scheduleAfterDrainMs = null;
   this._failed = true;
+  this._releaseBus();
   this._publish({
     v: 1,
     type: 'sweep_encoder_unavailable',
@@ -270,7 +316,6 @@ PairedEncoderSampler.prototype._publish = function (payload) {
 PairedEncoderSampler.prototype._complete = function (poll) {
   if (this._active !== poll || poll.left === null || poll.right === null) return;
   this._active = null;
-  this._releaseBus();
   this._publish({
     v: 1,
     type: 'sweep_encoder_pair',
@@ -280,7 +325,8 @@ PairedEncoderSampler.prototype._complete = function (poll) {
     left_receipt_ns: poll.leftReceiptNs,
     right_receipt_ns: poll.rightReceiptNs,
   });
-  this._schedule(this._pollIntervalMs);
+  this._releaseBus();
+  this._scheduleWhenDrainCompletes(this._pollIntervalMs);
 };
 
 module.exports = PairedEncoderSampler;
