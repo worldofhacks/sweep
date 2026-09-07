@@ -181,6 +181,14 @@ def test_duplicate_nonfinite_and_out_of_bounds_inputs_are_refused():
         (lambda observed, known: known.update(frame="ohmni_slam"), "known.frame"),
         (lambda observed, known: observed.pop("scope"), "observed.scope"),
         (lambda observed, known: known["map"].pop("physical_datum"), "known.map"),
+        (
+            lambda observed, known: observed["scope"].update(session=" session-a "),
+            "canonical printable",
+        ),
+        (
+            lambda observed, known: observed["scope"].update(connection_epoch=2**63),
+            "positive int64",
+        ),
     ],
 )
 def test_registration_binds_local_source_scope_and_pinned_world_identity(mutate, message):
@@ -256,9 +264,10 @@ def test_cli_parses_and_hashes_the_same_immutable_input_snapshots(tmp_path, monk
     assert ohmni_world_registration.main() == 0
     candidate = json.loads(output_path.read_text())
     assert candidate["source"]["session"] == "session-a"
-    assert candidate["input_provenance"]["observed_document_sha256"] == hashlib.sha256(
-        original_observed
-    ).hexdigest()
+    assert (
+        candidate["input_provenance"]["observed_document_sha256"]
+        == hashlib.sha256(original_observed).hexdigest()
+    )
 
 
 def test_cli_rejects_duplicate_json_keys_before_writing_a_candidate(tmp_path, monkeypatch):

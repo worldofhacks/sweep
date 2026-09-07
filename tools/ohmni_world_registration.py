@@ -18,6 +18,8 @@ MAX_RMS_RESIDUAL_M = 0.075
 MAX_HELD_OUT_RESIDUAL_M = 0.10
 MAX_COORDINATE_M = 1_000_000
 MAX_INPUT_BYTES = 1024 * 1024
+MAX_IDENTIFIER_CHARS = 128
+MAX_SESSION_CHARS = 512
 
 
 def _require(condition, message):
@@ -25,9 +27,15 @@ def _require(condition, message):
         raise ValueError(message)
 
 
-def _text(value, name):
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{name} must be nonempty text")
+def _text(value, name, maximum=MAX_IDENTIFIER_CHARS):
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or not value.isprintable()
+        or len(value) > maximum
+    ):
+        raise ValueError(f"{name} must be canonical printable text")
     return value
 
 
@@ -151,10 +159,13 @@ def _scope(value):
         )
     if type(value["device_id"]) is not int or not 1 <= value["device_id"] <= 2**31 - 1:
         raise ValueError("observed.scope.device_id must be a positive int32")
-    if type(value["connection_epoch"]) is not int or value["connection_epoch"] < 1:
-        raise ValueError("observed.scope.connection_epoch must be positive")
+    if (
+        type(value["connection_epoch"]) is not int
+        or not 1 <= value["connection_epoch"] <= 2**63 - 1
+    ):
+        raise ValueError("observed.scope.connection_epoch must be a positive int64")
     return {
-        "session": _text(value["session"], "observed.scope.session"),
+        "session": _text(value["session"], "observed.scope.session", MAX_SESSION_CHARS),
         "device_id": value["device_id"],
         "connection_epoch": value["connection_epoch"],
         "source_id": _text(value["source_id"], "observed.scope.source_id"),
