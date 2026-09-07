@@ -36,6 +36,9 @@ if TYPE_CHECKING:
     from relay.navigation_wire import NavigationWireConfig
 
 
+_MAX_GUARD_INPUTS = 4_096
+
+
 def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result = {}
     for name, value in pairs:
@@ -65,6 +68,67 @@ def _read_bytes(path: Path, name: str) -> bytes:
     if len(payload) > 1_000_000:
         raise ValueError(f"{name} exceeds one megabyte")
     return payload
+
+
+@dataclass(frozen=True, slots=True)
+class _InputMetadata:
+    kind: str
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class _InputGuard:
+    inputs: Mapping[Path, _InputMetadata]
+
+    @classmethod
+    def capture(cls, roots: tuple[Path, ...]) -> _InputGuard:
+        inputs: dict[Path, _InputMetadata] = {}
+        for root in roots:
+            cls._capture_path(root, inputs)
+        return cls(MappingProxyType(inputs))
+
+    @classmethod
+    def _capture_path(cls, path: Path, inputs: dict[Path, _InputMetadata]) -> None:
+        if path in inputs:
+            return
+        if len(inputs) >= _MAX_GUARD_INPUTS:
+            raise ValueError("navigation artifact input set exceeds the bounded limit")
+        metadata = _input_metadata(path)
+        inputs[path] = metadata
+        if metadata.kind == "directory":
+            with os.scandir(path) as entries:
+                for entry in sorted(entries, key=lambda item: item.name):
+                    cls._capture_path(Path(entry.path), inputs)
+
+    def check(self) -> None:
+        current = _InputGuard.capture(tuple(self.inputs)).inputs
+        if current != self.inputs:
+            raise ValueError("navigation artifact inputs changed; load a new deployment")
+
+
+def _input_metadata(path: Path) -> _InputMetadata:
+    try:
+        info = os.lstat(path)
+    except OSError as error:
+        raise ValueError("navigation artifact input is unavailable") from error
+    if stat.S_ISREG(info.st_mode):
+        kind = "file"
+    elif stat.S_ISDIR(info.st_mode):
+        kind = "directory"
+    else:
+        raise ValueError("navigation artifact input must be a regular file or directory")
+    return _InputMetadata(
+        kind,
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
 
 
 def read_document(path: Path) -> dict[str, object]:
@@ -261,8 +325,44 @@ def _validate_world_localization(
             raise ValueError("navigation deployment does not bind world localization evidence")
 
 
+def _flight_input_roots(
+    path: Path,
+    approval_path: Path,
+    key_path: Path,
+    bundle: Path,
+    geometry: Path,
+    authoring: Path,
+    world_path: Path,
+    wire_files: object,
+) -> tuple[Path, ...]:
+    roots = [path, approval_path, key_path, bundle, geometry, authoring, world_path]
+    entries = _device_mapping(wire_files, "wire_navigation_files")
+    roots.extend(
+        path.parent / Path(raw_path) for raw_path in entries.values() if isinstance(raw_path, str)
+    )
+    world = read_document(world_path)
+    devices = world.get("devices")
+    if not isinstance(devices, list):
+        raise ValueError("world localization configuration has no devices")
+    bundle_path = world.get("bundle")
+    if not isinstance(bundle_path, str) or not bundle_path:
+        raise ValueError("world localization configuration has no bundle")
+    roots.append(world_path.parent / bundle_path)
+    for device in devices:
+        if not isinstance(device, Mapping):
+            raise ValueError("world localization configuration device is invalid")
+        evidence_paths = device.get("evidence_paths")
+        if not isinstance(evidence_paths, Mapping):
+            raise ValueError("world localization configuration evidence paths are invalid")
+        for raw_path in evidence_paths.values():
+            if not isinstance(raw_path, str) or not raw_path:
+                raise ValueError("world localization evidence path is invalid")
+            roots.append(world_path.parent / raw_path)
+    return tuple(roots)
+
+
 def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
-    path = Path(path).resolve()
+    path = Path(path).absolute()
     raw = read_document(path)
     base_fields = {
         "schema_version",
@@ -292,7 +392,7 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
         value = raw[name]
         if not isinstance(value, str) or not value or value != value.strip():
             raise ValueError(f"{name} must name a file or directory")
-        return (path.parent / value).resolve()
+        return (path.parent / value).absolute()
 
     slots_raw = raw["arrival_slots"]
     if not isinstance(slots_raw, list) or not 1 <= len(slots_raw) <= 16:
@@ -322,10 +422,9 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
         raise ValueError("home zone must have explicit arrival permission")
     execution_fields = set(NavigationExecutionConfig.__dataclass_fields__)
     execution_raw = raw["execution"]
-    if (
-        isinstance(execution_raw, dict)
-        and set(execution_raw) == execution_fields - {"max_aircraft"}
-    ):
+    if isinstance(execution_raw, dict) and set(execution_raw) == execution_fields - {
+        "max_aircraft"
+    }:
         execution = {**execution_raw, "max_aircraft": 4}
     else:
         execution = dict(_fields(execution_raw, execution_fields, "navigation execution"))
@@ -391,13 +490,13 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
             ),
         )
 
-    loaded = artifact()
-    if (
-        navigation_configuration_digest(loaded, config, permission, raw["home_zone_id"])
-        != approval.configuration_sha256
-    ):
-        raise ValueError("navigation approval does not bind this deployment configuration")
     if approval.mode != "flight":
+        loaded = artifact()
+        if (
+            navigation_configuration_digest(loaded, config, permission, raw["home_zone_id"])
+            != approval.configuration_sha256
+        ):
+            raise ValueError("navigation approval does not bind this deployment configuration")
         return NavigationDeployment(
             path, config, permission, raw["home_zone_id"], approval, artifact
         )
@@ -408,6 +507,32 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
         {str(device_id): asdict(profiles[device_id]) for device_id in sorted(profiles)}
     ):
         raise ValueError("navigation execution does not bind approved wire profiles")
+    world_path = local("world_localization_file")
+    guard = _InputGuard.capture(
+        _flight_input_roots(
+            path,
+            approval_path,
+            key_path,
+            bundle,
+            geometry,
+            authoring,
+            world_path,
+            raw["wire_navigation_files"],
+        )
+    )
+
+    def frozen_artifact() -> NavigationArtifact:
+        guard.check()
+        result = artifact()
+        guard.check()
+        return result
+
+    loaded = frozen_artifact()
+    if (
+        navigation_configuration_digest(loaded, config, permission, raw["home_zone_id"])
+        != approval.configuration_sha256
+    ):
+        raise ValueError("navigation approval does not bind this deployment configuration")
     if any(
         loaded.map_pin.version != profile.map_version
         or loaded.map_pin.content_sha256 != profile.map_sha256
@@ -415,17 +540,21 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
         for profile in profiles.values()
     ):
         raise ValueError("wire profiles do not bind the approved navigation artifacts")
-    world_path = local("world_localization_file")
 
-    def validate_flight() -> None:
+    def validate_flight_inputs() -> None:
         _validate_wire_tuning(raw["wire_navigation_files"], path.parent, profiles)
         _validate_world_localization(world_path, config, approval, profiles)
 
+    validate_flight_inputs()
+    guard.check()
+
+    def validate_flight() -> None:
+        guard.check()
+
     def flight_artifact() -> NavigationArtifact:
         validate_flight()
-        return artifact()
+        return loaded
 
-    validate_flight()
     return NavigationDeployment(
         path,
         config,

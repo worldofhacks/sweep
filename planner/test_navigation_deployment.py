@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
@@ -15,15 +16,18 @@ from planner.navigation import (
     NavigationPermission,
     Pose,
 )
+from planner.navigation_authorization import NavigationApproval
 from planner.navigation_deployment import load_navigation_deployment
 from planner.navigation_runtime import (
     NavigationExecutionConfig,
     NavigationFrame,
+    NavigationRuntime,
     navigation_configuration_digest,
 )
 from planner.test_navigation import FIXTURE
 from planner.test_navigation_runtime import IDENTITY, KEY
 from relay.auth import sign_event
+from relay.control_localization import ControlPose
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import make_intent, make_snapshot, replace_aircraft
 from tools.map_geometry import generate
@@ -398,3 +402,139 @@ def test_flight_deployment_loads_the_real_world_localization_artifacts(tmp_path)
     with pytest.raises(ValueError, match="evidence|bind"):
         load_navigation_deployment(path)
     assert camera_sha256 != "f" * 64
+
+
+def test_flight_deployment_reuses_one_validated_artifact_until_an_input_changes(
+    tmp_path, monkeypatch
+):
+    import planner.navigation_deployment as deployment_module
+
+    path, world_path, _ = _flight_deployment_files(tmp_path)
+    original = deployment_module._validate_world_localization
+    calls = 0
+
+    def validate(*args):
+        nonlocal calls
+        calls += 1
+        original(*args)
+
+    monkeypatch.setattr(deployment_module, "_validate_world_localization", validate)
+    deployment = load_navigation_deployment(path)
+    artifact = deployment.artifact()
+    assert all(deployment.artifact() is artifact for _ in range(20))
+    assert calls == 1
+
+    world_path.write_text(world_path.read_text() + "\n")
+    with pytest.raises(ValueError, match="inputs changed"):
+        deployment.artifact()
+
+
+def test_flight_tracking_reuses_the_frozen_artifact_and_localization_configuration(
+    tmp_path, monkeypatch
+):
+    import planner.navigation_deployment as deployment_module
+
+    path, _, _ = _flight_deployment_files(tmp_path)
+    original = deployment_module._validate_world_localization
+    calls = 0
+
+    def validate(*args):
+        nonlocal calls
+        calls += 1
+        original(*args)
+
+    monkeypatch.setattr(deployment_module, "_validate_world_localization", validate)
+    deployment = load_navigation_deployment(path)
+    config = replace(
+        deployment.config,
+        motion=MotionConfig(0.005, 0.005, 0.005, 0.005, 0.01, 0.005, 0.2),
+        position_tolerance_m=0.005,
+    )
+    artifact = deployment.artifact()
+    approval_unsigned = {
+        "v": 1,
+        "type": "navigation_approval",
+        "approval_id": "flight-tracking-acceptance",
+        "session": "flight-session",
+        "mode": "flight",
+        "configuration_sha256": navigation_configuration_digest(
+            artifact, config, deployment.permission, deployment.home_zone_id
+        ),
+        "issued_at_ms": 99_000,
+        "expires_at_ms": 110_000,
+        "epochs": [[1, 7]],
+        "evidence_sha256": list(deployment.approval.evidence_sha256),
+    }
+    approval = NavigationApproval.verify(
+        {**approval_unsigned, "signature": sign_event(approval_unsigned, KEY)}, KEY
+    )
+    pins = config.frames[0].control_pins
+    assert pins is not None
+    pose = ControlPose(
+        t=100_000,
+        event_id="tracking-control-pose",
+        session="flight-session",
+        drone_id=1,
+        connection_epoch=7,
+        map_id=pins.map_id,
+        geometry_id=pins.geometry_id,
+        camera_calibration_id=pins.camera_calibration_id,
+        body_extrinsics_id=pins.body_extrinsics_id,
+        pose_time_ms=99_998,
+        fix_time_ms=99_998,
+        x_mm=-20_000,
+        y_mm=9_800,
+        z_mm=-29_000,
+        position_frame="map_enu",
+        position_uncertainty_mm=1,
+        status="ready",
+    )
+    snapshot = replace_aircraft(
+        make_snapshot(1, selection=(1,), now_ms=100_000),
+        1,
+        connection_epoch=7,
+        pose=Position(-20, 9.8, -29),
+        position_last_seen_ms=100_000,
+    )
+    runtime = NavigationRuntime(
+        deployment.artifact,
+        config,
+        deployment.permission,
+        approval,
+        session="flight-session",
+        home_zone_id=deployment.home_zone_id,
+        control_pose=lambda _: pose,
+    )
+    plan = runtime.prepare(
+        make_intent(IntentName.COME_HOME, selection=(1,), confirm=True), snapshot
+    )
+    assert isinstance(plan, Plan)
+    command = plan.commands[0]
+    assert all(runtime.check_tracking(plan, command, snapshot, pose) is None for _ in range(20))
+    assert calls == 1
+
+
+@pytest.mark.parametrize("change", ("replacement", "new_bundle_file", "symlink"))
+def test_flight_deployment_refuses_replaced_or_added_artifact_inputs(tmp_path, change):
+    path, _, _ = _flight_deployment_files(tmp_path)
+    deployment = load_navigation_deployment(path)
+    raw = json.loads(path.read_text())
+    if change == "replacement":
+        approval = tmp_path / raw["approval_file"]
+        replacement = tmp_path / "approval-replacement.json"
+        replacement.write_bytes(approval.read_bytes())
+        os.replace(replacement, approval)
+    elif change == "new_bundle_file":
+        bundle = tmp_path / raw["bundle_directory"]
+        (bundle / "unexpected-input.json").write_text("{}")
+    else:
+        link = tmp_path / "bundle-link"
+        os.symlink(tmp_path / raw["bundle_directory"], link)
+        raw["bundle_directory"] = link.name
+        path.write_text(json.dumps(raw))
+        with pytest.raises(ValueError, match="regular file or directory"):
+            load_navigation_deployment(path)
+        return
+
+    with pytest.raises(ValueError, match="inputs changed"):
+        deployment.artifact()
