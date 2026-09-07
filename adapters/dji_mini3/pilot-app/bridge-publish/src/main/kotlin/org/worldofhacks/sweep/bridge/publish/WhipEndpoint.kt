@@ -1,5 +1,7 @@
 package org.worldofhacks.sweep.bridge.publish
 
+import java.net.URI
+
 /**
  * MediaMTX endpoints for one aircraft. Stream names follow the console's `drone{droneId}`
  * mapping (`console/src/media/playback.ts`), so the phone publishes to
@@ -24,7 +26,7 @@ object WhipEndpoint {
 
     /** The Setup screen's ground-station host when given, otherwise the relay's host. */
     fun groundHost(relayUrl: String, mediaHost: String?): String =
-        mediaHost?.trim()?.takeIf { it.isNotEmpty() } ?: hostOf(relayUrl)
+        configuredOrigin(relayUrl, mediaHost).host
 
     fun whipUrl(relayUrl: String, mediaHost: String?, mediaPort: Int, droneId: Int): String =
         "${origin(relayUrl, mediaHost, mediaPort)}/${streamName(droneId)}/whip"
@@ -38,9 +40,32 @@ object WhipEndpoint {
 
     fun origin(relayUrl: String, mediaHost: String?, mediaPort: Int): String {
         require(mediaPort in 1..65535) { "ground-station port must be between 1 and 65535" }
-        val host = groundHost(relayUrl, mediaHost)
-        require(host.isNotEmpty()) { "ground-station host is empty" }
-        val formatted = if (':' in host) "[$host]" else host
-        return "http://$formatted:$mediaPort"
+        val origin = configuredOrigin(relayUrl, mediaHost)
+        val formatted = if (':' in origin.host) "[${origin.host}]" else origin.host
+        return "${origin.scheme}://$formatted:$mediaPort"
     }
+
+    private fun configuredOrigin(relayUrl: String, mediaHost: String?): MediaOrigin {
+        val value = mediaHost?.trim()?.takeIf { it.isNotEmpty() }
+        if (value == null) {
+            val host = hostOf(relayUrl)
+            require(host.isNotEmpty()) { "ground-station host is empty" }
+            return MediaOrigin("http", host)
+        }
+        if (value.startsWith("https://")) {
+            val uri = runCatching { URI(value) }.getOrElse { throw IllegalArgumentException("ground-station HTTPS origin is invalid") }
+            require(uri.scheme == "https" && uri.userInfo == null && uri.port == -1 && uri.rawPath.isNullOrEmpty() && uri.rawQuery == null && uri.rawFragment == null) {
+                "ground-station HTTPS origin must contain only a host"
+            }
+            val host = uri.host?.removePrefix("[")?.removeSuffix("]")
+            require(!host.isNullOrEmpty()) { "ground-station HTTPS origin must contain a host" }
+            return MediaOrigin("https", host)
+        }
+        require("://" !in value && value.none { it in "/?#@" || it.isWhitespace() }) {
+            "ground-station host must be bare or an HTTPS origin"
+        }
+        return MediaOrigin("http", value)
+    }
+
+    private data class MediaOrigin(val scheme: String, val host: String)
 }
