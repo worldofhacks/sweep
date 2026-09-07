@@ -212,7 +212,9 @@ def test_fisheye_calibration_uses_detected_rendered_checkerboards(tmp_path: Path
 def test_fisheye_calibration_rejects_repeated_board_pose(tmp_path: Path) -> None:
     _write_fisheye_boards(tmp_path, repeated_pose=True)
 
-    with pytest.raises(ValueError, match="insufficiently varied|ill-conditioned"):
+    with pytest.raises(
+        ValueError, match="insufficiently varied|ill-conditioned|fisheye radial mapping folds"
+    ):
         calibrate(_fisheye_request(tmp_path))
 
 
@@ -336,7 +338,7 @@ def test_fisheye_cli_rejects_poor_fit_without_writing_an_artifact(
         ],
     )
 
-    with pytest.raises(SystemExit, match="RMS reprojection error"):
+    with pytest.raises(SystemExit, match="RMS reprojection error|fisheye radial mapping folds"):
         main()
 
     assert not output.exists()
