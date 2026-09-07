@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 
-from planner.navigation_contracts import integer, normalized_text, sha256_digest
+from planner.navigation_contracts import MAX_AIRCRAFT, integer, normalized_text, sha256_digest
 from relay.auth import verify_event_signature
 
 
@@ -69,8 +69,8 @@ class NavigationApproval:
         if not start < end <= start + 86_400_000:
             raise ValueError("navigation approval must expire within one day")
         epochs = document["epochs"]
-        if not isinstance(epochs, list) or not 1 <= len(epochs) <= 4:
-            raise ValueError("navigation approval needs one through four aircraft epochs")
+        if not isinstance(epochs, list) or not 1 <= len(epochs) <= MAX_AIRCRAFT:
+            raise ValueError("navigation approval needs one through 32 aircraft epochs")
         for pair in epochs:
             if not isinstance(pair, list) or len(pair) != 2:
                 raise ValueError("navigation approval epoch must be a drone/epoch pair")
