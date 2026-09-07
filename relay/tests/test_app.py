@@ -152,6 +152,10 @@ def test_control_heartbeat_is_signed_routed_current_and_not_audited(
         "connection_epoch",
         "roster_version",
         "seq",
+        "issued_at",
+        "expires_at",
+        "hold_after_ms",
+        "failsafe_after_ms",
         "signature",
     }
     assert set(first) == expected
@@ -172,6 +176,8 @@ def test_control_heartbeat_is_signed_routed_current_and_not_audited(
         1,
     )
     assert second["seq"] == 2
+    assert first["expires_at"] == first["issued_at"] + app_settings.node_watchdog_failsafe_ms
+    assert first["hold_after_ms"] == app_settings.node_watchdog_hold_ms
     assert second["roster_version"] > first["roster_version"]
     # Only the readiness transition, not either transport heartbeat, added an audit record.
     before, after_first, after_readiness, after_second = audit_sequences

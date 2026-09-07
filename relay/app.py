@@ -767,9 +767,10 @@ class RelayRuntime:
                     sequence = (
                         self._control_heartbeat_sequence.get(subscription.connection_id, 0) + 1
                     )
+                    issued_at = self.clock()
                     unsigned: dict[str, object] = {
                         "v": 1,
-                        "t": self.clock(),
+                        "t": issued_at,
                         "type": "control_heartbeat",
                         "event_id": self.event_ids(),
                         "session": session_id,
@@ -778,6 +779,10 @@ class RelayRuntime:
                         "connection_epoch": connection_epoch,
                         "roster_version": roster_version,
                         "seq": sequence,
+                        "issued_at": issued_at,
+                        "expires_at": issued_at + self.settings.node_watchdog_failsafe_ms,
+                        "hold_after_ms": self.settings.node_watchdog_hold_ms,
+                        "failsafe_after_ms": self.settings.node_watchdog_failsafe_ms,
                     }
                     event = {
                         **unsigned,

@@ -56,6 +56,10 @@ class GroundRuntimeConfig:
     body_frame: str = "body"
     lidar_source_id: str = "ohmni-lidar"
     lidar_frame: str = "lidar"
+    lidar_mount_x_m: float | None = None
+    lidar_mount_y_m: float | None = None
+    lidar_mount_z_m: float | None = None
+    lidar_mount_yaw_deg: float | None = None
     camera_source_id: str = "ohmni-camera"
     camera_frame: str = "camera"
     camera_calibration_id: str = "unconfigured"
@@ -64,6 +68,7 @@ class GroundRuntimeConfig:
     heartbeat_hold_ms: int = 2_000
     heartbeat_failsafe_ms: int = 10_000
     telemetry_hz: float = 5.0
+    outbound_queue_limit: int = 256
     monotonic: Callable[[], float] = time.monotonic
     event_ids: Callable[[], str] = lambda: str(uuid.uuid4())
 
@@ -76,6 +81,19 @@ class GroundRuntimeConfig:
             raise ValueError("ground heartbeat windows are invalid")
         if not 1 <= self.camera_width_px <= 16_384 or not 1 <= self.camera_height_px <= 16_384:
             raise ValueError("ground camera dimensions are invalid")
+        if self.outbound_queue_limit < 8:
+            raise ValueError("ground outbound queue must retain at least eight safety frames")
+        mount = (
+            self.lidar_mount_x_m,
+            self.lidar_mount_y_m,
+            self.lidar_mount_z_m,
+            self.lidar_mount_yaw_deg,
+        )
+        if any(value is not None for value in mount) and not all(
+            isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+            for value in mount
+        ):
+            raise ValueError("lidar mount requires a complete finite transform")
 
 
 class OhmniRuntime:
@@ -88,9 +106,14 @@ class OhmniRuntime:
         self._last_command_seq = 0
         self._last_heartbeat_seq = 0
         self._last_heartbeat_at: float | None = None
+        self._last_heartbeat_expires_at: int | None = None
         self._watchdog_state = "failsafe"
         self._ready = False
+        self._local_stop_ready = False
+        self._estop_latched = False
+        self._operator_rearm_required = False
         self._pose_event_id: str | None = None
+        self._last_scan_t_ms: int | None = None
         self._outbound: asyncio.Queue[dict[str, object]] | None = None
         self._stop: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -106,10 +129,20 @@ class OhmniRuntime:
     def watchdog_state(self) -> str:
         return self._watchdog_state
 
+    def rearm_after_operator_confirmation(self) -> None:
+        """Clear a local estop latch only after a physically present operator confirms it."""
+        if not self._operator_rearm_required:
+            return
+        self._estop_latched = False
+        self._operator_rearm_required = False
+        self._last_heartbeat_at = None
+        self._last_heartbeat_expires_at = None
+        self._local_stop("operator_rearm_pending_heartbeat", disable=True)
+
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
-        self._outbound = asyncio.Queue()
+        self._outbound = asyncio.Queue(maxsize=self.config.outbound_queue_limit)
         try:
             async with connect(
                 f"{self.config.relay_url.rstrip('/')}/ws/{self.config.session}"
@@ -221,9 +254,8 @@ class OhmniRuntime:
                 continue
             elapsed_ms = int((self.config.monotonic() - last) * 1_000)
             if (
-                elapsed_ms >= self.config.heartbeat_failsafe_ms
-                and self._watchdog_state != "failsafe"
-            ):
+                self._lease_expired() or elapsed_ms >= self.config.heartbeat_failsafe_ms
+            ) and self._watchdog_state != "failsafe":
                 self._local_stop("watchdog_failsafe", disable=True)
             elif elapsed_ms >= self.config.heartbeat_hold_ms and self._watchdog_state == "nominal":
                 self._local_stop("watchdog_hold", disable=False)
@@ -242,6 +274,7 @@ class OhmniRuntime:
         self._roster_version = int(frame.get("roster_version", self._roster_version))
         self._last_command_seq = self._last_heartbeat_seq = 0
         self._last_heartbeat_at = None
+        self._last_heartbeat_expires_at = None
         self._ready = False
         self._watchdog_state = "failsafe"
         self._local_stop("rejoin_requires_heartbeat", disable=True)
@@ -251,6 +284,9 @@ class OhmniRuntime:
 
     def _on_heartbeat(self, frame: Mapping[str, object]) -> None:
         unsigned = {key: value for key, value in frame.items() if key != "signature"}
+        now_ms = int(time.time_ns() // 1_000_000)
+        issued_at = frame.get("issued_at")
+        expires_at = frame.get("expires_at")
         if (
             frame.get("session") != self.config.session
             or frame.get("source") != "relay"
@@ -259,15 +295,36 @@ class OhmniRuntime:
             or frame.get("roster_version") != self._roster_version
             or not isinstance(frame.get("seq"), int)
             or frame["seq"] <= self._last_heartbeat_seq
+            or not isinstance(issued_at, int)
+            or isinstance(issued_at, bool)
+            or not isinstance(expires_at, int)
+            or isinstance(expires_at, bool)
+            or issued_at > now_ms
+            or expires_at <= now_ms
+            or expires_at - issued_at > self.config.heartbeat_failsafe_ms
+            or frame.get("hold_after_ms") != self.config.heartbeat_hold_ms
+            or frame.get("failsafe_after_ms") != self.config.heartbeat_failsafe_ms
             or not verify_event_signature(unsigned, frame.get("signature"), self._key)
         ):
             return
         self._last_heartbeat_seq = frame["seq"]
         self._last_heartbeat_at = self.config.monotonic()
+        self._last_heartbeat_expires_at = expires_at
+        if self._operator_rearm_required:
+            self._publish_status("operator_rearm_required")
+            return
         if self._watchdog_state != "nominal":
             self._watchdog_state = "nominal"
             self._publish_observations()
-            self._ready = self.device.enable() and self._pose_event_id is not None
+            self._ready = (
+                self._lidar_mount_configured
+                and self.device.enable()
+                and self._pose_event_id is not None
+            )
+            if not self._ready:
+                self._local_stop("ground_guard_not_ready", disable=True)
+            else:
+                self._local_stop_ready = self.device.status().state != "moving"
             self._publish_readiness()
             self._publish_status(None)
 
@@ -296,11 +353,12 @@ class OhmniRuntime:
             args = command.args
             try:
                 motion = self.device.drive_velocity(
-                    int(args["velocity_mm_s"]) / 1_000,
-                    math.degrees(int(args["yaw_mrad_s"]) / 1_000),
+                    int(args["linear_mm_s"]) / 1_000,
+                    math.degrees(int(args["angular_mrad_s"]) / 1_000),
                     int(args["duration_ms"]) / 1_000,
                 )
-            except (RuntimeError, ValueError) as error:
+            except (OSError, RuntimeError, ValueError) as error:
+                self._local_stop("ground_drive_io_failure", disable=True)
                 self._enqueue(self._ack(command, "failed", "local_guard_refused", str(error)))
                 return
             self._enqueue(self._ack(command, "executing"))
@@ -308,11 +366,13 @@ class OhmniRuntime:
             self._loop.create_task(self._complete_motion(command, motion))
             return
         if command.operation is CommandOperation.HOVER:
-            self.device.stop()
+            self._local_stop("remote_hold", disable=False)
             self._enqueue(self._ack(command, "executing"))
             self._enqueue(self._ack(command, "completed"))
             return
         if command.operation is CommandOperation.ESTOP:
+            self._estop_latched = True
+            self._operator_rearm_required = True
             self._local_stop("local_estop", disable=True)
             self._enqueue(self._ack(command, "executing"))
             self._enqueue(self._ack(command, "completed"))
@@ -321,7 +381,12 @@ class OhmniRuntime:
     async def _complete_motion(self, command: CommandFrame, motion: str) -> None:
         while True:
             await asyncio.sleep(0.02)
-            completed = self.device.motion_done(motion)
+            try:
+                completed = self.device.motion_done(motion)
+            except OSError as error:
+                self._local_stop("ground_motion_io_failure", disable=True)
+                self._enqueue(self._ack(command, "failed", "motion_failed", str(error)))
+                return
             if completed is False:
                 continue
             if completed is True:
@@ -347,6 +412,13 @@ class OhmniRuntime:
             CommandOperation.ESTOP,
         }:
             return "unsupported_operation", "ground route is not qualified"
+        if command.operation in {CommandOperation.HOVER, CommandOperation.ESTOP}:
+            return None
+        if self._operator_rearm_required:
+            return "operator_rearm_required", "physical operator rearm is required after estop"
+        if self._lease_expired():
+            self._local_stop("watchdog_failsafe", disable=True)
+            return "watchdog_failsafe", "the signed control lease has expired"
         if self._watchdog_state == "failsafe":
             return "watchdog_failsafe", "fresh verified heartbeat and readiness are required"
         if self._watchdog_state == "hold":
@@ -364,6 +436,7 @@ class OhmniRuntime:
             "unit": "ns",
             "value": time.monotonic_ns(),
         }
+        confidence = _confidence(status.pos_quality)
         pose_event = self._observation(
             self.config.pose_source_id,
             self.config.odom_frame,
@@ -382,6 +455,7 @@ class OhmniRuntime:
                     "qw": math.cos(math.radians(status.yaw_deg) / 2),
                 },
             },
+            confidence=confidence,
         )
         self._pose_event_id = pose_event["event_id"]
         self._enqueue(pose_event)
@@ -409,6 +483,7 @@ class OhmniRuntime:
                     "pos_quality": status.pos_quality,
                     "state": status.state,
                 },
+                confidence=confidence,
             )
         )
         self._enqueue(
@@ -422,27 +497,34 @@ class OhmniRuntime:
                     "detail": status.state,
                     "capabilities": list(self.device.capabilities),
                 },
+                confidence=confidence,
             )
         )
         scan = self.device.latest_scan()
-        if scan is not None:
+        if scan is not None and self._lidar_mount_configured and scan.t_ms != self._last_scan_t_ms:
+            self._last_scan_t_ms = scan.t_ms
+            sensor_x, sensor_y, sensor_yaw = self._lidar_sensor_pose(scan)
             self._enqueue(
                 self._observation(
                     self.config.lidar_source_id,
                     self.config.lidar_frame,
-                    receipt,
+                    {
+                        "clock_id": self.config.source_clock_id,
+                        "unit": "ms",
+                        "value": scan.t_ms,
+                    },
                     {
                         "kind": "range_scan",
                         "sensor_pose": {
                             "parent_frame": self.config.odom_frame,
                             "child_frame": self.config.lidar_frame,
-                            "x_m": scan.pose[0],
-                            "y_m": scan.pose[1],
-                            "z_m": 0.0,
+                            "x_m": sensor_x,
+                            "y_m": sensor_y,
+                            "z_m": self.config.lidar_mount_z_m,
                             "qx": 0.0,
                             "qy": 0.0,
-                            "qz": math.sin(math.radians(scan.pose[2]) / 2),
-                            "qw": math.cos(math.radians(scan.pose[2]) / 2),
+                            "qz": math.sin(math.radians(sensor_yaw) / 2),
+                            "qw": math.cos(math.radians(sensor_yaw) / 2),
                         },
                         "angle_min_rad": math.radians(scan.angle_min_deg),
                         "angle_increment_rad": math.radians(scan.angle_increment_deg),
@@ -451,22 +533,7 @@ class OhmniRuntime:
                         "ranges_m": [None if item == 0 else item / 100 for item in scan.ranges_cm],
                         "mount_id": "ohmni-rplidar",
                     },
-                )
-            )
-        if "camera" in self.device.capabilities:
-            self._enqueue(
-                self._observation(
-                    self.config.camera_source_id,
-                    self.config.camera_frame,
-                    receipt,
-                    {
-                        "kind": "camera_frame",
-                        "image_id": f"metadata-{self._epoch}-{self._pose_event_id}",
-                        "sha256": "0" * 64,
-                        "width_px": self.config.camera_width_px,
-                        "height_px": self.config.camera_height_px,
-                        "calibration_id": self.config.camera_calibration_id,
-                    },
+                    confidence=confidence,
                 )
             )
 
@@ -476,6 +543,8 @@ class OhmniRuntime:
         frame: str,
         receipt: Mapping[str, object],
         payload: Mapping[str, object],
+        *,
+        confidence: float,
     ) -> dict[str, object]:
         assert self._epoch is not None
         raw = {
@@ -488,7 +557,7 @@ class OhmniRuntime:
             "source_id": source_id,
             "node_type": "ground",
             "frame": frame,
-            "confidence": 1.0,
+            "confidence": confidence,
             "t_capture": None,
             "t_source_receipt": dict(receipt),
             "clock_mapping_id": None,
@@ -506,7 +575,7 @@ class OhmniRuntime:
                 connection_epoch=self._epoch,
                 drive_authority=self._ready and status.drive_authority,
                 safety_operator_present=bool(status.extras.get("spotter_present", False)),
-                local_stop_ready=True,
+                local_stop_ready=self._local_stop_ready,
                 heartbeat_ready=self._watchdog_state == "nominal",
                 pose_identity={
                     "event_id": self._pose_event_id,
@@ -536,16 +605,21 @@ class OhmniRuntime:
             }
         )
 
-    def _local_stop(self, reason: str, *, disable: bool) -> None:
+    def _local_stop(self, reason: str, *, disable: bool, publish: bool = True) -> None:
         try:
             self.device.stop()
             if disable:
                 self.device.disable()
+            status = self.device.status()
+            self._local_stop_ready = status.state in {"idle", "stopped"} and (
+                not disable or not status.drive_authority
+            )
         except OSError:
             _LOGGER.warning("local ground stop failed")
+            self._local_stop_ready = False
         self._ready = False
         self._watchdog_state = "failsafe" if disable else "hold"
-        if self._epoch is not None:
+        if publish and self._epoch is not None:
             self._publish_readiness()
             self._publish_status(reason)
 
@@ -589,7 +663,50 @@ class OhmniRuntime:
 
     def _enqueue(self, frame: dict[str, object]) -> None:
         if self._outbound is not None:
-            self._outbound.put_nowait(frame)
+            try:
+                self._outbound.put_nowait(frame)
+            except asyncio.QueueFull:
+                _LOGGER.error("ground outbound queue overflow; stopping local drive")
+                self._local_stop("outbound_queue_overflow", disable=True, publish=False)
+                if self._stop is not None:
+                    self._stop.set()
+
+    @property
+    def _lidar_mount_configured(self) -> bool:
+        return all(
+            value is not None
+            for value in (
+                self.config.lidar_mount_x_m,
+                self.config.lidar_mount_y_m,
+                self.config.lidar_mount_z_m,
+                self.config.lidar_mount_yaw_deg,
+            )
+        )
+
+    def _lidar_sensor_pose(self, scan: RangeScan) -> tuple[float, float, float]:
+        assert self.config.lidar_mount_x_m is not None
+        assert self.config.lidar_mount_y_m is not None
+        assert self.config.lidar_mount_yaw_deg is not None
+        heading = math.radians(scan.pose[2])
+        return (
+            scan.pose[0]
+            + math.cos(heading) * self.config.lidar_mount_x_m
+            - math.sin(heading) * self.config.lidar_mount_y_m,
+            scan.pose[1]
+            + math.sin(heading) * self.config.lidar_mount_x_m
+            + math.cos(heading) * self.config.lidar_mount_y_m,
+            (scan.pose[2] + self.config.lidar_mount_yaw_deg) % 360,
+        )
+
+    def _lease_expired(self) -> bool:
+        expires_at = self._last_heartbeat_expires_at
+        return expires_at is None or int(time.time_ns() // 1_000_000) >= expires_at
+
+
+def _confidence(value: object) -> float:
+    if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value):
+        return min(1.0, max(0.0, float(value)))
+    return 0.0
 
 
 def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
@@ -600,6 +717,18 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
     parser.add_argument("--token", default=os.environ.get("SWEEP_NODE_KEY"))
     parser.add_argument("--adapter-id", default=os.environ.get("SWEEP_ADAPTER_ID"))
     parser.add_argument("--telemetry-hz", type=float, default=5.0)
+    parser.add_argument(
+        "--lidar-mount-x-m", type=float, default=os.environ.get("SWEEP_LIDAR_MOUNT_X_M")
+    )
+    parser.add_argument(
+        "--lidar-mount-y-m", type=float, default=os.environ.get("SWEEP_LIDAR_MOUNT_Y_M")
+    )
+    parser.add_argument(
+        "--lidar-mount-z-m", type=float, default=os.environ.get("SWEEP_LIDAR_MOUNT_Z_M")
+    )
+    parser.add_argument(
+        "--lidar-mount-yaw-deg", type=float, default=os.environ.get("SWEEP_LIDAR_MOUNT_YAW_DEG")
+    )
     args = parser.parse_args(argv)
     if not args.relay or not args.session or not args.token or args.device_id is None:
         parser.error("relay, session, device ID, and adapter token are required")
@@ -610,6 +739,10 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
         token=args.token,
         adapter_id=args.adapter_id or f"ohmni-{args.device_id}",
         telemetry_hz=args.telemetry_hz,
+        lidar_mount_x_m=args.lidar_mount_x_m,
+        lidar_mount_y_m=args.lidar_mount_y_m,
+        lidar_mount_z_m=args.lidar_mount_z_m,
+        lidar_mount_yaw_deg=args.lidar_mount_yaw_deg,
     )
 
 

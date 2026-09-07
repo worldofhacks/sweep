@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import threading
 import time
@@ -10,16 +11,17 @@ from pathlib import Path
 
 import pytest
 import uvicorn
+from websockets.sync.client import connect as sync_connect
 
 from planner.models import CommandOperation
-from relay.app import RelayRuntime, create_app
-from relay.capabilities import C1_CAPABILITY_PROFILE
+from relay.app import RelayRuntime
+from relay.autonomy import AutonomyConfig, create_autonomy_app
 from relay.contracts import NodeType
 from relay.observation_ingress import ObservationConfiguration
 from relay.observations import FrameDeclaration, FrameRegistry, SourceBinding
-from relay.session import CapabilityBoundIntentSink
 from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.conftest import CONSOLE_KEY, SESSION
+from tests.autonomy_fixtures import planning_config, safety_config
 
 from .fake import FakeGroundDevice
 from .runtime import GroundRuntimeConfig, OhmniRuntime, parse_args
@@ -106,11 +108,11 @@ def relay_server(tmp_path: Path) -> Iterator[_RelayServer]:
         node_watchdog_failsafe_ms=200,
         observation_configuration=_observation_configuration(),
     )
-    app = create_app(
+    app, autonomy = create_autonomy_app(
         settings,
-        intent_sink_factory=lambda _session: CapabilityBoundIntentSink(
-            lambda _intent, _state: None,
-            C1_CAPABILITY_PROFILE,
+        AutonomyConfig(
+            planning=planning_config(),
+            safety=safety_config(),
         ),
     )
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -130,6 +132,7 @@ def relay_server(tmp_path: Path) -> Iterator[_RelayServer]:
         if thread.is_alive():
             server.force_exit = True
             thread.join(timeout=WAIT_S)
+        autonomy.close()
 
 
 def _deliver(server: _RelayServer, frame: dict[str, object]) -> bool:
@@ -138,6 +141,16 @@ def _deliver(server: _RelayServer, frame: dict[str, object]) -> bool:
         server.runtime.deliver_to_node(SESSION, GROUND_ID, frame), server.runtime.loop
     )
     return delivered.result(timeout=WAIT_S)
+
+
+def _receive_until(socket: object, predicate: object) -> dict[str, object]:
+    deadline = time.monotonic() + WAIT_S
+    while time.monotonic() < deadline:
+        raw = socket.recv(timeout=WAIT_S)  # type: ignore[attr-defined]
+        frame = json.loads(raw)
+        if isinstance(frame, dict) and predicate(frame):  # type: ignore[operator]
+            return frame
+    raise AssertionError("timed out waiting for relay event")
 
 
 def test_runtime_arguments_build_the_required_ground_identity() -> None:
@@ -171,6 +184,10 @@ def test_ground_runtime_joins_becomes_ready_acks_velocity_and_stops_on_lease_los
             adapter_id="fake-ohmni-9",
             heartbeat_hold_ms=100,
             heartbeat_failsafe_ms=200,
+            lidar_mount_x_m=0.0,
+            lidar_mount_y_m=0.0,
+            lidar_mount_z_m=0.25,
+            lidar_mount_yaw_deg=0.0,
         ),
         device,
     )
@@ -178,8 +195,10 @@ def test_ground_runtime_joins_becomes_ready_acks_velocity_and_stops_on_lease_los
     try:
         session = relay_server.runtime.sessions[SESSION]
         _wait_for(
-            lambda: bool(session.current_state()["drones"])
-            and session.current_state()["drones"][0]["membership"] == "ready",
+            lambda: (
+                bool(session.current_state()["drones"])
+                and session.current_state()["drones"][0]["membership"] == "ready"
+            ),
             "ground readiness",
         )
         state = session.current_state()["drones"][0]
@@ -194,7 +213,7 @@ def test_ground_runtime_joins_becomes_ready_acks_velocity_and_stops_on_lease_los
             drone_id=GROUND_ID,
             connection_epoch=state["connection_epoch"],
             operation=CommandOperation.GROUND_VELOCITY,
-            args={"velocity_mm_s": 100, "yaw_mrad_s": 0, "duration_ms": 25},
+            args={"linear_mm_s": 100, "angular_mrad_s": 0, "duration_ms": 25},
             signing_key=GROUND_KEY,
         )
         assert _deliver(relay_server, command)
@@ -212,5 +231,234 @@ def test_ground_runtime_joins_becomes_ready_acks_velocity_and_stops_on_lease_los
         _wait_for(lambda: node.watchdog_state == "failsafe", "ground watchdog failsafe")
         assert not device.enabled
         assert device.stopped
+    finally:
+        node.stop()
+
+
+def test_confirmed_console_ground_velocity_uses_signed_relay_command_lifecycle(
+    relay_server: _RelayServer,
+) -> None:
+    device = FakeGroundDevice()
+    node = OhmniRuntime(
+        GroundRuntimeConfig(
+            relay_url=relay_server.url,
+            session=SESSION,
+            device_id=GROUND_ID,
+            token=GROUND_KEY.decode(),
+            adapter_id="fake-ohmni-9",
+            heartbeat_hold_ms=100,
+            heartbeat_failsafe_ms=200,
+            lidar_mount_x_m=0.0,
+            lidar_mount_y_m=0.0,
+            lidar_mount_z_m=0.25,
+            lidar_mount_yaw_deg=0.0,
+        ),
+        device,
+    )
+    node.start()
+    try:
+        session = relay_server.runtime.sessions[SESSION]
+        _wait_for(
+            lambda: (
+                bool(session.current_state()["drones"])
+                and session.current_state()["drones"][0]["membership"] == "ready"
+            ),
+            "ground readiness",
+        )
+        intent_id = "ground-velocity-e2e"
+        with sync_connect(f"{relay_server.url}/ws/{SESSION}", proxy=None) as console:
+            console.send(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "type": "auth",
+                        "source": "console",
+                        "token": CONSOLE_KEY.decode(),
+                    }
+                )
+            )
+            assert json.loads(console.recv(timeout=WAIT_S))["type"] == "auth.accepted"
+            assert json.loads(console.recv(timeout=WAIT_S))["type"] == "state"
+            console.send(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "t": int(time.time_ns() // 1_000_000),
+                        "type": "intent",
+                        "intent_id": intent_id,
+                        "retry_of": None,
+                        "source": "console",
+                        "session": SESSION,
+                        "name": "ground_velocity",
+                        "args": {
+                            "linear_mm_s": 100,
+                            "angular_mrad_s": 0,
+                            "duration_ms": 25,
+                        },
+                        "selection": [GROUND_ID],
+                        "mode": "indoor",
+                        "confirm": True,
+                    }
+                )
+            )
+            terminal = _receive_until(
+                console,
+                lambda frame: (
+                    frame.get("type") == "acknowledgement"
+                    and frame.get("intent_id") == intent_id
+                    and frame.get("source") == "autonomy"
+                    and frame.get("status") == "completed"
+                ),
+            )
+        assert terminal["command_id"] is None
+        assert device.x > 0
+        records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
+        commands = [
+            record
+            for record in records
+            if record["type"] == "command" and record["intent_id"] == intent_id
+        ]
+        assert len(commands) == 1
+        assert commands[0]["operation"] == "ground_velocity"
+        assert commands[0]["args"] == {
+            "linear_mm_s": 100,
+            "angular_mrad_s": 0,
+            "duration_ms": 25,
+        }
+        assert "signature" not in commands[0]
+        lifecycle = [
+            (record["source"], record["status"])
+            for record in records
+            if record["type"] == "acknowledgement" and record.get("intent_id") == intent_id
+        ]
+        assert lifecycle == [
+            ("relay", "accepted"),
+            ("adapter", "accepted"),
+            ("adapter", "executing"),
+            ("adapter", "completed"),
+            ("autonomy", "completed"),
+        ]
+    finally:
+        node.stop()
+
+
+@pytest.mark.parametrize(
+    ("intent_name", "selection", "operation"),
+    [
+        ("hold", [GROUND_ID], CommandOperation.HOVER),
+        ("estop", [], CommandOperation.ESTOP),
+    ],
+)
+def test_console_stop_sends_a_signed_terminal_ground_stop_while_the_robot_is_moving(
+    relay_server: _RelayServer,
+    intent_name: str,
+    selection: list[int],
+    operation: CommandOperation,
+) -> None:
+    device = FakeGroundDevice()
+    node = OhmniRuntime(
+        GroundRuntimeConfig(
+            relay_url=relay_server.url,
+            session=SESSION,
+            device_id=GROUND_ID,
+            token=GROUND_KEY.decode(),
+            adapter_id="fake-ohmni-9",
+            heartbeat_hold_ms=100,
+            heartbeat_failsafe_ms=200,
+            lidar_mount_x_m=0.0,
+            lidar_mount_y_m=0.0,
+            lidar_mount_z_m=0.25,
+            lidar_mount_yaw_deg=0.0,
+        ),
+        device,
+    )
+    node.start()
+    try:
+        session = relay_server.runtime.sessions[SESSION]
+        _wait_for(
+            lambda: (
+                bool(session.current_state()["drones"])
+                and session.current_state()["drones"][0]["membership"] == "ready"
+            ),
+            "ground readiness",
+        )
+        state = session.current_state()["drones"][0]
+        motion = session.issue_command(
+            command_id=f"moving-before-{intent_name}",
+            intent_id=f"moving-before-{intent_name}",
+            roster_version=session.current_state()["roster_version"],
+            drone_id=GROUND_ID,
+            connection_epoch=state["connection_epoch"],
+            operation=CommandOperation.GROUND_VELOCITY,
+            args={"linear_mm_s": 100, "angular_mrad_s": 0, "duration_ms": 500},
+            signing_key=GROUND_KEY,
+        )
+        assert _deliver(relay_server, motion)
+        _wait_for(lambda: device.status().state == "moving", "ground motion")
+
+        intent_id = f"{intent_name}-ground-stop-e2e"
+        with sync_connect(f"{relay_server.url}/ws/{SESSION}", proxy=None) as console:
+            console.send(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "type": "auth",
+                        "source": "console",
+                        "token": CONSOLE_KEY.decode(),
+                    }
+                )
+            )
+            assert json.loads(console.recv(timeout=WAIT_S))["type"] == "auth.accepted"
+            assert json.loads(console.recv(timeout=WAIT_S))["type"] == "state"
+            console.send(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "t": int(time.time_ns() // 1_000_000),
+                        "type": "intent",
+                        "intent_id": intent_id,
+                        "retry_of": None,
+                        "source": "console",
+                        "session": SESSION,
+                        "name": intent_name,
+                        "args": {},
+                        "selection": selection,
+                        "mode": "indoor",
+                        "confirm": False,
+                    }
+                )
+            )
+            terminal = _receive_until(
+                console,
+                lambda frame: (
+                    frame.get("type") == "acknowledgement"
+                    and frame.get("intent_id") == intent_id
+                    and frame.get("source") == "autonomy"
+                    and frame.get("status") == "completed"
+                ),
+        )
+        assert terminal["command_id"] is None
+        assert device.status().state != "moving"
+        records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
+        commands = [
+            record
+            for record in records
+            if record["type"] == "command" and record["intent_id"] == intent_id
+        ]
+        assert [(command["drone_id"], command["operation"]) for command in commands] == [
+            (GROUND_ID, operation.value)
+        ]
+        lifecycle = [
+            (record["source"], record["status"])
+            for record in records
+            if record["type"] == "acknowledgement" and record.get("intent_id") == intent_id
+        ]
+        assert lifecycle == [
+            ("relay", "accepted"),
+            ("adapter", "accepted"),
+            ("adapter", "executing"),
+            ("adapter", "completed"),
+            ("autonomy", "completed"),
+        ]
     finally:
         node.stop()

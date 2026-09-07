@@ -35,6 +35,7 @@ from fastapi import FastAPI
 
 from adapters.dispatch import AdapterDispatcher
 from adapters.dji_mini3.remote import CommandRequest, NodeLink
+from adapters.ohmni.dispatcher import GroundCommandDispatcher
 from adapters.sim.camera import SimCameraConfig
 from arbiter.safety import SafetyArbiter, SafetyConfig
 from planner.controller import AutonomyController, RelayExecution
@@ -44,6 +45,7 @@ from planner.models import (
     FleetSnapshot,
     FlightState,
     LifecycleStatus,
+    Plan,
     Refusal,
     RefusalReason,
     RelayAircraftSafetyEnrichment,
@@ -84,6 +86,7 @@ HOLD_PREEMPTS = frozenset(
         IntentName.SWEEP,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
+        IntentName.GROUND_VELOCITY,
     }
 )
 """Operator motion and camera plans a hold cancels; a running safety plan finishes first."""
@@ -670,19 +673,72 @@ class AutonomySession:
             return _PreemptibleLink(link, job, session)
 
         try:
-            snapshot = current()
-            dispatcher = build_dispatcher(
-                runtime,
-                self.session_id,
-                snapshot,
-                arbiter=self.arbiter,
-                sim_camera_config=self._composition.config.sim_camera,
-                link_wrapper=gate,
-            )
-            controller = AutonomyController(
-                planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
-            )
-            result = controller.execute(intent, snapshot, current_snapshot=current)
+            if intent.name is IntentName.GROUND_VELOCITY:
+                link = gate(
+                    RelayNodeLink(
+                        runtime,
+                        self.session_id,
+                        delivery_timeout_ms=runtime.settings.command_ttl_ms,
+                    )
+                )
+                result = GroundCommandDispatcher(
+                    link,
+                    acknowledgement_timeout_ms=runtime.settings.command_ttl_ms,
+                    command_deadline_ms=runtime.settings.command_deadline_ms,
+                ).dispatch(intent, session.current_state())
+                dispatcher = None
+            else:
+                snapshot = current()
+                if intent.name in {IntentName.HOLD, IntentName.ESTOP}:
+                    ground_result = None
+                    if _ground_stop_targets(intent, session.current_state()):
+                        link = gate(
+                            RelayNodeLink(
+                                runtime,
+                                self.session_id,
+                                delivery_timeout_ms=runtime.settings.command_ttl_ms,
+                            )
+                        )
+                        ground_result = GroundCommandDispatcher(
+                            link,
+                            acknowledgement_timeout_ms=runtime.settings.command_ttl_ms,
+                            command_deadline_ms=runtime.settings.command_deadline_ms,
+                        ).dispatch_stop(intent, session.current_state())
+                    air_intent, air_snapshot = _air_only_stop(intent, snapshot)
+                    if air_snapshot.aircraft:
+                        dispatcher = build_dispatcher(
+                            runtime,
+                            self.session_id,
+                            air_snapshot,
+                            arbiter=self.arbiter,
+                            sim_camera_config=self._composition.config.sim_camera,
+                            link_wrapper=gate,
+                        )
+                        controller = AutonomyController(
+                            planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
+                        )
+                        air_result = controller.execute(
+                            air_intent,
+                            air_snapshot,
+                            current_snapshot=lambda: _air_only_stop(intent, current())[1],
+                        )
+                    else:
+                        dispatcher = None
+                        air_result = None
+                    result = _aggregate_stop_results(intent, snapshot, ground_result, air_result)
+                else:
+                    dispatcher = build_dispatcher(
+                        runtime,
+                        self.session_id,
+                        snapshot,
+                        arbiter=self.arbiter,
+                        sim_camera_config=self._composition.config.sim_camera,
+                        link_wrapper=gate,
+                    )
+                    controller = AutonomyController(
+                        planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
+                    )
+                    result = controller.execute(intent, snapshot, current_snapshot=current)
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             return
@@ -695,6 +751,8 @@ class AutonomySession:
             result = _composition_failure(intent, session, error)
         with self._lock:
             if result.status is LifecycleStatus.EXECUTING:
+                if dispatcher is None:
+                    raise RuntimeError("ground dispatcher returned a nonterminal command result")
                 self._awaiting[intent.intent_id] = _AwaitingExecution(
                     job=job,
                     session=session,
@@ -1060,6 +1118,111 @@ def create_autonomy_app(
     )
     composition.bind(app)
     return app, composition
+
+
+def _ground_stop_targets(intent: IntentV1, state: Mapping[str, object]) -> bool:
+    if intent.name not in {IntentName.HOLD, IntentName.ESTOP}:
+        return False
+    drones = state.get("drones")
+    if not isinstance(drones, list):
+        return False
+    selected = set(intent.selection)
+    return any(
+        isinstance(drone, Mapping)
+        and drone.get("node_type") == "ground"
+        and isinstance(drone.get("drone_id"), int)
+        and not isinstance(drone.get("drone_id"), bool)
+        and (intent.name is IntentName.ESTOP or drone["drone_id"] in selected)
+        for drone in drones
+    )
+
+
+def _air_only_stop(intent: IntentV1, snapshot: FleetSnapshot) -> tuple[IntentV1, FleetSnapshot]:
+    """Keep ground IDs out of the aircraft planner's selection projection."""
+    selection = tuple(drone_id for drone_id in intent.selection if drone_id in snapshot.aircraft)
+    return replace(intent, selection=selection), replace(snapshot, selection=selection)
+
+
+def _aggregate_stop_results(
+    intent: IntentV1,
+    snapshot: FleetSnapshot,
+    ground: ExecutionResult | None,
+    aircraft: ExecutionResult | None,
+) -> ExecutionResult:
+    if ground is None and aircraft is not None:
+        return aircraft
+    if aircraft is None and ground is not None:
+        return ground
+    if ground is None or aircraft is None:
+        return ExecutionResult(
+            intent_id=intent.intent_id,
+            roster_version=snapshot.roster_version,
+            status=LifecycleStatus.REFUSED,
+            refusal=Refusal(
+                intent_id=intent.intent_id,
+                roster_version=snapshot.roster_version,
+                drone_id=None,
+                connection_epoch=None,
+                reason=RefusalReason.INVALID_SELECTION,
+                detail="the stop has no dispatchable targets",
+            ),
+        )
+
+    plans = tuple(result.plan for result in (ground, aircraft) if result.plan is not None)
+    commands = tuple(command for plan in plans for command in plan.commands)
+    plan = Plan(
+        plan_id=f"plan:{intent.intent_id}:mixed-stop",
+        intent_id=intent.intent_id,
+        intent_name=intent.name,
+        roster_version=snapshot.roster_version,
+        selection=intent.selection,
+        confirmed=True,
+        commands=commands,
+        hold_scope=next((item.hold_scope for item in plans if item.hold_scope is not None), None),
+    )
+    acknowledgements = tuple(
+        acknowledgement
+        for result in (ground, aircraft)
+        for acknowledgement in result.acknowledgements
+    )
+    failed = next(
+        (result for result in (ground, aircraft) if result.status is not LifecycleStatus.COMPLETED),
+        None,
+    )
+    if failed is None:
+        return ExecutionResult(
+            intent_id=intent.intent_id,
+            roster_version=snapshot.roster_version,
+            status=LifecycleStatus.COMPLETED,
+            plan=plan,
+            acknowledgements=acknowledgements,
+        )
+    refusal = failed.refusal or Refusal(
+        intent_id=intent.intent_id,
+        roster_version=snapshot.roster_version,
+        drone_id=None,
+        connection_epoch=None,
+        reason=RefusalReason.ADAPTER_FAILURE,
+        detail="a stop target did not complete",
+        status=LifecycleStatus.FAILED,
+    )
+    return ExecutionResult(
+        intent_id=intent.intent_id,
+        roster_version=snapshot.roster_version,
+        status=LifecycleStatus.FAILED,
+        plan=plan,
+        acknowledgements=acknowledgements,
+        refusal=refusal,
+        degraded_aircraft=tuple(
+            sorted(
+                {
+                    drone_id
+                    for result in (ground, aircraft)
+                    for drone_id in result.degraded_aircraft
+                }
+            )
+        ),
+    )
 
 
 def _composition_failure(
