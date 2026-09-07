@@ -25,6 +25,41 @@ def map_points(tag, *, world=False):
     return tag_corners(size) @ transform[:3, :3].T + transform[:3, 3]
 
 
+def _consensus_config(value):
+    if value is None:
+        return 1, 1, None, None
+    if not isinstance(value, dict) or set(value) != {
+        "minimum_distinct_tags",
+        "maximum_candidate_tags",
+        "maximum_translation_residual_m",
+        "maximum_rotation_residual_rad",
+    }:
+        raise ValueError("tag consensus configuration is invalid")
+    minimum = value["minimum_distinct_tags"]
+    maximum = value["maximum_candidate_tags"]
+    translation = value["maximum_translation_residual_m"]
+    rotation = value["maximum_rotation_residual_rad"]
+    if (
+        type(minimum) is not int
+        or not 1 <= minimum <= 6
+        or type(maximum) is not int
+        or not minimum <= maximum <= 6
+        or type(translation) not in (int, float)
+        or not np.isfinite(translation)
+        or translation <= 0
+        or type(rotation) not in (int, float)
+        or not np.isfinite(rotation)
+        or not 0 < rotation <= np.pi
+    ):
+        raise ValueError("tag consensus configuration is invalid")
+    return minimum, maximum, float(translation), float(rotation)
+
+
+def _rotation_residual(first, second):
+    delta = first.T @ second
+    return float(np.arccos(np.clip((np.trace(delta) - 1) / 2, -1, 1)))
+
+
 class TagLocalizer:
     def __init__(
         self,
@@ -35,6 +70,7 @@ class TagLocalizer:
         camera_serial,
         pipeline,
         T_body_camera,
+        consensus=None,
     ):
         self.manifest = validate_bundle(bundle, accepted_versions)
         self.world = self.manifest["schema_version"] == 2
@@ -109,6 +145,12 @@ class TagLocalizer:
         self.T_body_camera = rigid(T_body_camera)
         self.tags = {t["id"]: t for t in self.manifest.document("tags.yaml")["tags"]}
         self.calibration_sha256 = calibration_sha256
+        (
+            self.minimum_consensus_tags,
+            self.maximum_consensus_candidates,
+            self.maximum_translation_residual_m,
+            self.maximum_rotation_residual_rad,
+        ) = _consensus_config(consensus)
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
         parameters = cv2.aruco.DetectorParameters()
         parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
@@ -146,14 +188,180 @@ class TagLocalizer:
             return report | {"reason": "no_tags"}
         identifiers = ids.flatten().tolist()
         if len(set(identifiers)) != len(identifiers) or any(
-            i not in self.tags for i in identifiers
+            identifier not in self.tags for identifier in identifiers
         ):
             return report | {"reason": "unknown_or_duplicate_tag"}
-        if self.world and any(not self.tags[i]["verified_for_flight"] for i in identifiers):
+        if self.world and any(
+            not self.tags[identifier]["verified_for_flight"] for identifier in identifiers
+        ):
             return report | {"reason": "unverified_world_tag", "tag_ids": identifiers}
-        # ArUco returns decoded TL/TR/BR/BL; these are not image-position sorting.
-        pixels = np.concatenate([c.reshape(4, 2) for c in corners]).astype(float)
-        points = np.concatenate([map_points(self.tags[i], world=self.world) for i in identifiers])
+        if self.minimum_consensus_tags > 1 and len(identifiers) > self.maximum_consensus_candidates:
+            return report | {
+                "reason": "too_many_consensus_tags",
+                "tag_ids": identifiers,
+                "maximum_candidate_tags": self.maximum_consensus_candidates,
+            }
+        pixels_by_id = {
+            identifier: corner.reshape(4, 2).astype(float)
+            for identifier, corner in zip(identifiers, corners, strict=True)
+        }
+        inlier_ids, consensus_reason, consensus = self._consensus(identifiers, pixels_by_id)
+        if inlier_ids is None:
+            return report | {
+                "reason": consensus_reason,
+                "tag_ids": identifiers,
+                **consensus,
+            }
+        points = np.concatenate(
+            [map_points(self.tags[identifier], world=self.world) for identifier in inlier_ids]
+        )
+        pixels = np.concatenate([pixels_by_id[identifier] for identifier in inlier_ids])
+        camera, error, reason = self._camera_pose(points, pixels, inlier_ids)
+        if camera is None:
+            return report | {"reason": reason, "tag_ids": identifiers, **consensus}
+        body = camera @ np.linalg.inv(self.T_body_camera)
+        return (
+            report
+            | dict(
+                accepted=True,
+                reason="pose",
+                tag_ids=identifiers,
+                reprojection_rms_px=error,
+                **consensus,
+            )
+            | {
+                "T_world_camera" if self.world else "T_map_camera": camera.tolist(),
+                "T_world_body" if self.world else "T_map_body": body.tolist(),
+            }
+        )
+
+    def _consensus(self, identifiers, pixels_by_id):
+        if self.minimum_consensus_tags == 1:
+            return list(identifiers), None, {"consensus_status": "not_required"}
+        candidates = {}
+        for identifier in identifiers:
+            points = map_points(self.tags[identifier], world=self.world)
+            viable = [
+                candidate
+                for candidate in self._pose_candidates(
+                    points, pixels_by_id[identifier], [identifier]
+                )
+                if candidate[0] <= 2
+            ]
+            if viable:
+                candidates[identifier] = viable[:2]
+        selected, ambiguous = self._largest_pairwise_consensus(candidates)
+        inliers = [] if selected is None else sorted(candidate[0] for candidate in selected)
+        by_id = {identifier: candidates[identifier][0] for identifier in candidates}
+        if selected:
+            by_id.update({candidate[0]: (candidate[1], candidate[2]) for candidate in selected})
+        if selected:
+            reference = min(
+                selected,
+                key=lambda candidate: (
+                    sum(
+                        np.linalg.norm(candidate[2][:3, 3] - other[2][:3, 3])
+                        + _rotation_residual(candidate[2][:3, :3], other[2][:3, :3])
+                        for other in selected
+                    ),
+                    candidate[0],
+                    candidate[1],
+                ),
+            )
+            reference_id, _, reference_camera, _ = reference
+        else:
+            reference_id, reference_camera = None, None
+        residuals = [
+            {
+                "tag_id": identifier,
+                "reprojection_rms_px": by_id[identifier][0],
+                "translation_m": None
+                if reference_camera is None
+                else float(np.linalg.norm(by_id[identifier][1][:3, 3] - reference_camera[:3, 3])),
+                "rotation_rad": None
+                if reference_camera is None
+                else _rotation_residual(by_id[identifier][1][:3, :3], reference_camera[:3, :3]),
+            }
+            for identifier in sorted(candidates)
+        ]
+        diagnostics = {
+            "consensus_status": "ambiguous"
+            if ambiguous
+            else "accepted"
+            if len(inliers) >= self.minimum_consensus_tags
+            else "not_reached",
+            "consensus_required_distinct_tags": self.minimum_consensus_tags,
+            "consensus_maximum_candidate_tags": self.maximum_consensus_candidates,
+            "consensus_candidate_tag_ids": sorted(candidates),
+            "consensus_inlier_tag_ids": inliers,
+            "consensus_outlier_tag_ids": sorted(set(identifiers) - set(inliers)),
+            "consensus_reference_tag_id": reference_id,
+            "consensus_pairwise_compatible": bool(selected),
+            "consensus_residuals": residuals,
+        }
+        if ambiguous:
+            return None, "ambiguous_consensus", diagnostics
+        if len(inliers) < self.minimum_consensus_tags:
+            return None, "insufficient_tag_consensus", diagnostics
+        return inliers, None, diagnostics
+
+    def _largest_pairwise_consensus(self, candidates):
+        groups = [(identifier, candidates[identifier]) for identifier in sorted(candidates)]
+        largest = 0
+        best_by_tag_set = {}
+
+        def compatible(first, second):
+            return (
+                np.linalg.norm(first[2][:3, 3] - second[2][:3, 3])
+                <= self.maximum_translation_residual_m
+                and _rotation_residual(first[2][:3, :3], second[2][:3, :3])
+                <= self.maximum_rotation_residual_rad
+            )
+
+        def visit(index, selected):
+            nonlocal largest, best_by_tag_set
+            if len(selected) + len(groups) - index < largest:
+                return
+            if index == len(groups):
+                size = len(selected)
+                if not size:
+                    return
+                tag_set = tuple(candidate[0] for candidate in selected)
+                score = tuple((candidate[1], candidate[0], candidate[3]) for candidate in selected)
+                if size > largest:
+                    largest, best_by_tag_set = size, {tag_set: (score, tuple(selected))}
+                elif size == largest:
+                    current = best_by_tag_set.get(tag_set)
+                    if current is None or score < current[0]:
+                        best_by_tag_set[tag_set] = (score, tuple(selected))
+                return
+            identifier, poses = groups[index]
+            for pose_index, (error, camera) in enumerate(poses):
+                candidate = (identifier, error, camera, pose_index)
+                if all(compatible(candidate, existing) for existing in selected):
+                    visit(index + 1, [*selected, candidate])
+            visit(index + 1, selected)
+
+        visit(0, [])
+        if not best_by_tag_set:
+            return None, False
+        if len(best_by_tag_set) > 1 and largest >= self.minimum_consensus_tags:
+            return None, True
+        return min(best_by_tag_set.values(), key=lambda item: item[0])[1], False
+
+    def _camera_pose(self, points, pixels, identifiers):
+        candidates = self._pose_candidates(points, pixels, identifiers)
+        if not candidates or candidates[0][0] > 2:
+            return None, None, "reprojection_or_cheirality"
+        if len(candidates) > 1 and (
+            candidates[1][0] - candidates[0][0] < 0.5
+            or candidates[1][0] < 2 * max(candidates[0][0], 1e-9)
+        ):
+            return None, None, "ambiguous"
+        error, camera = candidates[0]
+        return camera, error, None
+
+    def _pose_candidates(self, points, pixels, identifiers):
         transform_key = "T_world_tag" if self.world else "T_map_tag"
         centered = points - points.mean(axis=0)
         _, singular, axes = np.linalg.svd(centered)
@@ -184,11 +392,11 @@ class TagLocalizer:
             T_map_camera = np.linalg.inv(T_camera_map)
             if any(
                 np.dot(
-                    T_map_camera[:3, 3] - np.array(self.tags[i][transform_key])[:3, 3],
-                    np.array(self.tags[i][transform_key])[:3, 2],
+                    T_map_camera[:3, 3] - np.array(self.tags[identifier][transform_key])[:3, 3],
+                    np.array(self.tags[identifier][transform_key])[:3, 2],
                 )
                 <= 0
-                for i in identifiers
+                for identifier in identifiers
             ):
                 continue
             projected = cv2.projectPoints(
@@ -198,25 +406,4 @@ class TagLocalizer:
             if np.isfinite(error):
                 candidates.append((error, T_map_camera))
         candidates.sort(key=lambda item: item[0])
-        if not candidates or candidates[0][0] > 2:
-            return report | {"reason": "reprojection_or_cheirality"}
-        if len(candidates) > 1 and (
-            candidates[1][0] - candidates[0][0] < 0.5
-            or candidates[1][0] < 2 * max(candidates[0][0], 1e-9)
-        ):
-            return report | {"reason": "ambiguous"}
-        error, camera = candidates[0]
-        body = camera @ np.linalg.inv(self.T_body_camera)
-        return (
-            report
-            | dict(
-                accepted=True,
-                reason="pose",
-                tag_ids=identifiers,
-                reprojection_rms_px=error,
-            )
-            | {
-                "T_world_camera" if self.world else "T_map_camera": camera.tolist(),
-                "T_world_body" if self.world else "T_map_body": body.tolist(),
-            }
-        )
+        return candidates
