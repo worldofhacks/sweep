@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import BinaryIO, Protocol
 
 import numpy as np
 from websockets.asyncio.client import connect
@@ -679,6 +679,8 @@ async def _confirm_submission(
             continue
         if raw.get("type") == "observation" and archive is not None:
             archive.observe(raw)
+            if archive.stopped:
+                return raw.get("event_id") == event.event_id, True
         if raw.get("type") == "state":
             if scope_from_state(raw, session=scope.session, device_id=scope.device_id) != scope:
                 raise LiveMapperError("target ground epoch changed while publishing")
@@ -863,6 +865,15 @@ async def _serve_one(port: int, timeout_s: float) -> socket.socket:
         await server.wait_closed()
 
 
+def _close_frame_source(source: socket.socket, stream: BinaryIO) -> None:
+    try:
+        source.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    stream.close()
+    source.close()
+
+
 def _adb_clock_query(adb: str, serial: str) -> str:
     result = subprocess.run(
         [
@@ -970,8 +981,7 @@ async def _main_async(args: argparse.Namespace) -> int:
             frames = NutCaptureReader(stream).frames()
 
             def close_frames() -> None:
-                stream.close()
-                source.close()
+                _close_frame_source(source, stream)
 
             async with connect(f"{args.relay_url.rstrip('/')}/ws/{args.session}") as relay:
                 await relay.send(

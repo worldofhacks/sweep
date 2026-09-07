@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import threading
 import time
 
@@ -590,6 +591,33 @@ def test_publisher_stops_a_silent_frame_reader_at_the_archive_deadline(tmp_path)
     assert archive.finish()["observations"]["stop_reason"] == "duration"
 
 
+def test_frame_source_shutdown_unblocks_a_buffered_socket_reader() -> None:
+    from tools.ohmni_live_tag_mapper import _close_frame_source
+
+    source, peer = socket.socketpair()
+    stream = source.makefile("rb")
+    reading = threading.Event()
+    finished = threading.Event()
+
+    def read_one() -> None:
+        reading.set()
+        try:
+            stream.read(1)
+        finally:
+            finished.set()
+
+    reader = threading.Thread(target=read_one)
+    reader.start()
+    try:
+        assert reading.wait(0.5)
+        _close_frame_source(source, stream)
+        reader.join(0.5)
+        assert finished.is_set()
+        assert not reader.is_alive()
+    finally:
+        peer.close()
+
+
 def test_publisher_stops_a_silent_relay_at_the_archive_deadline(tmp_path) -> None:
     from tools.ohmni_live_tag_mapper import AcceptedObservationArchive, ArchiveConfig
 
@@ -635,6 +663,40 @@ def test_publisher_stops_a_silent_relay_at_the_archive_deadline(tmp_path) -> Non
     assert asyncio.run(publish_observations(Socket(), _mapper(), (_frame(),), archive=archive)) == 0
     assert time.monotonic() - started < 0.5
     assert archive.finish()["observations"]["stop_reason"] == "duration"
+
+
+def test_confirmation_stops_when_an_unrelated_archive_event_reaches_its_bound(tmp_path) -> None:
+    from relay.observations import Observation
+    from tools.ohmni_live_tag_mapper import (
+        AcceptedObservationArchive,
+        ArchiveConfig,
+        _confirm_submission,
+    )
+
+    mapper = _mapper()
+    scope = LiveScope("live-12", 12, 9)
+    unrelated, event, *_ = mapper.observations(scope, _frame())
+    archive = AcceptedObservationArchive(
+        tmp_path / "archive",
+        scope=scope,
+        mapper=mapper.config,
+        config=ArchiveConfig("ohmni-pose", "ohmni-lidar", "odom", "body", "lidar", max_records=1),
+    )
+
+    class Socket:
+        sent = False
+
+        async def recv(self) -> str:
+            if not self.sent:
+                self.sent = True
+                return json.dumps(Observation(unrelated, 1_100).to_mapping())
+            await asyncio.Future()
+            raise AssertionError("unreachable") from None
+
+    started = time.monotonic()
+    assert asyncio.run(_confirm_submission(Socket(), scope, event, 1, archive)) == (False, True)
+    assert time.monotonic() - started < 0.5
+    assert archive.finish()["observations"]["stop_reason"] == "max_records"
 
 
 def test_archive_drain_stops_after_its_silent_receive_deadline(tmp_path) -> None:
