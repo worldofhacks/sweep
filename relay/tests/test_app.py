@@ -20,6 +20,7 @@ from relay.app import RelayRuntime, create_app
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import AuthenticationError, Principal, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
+from relay.contracts import NodeType
 from relay.media import MediaMonitor, MediaPathObservation
 from relay.session import CapabilityBoundIntentSink, Clock, IntentSink, RelaySession
 from relay.settings import RelaySettings
@@ -152,10 +153,6 @@ def test_control_heartbeat_is_signed_routed_current_and_not_audited(
         "connection_epoch",
         "roster_version",
         "seq",
-        "issued_at",
-        "expires_at",
-        "hold_after_ms",
-        "failsafe_after_ms",
         "signature",
     }
     assert set(first) == expected
@@ -176,14 +173,49 @@ def test_control_heartbeat_is_signed_routed_current_and_not_audited(
         1,
     )
     assert second["seq"] == 2
-    assert first["expires_at"] == first["issued_at"] + app_settings.node_watchdog_failsafe_ms
-    assert first["hold_after_ms"] == app_settings.node_watchdog_hold_ms
     assert second["roster_version"] > first["roster_version"]
     # Only the readiness transition, not either transport heartbeat, added an audit record.
     before, after_first, after_readiness, after_second = audit_sequences
     assert after_first == before
     assert after_readiness > after_first
     assert after_second == after_readiness
+
+
+def test_ground_control_heartbeat_retains_explicit_lease_bounds(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+) -> None:
+    settings = replace(
+        app_settings, adapter_keys={11: ADAPTER_KEY}, node_types={11: NodeType.GROUND}
+    )
+
+    async def receive_heartbeat() -> dict[str, object]:
+        runtime = RelayRuntime(settings, clock=clock, event_ids=event_ids)
+        session = runtime.session(SESSION)
+        principal = Principal(source="adapter", drone_id=11, signing_key=ADAPTER_KEY)
+        subscription = await runtime.subscribe(SESSION, principal)
+        session.process_membership(
+            membership_payload(
+                action="join",
+                event_id="ground-heartbeat",
+                drone_id=11,
+                node_type="ground",
+                capabilities=["ground_drive"],
+            ),
+            principal,
+        )
+        await runtime._publish_control_heartbeats(SESSION, session)
+        return subscription.queue.get_nowait().event
+
+    heartbeat = asyncio.run(receive_heartbeat())
+    assert heartbeat["drone_id"] == 11
+    assert heartbeat["issued_at"] == heartbeat["t"]
+    assert heartbeat["expires_at"] == heartbeat["t"] + settings.node_watchdog_failsafe_ms
+    assert heartbeat["hold_after_ms"] == settings.node_watchdog_hold_ms
+    assert heartbeat["failsafe_after_ms"] == settings.node_watchdog_failsafe_ms
+    unsigned = {key: value for key, value in heartbeat.items() if key != "signature"}
+    assert verify_event_signature(unsigned, str(heartbeat["signature"]), ADAPTER_KEY)
 
 
 def test_control_heartbeat_cadence_stays_inside_a_short_hold_window(

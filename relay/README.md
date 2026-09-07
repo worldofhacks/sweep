@@ -254,6 +254,11 @@ current roster version, timestamp freshness, and sequence all validate. Commands
 membership, acknowledgements, parseable telemetry, and fan-out echoes are deliberately not
 liveness evidence.
 
+The aircraft frame above is exact. Only a host-configured ground node receives the
+additional signed `issued_at`, `expires_at`, `hold_after_ms`, and `failsafe_after_ms`
+fields. The bridge CI job feeds an actual relay heartbeat to the Kotlin phone parser
+and verifies its signature through `tools.check_phone_control_heartbeat`.
+
 ### Command frame (relay to node)
 
 ```json

@@ -28,6 +28,7 @@ from relay.auth import (
     sign_event,
 )
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.contracts import NodeType
 from relay.control_localization import ControlLocalizationProjector
 from relay.intent_v1 import REGISTERED_SOURCES
 from relay.media import MediaEvidence, MediaMonitor, MediaMtxClient
@@ -799,11 +800,14 @@ class RelayRuntime:
                         "connection_epoch": connection_epoch,
                         "roster_version": roster_version,
                         "seq": sequence,
-                        "issued_at": issued_at,
-                        "expires_at": issued_at + self.settings.node_watchdog_failsafe_ms,
-                        "hold_after_ms": self.settings.node_watchdog_hold_ms,
-                        "failsafe_after_ms": self.settings.node_watchdog_failsafe_ms,
                     }
+                    if self.settings.node_types.get(principal.drone_id) == NodeType.GROUND:
+                        unsigned.update(
+                            issued_at=issued_at,
+                            expires_at=issued_at + self.settings.node_watchdog_failsafe_ms,
+                            hold_after_ms=self.settings.node_watchdog_hold_ms,
+                            failsafe_after_ms=self.settings.node_watchdog_failsafe_ms,
+                        )
                     event = {
                         **unsigned,
                         "signature": sign_event(unsigned, principal.signing_key),
