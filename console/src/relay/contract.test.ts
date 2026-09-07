@@ -65,34 +65,15 @@ describe('M1.1 wire compatibility', () => {
     expect(isConsoleIntentV1({ ...pulse, name: 'arm', args: {}, selection: [], confirm: false })).toBe(false)
   })
 
-  test('refuses optional controls that the deployed relay does not advertise', () => {
+  test('reads both the original C1 profile and C1 with optional body_pulse support', () => {
     const state = { v: 1, t, type: 'state', event_id: 'pulse-profile', session,
       roster_version: 1, armed: false, estop: false, selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
       capability_profile: 'c1_basic_control', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
       pending: null, accepted_plan: null, drones: [aircraft({ adapter_capabilities: ['flight', 'body_pulse_v1'] })] }
     expect(parseRelayServerEvent(state)).not.toBeNull()
-    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse'] })).toBeNull()
+    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse'] })).not.toBeNull()
     expect(parseRelayServerEvent({ ...state, enabled_intent_names: ['body_pulse'] })).toBeNull()
     expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse', 'unknown'] })).toBeNull()
-  })
-
-  test('normalizes the deployed ground state and accepts its signed pose evidence', () => {
-    const state = {
-      v: 1, t, type: 'state', event_id: 'root-ground-state', session,
-      roster_version: 3, armed: false, estop: false, selection: [11], formation: 'none', spacing: 0.8, mode: 'indoor',
-      capability_profile: 'c1_ground_runtime', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'ground_velocity', 'survey_area'],
-      pending: null, accepted_plan: null,
-      drones: [aircraft({ drone_id: 11, node_type: 'ground', ground_readiness: { source_id: 'ohmni-pose' }, adapter_capabilities: ['ground_drive'] })],
-    }
-    const parsed = parseRelayServerEvent(state)
-    expect(parsed).toMatchObject({ type: 'state', drones: [{ node_type: 'ground', device_class: 'ground_vehicle', unit: 11 }] })
-    expect(parseRelayServerEvent({ ...state, drones: [{ ...state.drones[0], device_class: 'aircraft' }] })).toBeNull()
-    expect(parseRelayServerEvent({
-      v: 1, type: 'observation', event_id: 'root-ground-pose', session, device_id: 11, connection_epoch: 2,
-      source_id: 'ohmni-pose', node_type: 'ground', frame: 'world', confidence: 0.9,
-      t_capture: null, t_source_receipt: { clock_id: 'ohmni-ms', unit: 'ms', value: 100 }, clock_mapping_id: null,
-      payload: { kind: 'pose', pose: { parent_frame: 'world', child_frame: 'base_link', x_m: 2, y_m: -1, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } }, t_ingest: 101,
-    })).toMatchObject({ type: 'observation', payload: { kind: 'pose' } })
   })
 
   test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {

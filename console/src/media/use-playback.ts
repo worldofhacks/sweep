@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useEffect, useState, type RefObject } from 'react'
 import type { PlaybackDescriptor } from './playback'
 import type { MediaPlaybackState, PlaybackSession } from './player'
 
@@ -19,20 +19,10 @@ export function usePlayback(
   createSession: () => PlaybackSession,
 ): PlaybackView {
   const [view, setView] = useState<PlaybackView>({ state: 'idle' })
-  const latest = useRef({ descriptor, createSession })
-  const descriptorKey = descriptor
-    ? `${descriptor.primary.url}\u0000${descriptor.primary.authorization}\u0000${descriptor.stream}`
-    : ''
-
-  useEffect(() => {
-    latest.current = { descriptor, createSession }
-  }, [createSession, descriptor])
 
   useEffect(() => {
     const video = videoRef.current
-    const current = latest.current
-    const playbackDescriptor = current.descriptor
-    if (!video || !playbackDescriptor) return
+    if (!video || !descriptor) return
     let active = true
     let generation = 0
     let session: PlaybackSession | null = null
@@ -64,11 +54,11 @@ export function usePlayback(
         })
       }
       try {
-        const nextSession = current.createSession()
+        const nextSession = createSession()
         session = nextSession
         void Promise.resolve().then(() => {
           if (!active || attempt !== generation) return
-          return nextSession.start(video, playbackDescriptor, (state, detail) => {
+          return nextSession.start(video, descriptor, (state, detail) => {
             if (!active || attempt !== generation) return
             if (state === 'failed') { failed(detail); return }
             if (state === 'playing') {
@@ -96,7 +86,7 @@ export function usePlayback(
       session = null
       void closeSession(closingSession)
     }
-  }, [descriptorKey, videoRef])
+  }, [createSession, descriptor, videoRef])
 
   return descriptor ? view : { state: 'idle' }
 }

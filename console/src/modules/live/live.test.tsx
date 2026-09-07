@@ -335,7 +335,7 @@ describe('Live module playback', () => {
     expect(wall.getAllByRole('article')).toHaveLength(8)
     expect(wall.queryByRole('article', { name: /Slot .* empty/ })).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(8))
-    expect(log.started).toEqual(['drone1', 'drone2', 'drone3', 'drone4', 'drone11', 'drone12', 'drone13', 'drone14'])
+    expect(log.started).toEqual(['drone1', 'drone2', 'drone3', 'drone4', 'ground1', 'ground2', 'ground3', 'ground4'])
     expect(tile('D-01').getByLabelText('Live feed D-01')).toBe(firstPlayer)
     expect(log.closed).toBe(0)
     expect(clients.console.sent).toEqual([])
@@ -359,7 +359,7 @@ describe('Live module playback', () => {
     expect(clients.keyboard.sent).toEqual([])
   })
 
-  test('the mixed wall plays all five global device paths and reconnects only the device whose epoch changed', async () => {
+  test('the mixed wall plays all five class/unit paths and reconnects only the device whose epoch changed', async () => {
     const clients = {
       console: new FixtureRelayClient(session, clock, 'console', 'mixed'),
       keyboard: new FixtureRelayClient(session, clock, 'keyboard', 'mixed'),
@@ -367,14 +367,14 @@ describe('Live module playback', () => {
     const log = new SessionLog()
     const view = renderLive(clients, log.media)
     await screen.findByRole('region', { name: 'All devices' })
-    await waitFor(() => expect(log.started).toEqual(['drone1', 'drone11', 'drone12']))
+    await waitFor(() => expect(log.started).toEqual(['drone1', 'ground1', 'ground2']))
     const drones = fixtureScenario('mixed').fleet(clock()).map((drone) => ({
       ...drone, video: { status: 'live' as const, last_frame_at: clock() },
     }))
     const rosterVersion = fixtureScenario('mixed').rosterVersion
     act(() => emitState(clients.console, 'five-live', drones, [1], rosterVersion))
     await waitFor(() => expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(5))
-    expect(log.started).toEqual(['drone1', 'drone11', 'drone12', 'drone2', 'drone13'])
+    expect(log.started).toEqual(['drone1', 'ground1', 'ground2', 'drone2', 'ground3'])
     expect(log.closed).toBe(0)
     for (const id of ['D-01', 'D-02', 'G-01', 'G-02', 'G-03']) {
       expect(tile(id).getByLabelText(`Live feed ${id}`)).toBeInTheDocument()
@@ -384,7 +384,7 @@ describe('Live module playback', () => {
       : drone)
     act(() => emitState(clients.console, 'ground-two-rejoined', rejoined, [1], rosterVersion))
     await waitFor(() => expect(log.closed).toBe(1))
-    expect(log.started).toEqual(['drone1', 'drone11', 'drone12', 'drone2', 'drone13', 'drone12'])
+    expect(log.started).toEqual(['drone1', 'ground1', 'ground2', 'drone2', 'ground3', 'ground2'])
     expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(5)
     act(() => emitState(clients.console, 'ground-one-offline', rejoined.map((drone) => drone.drone_id === 11
       ? { ...drone, video: { status: 'offline', last_frame_at: clock() } }
@@ -563,7 +563,7 @@ describe('Live module robot inspection', () => {
     expect(tile('G-01').getByLabelText('Live feed G-01')).toBeInTheDocument()
     expect(tile('G-02').getByLabelText('Live feed G-02')).toBeInTheDocument()
     expect(await tile('G-01').findByText('Playback playing')).toBeInTheDocument()
-    await waitFor(() => expect(log.started).toEqual(['drone1', 'drone11', 'drone12']))
+    await waitFor(() => expect(log.started).toEqual(['drone1', 'ground1', 'ground2']))
     expect(tile('G-03').getByText('unreported')).toBeInTheDocument()
     expect(tile('G-03').getByRole('button', { name: 'not selectable G-03' })).toHaveAttribute(
       'title', 'Relay reports this robot is not selectable.',

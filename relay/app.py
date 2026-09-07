@@ -74,6 +74,7 @@ def default_media_monitor(settings: RelaySettings, clock: Clock) -> MediaMonitor
         drone_ids=tuple(sorted(settings.adapter_keys)),
         poll_interval_ms=settings.media_poll_interval_ms,
         stale_after_ms=settings.media_stale_after_ms,
+        streams=settings.media_streams,
     )
 
 
@@ -245,6 +246,8 @@ class RelayRuntime:
                     control_pose_signing_key=self.control_pose_signing_key,
                     media_evidence=self.media_evidence,
                     node_types=self.settings.node_types,
+                    device_units=self.settings.device_units,
+                    media_streams=self.settings.media_streams,
                     aircraft_limit=(
                         self.settings.physical_aircraft_limit
                         if self.settings.adapter_backend is AdapterBackend.REMOTE

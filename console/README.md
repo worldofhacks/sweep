@@ -66,40 +66,43 @@ unconfigured second camera is never duplicated from the primary feed. [Integrati
 
 ## Device classes
 
-The relay identifies each device with `node_type` (`aircraft` or `ground`). The console derives
-its internal `device_class` and uses the exact integer device ID as `unit` unless state metadata
-supplies a unit. A conflicting `node_type` and `device_class` is rejected. Labels are `D-{unit}` for
+Every device the relay reports carries `device_class` (`aircraft` or `ground_vehicle`) and `unit`,
+its 1-based ordinal within that class; a relay that omits them is read as aircraft whose unit is
+the drone id (`src/relay/contract.ts`, `normalizeRelayAircraftState`). Labels are `D-{unit}` for
 aircraft and `G-{unit}` for ground vehicles (`formatDeviceId`; `formatDroneId` stays as the
 aircraft-only alias), and operator copy takes the noun for the class in view: `aircraft`, `robot`,
 or `device` when a set is mixed or empty (`deviceNoun`, `rosterNoun`, `selectionNoun` in
-`src/control/state.ts`; the sentence tables in `src/shell/sentences.ts` take the same noun).
+`src/control/state.ts`; the sentence tables in `src/shell/sentences.ts` take the same noun). A
+join's `class:<device_class>` capability sets the class before the first state frame arrives.
 
 The Control module marks `takeoff`, `land`, `land_all`, `altitude`, `sweep` and `capture_room`
 unsupported with "Not available for robots." when every device a control addresses is a ground
 vehicle (`deviceClassBlockedReason`); a mixed selection keeps them enabled because the relay
 decides per device, and `land_all` follows the roster, so it is unsupported only when the roster
-holds no aircraft. The deployed profile supports `ground_velocity` and `survey_area` when it
-advertises them. Legacy body-pulse, peripheral, and camera controls remain unsupported.
+holds no aircraft. Body pulses require an aircraft-only selection, even when a robot advertises
+the pulse capability. The opt-in Flight profile also rejects any selection containing a robot.
 For a ground vehicle the registry's safety-operator line reads `Spotter` (a person beside the robot
 with its screen stop in reach). Missing authority reads `Sweep control not granted`; that flag
 alone does not prove an RC takeover or local override. Readiness help gives class-specific setup
 steps and shows zero position quality independently of live telemetry or membership.
 
-Signed relay observations are parsed by `src/relay/observation.ts` and retained by producer,
-device, epoch, and payload kind. A declared source-local scan remains local. Only a signed pose
-whose parent frame is `world` can place a ground device on the shared map. `MapMetadata` and
+A node's `sensor` frame (a `lidar_scan`: pose at scan time, angle origin and increment, range
+bounds, and integer centimetre ranges with 0 for no return) is parsed with the relay's bounds
+(`RelaySensorEvent`, `parseRelayServerEvent`) and kept in `src/sensor/store.ts`: the latest scan per
+device and a trail of the last twenty, read with `useSensorStore(controller.sensors)`. The control
+reducer records only `sensor.last_scan_at`, mirroring the relay's projection. `MapMetadata` and
 `parseMapMetadata` read the headers of the relay's map endpoint for the fleet map.
 
 ## Camera dashboard
 
 The Live module's single wall and device inspection use the authoritative device ID, class, unit, connection
 epoch, telemetry, membership, readiness reasons, and a closed media status with a last-frame
-timestamp. The console uses explicitly reported camera IDs, labels, safe configured stream names, and per-camera status. With no camera mapping it derives the primary stream as `drone{device_id}` for every device. It never renders an arbitrary adapter-provided media URL. `All devices` is the default for every roster: its responsive
+timestamp. The console uses explicitly reported camera IDs, labels, safe configured stream names, and per-camera status. With no camera mapping it retains one legacy primary stream, `drone{unit}` for aircraft or `ground{unit}` for robots. It never renders an arbitrary adapter-provided media URL. `All devices` is the default for every roster: its responsive
 wall has one tile per reported device with selection among its explicitly configured onboard cameras, adds new joins automatically, and keeps known offline states visible. An empty configured-camera list remains empty. There are no empty hardware slots or six-device display cap; it supports
 the configured bounded mixed-fleet inventory. Focus opens local device inspection with
 a Back to All devices action; no extra wall modes or command selection changes are needed. With device IDs
 `1,2,11,12,13` configured as two aircraft and three robots, the paths are `drone1`, `drone2`,
-`drone11`, `drone12`, `drone13`; command envelopes retain the global IDs. One console uses one
+`ground1`, `ground2`, `ground3`; command envelopes retain the global IDs. One console uses one
 authoritative relay/session; it does not combine rosters from separate relay instances.
 
 ## Live playback
@@ -179,11 +182,11 @@ does not decode, or a refusal draw no raster and say so; 404 is the honest "the 
 for this session yet"; without a bootstrap nothing is read at all and `Reset map` is disabled.
 `Reset map` posts to `…/map/reset` and reports what the relay answered.
 
-Aircraft positions can come from the relay telemetry projection (`x`, `y`, and an optional
-`heading_deg` or `yaw_deg`). Ground positions use a signed `world` pose from the observation
-store. A device that reports neither is named under the map rather than placed, and a device with
-no heading is drawn as a circle rather than a guessed direction. Source-local scans and trails do
-not enter the shared map. The geofence is read
+Positions come from the relay's telemetry projection (`x`, `y`, and an optional `heading_deg`, or
+`yaw_deg` from a node that names it that way), else from the pose of the device's newest scan in
+the current connection epoch. A device that reports neither is named under the map rather than
+placed, and a device with no heading is drawn as a circle rather than a guessed direction. Scans
+and trails come from the sensor store's ring, never from the control reducer. The geofence is read
 from the catalog's configuration snapshot, which the relay does not serve yet, so production draws
 no box until real configuration is available.
 
@@ -345,3 +348,78 @@ another vendor without an adapter contract and hardware evidence.
 
 Robot LiDAR readiness never becomes an aircraft flight or camera prerequisite. A playable
 camera feed does not promise panorama capture, gimbal control, or media retrieval.
+
+## Known-map destination review — issue #143
+
+Control › Navigate uses the authoritative selection, including each device's class and connection
+epoch. It resolves accepted destination names and aliases, asks for clarification when names are
+ambiguous, and refuses excluded, wrong-floor, unreachable, or unsupported destinations. Grounded
+aircraft require a separate takeoff operation; navigation review never drafts capture, survey, or
+formation jobs.
+
+The runtime discovers authenticated platform services on the configured relay and injects the real
+HTTP `NavigationClient` through `services.navigation`. Its catalog
+must identify the accepted map, floor, world frame, approval, content hashes and geometry/navigation
+versions, plus the authoritative motion configuration. A preview binds those inputs to the request,
+roster, selected identities, per-device outcomes, routes, arrival slots and class-specific hold behavior.
+The pane and existing dock show this frozen evidence. Changed inputs, expired evidence, cancelled
+requests and replaced providers retire the review; delayed responses cannot recreate it.
+
+The relay source implements catalog, name resolution, explicit destination compilation, durable
+preview storage, confirmation revalidation and active-map selection. Catalogs come from the exact
+current approved map and the loaded autonomy configuration. The console can request a read-only
+review when the platform advertises review support, including typed capability refusals and unknown
+route reachability. This does not widen C1/C2 motion capabilities. The shared Intent v1
+`navigate {zone_id}` vocabulary is registered; generic transmission paths, model plans and retries
+cannot bypass its frozen review. No runtime route or device evidence is generated.
+
+Class-qualified route planning and execution remain under #144/#145/#249. Current previews report
+`dispatchEligible: false` and confirmation reports execution unavailable. A static authoring map is
+not a generated flight-clearance artifact. Updating the console alone does not update an older
+running relay: an unupgraded relay, missing approved map or missing measured autonomy configuration
+remains visibly unavailable. See [platform integration](../docs/platform-integration.md) and the
+[navigation HTTP contract](../relay/NAVIGATION.md) for the exact software and deployment boundaries.
+
+## Shared map authoring — issue #248
+
+Map › Map authoring edits operator-supplied occupancy images and measured map metadata in the existing
+console. Enter the actual resolution, bottom-left origin, map version, floor and registered `world`
+frame before drawing, then supply metric units, creation provenance and measured registration
+identity, residual and threshold before validation. The editor supports named zones and aliases, corridor centerlines and widths,
+hand-measured flight heights and tolerances, geofences, static obstacles, no-fly polygons, and tags
+with orientation, provenance, confidence, observation references and tape-verification evidence. Numeric vertex editing and undo
+support precise corrections. A LiDAR occupancy plane does not establish aircraft clearance.
+
+Local drafts can be exported and imported as `sweep-map-draft-v1`; this is an editor document, not the
+published `sweep-world-bundle-v1` schema. Image bytes, dimensions and hashes are checked on import. Export local
+work before leaving the Map module or closing the console. Switching between its Live observations
+and Map authoring tabs retains the local draft. Imported documents cannot confer relay validation or
+approval, and local edits invalidate previously displayed validation and approval evidence.
+
+`services.mapAuthoring` is supplied by the real authenticated HTTP adapter for revision listing/loading,
+saving, server validation, exact-revision approval, comparison, active-map selection and recording
+associated tag observations. Server save runs the world-bundle validator and records its result;
+invalid drafts may remain editable stored revisions but cannot be approved.
+Saving returns an immutable revision/hash; validation and explicit audited approval must refer to that
+same saved identity. Position and drive-over requests carry the exact saved bundle/revision/hash,
+which must match the active approved map and the host-qualified registration. Responses and capture
+receipts retain that reference; repeated map/floor labels cannot associate another map's evidence.
+Drive-over tag recording names one selected ground robot and its current connection epoch;
+another device's observation is rejected. The editor rejects late responses after edits or provider changes. Local checks
+help correct geometry and evidence, but never replace the world-bundle validator or measured hardware
+qualification. Verified live position overlays additionally require the provider's observation capability,
+a matching session/map/floor, a current reported device epoch and fresh world-frame association.
+Generic telemetry coordinates are not promoted into map observations.
+
+The relay stores immutable versioned drafts, published bundles, validation receipts, approvals and
+operator audit records in session-scoped SQLite. Loading and validating an unchanged approved
+revision preserves its original immutable approval binding. Use **Use approved revision for
+navigation** to select its exact approved revision independently of approval. Multiple approved
+maps require this explicit choice; an edited selected map does not silently follow its new head.
+
+Live overlays and drive-over recording are advertised only when the host has configured a qualified
+world-pose producer with its actual device identity, credential, clock domain and approved-map
+registration. They consume the shared observation envelope; legacy x/y is not substituted. Those
+source measurements and the real Level 1 map remain hardware work under #243/#246/#247. The editor
+uses the same workflow for a real replacement map. Synthetic bundle and image fixtures live only in
+isolated tests; the operator runtime starts with real inputs or honest unavailable states.

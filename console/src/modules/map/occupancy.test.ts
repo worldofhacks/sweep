@@ -18,7 +18,7 @@ const HEADERS = {
 }
 
 function pngResponse(headers: Record<string, string> = HEADERS, status = 200): Response {
-  return new Response(new Uint8Array([137, 80, 78, 71]), {
+  return new Response(new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' }), {
     status,
     headers,
   })

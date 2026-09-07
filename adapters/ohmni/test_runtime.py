@@ -433,6 +433,16 @@ def test_confirmed_console_ground_velocity_uses_signed_relay_command_lifecycle(
             )
             assert json.loads(console.recv(timeout=WAIT_S))["type"] == "auth.accepted"
             assert json.loads(console.recv(timeout=WAIT_S))["type"] == "state"
+            _receive_until(
+                console,
+                lambda frame: (
+                    frame.get("type") == "state"
+                    and any(
+                        drone.get("drone_id") == GROUND_ID and drone.get("selectable")
+                        for drone in frame["drones"]
+                    )
+                ),
+            )
             console.send(
                 json.dumps(
                     {

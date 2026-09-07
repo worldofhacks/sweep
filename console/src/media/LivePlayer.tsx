@@ -20,15 +20,15 @@ export interface LivePlayerProps {
 /** Mounted only while the relay reports the stream live; unmounting closes the session. */
 export function LivePlayer({ device, media, camera }: LivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
-  const { drone_id } = device
+  const { device_class, unit } = device
   const cameraStream = camera?.stream
   const descriptor = useMemo<PlaybackDescriptor | Error>(() => {
     try {
-      return createPlaybackDescriptor({ ...media.configuration, device: { drone_id }, stream: cameraStream })
+      return createPlaybackDescriptor({ ...media.configuration, device: { device_class, unit }, stream: cameraStream })
     } catch (error) {
       return error instanceof Error ? error : new Error('No playback descriptor')
     }
-  }, [drone_id, media.configuration, cameraStream])
+  }, [device_class, unit, media.configuration, cameraStream])
   const playback = usePlayback(
     videoRef,
     descriptor instanceof Error ? null : descriptor,

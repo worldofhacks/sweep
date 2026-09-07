@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import os
+import re
 import subprocess
 import threading
 import time
@@ -13,6 +15,7 @@ from urllib.parse import quote
 
 MAX_DEVICE_ID = 64
 FRAME_FRESHNESS_S = 3.0
+STREAM_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 
 
 @dataclass(frozen=True)
@@ -47,10 +50,14 @@ def stream_name(device_id: int) -> str:
     return f"drone{device_id}"
 
 
-def publish_url(host: str, device_id: int, key: str) -> str:
+def publish_url(host: str, device_id: int, key: str, *, stream: str | None = None) -> str:
     if not host or any(character in host for character in "/@?#\r\n"):
         raise ValueError("media host must be a hostname[:port]")
     path = stream_name(device_id)
+    if stream is not None:
+        if not isinstance(stream, str) or STREAM_PATTERN.fullmatch(stream) is None:
+            raise ValueError("camera stream must be a bounded flat MediaMTX path")
+        path = stream
     password = hmac.new(
         key.encode(), f"sweep-media-publish-v1:{path}".encode(), hashlib.sha256
     ).hexdigest()
@@ -130,6 +137,7 @@ def from_environment(host: str, key: str) -> Camera:
         key,
         os.environ.get("SWEEP_FFMPEG", "/data/local/sweep/ffmpeg"),
         source,
+        stream=os.environ.get("SWEEP_CAMERA_STREAM"),
     )
 
 
@@ -142,14 +150,16 @@ class Camera:
         ffmpeg: str,
         source: V4LSource,
         *,
+        stream: str | None = None,
         monotonic=time.monotonic,
     ) -> None:
-        self._command = command(ffmpeg, publish_url(host, device_id, key), source)
+        self._command = command(ffmpeg, publish_url(host, device_id, key, stream=stream), source)
         self._monotonic = monotonic
         self._process: subprocess.Popen[bytes] | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._frames_seen = 0
+        self._progress_updates = 0
         self._last_frame_at: float | None = None
         self._thread = threading.Thread(target=self._run, name="ohmni-camera", daemon=True)
         self._state = "stopped"
@@ -189,6 +199,7 @@ class Camera:
             with self._lock:
                 if count > self._frames_seen:
                     self._frames_seen = count
+                    self._progress_updates += 1
                     self._last_frame_at = self._monotonic()
 
     def _stop_process(self, process: subprocess.Popen[bytes]) -> None:
@@ -199,7 +210,84 @@ class Camera:
             process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.wait()
+            process.wait(timeout=2)
+
+    def probe(self, timeout_s: float = 10.0) -> dict[str, object]:
+        """One owned attempt, with bounded cleanup and credential-free diagnostics.
+
+        Two advancing progress samples establish local producer output only. The
+        caller must independently verify MediaMTX receipt and actual playback.
+        """
+        if (
+            isinstance(timeout_s, bool)
+            or not isinstance(timeout_s, (int, float))
+            or not math.isfinite(timeout_s)
+            or not 1 <= timeout_s <= 30
+        ):
+            raise ValueError("camera probe timeout must be 1 through 30 seconds")
+        with self._lock:
+            if self._thread.is_alive() or self._process is not None or self._stop.is_set():
+                raise ValueError("camera probe requires an idle, open owner")
+            self._frames_seen = self._progress_updates = 0
+            self._last_frame_at = None
+            self._state = "connecting"
+        result: dict[str, object] = {
+            "status": "failed",
+            "reason": "publisher_start_failed",
+            "frames_seen": 0,
+            "progress_updates": 0,
+            "cleanup_confirmed": True,
+        }
+        process = observer = None
+        try:
+            process = subprocess.Popen(
+                self._command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            with self._lock:
+                self._process = process
+            observer = threading.Thread(target=self._observe_progress, args=(process,), daemon=True)
+            observer.start()
+            deadline = self._monotonic() + timeout_s
+            while True:
+                if self._stop.is_set():
+                    result["reason"] = "interrupted"
+                    break
+                if process.poll() is not None:
+                    result["reason"] = "publisher_exited"
+                    break
+                with self._lock:
+                    updates = self._progress_updates
+                if updates >= 2 and self.state == "publishing":
+                    result.update(status="frames_observed", reason=None)
+                    break
+                if self._monotonic() >= deadline:
+                    result["reason"] = "progress_timeout"
+                    break
+                self._stop.wait(0.05)
+        except OSError:
+            # The exception or ffmpeg stderr may contain a credential-bearing URL.
+            result["reason"] = "publisher_start_failed"
+        finally:
+            if process is not None:
+                try:
+                    self._stop_process(process)
+                except (OSError, subprocess.TimeoutExpired):
+                    result.update(status="failed", reason="cleanup_failed", cleanup_confirmed=False)
+                if result["cleanup_confirmed"]:
+                    if observer is not None:
+                        observer.join(timeout=1)
+                    if process.stderr is not None and not (observer and observer.is_alive()):
+                        process.stderr.close()
+            with self._lock:
+                result["frames_seen"] = self._frames_seen
+                result["progress_updates"] = self._progress_updates
+                self._state = "stopped" if result["cleanup_confirmed"] else "failed"
+                if result["cleanup_confirmed"]:
+                    self._process = None
+        return result
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -219,6 +307,7 @@ class Camera:
             with self._lock:
                 self._process = process
                 self._frames_seen = 0
+                self._progress_updates = 0
                 self._last_frame_at = None
                 self._state = "connecting"
             observer = threading.Thread(
@@ -230,7 +319,12 @@ class Camera:
             observer.start()
             while not self._stop.wait(0.5) and process.poll() is None:
                 pass
-            self._stop_process(process)
+            try:
+                self._stop_process(process)
+            except (OSError, subprocess.TimeoutExpired):
+                with self._lock:
+                    self._state = "failed"
+                return  # Never replace a publisher whose cleanup is unconfirmed.
             observer.join(timeout=1)
             with self._lock:
                 self._process = None
@@ -239,7 +333,10 @@ class Camera:
         with self._lock:
             self._state = "stopped"
 
-    def close(self) -> None:
+    def request_stop(self) -> None:
         self._stop.set()
+
+    def close(self) -> None:
+        self.request_stop()
         if self._thread.is_alive():
-            self._thread.join(timeout=3)
+            self._thread.join(timeout=6)

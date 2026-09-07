@@ -13,7 +13,7 @@ import {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 const descriptor = createPlaybackDescriptor({
-  device: { drone_id: 1 },
+  device: { device_class: 'aircraft', unit: 1 },
   webrtcOrigin: 'http://localhost:8889',
   readerUsername: 'reader',
   readerPassword: 'secret',
@@ -106,7 +106,7 @@ test.each([
   ['https://media.example', 'https://media.example/session/1', 'https://media.example/session/1'],
 ])('cleans up a same-origin WHEP session from %s with Location %s', async (origin, location, expectedUrl) => {
   const playback = createPlaybackDescriptor({
-    device: { drone_id: 1 },
+    device: { device_class: 'aircraft', unit: 1 },
     webrtcOrigin: origin,
     readerUsername: 'reader',
     readerPassword: 'secret',

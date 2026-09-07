@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -48,6 +49,8 @@ class RelaySettings:
     relay_token: bytes = field(repr=False)
     adapter_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     node_types: Mapping[int, NodeType] = field(default_factory=dict)
+    device_units: Mapping[int, int] = field(default_factory=dict)
+    media_streams: Mapping[int, str] = field(default_factory=dict)
     allow_shared_adapter_token: bool = False
     localization_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     log_dir: Path = Path(".sweep/session-logs")
@@ -132,6 +135,34 @@ class RelaySettings:
                 "SWEEP_NODE_TYPES_JSON must map configured adapter IDs to aircraft or ground"
             )
         object.__setattr__(self, "node_types", MappingProxyType(node_types))
+        for name, mapping in (
+            ("device_units", self.device_units),
+            ("media_streams", self.media_streams),
+        ):
+            if not isinstance(mapping, Mapping) or any(
+                type(key) is not int or key not in adapter_keys for key in mapping
+            ):
+                raise SettingsError(f"{name} must map configured adapter IDs")
+        units = dict(self.device_units)
+        if any(type(unit) is not int or not 1 <= unit <= 64 for unit in units.values()):
+            raise SettingsError("device units must be integers from 1 through 64")
+        identities = [
+            (node_types.get(key, NodeType.AIRCRAFT), units.get(key, key)) for key in adapter_keys
+        ]
+        if len(identities) != len(set(identities)):
+            raise SettingsError("device units must be unique within each node type")
+        streams = dict(self.media_streams)
+        if any(
+            not isinstance(name, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name) is None
+            for name in streams.values()
+        ):
+            raise SettingsError("media streams must be unique bounded path names")
+        resolved_streams = [streams.get(key, f"drone{key}") for key in adapter_keys]
+        if len(set(resolved_streams)) != len(resolved_streams):
+            raise SettingsError("media streams must be unique across all configured adapters")
+        object.__setattr__(self, "device_units", MappingProxyType(units))
+        object.__setattr__(self, "media_streams", MappingProxyType(streams))
         if self.ground_return_id is not None and (
             not self.ground_return_id
             or len(self.ground_return_id) > 128
@@ -243,6 +274,12 @@ class RelaySettings:
             ),
             adapter_keys=adapter_keys,
             node_types=_node_types(values.get("SWEEP_NODE_TYPES_JSON", "{}")),
+            device_units=_device_mapping(
+                values.get("SWEEP_DEVICE_UNITS_JSON", "{}"), "SWEEP_DEVICE_UNITS_JSON"
+            ),
+            media_streams=_device_mapping(
+                values.get("SWEEP_MEDIA_STREAMS_JSON", "{}"), "SWEEP_MEDIA_STREAMS_JSON"
+            ),
             localization_keys=_credential_keys(
                 values.get("SWEEP_LOCALIZATION_KEYS_JSON", "{}"),
                 "SWEEP_LOCALIZATION_KEYS_JSON",
@@ -402,6 +439,27 @@ def _credential_keys(raw: str, name: str) -> dict[int, bytes]:
         if not isinstance(raw_key, str) or not raw_key:
             raise SettingsError(f"{name} credentials must be non-empty strings")
         result[drone_id] = raw_key.encode()
+    return result
+
+
+def _device_mapping(raw: str, name: str) -> dict:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SettingsError(f"{name} must be valid JSON") from error
+    if not isinstance(value, dict):
+        raise SettingsError(f"{name} must be an object")
+    result = {}
+    for key, item in value.items():
+        if (
+            not isinstance(key, str)
+            or not key.isascii()
+            or not key.isdecimal()
+            or str(int(key)) != key
+            or int(key) <= 0
+        ):
+            raise SettingsError(f"{name} IDs must be canonical positive integers")
+        result[int(key)] = item
     return result
 
 

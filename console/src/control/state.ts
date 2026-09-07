@@ -1,4 +1,5 @@
 import type {
+  AdvertisedIntentName,
   BackendIntentStatus,
   CapturePattern,
   ConsoleIntentName,
@@ -10,8 +11,11 @@ import type {
   RelayAircraftState,
   RelayServerEvent,
 } from '../relay/contract'
-import { DEVICE_CLASSES, followsSelection } from '../relay/contract'
+import { DEVICE_CLASSES, followsSelection, isSupportedIntent } from '../relay/contract'
+import type { NavigationPreview } from '../navigation'
 import type { Observation } from '../relay/observation'
+
+export { NAVIGATION_CONFIRMATION_UNAVAILABLE } from '../navigation'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'degraded' | 'disconnected'
 export type RelayTransport = 'websocket' | 'fixture' | 'unavailable'
@@ -29,6 +33,9 @@ export interface RelayConnection {
 }
 
 export interface PlanPreview {
+  /** Server-reported review evidence, never a locally generated route or permission. */
+  navigation?: NavigationPreview
+  confirmationBlockedReason?: string
   /** Explicit connected-device preview binding, independent of motion selection. */
   deviceEpochs?: Record<number, number>
   title: string
@@ -107,7 +114,7 @@ export interface ControlState {
   spacing: number | null
   /** Null until a validated relay state advertises its active capability contract. */
   capabilityProfile: string | null
-  enabledIntentNames: ConsoleIntentName[]
+  enabledIntentNames: AdvertisedIntentName[]
   departed: DepartureRecord[]
   requests: RequestRecord[]
   selectedFeedId: DroneId | null
@@ -187,7 +194,7 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
 
 /** E-stop remains universally available by policy; every other intent is profile-gated. */
 export function isIntentEnabled(state: ControlState, name: ConsoleIntentName): boolean {
-  return name === 'estop' || state.enabledIntentNames.includes(name)
+  return name === 'estop' || (isSupportedIntent(name) && state.enabledIntentNames.includes(name))
 }
 
 export function capabilityBlockedReason(
@@ -269,7 +276,7 @@ export function controlReducer(state: ControlState, action: ControlAction): Cont
 
 function reduceConnection(state: ControlState, connection: RelayConnection): ControlState {
   if (connection.status === 'connected') return { ...state, connection }
-  if (connection.status === 'connecting') return { ...state, connection }
+  if (connection.status === 'connecting') return { ...state, connection, latestObservations: {} }
 
   const level = connection.status === 'degraded' ? 'warning' : 'danger'
   const notice = makeNotice(
@@ -279,7 +286,7 @@ function reduceConnection(state: ControlState, connection: RelayConnection): Con
     connection.reason ?? 'No reason was provided.',
     connection.changedAt,
   )
-  return { ...state, connection, notices: prependNotice(state.notices, notice) }
+  return { ...state, connection, latestObservations: {}, notices: prependNotice(state.notices, notice) }
 }
 
 function reduceKeyboardConnection(state: ControlState, connection: RelayConnection): ControlState {
@@ -342,7 +349,7 @@ function reduceRelayEvent(
   source: IntentSource,
   receivedAt?: number,
 ): ControlState {
-  if (event.type === 'observation') return reduceObservation(state, event)
+  if (event.type === 'observation') return source === 'console' ? reduceObservation(state, event, receivedAt) : state
   if (state.seenEventIds.includes(event.event_id)) return state
   const stateWithEvent = {
     ...state,
@@ -576,6 +583,7 @@ function reduceStateEvent(
     ...state,
     rosterVersion: event.roster_version,
     aircraft,
+    latestObservations: retainedObservations(state.latestObservations, aircraft, event.t),
     selection,
     formation: event.formation,
     spacing: event.spacing,
@@ -733,6 +741,7 @@ function reduceMembershipEvent(
       ...state,
       rosterVersion: event.roster_version,
       aircraft: { ...state.aircraft, [event.drone_id]: drone },
+      latestObservations: retainedObservations(state.latestObservations, { ...state.aircraft, [event.drone_id]: drone }, event.t),
       selection,
     }
     const staleRosterRequests = next.requests
@@ -798,11 +807,11 @@ function projectMembershipEvent(
   previous?: RelayAircraftState,
   known?: RelayAircraftState,
 ): RelayAircraftState {
-  const node_type = event.node_type ?? 'aircraft'
-  const device_class = node_type === 'ground' ? 'ground_vehicle' : 'aircraft'
+  const node_type = event.node_type ?? known?.node_type
+  const device_class = node_type === undefined ? known?.device_class ?? deviceClassFromCapabilities(event.capabilities) : node_type === 'ground' ? 'ground_vehicle' : 'aircraft'
   return {
     drone_id: event.drone_id,
-    node_type,
+    ...(node_type === undefined ? {} : { node_type }),
     device_class,
     unit: known !== undefined && known.device_class === device_class ? known.unit : event.drone_id,
     connection_epoch: event.connection_epoch,
@@ -836,18 +845,31 @@ function projectMembershipEvent(
   }
 }
 
-function reduceObservation(state: ControlState, observation: Observation): ControlState {
+/** Bounded latest values, always bound to the current session, device and epoch. */
+function reduceObservation(state: ControlState, observation: Observation, receivedAt?: number): ControlState {
   const device = state.aircraft[observation.device_id]
-  if (
-    observation.session !== state.sessionId ||
-    !device ||
+  const last = state.lastStateEvent
+  const now = last ? last.t + Math.max(0, (receivedAt ?? last.receivedAt ?? 0) - (last.receivedAt ?? receivedAt ?? 0)) : null
+  if (!['connected', 'degraded'].includes(state.connection.status) || now === null ||
+    observation.session !== state.sessionId || !device ||
+    ['disconnected', 'leaving'].includes(device.membership) ||
     device.connection_epoch !== observation.connection_epoch ||
-    (device.node_type ?? 'aircraft') !== observation.node_type
-  ) return state
+    (device.node_type ?? (device.device_class === 'ground_vehicle' ? 'ground' : 'aircraft')) !== observation.node_type ||
+    observation.t_ingest > now + 1000 || now - observation.t_ingest > 30_000) return state
   const key = JSON.stringify([observation.device_id, observation.connection_epoch, observation.source_id, observation.payload.kind])
   const prior = state.latestObservations[key]
   if (prior && prior.t_ingest >= observation.t_ingest) return state
-  return { ...state, latestObservations: { ...state.latestObservations, [key]: observation } }
+  return { ...state, latestObservations: retainedObservations({ ...state.latestObservations, [key]: observation }, state.aircraft, now) }
+}
+
+function retainedObservations(observations: Readonly<Record<string, Observation>>, aircraft: Record<DroneId, RelayAircraftState>, now: number): Readonly<Record<string, Observation>> {
+  return Object.fromEntries(Object.entries(observations).filter(([, observation]) => {
+    const device = aircraft[observation.device_id]
+    return device && !['disconnected', 'leaving'].includes(device.membership) &&
+      device.connection_epoch === observation.connection_epoch &&
+      observation.node_type === (device.node_type ?? (device.device_class === 'ground_vehicle' ? 'ground' : 'aircraft')) &&
+      now - observation.t_ingest <= 30_000
+  }).sort((a, b) => b[1].t_ingest - a[1].t_ingest).slice(0, 256))
 }
 
 /** The join's `class:<device_class>` capability; absent or unknown means aircraft, as on the relay. */

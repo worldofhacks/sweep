@@ -1,16 +1,18 @@
 /**
  * Console-side mirror of the frozen Intent v1 contract in relay/intent_v1.py.
+ * navigate is reserved for console review integration (#143), not a deployed
+ * backend intent. Every current console transmission path rejects it.
  *
  * Relay event envelopes are deliberately kept in this one module while M1.1 is
  * integrated. Components and reducers consume these normalized shapes and do
  * not infer transport, planner, or safety semantics.
  */
 
-export type DroneId = number
 import { parseObservation, type Observation } from './observation'
 
+export type DroneId = number
 export type NodeType = 'aircraft' | 'ground'
-/** Internal presentation class derived from the relay's canonical node type. */
+/** Mirror of planner/models.py DeviceClass; absent on the wire means aircraft. */
 export type DeviceClass = 'aircraft' | 'ground_vehicle'
 export const DEVICE_CLASSES: readonly DeviceClass[] = ['aircraft', 'ground_vehicle']
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
@@ -52,10 +54,10 @@ export type ConsoleIntentName =
   | 'formation_set'
   | 'spacing'
   | 'come_home'
+  /** Preview-only until the relay publishes its frozen navigation confirmation contract. */
+  | 'navigate'
   | 'sweep'
   | 'capture_room'
-  | 'ground_velocity'
-  | 'survey_area'
 
 export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'arm',
@@ -75,10 +77,9 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'formation_set',
   'spacing',
   'come_home',
+  'navigate',
   'sweep',
   'capture_room',
-  'ground_velocity',
-  'survey_area',
 ]
 
 /** The exact profile emitted by a C1 relay. */
@@ -118,8 +119,12 @@ export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
 
 /** Every intent implemented by this console, independently of deployment release. */
 export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>(
-  [...C2_FLEET_OPERATIONS_INTENTS, 'ground_velocity', 'survey_area'],
+  [...C2_FLEET_OPERATIONS_INTENTS, 'body_pulse', 'robot_peripheral', 'camera_control', 'navigate'],
 )
+
+/** Known relay advertisements do not grant this console a command implementation. */
+export type AdvertisedIntentName = ConsoleIntentName | 'ground_velocity' | 'survey_area'
+const ADVERTISED_INTENTS: ReadonlySet<string> = new Set([...SUPPORTED_INTENTS, 'ground_velocity', 'survey_area'])
 
 export function isSupportedIntent(name: ConsoleIntentName): boolean {
   return SUPPORTED_INTENTS.has(name)
@@ -131,6 +136,7 @@ export function isSupportedIntent(name: ConsoleIntentName): boolean {
  * requires every webcam flight action, including session enable, to be confirmed.
  */
 export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
+  'navigate',
   'robot_peripheral',
   'camera_control',
   'body_pulse',
@@ -139,8 +145,6 @@ export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<
   'land_all',
   'sweep',
   'capture_room',
-  'ground_velocity',
-  'survey_area',
 ])
 
 export function requiresConfirmation(name: ConsoleIntentName): boolean {
@@ -168,10 +172,9 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   formation_set: 'selected',
   spacing: 'selected',
   come_home: 'selected',
+  navigate: 'selected',
   sweep: 'selected',
   capture_room: 'exactly one',
-  ground_velocity: 'exactly one',
-  survey_area: 'exactly one',
 }
 
 export function selectionRule(name: ConsoleIntentName): SelectionRule {
@@ -253,16 +256,8 @@ export interface CaptureRoomArgs {
   capture_id: string
   pattern: CapturePattern
 }
-export interface GroundVelocityArgs {
-  linear_mm_s: number
-  angular_mrad_s: number
-  duration_ms: number
-}
-export interface SurveyAreaArgs {
-  area_id: string
-}
 
-/** Args shape per intent name, mirroring relay/intent_v1.py _parse_args. */
+/** Deployed args mirror relay/intent_v1.py; navigate is a preview-only reservation. */
 export interface IntentArgsByName {
   arm: EmptyArgs
   disarm: EmptyArgs
@@ -281,10 +276,10 @@ export interface IntentArgsByName {
   formation_set: FormationSetArgs
   spacing: DeltaArgs
   come_home: EmptyArgs
+  /** Console review shape from #143; unavailable for transmission in this build. */
+  navigate: { zone_id: string }
   sweep: SweepArgs
   capture_room: CaptureRoomArgs
-  ground_velocity: GroundVelocityArgs
-  survey_area: SurveyAreaArgs
 }
 
 export type IntentArgs = IntentArgsByName[ConsoleIntentName]
@@ -333,7 +328,6 @@ export interface RelayAircraftState {
   /** Browser-derived freshness, discarded from incoming wire data. */
   client_observation?: import('../control/observation').DeviceObservation
   drone_id: DroneId
-  /** Canonical relay identity. The display class is derived locally from this field. */
   node_type?: NodeType
   /** Absent on the wire from a relay without device classes; parsed as aircraft. */
   device_class: DeviceClass
@@ -383,7 +377,7 @@ export interface RelayStateEvent {
   spacing: number
   mode: string
   capability_profile: string
-  enabled_intent_names: ConsoleIntentName[]
+  enabled_intent_names: AdvertisedIntentName[]
   pending: Record<string, unknown> | null
   accepted_plan: Record<string, unknown> | null
   drones: RelayAircraftState[]
@@ -401,6 +395,7 @@ export type MembershipAction =
   | 'unexpected_loss'
   | 'telemetry_stale'
   | 'telemetry_recovered'
+  | 'observation_stale'
 
 export interface RelayMembershipEvent {
   v: 1
@@ -1041,14 +1036,14 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
-function isCapabilityAdvertisement(profile: unknown, enabled: unknown): enabled is ConsoleIntentName[] {
+function isCapabilityAdvertisement(profile: unknown, enabled: unknown): enabled is AdvertisedIntentName[] {
   if (
     typeof profile !== 'string' ||
     !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(profile) ||
     !isStringArray(enabled) ||
     enabled.length === 0 ||
     new Set(enabled).size !== enabled.length ||
-    !enabled.every((name) => SUPPORTED_INTENTS.has(name as ConsoleIntentName))
+    !enabled.every((name) => ADVERTISED_INTENTS.has(name))
   ) {
     return false
   }
@@ -1101,17 +1096,11 @@ export function normalizeRelayAircraftState(value: unknown): unknown {
   if (!Object.hasOwn(drone, 'membership_history_truncated')) drone.membership_history_truncated = 0
   const nodeType = drone.node_type
   const deviceClass = drone.device_class
-  if (nodeType === undefined) {
-    drone.node_type = deviceClass === 'ground_vehicle' ? 'ground' : 'aircraft'
-  } else if (nodeType !== 'aircraft' && nodeType !== 'ground') {
-    return drone
-  }
-  const derivedClass: DeviceClass = drone.node_type === 'ground' ? 'ground_vehicle' : 'aircraft'
-  if (deviceClass !== undefined && deviceClass !== derivedClass) {
-    drone.device_class = 'invalid-node-type'
-  } else {
-    drone.device_class = derivedClass
-  }
+  if (nodeType !== undefined && nodeType !== 'ground' && nodeType !== 'aircraft') return drone
+  if (nodeType === undefined) drone.node_type = deviceClass === 'ground_vehicle' ? 'ground' : 'aircraft'
+  const derivedClass = drone.node_type === 'ground' ? 'ground_vehicle' : 'aircraft'
+  if (deviceClass !== undefined && deviceClass !== derivedClass) drone.device_class = 'invalid-node-type'
+  else drone.device_class = derivedClass
   if (!Object.hasOwn(drone, 'unit')) drone.unit = drone.drone_id
   return drone
 }
@@ -1123,7 +1112,7 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
 
   return (
     isDroneId(value.drone_id) &&
-    (value.node_type === 'aircraft' || value.node_type === 'ground') &&
+    (value.node_type === 'ground' || value.node_type === 'aircraft') &&
     isDeviceClass(value.device_class) &&
     isDroneId(value.unit) &&
     isNonNegativeInteger(value.connection_epoch) &&
@@ -1149,7 +1138,10 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
     isNonNegativeInteger(value.membership_history_truncated) &&
     isVideoStreamState(value.video) &&
     isDeviceCameras(value.cameras) &&
-    isSensorState(value.sensor)
+    isSensorState(value.sensor) &&
+    (value.ground_readiness === undefined || value.ground_readiness === null ||
+      (isRecord(value.ground_readiness) && Object.keys(value.ground_readiness).length === 1 &&
+        (value.ground_readiness.source_id === null || isBoundedNodeText(value.ground_readiness.source_id))))
   )
 }
 
@@ -1424,6 +1416,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
         'unexpected_loss',
         'telemetry_stale',
         'telemetry_recovered',
+        'observation_stale',
       ].includes(String(value.action)) ||
       !isDroneId(value.drone_id) ||
       !isNonNegativeInteger(value.connection_epoch) ||
@@ -1442,7 +1435,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
     ) {
       return null
     }
-    return { ...value, node_type: value.node_type ?? 'aircraft' } as unknown as RelayMembershipEvent
+    return value as unknown as RelayMembershipEvent
   }
 
   if (value.type === 'auth.accepted') {
@@ -1634,14 +1627,8 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
         isCanonicalIntentText(args.capture_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
         CAPTURE_PATTERNS.has(args.pattern as CapturePattern)
       )
-    case 'ground_velocity':
-      return keys.length === 3 &&
-        Number.isInteger(args.linear_mm_s) && Number(args.linear_mm_s) >= 0 && Number(args.linear_mm_s) <= 180 &&
-        Number.isInteger(args.angular_mrad_s) && Math.abs(Number(args.angular_mrad_s)) <= 785 &&
-        Number.isInteger(args.duration_ms) && Number(args.duration_ms) > 0 && Number(args.duration_ms) <= 500 &&
-        ((args.linear_mm_s === 0) !== (args.angular_mrad_s === 0))
-    case 'survey_area':
-      return keys.length === 1 && isCanonicalIntentText(args.area_id, MAX_INTENT_IDENTIFIER_CODE_POINTS)
+    case 'navigate':
+      return keys.length === 1 && isCanonicalIntentText(args.zone_id, MAX_INTENT_IDENTIFIER_CODE_POINTS)
     case 'arm':
     case 'disarm':
     case 'estop':

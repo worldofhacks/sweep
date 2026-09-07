@@ -297,12 +297,16 @@ class RelaySession:
         relay_clock_id: str = "unix_epoch_ms",
         media_evidence: MediaEvidenceProvider | None = None,
         node_types: Mapping[int, NodeType] | None = None,
+        device_units: Mapping[int, int] | None = None,
+        media_streams: Mapping[int, str] | None = None,
         observation_configuration: ObservationConfiguration | None = None,
         aircraft_limit: int | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
         self.session_id = session_identifier(session_id)
+        self._device_units = dict(device_units or {})
+        self._media_streams = dict(media_streams or {})
         self.audit_log = audit_log
         self.limits = limits
         self.clock = clock or _epoch_ms
@@ -2577,11 +2581,27 @@ class RelaySession:
             raise AuditLogError("relay session is unusable after an audit failure")
 
     def _state_event(self, now: int) -> dict[str, object]:
-        return self.registry.state_event(
+        state = self.registry.state_event(
             session=self.session_id,
             t=now,
             event_id=self.event_ids(),
         )
+        for device in state["drones"]:
+            if device["drone_id"] in self._device_units:
+                device["unit"] = self._device_units[device["drone_id"]]
+                device["device_class"] = (
+                    "ground_vehicle" if device.get("node_type") == "ground" else "aircraft"
+                )
+            if device["drone_id"] in self._media_streams:
+                device["cameras"] = [
+                    {
+                        "camera_id": "primary",
+                        "label": "Primary camera",
+                        "stream": self._media_streams[device["drone_id"]],
+                        **device["video"],
+                    }
+                ]
+        return state
 
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
@@ -2819,6 +2839,21 @@ def _bounded_control_projection_snapshot(value: object, field: str) -> object:
 
 def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]:
     expected = _DRONE_STATE_KEYS
+    if "unit" in drone or "device_class" in drone:
+        expected = expected | {"unit", "device_class"}
+    if "cameras" in drone:
+        expected = expected | {"cameras"}
+        cameras = drone["cameras"]
+        if (
+            not isinstance(cameras, list)
+            or len(cameras) > 2
+            or any(
+                not isinstance(camera, Mapping)
+                or set(camera) != {"camera_id", "label", "stream", "status", "last_frame_at"}
+                for camera in cameras
+            )
+        ):
+            raise AuditLogError("configured cameras must match the bounded media projection")
     if drone.get("node_type") == "ground":
         expected = expected | {"ground_readiness"}
     missing = expected - set(drone)

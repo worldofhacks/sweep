@@ -246,8 +246,8 @@ describe('command catalogue', () => {
     expect(groups[1].rows.map((row) => [row.label, row.confirm, row.rule, row.status])).toEqual([
       ['Takeoff', 'confirm', 'selected', 'available'],
       ['Hold', '—', 'selected', 'available'],
-      ['Forward 0.5 seconds', 'confirm', 'selected', 'unsupported'],
-      ['Backward 0.5 seconds', 'confirm', 'selected', 'unsupported'],
+      ['Forward 0.5 seconds', 'confirm', 'selected', 'available'],
+      ['Backward 0.5 seconds', 'confirm', 'selected', 'available'],
       ['Come home', '—', 'selected', 'available'],
       ['Land', 'confirm', 'selected', 'available'],
       ['Land all', 'confirm', 'all', 'available'],

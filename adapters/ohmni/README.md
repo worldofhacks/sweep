@@ -37,7 +37,11 @@ SWEEP_CAMERA_WIDTH_PX=640
 SWEEP_CAMERA_HEIGHT_PX=480
 ```
 
-The source must be an approved V4L node, `mjpeg` or `uyvy422`, its native rate or a measured integer rate, and measured dimensions. The publisher uses the node ID for the MediaMTX path `drone{id}`. It reports `publishing` only after ffmpeg reports increasing decoded-frame counts and changes to `failed` when that progress is stale.
+The source must be an approved V4L node, `mjpeg` or `uyvy422`, its native rate or a measured integer rate, and measured dimensions. By default the publisher uses the global node ID for the MediaMTX path `drone{id}`. An optional `SWEEP_CAMERA_STREAM=ground1` explicitly selects an already provisioned local stream; it does not change the node ID. The account name and HMAC password domain both follow that exact stream. Names must be flat, begin with an ASCII letter or digit, contain only letters, digits, `_` or `-`, and fit within 64 characters. Existing publisher and reader permissions must authorize the selected stream; this option changes no MediaMTX service or credentials.
+
+`sh /data/local/sweep/adapters/ohmni/camera.sh probe` performs one foreground publication attempt using the same private configuration. It waits at most ten seconds for two advancing ffmpeg frame-count samples, then terminates only its own ffmpeg process. Cleanup can take another five seconds. It prints only a JSON result with a bounded reason, observed frame/progress counts and `cleanup_confirmed`; `exit 0` means local producer output was observed, while `exit 1` means failure. It does not retry, write a background PID record, start ground control or stop vendor processes. It refuses an existing live camera PID record. A vendor-open V4L input may still reject capture; use the result instead of inferring availability from process liveness. Independently verify increasing MediaMTX inbound bytes and decoded browser frames before calling the feed live.
+
+The long-running `start` operation reports `publishing` internally only after increasing ffmpeg frame counts and changes to `failed` when progress is stale. Native input rate remains supported. Neither mode implements photo capture or camera tilt controls.
 
 ## Approved ground return
 

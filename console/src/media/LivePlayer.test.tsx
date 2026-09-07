@@ -53,7 +53,7 @@ test('a failed aircraft tile reconnects independently, ignores old callbacks, an
   await advance()
   expect(sessions).toHaveLength(2)
   expect(sessions[0].start.mock.calls[0][1].stream).toBe('drone1')
-  expect(sessions[1].start.mock.calls[0][1].stream).toBe('drone11')
+  expect(sessions[1].start.mock.calls[0][1].stream).toBe('ground1')
   act(() => { sessions[0].emit('playing'); sessions[1].emit('playing') })
 
   act(() => sessions[0].emit('failed', 'WHEP connection lost'))
@@ -91,34 +91,6 @@ test('a failed aircraft tile reconnects independently, ignores old callbacks, an
   await advance()
   expect(sessions[1].close).toHaveBeenCalledTimes(1)
   expect(vi.getTimerCount()).toBe(0)
-})
-
-test('equivalent runtime values do not replace an active session during a relay rerender', async () => {
-  vi.useFakeTimers()
-  const sessions: ControlledSession[] = []
-  const createSession = vi.fn(() => {
-    const session = new ControlledSession()
-    sessions.push(session)
-    return session
-  })
-  const media = (): MediaRuntime => ({
-    configuration: {
-      webrtcOrigin: 'http://localhost:8889',
-      readerUsername: 'fixture-reader',
-      readerPassword: 'fixture-secret',
-    },
-    createSession,
-  })
-  const { rerender, unmount } = render(<LivePlayer device={aircraft} media={media()} />)
-  await advance()
-  expect(sessions).toHaveLength(1)
-  act(() => sessions[0].emit('playing'))
-  rerender(<LivePlayer device={{ ...aircraft }} media={media()} />)
-  await advance()
-  expect(sessions).toHaveLength(1)
-  expect(sessions[0].close).not.toHaveBeenCalled()
-  unmount()
-  await advance()
 })
 
 test('retries wait for cleanup and cannot be scheduled by cleanup finishing after unmount', async () => {

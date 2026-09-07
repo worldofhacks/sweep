@@ -26,8 +26,8 @@ case "${1:-start}" in
       rm -f camera.pid
     fi
     exit 0;;
-  start) ;;
-  *) echo 'usage: camera.sh [start|stop]' >&2; exit 2;;
+  start|probe) ;;
+  *) echo 'usage: camera.sh [start|stop|probe]' >&2; exit 2;;
 esac
 if [ -f camera.pid ] && kill -0 "$(cat camera.pid)" 2>/dev/null; then
   echo 'Camera already running' >&2
@@ -48,6 +48,10 @@ fi
 export SWEEP_DEVICE_UNIT="$node_device_unit"
 export PYTHONPATH=/data/local/sweep
 umask 077
+if [ "${1:-start}" = probe ]; then
+  # Foreground, one attempt, no retry loop or background PID record.
+  exec ./lib/ld-musl-x86_64.so.1 ./python/bin/python3.12 -m adapters.ohmni.camera_runner --probe --timeout 10
+fi
 nohup ./lib/ld-musl-x86_64.so.1 ./python/bin/python3.12 -m adapters.ohmni.camera_runner >camera.log 2>&1 &
 echo "$!" > camera.pid
 echo 'Camera publisher started; inspect camera.log for failures.'

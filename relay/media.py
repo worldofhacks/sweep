@@ -146,6 +146,7 @@ class MediaMonitor:
         drone_ids: Iterable[int] = DEFAULT_MEDIA_DRONE_IDS,
         poll_interval_ms: int = 1_000,
         stale_after_ms: int = 3_000,
+        streams: Mapping[int, str] | None = None,
     ) -> None:
         if poll_interval_ms <= 0:
             raise ValueError("poll_interval_ms must be positive")
@@ -154,6 +155,7 @@ class MediaMonitor:
         self._client = client
         self._clock = clock
         self._drone_ids = tuple(drone_ids)
+        self._streams = dict(streams or {})
         self._poll_interval_s = poll_interval_ms / 1_000
         self._stale_after_ms = stale_after_ms
         self._paths: dict[int, _PathState] = {}
@@ -193,7 +195,10 @@ class MediaMonitor:
     async def poll_once(self) -> bool:
         """Read every path once; return whether the whole cycle completed."""
         results = await asyncio.gather(
-            *(self._client.read_path(stream_name(drone_id)) for drone_id in self._drone_ids),
+            *(
+                self._client.read_path(self._streams.get(drone_id, stream_name(drone_id)))
+                for drone_id in self._drone_ids
+            ),
             return_exceptions=True,
         )
         now = self._clock()
