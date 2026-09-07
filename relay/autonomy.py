@@ -203,6 +203,11 @@ def relay_snapshot(
     for drone in drones_raw:
         if not isinstance(drone, Mapping):
             raise ValueError("relay drone entries must be mappings")
+        node_type = drone.get("node_type", "aircraft")
+        if node_type not in ("aircraft", "ground"):
+            raise ValueError("relay node type is unknown")
+        if node_type == "ground":
+            continue
         drone_id = drone.get("drone_id")
         if not isinstance(drone_id, int) or isinstance(drone_id, bool) or drone_id <= 0:
             raise ValueError("relay drone entries require a positive drone_id")
