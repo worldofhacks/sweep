@@ -163,6 +163,10 @@ internal class ProbeAircraft(
         Binding("KeyRcConnection", RemoteControllerKey.KeyConnection, ComponentIndexType.LEFT_OR_MAIN) { rcConnected = it },
         Binding("KeyAircraftLocation3D", FlightControllerKey.KeyAircraftLocation3D) { location = it },
         Binding("KeyAircraftVelocity", FlightControllerKey.KeyAircraftVelocity) { velocity = it },
+        Binding("KeyIsVisionSensorUsed", FlightControllerKey.KeyIsVisionSensorUsed) { },
+        Binding("KeyVisionPositioningLevel", FlightControllerKey.KeyVisionPositioningLevel) { },
+        Binding("KeyFusionPositioningLevel", FlightControllerKey.KeyFusionPositioningLevel) { },
+        Binding("KeyPositioningDataSource", FlightControllerKey.KeyPositioningDataSource) { },
         Binding("KeyAircraftAttitude", FlightControllerKey.KeyAircraftAttitude) { attitude = it },
         Binding("KeyGimbalAttitude", GimbalKey.KeyGimbalAttitude, ComponentIndexType.LEFT_OR_MAIN) { },
         Binding("KeyAltitude", FlightControllerKey.KeyAltitude) { value ->
