@@ -133,6 +133,7 @@ data class SupervisedVerticalConfig(
     val hardCeilingM: Double = 2.5908,
     val targetToleranceM: Double = 0.05,
     val targetSettleMs: Long = 500,
+    val approachGainPerS: Double = 1.0,
 ) {
     init {
         require(maximumHeightAgeMs > 0) { "maximum height age must be positive" }
@@ -141,6 +142,7 @@ data class SupervisedVerticalConfig(
             "target tolerance must be positive and below the hard ceiling"
         }
         require(targetSettleMs >= 0) { "target settle time must be non-negative" }
+        require(approachGainPerS.isFinite() && approachGainPerS > 0) { "approach gain must be positive and finite" }
     }
 }
 

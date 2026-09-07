@@ -1255,7 +1255,9 @@ class FlightController(
         val supervised = config.supervisedVertical ?: return StickFrame.NEUTRAL
         val height = guardVerticalHeight(current.targetZM, supervised, now) ?: return StickFrame.NEUTRAL
         if (height >= current.targetZM - supervised.targetToleranceM) return StickFrame.NEUTRAL
-        return StickFrame.NEUTRAL.copy(verticalThrottle = config.limits.maxVerticalMS)
+        val remainingM = current.targetZM - height
+        val ascentMS = minOf(config.limits.maxVerticalMS, remainingM * supervised.approachGainPerS)
+        return StickFrame.NEUTRAL.copy(verticalThrottle = ascentMS)
     }
 
     // ---- virtual stick lifecycle ----

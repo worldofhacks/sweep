@@ -634,7 +634,7 @@ internal class ProbeAircraft(
     private enum class GimbalPitchReportState { EXECUTING, COMPLETED, FAILED }
 
     private companion object {
-        const val MIN_GIMBAL_PITCH_DEGREES = -85.0
+        const val MIN_GIMBAL_PITCH_DEGREES = -90.0
         const val MAX_GIMBAL_PITCH_DEGREES = 0.0
         const val GIMBAL_ROTATION_DURATION_SECONDS = 2.0
         const val GIMBAL_ACTION_TIMEOUT_MS = 2_000L

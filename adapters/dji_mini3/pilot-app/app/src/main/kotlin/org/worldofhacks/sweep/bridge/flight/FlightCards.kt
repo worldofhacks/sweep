@@ -148,6 +148,7 @@ fun GimbalPitchCard(controls: org.worldofhacks.sweep.bridge.session.GimbalPitchC
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(enabled = !state.active, onClick = { controls.requestGimbalPitch(-45.0) }) { Text("Tilt −45°") }
                 Button(enabled = !state.active, onClick = { controls.requestGimbalPitch(-75.0) }) { Text("Tilt −75°") }
+                OutlinedButton(enabled = !state.active, onClick = { controls.requestGimbalPitch(-90.0) }) { Text("Tilt −90°") }
             }
             Text(state.detail, color = if (state.active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
         }
