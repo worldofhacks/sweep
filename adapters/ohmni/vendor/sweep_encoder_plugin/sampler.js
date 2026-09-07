@@ -8,6 +8,8 @@ const BYTES = 2;
 const READ_COMMAND = 4;
 const POLL_INTERVAL_MS = 100;
 const REPLY_TIMEOUT_MS = 100;
+const NORMAL_READ_TIMEOUT_MS = 350;
+const MAX_NORMAL_READ_KEYS = 7;
 const DEFERRED_REQUEST_GAP_MS = 5;
 const MAX_CLIENTS = 4;
 const MAX_CLIENT_BUFFER_BYTES = 64 * 1024;
@@ -45,8 +47,10 @@ function PairedEncoderSampler(serial, socketPath, options) {
   this._deferredDrainDone = [];
   this._scheduleAfterDrainMs = null;
   this._scheduleAfterReadsMs = null;
-  this._vendorReads = {};
-  this._batteryReads = 0;
+  this._normalReads = {};
+  this._expiredNormalReads = {};
+  this._normalReadTimeoutMs = options.normalReadTimeoutMs || NORMAL_READ_TIMEOUT_MS;
+  this._onDiagnostic = options.onDiagnostic || function () {};
   this._socketPath = socketPath;
   this._clock = options.monotonicNs || monotonicNs;
   this._setTimeout = options.setTimeout || setTimeout;
@@ -92,8 +96,7 @@ PairedEncoderSampler.prototype.stop = function (done) {
   this._stopped = true;
   this._scheduleAfterDrainMs = null;
   this._scheduleAfterReadsMs = null;
-  this._vendorReads = {};
-  this._batteryReads = 0;
+  this._clearNormalReads();
   this._abortActive();
   if (this._timer) {
     this._clearTimeout(this._timer);
@@ -170,8 +173,7 @@ PairedEncoderSampler.prototype.beginInitialization = function () {
   this._qualified = false;
   this._scheduleAfterDrainMs = null;
   this._scheduleAfterReadsMs = null;
-  this._vendorReads = {};
-  this._batteryReads = 0;
+  this._clearNormalReads();
   this._abortActive();
   if (this._timer) {
     this._clearTimeout(this._timer);
@@ -237,15 +239,14 @@ PairedEncoderSampler.prototype._queueOrSendBatteryQuery = function () {
 };
 
 PairedEncoderSampler.prototype._sendVendorRequest = function (sid, command, payload) {
-  if (!this._failed && !this._stopped && isReadRequest(command, payload)) {
-    const key = readKey(sid, payload[0]);
-    this._vendorReads[key] = (this._vendorReads[key] || 0) + 1;
+  if (!this._failed && !this._stopped && isReadRequest(command, payload) && !isDriveEncoderRequest(sid, command, payload)) {
+    this._trackNormalRead(this._normalReadKey(readKey(sid, payload[0])), { sid: sid, address: payload[0] });
   }
   this._directSendCustom(sid, command, payload);
 };
 
 PairedEncoderSampler.prototype._sendBatteryQuery = function () {
-  if (!this._failed && !this._stopped) this._batteryReads += 1;
+  if (!this._failed && !this._stopped) this._trackNormalRead('battery', { kind: 'battery' });
   this._directSendBatteryQuery();
 };
 
@@ -294,7 +295,7 @@ PairedEncoderSampler.prototype._finishDeferredDrain = function () {
 };
 
 PairedEncoderSampler.prototype._hasOutstandingReads = function () {
-  return this._batteryReads !== 0 || Object.keys(this._vendorReads).length !== 0;
+  return Object.keys(this._normalReads).length !== 0 || Object.keys(this._expiredNormalReads).length !== 0;
 };
 
 PairedEncoderSampler.prototype._scheduleWhenReadsComplete = function (delayMs) {
@@ -316,10 +317,8 @@ PairedEncoderSampler.prototype._requestSide = function (poll, side) {
 
 PairedEncoderSampler.prototype._handleServoResponse = function (message) {
   const key = readKey(message.sid, message.addr);
-  if (this._vendorReads[key]) {
-    this._vendorReads[key] -= 1;
-    if (this._vendorReads[key] === 0) delete this._vendorReads[key];
-    this._resumeWhenReadsComplete();
+  if (this._normalReads[key]) {
+    this._completeNormalRead(key);
     return;
   }
   const poll = this._active;
@@ -343,9 +342,87 @@ PairedEncoderSampler.prototype._handleServoResponse = function (message) {
 };
 
 PairedEncoderSampler.prototype._handleCoreResponse = function (message) {
-  if (!message || (message.type !== 'battery' && message.type !== 'battery_new') || this._batteryReads === 0) return;
-  this._batteryReads -= 1;
+  if (!message || (message.type !== 'battery' && message.type !== 'battery_new')) return;
+  this._completeNormalRead('battery');
+};
+
+PairedEncoderSampler.prototype._trackNormalRead = function (key, details) {
+  const existing = this._normalReads[key];
+  if (existing && existing.timeout) this._clearTimeout(existing.timeout);
+  const expired = this._expiredNormalReads[key];
+  if (expired) this._clearTimeout(expired.timeout);
+  const read = {
+    details: details,
+    quarantined: Boolean(expired),
+    timeout: this._setTimeout(() => this._expireNormalRead(key, read), this._normalReadTimeoutMs),
+  };
+  this._normalReads[key] = read;
+  if (expired) this._markExpiredNormalRead(key);
+};
+
+PairedEncoderSampler.prototype._normalReadKey = function (key) {
+  if (this._normalReads[key] || this._expiredNormalReads[key] ||
+      Object.keys(this._normalReads).length + Object.keys(this._expiredNormalReads).length < MAX_NORMAL_READ_KEYS) {
+    return key;
+  }
+  this._onDiagnostic({
+    type: 'normal_read_key_limit',
+    key: key,
+    outstanding: this._normalReadSnapshot(),
+  });
+  return 'other';
+};
+
+PairedEncoderSampler.prototype._completeNormalRead = function (key) {
+  if (this._expiredNormalReads[key]) return;
+  const read = this._normalReads[key];
+  if (!read) return;
+  this._clearTimeout(read.timeout);
+  delete this._normalReads[key];
   this._resumeWhenReadsComplete();
+};
+
+PairedEncoderSampler.prototype._expireNormalRead = function (key, read) {
+  if (this._normalReads[key] !== read) return;
+  delete this._normalReads[key];
+  if (!read.quarantined) this._markExpiredNormalRead(key);
+  this._onDiagnostic({
+    type: 'normal_read_expired',
+    key: key,
+    outstanding: this._normalReadSnapshot(),
+  });
+  this._publish({
+    v: 1,
+    type: 'sweep_encoder_unavailable',
+    poll_id: null,
+    reason: 'normal_read_timeout',
+  });
+  this._resumeWhenReadsComplete();
+};
+
+PairedEncoderSampler.prototype._normalReadSnapshot = function () {
+  return {
+    pending: Object.keys(this._normalReads).sort(),
+    expired: Object.keys(this._expiredNormalReads).sort(),
+  };
+};
+
+PairedEncoderSampler.prototype._clearNormalReads = function () {
+  Object.keys(this._normalReads).forEach((key) => this._clearTimeout(this._normalReads[key].timeout));
+  Object.keys(this._expiredNormalReads).forEach((key) => this._clearTimeout(this._expiredNormalReads[key].timeout));
+  this._normalReads = {};
+  this._expiredNormalReads = {};
+};
+
+PairedEncoderSampler.prototype._markExpiredNormalRead = function (key) {
+  const expired = {
+    timeout: this._setTimeout(() => {
+      if (this._expiredNormalReads[key] !== expired) return;
+      delete this._expiredNormalReads[key];
+      this._resumeWhenReadsComplete();
+    }, this._normalReadTimeoutMs),
+  };
+  this._expiredNormalReads[key] = expired;
 };
 
 PairedEncoderSampler.prototype._resumeWhenReadsComplete = function () {
@@ -368,8 +445,7 @@ PairedEncoderSampler.prototype._fail = function (reason) {
   this._qualified = false;
   this._scheduleAfterDrainMs = null;
   this._scheduleAfterReadsMs = null;
-  this._vendorReads = {};
-  this._batteryReads = 0;
+  this._clearNormalReads();
   this._failed = true;
   this._releaseBus();
   this._publish({
@@ -403,6 +479,7 @@ PairedEncoderSampler.prototype._publish = function (payload) {
 PairedEncoderSampler.prototype._complete = function (poll) {
   if (this._active !== poll || poll.left === null || poll.right === null) return;
   this._active = null;
+  this._unavailable = null;
   this._publish({
     v: 1,
     type: 'sweep_encoder_pair',

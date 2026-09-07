@@ -74,6 +74,8 @@ async function withSampler(options, test) {
     monotonicNs: () => String(clock++),
     pollIntervalMs: options.pollIntervalMs || 100,
     replyTimeoutMs: options.replyTimeoutMs || 20,
+    normalReadTimeoutMs: options.normalReadTimeoutMs || 350,
+    onDiagnostic: options.onDiagnostic,
   });
   sampler.start();
   if (options.activate !== false) {
@@ -87,6 +89,53 @@ async function withSampler(options, test) {
     await new Promise((resolve) => sampler.stop(resolve));
     fs.rmSync(directory, { recursive: true, force: true });
   }
+}
+
+async function testMissedNormalReadRecoversToANewEncoderPair() {
+  await withSampler({ activate: false, pollIntervalMs: 1, normalReadTimeoutMs: 20 }, async ({ sampler, serial }) => {
+    serial.sendCustom(0, 4, Buffer.from([59, 4]));
+    sampler.activate();
+    await wait(25);
+    assert.deepStrictEqual(sampler._unavailable, {
+      v: 1,
+      type: 'sweep_encoder_unavailable',
+      poll_id: null,
+      reason: 'normal_read_timeout',
+    });
+    await wait(25);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [59, 58]);
+    serial.reply(0, 10);
+    serial.reply(1, 20);
+    assert.strictEqual(sampler._unavailable, null);
+  });
+}
+
+async function testLateNormalRepliesCannotAdvanceAnEncoderPoll() {
+  await withSampler({ activate: false, pollIntervalMs: 1, normalReadTimeoutMs: 20 }, async ({ sampler, serial }) => {
+    serial.sendCustom(0, 4, Buffer.from([59, 4]));
+    serial.sendBatteryQuery();
+    sampler.activate();
+    await wait(24);
+    serial.reply(0, 1, 59);
+    serial.batteryReply();
+    await wait(8);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [59]);
+    await wait(18);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [59, 58]);
+  });
+}
+
+async function testFreshNormalReadExtendsTheExpiredReadQuarantine() {
+  await withSampler({ activate: false, pollIntervalMs: 1, normalReadTimeoutMs: 20 }, async ({ sampler, serial }) => {
+    serial.sendCustom(0, 4, Buffer.from([59, 4]));
+    sampler.activate();
+    await wait(24);
+    serial.sendCustom(0, 4, Buffer.from([59, 4]));
+    await wait(18);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [59, 59]);
+    await wait(12);
+    assert.deepStrictEqual(serial.requests.map((request) => request.payload[0]), [59, 59, 58]);
+  });
 }
 
 
@@ -468,6 +517,9 @@ async function testFanoutBoundsClientsAndDropsSlowReaders() {
 }
 
 (async () => {
+  await testMissedNormalReadRecoversToANewEncoderPair();
+  await testLateNormalRepliesCannotAdvanceAnEncoderPoll();
+  await testFreshNormalReadExtendsTheExpiredReadQuarantine();
   await testBatteryReplyBeforeActivationBlocksTheFirstEncoderPoll();
   await testBatteryRequestDuringAnEncoderPairDrainsBeforeTheNextPair();
   await testWormNeckReadBlocksTheNextEncoderPollUntilItsResponse();

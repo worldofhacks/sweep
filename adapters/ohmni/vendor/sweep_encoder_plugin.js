@@ -20,7 +20,8 @@ function SweepEncoderPlugin(owner) {
   this._trace.installWireObserver();
   this._sampler = new PairedEncoderSampler(
     owner._serial,
-    owner._sweepEncoderSocketPath || path.resolve(__dirname, '..', 'sweep_encoder.sock')
+    owner._sweepEncoderSocketPath || path.resolve(__dirname, '..', 'sweep_encoder.sock'),
+    { onDiagnostic: (diagnostic) => this._trace.recordDiagnostic(diagnostic) }
   );
   this._sampler.start();
   this._trace.installCallObserver();
