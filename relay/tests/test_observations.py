@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from relay.observations import (
     ClockMapping,
@@ -75,6 +76,7 @@ def world_binding() -> SourceBinding:
         "dji-bridge",
         "aircraft",
         ("world",),
+        ("telemetry",),
         "level-1",
         "sha256:map-v1",
         "level-1-survey-2026-09",
@@ -90,11 +92,14 @@ def local_binding(epoch: int = 3) -> SourceBinding:
         "ohmni-lidar",
         "ground",
         ("odom", "lidar", "camera", "tag:42", "legacy_map_enu"),
+        ("telemetry", "pose", "range_scan", "camera_frame", "tag_observation", "status"),
     )
 
 
 def legacy_binding() -> SourceBinding:
-    return SourceBinding("demo-1", 7, 7, "dji-bridge", "aircraft", ("legacy_map_enu",))
+    return SourceBinding(
+        "demo-1", 7, 7, "dji-bridge", "aircraft", ("legacy_map_enu",), ("telemetry",)
+    )
 
 
 def test_aircraft_golden_decodes_ingests_and_reencodes_exactly() -> None:
@@ -112,7 +117,7 @@ def test_aircraft_golden_decodes_ingests_and_reencodes_exactly() -> None:
     )
 
     assert result.encode() == encoded.rstrip(b"\n")
-    assert result.submission.payload["kind"] == "aircraft_telemetry"
+    assert result.submission.payload["kind"] == "telemetry"
 
 
 def test_unregistered_odom_scan_is_a_valid_mapping_diagnostic() -> None:
@@ -255,6 +260,7 @@ def test_unknown_frame_stale_epoch_and_unconfigured_mapping_fail_closed() -> Non
                 "ohmni-lidar",
                 "ground",
                 ("odom", "lidar"),
+                ("range_scan",),
                 allowed_clock_mapping_ids=("missing",),
             ),
             mappings={},
@@ -324,6 +330,7 @@ def test_world_requires_matching_host_binding_pins_and_numeric_confidence() -> N
         "dji-bridge",
         "aircraft",
         ("world",),
+        ("telemetry",),
         "level-1",
         "sha256:other-map",
         "level-1-survey-2026-09",
@@ -442,3 +449,74 @@ def test_parser_rejects_boolean_version_huge_numbers_and_non_utf8_json() -> None
     with pytest.raises(ObservationError) as encoding:
         decode_submission(b"\xff")
     assert encoding.value.code == "invalid_observation"
+
+
+def test_schema_artifact_matches_the_golden_observations_and_rejects_extra_fields() -> None:
+    schema = json.loads(
+        (Path(__file__).parents[2] / "schemas" / "observation-v1.schema.json").read_text()
+    )
+    validator = Draft202012Validator(schema)
+    for path in FIXTURES.glob("*.json"):
+        assert not list(validator.iter_errors(json.loads(path.read_text())))
+
+    invalid = json.loads((FIXTURES / "aircraft-world.json").read_text())
+    invalid["unexpected"] = True
+    assert list(validator.iter_errors(invalid))
+
+
+def test_tag_payload_does_not_invent_a_pose_or_covariance() -> None:
+    raw = json.loads((FIXTURES / "camera-tag-observation.json").read_text())
+    payload = raw["payload"]
+    payload["pose_accepted"] = False
+    payload["reason"] = "ambiguous"
+    payload["tag_pose"] = None
+    payload["covariance_m2"] = None
+    payload["size_m"] = None
+    parsed = ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+    assert parsed.payload["tag_pose"] is None
+
+    payload["covariance_m2"] = [0.01] * 9
+    with pytest.raises(ObservationError, match="covariance"):
+        ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+
+
+def test_source_binding_rejects_a_known_payload_kind_that_it_did_not_authorize() -> None:
+    raw = json.loads((FIXTURES / "camera-tag-observation.json").read_text())
+    submission = ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+    binding = SourceBinding(
+        "demo-1", 9, 3, "ohmni-lidar", "ground", ("camera", "tag:42"), ("camera_frame",)
+    )
+    with pytest.raises(ObservationError) as rejected:
+        ingest(
+            submission,
+            t_ingest=raw["t_ingest"],
+            frames=local_registry(),
+            binding=binding,
+            mappings={},
+            timing=TimingPolicy(25),
+        )
+    assert rejected.value.code == "payload_not_authorized"
+
+
+def test_ground_telemetry_uses_the_same_payload_shape_as_aircraft() -> None:
+    raw = json.loads((FIXTURES / "ground-odom-range-scan.json").read_text())
+    raw["frame"] = "odom"
+    raw["payload"] = {
+        "kind": "telemetry",
+        "position": {"frame": "odom", "x_m": 1.0, "y_m": 2.0, "z_m": 0.0},
+        "velocity": {"frame": "odom", "x_m_s": 0.1, "y_m_s": 0.0, "z_m_s": 0.0},
+        "battery": 0.7,
+        "link": 0.8,
+        "pos_quality": 0.0,
+        "state": "mapping",
+    }
+    submission = ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+    accepted = ingest(
+        submission,
+        t_ingest=raw["t_ingest"],
+        frames=local_registry(),
+        binding=local_binding(),
+        mappings={},
+        timing=TimingPolicy(25),
+    )
+    assert accepted.submission.payload["kind"] == "telemetry"
