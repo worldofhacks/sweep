@@ -7,6 +7,7 @@ import math
 import os
 import signal
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -17,6 +18,7 @@ from perception.localization_lease import LocalizationLeaseStatus
 from perception.tag_localization import TagLocalizer
 from perception.webcam_filter import WebcamFilter
 from perception.webcam_stream import WebcamStream
+from relay.media import stream_name
 from tools.map_common import parse_document
 
 
@@ -27,12 +29,31 @@ def pinned_json(path, expected):
     return parse_document(payload, str(path))
 
 
+def configured_stream_paths(settings):
+    return {device_id: stream_name(device_id) for device_id in settings.adapter_keys}
+
+
+def _validate_stream_path(config, configured_streams):
+    stream_path = config.get("stream_path")
+    device_id = config.get("source_device_id")
+    if device_id is None:
+        if stream_path not in {f"drone{i}" for i in range(1, 7)}:
+            raise ValueError("stream_path must name a legacy MediaMTX drone1 through drone6 path")
+        return
+    if type(device_id) is not int or device_id <= 0 or not isinstance(configured_streams, Mapping):
+        raise ValueError("source_device_id requires configured camera streams")
+    expected_stream = configured_streams.get(device_id)
+    if not isinstance(expected_stream, str):
+        raise ValueError("source_device_id must name a configured source device")
+    if stream_path != expected_stream:
+        raise ValueError("stream_path must match the configured source device")
+
+
 class WebcamLocalization:
-    def __init__(self, config, *, allow_synthetic=False):
+    def __init__(self, config, *, allow_synthetic=False, configured_streams=None):
         if not isinstance(config, dict) or not isinstance(config.get("localizer"), dict):
             raise ValueError("webcam configuration must contain a localizer object")
-        if config.get("stream_path") not in {f"drone{i}" for i in range(1, 7)}:
-            raise ValueError("stream_path must name a MediaMTX drone1 through drone6 path")
+        _validate_stream_path(config, configured_streams)
         localizer_config = config["localizer"]
         pipeline = localizer_config.get("pipeline")
         if not isinstance(pipeline, dict):
@@ -281,7 +302,17 @@ def main():
         parsed_url = urlsplit(url)
         if parsed_url.scheme not in ("rtsp", "rtsps") or not parsed_url.netloc:
             raise ValueError("URL environment variable must contain the MediaMTX RTSP read URL")
-        loop = WebcamLocalization(load_config(args.config), allow_synthetic=args.allow_synthetic)
+        config = load_config(args.config)
+        configured_streams = None
+        if config.get("source_device_id") is not None:
+            from relay.settings import RelaySettings
+
+            configured_streams = configured_stream_paths(RelaySettings.from_env())
+        loop = WebcamLocalization(
+            config,
+            allow_synthetic=args.allow_synthetic,
+            configured_streams=configured_streams,
+        )
         if parsed_url.path != "/" + loop.provenance["stream_path"]:
             raise ValueError("RTSP path does not match the pinned source configuration")
         if bool(args.detector_model) != bool(args.detector_model_sha256):
