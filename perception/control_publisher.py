@@ -21,7 +21,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_for_futures
-from dataclasses import MISSING, asdict, dataclass, fields, replace
+from dataclasses import MISSING, asdict, dataclass, field, fields, replace
 from math import isfinite
 from pathlib import Path
 from types import MappingProxyType
@@ -50,10 +50,14 @@ from relay.control_localization_contracts import (
 LIVE_PUBLISH_INTERVAL_S = 0.1
 LIVE_RECONNECT_BACKOFF_S = 1.0
 LIVE_SHUTDOWN_TIMEOUT_S = 6.0
-MAX_DRONES = 4
+MAX_DRONES = 32
+MAX_STATE_NODES = 9
 MAX_QUEUE_LIMIT = 4_096
 MAX_JSON_BYTES = 1_048_576
 MAX_URL_CHARS = 2_048
+MAX_INBOUND_OBSERVATIONS = 64
+MAX_INBOUND_OBSERVATION_BYTES = 4 * 64 * 1024
+MAX_CANONICAL_OBSERVATION_BYTES = 64 * 1024
 _ACTIVE_MEMBERSHIPS = frozenset({"registered", "ready", "degraded"})
 _MEMBERSHIPS = _ACTIVE_MEMBERSHIPS | {"leaving", "disconnected"}
 
@@ -154,6 +158,8 @@ class _SocketState:
     socket: object
     binding: LiveBinding
     failure: PublisherTransportError | None = None
+    observations: deque[dict[str, object]] = field(default_factory=deque)
+    observation_bytes: int = 0
 
 
 class WebSocketPublisherTransport:
@@ -254,6 +260,19 @@ class WebSocketPublisherTransport:
             self._fail(drone_id, state, failure)
             raise failure from error
 
+    def take_observations(self, drone_id: int) -> tuple[dict[str, object], ...]:
+        """Return the bounded canonical observation stream for one bound aircraft."""
+        with self._lock:
+            if self._closed:
+                raise PublisherTransportError("localization transport is closed")
+            state = self._states.get(drone_id)
+            if state is None or state.failure is not None:
+                raise PublisherTransportError("localization transport is unavailable")
+            accepted = tuple(state.observations)
+            state.observations.clear()
+            state.observation_bytes = 0
+            return accepted
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
@@ -271,6 +290,29 @@ class WebSocketPublisherTransport:
                     with self._lock:
                         if self._states.get(drone_id) is state:
                             state.binding = binding
+                elif event.get("type") == "observation":
+                    if event.get("device_id") != drone_id:
+                        raise PublisherTransportError(
+                            "localization received an observation for another aircraft"
+                        )
+                    encoded = _canonical_json(event)
+                    if len(encoded) > MAX_CANONICAL_OBSERVATION_BYTES:
+                        raise PublisherTransportError(
+                            "localization observation exceeds the canonical byte ceiling"
+                        )
+                    with self._lock:
+                        if self._states.get(drone_id) is not state:
+                            return
+                        if (
+                            len(state.observations) >= MAX_INBOUND_OBSERVATIONS
+                            or state.observation_bytes + len(encoded)
+                            > MAX_INBOUND_OBSERVATION_BYTES
+                        ):
+                            raise PublisherTransportError(
+                                "localization observation stream exceeded its bounded queue"
+                            )
+                        state.observations.append(dict(event))
+                        state.observation_bytes += len(encoded)
         except Exception:
             self._fail(
                 drone_id,
@@ -701,6 +743,29 @@ class ControlPublisher:
             raise PublisherTransportError("localization frame was not delivered") from error
         return frame
 
+    def take_live_observations(
+        self, drone_id: int
+    ) -> tuple[LiveBinding, tuple[dict[str, object], ...]]:
+        """Drain canonical evidence received on this publisher's authenticated socket."""
+        self._require_open()
+        if self.config.mode != "live" or self.transport is None:
+            raise PublisherError("replay publisher has no live observation transport")
+        binding = self._current_binding(drone_id)
+        take = getattr(self.transport, "take_observations", None)
+        if not callable(take):
+            raise PublisherTransportError("localization transport cannot receive observations")
+        try:
+            observations = take(drone_id)
+        except PublisherTransportError:
+            raise
+        except Exception as error:
+            raise PublisherTransportError("localization observation delivery failed") from error
+        if not isinstance(observations, tuple) or any(
+            not isinstance(event, dict) for event in observations
+        ):
+            raise PublisherTransportError("localization transport returned invalid observations")
+        return binding, observations
+
     def close(self) -> None:
         if self._closed:
             return
@@ -969,7 +1034,7 @@ def _binding_from_state(raw: Mapping[str, object], drone_id: int, session: str) 
         or raw["type"] != "state"
         or raw["session"] != session
         or not isinstance(raw["drones"], list)
-        or len(raw["drones"]) > MAX_DRONES
+        or len(raw["drones"]) > MAX_STATE_NODES
     ):
         raise PublisherTransportError("relay state handshake is invalid")
     try:
@@ -997,6 +1062,8 @@ def _binding_from_state(raw: Mapping[str, object], drone_id: int, session: str) 
             raise PublisherTransportError("relay state drone identities are invalid")
         seen.add(candidate)
         if candidate == drone_id:
+            if item.get("node_type", "aircraft") != "aircraft":
+                raise PublisherTransportError("localization binding requires an aircraft")
             matches.append(item)
     if len(matches) != 1:
         raise PublisherTransportError("authenticated aircraft has no current relay epoch")

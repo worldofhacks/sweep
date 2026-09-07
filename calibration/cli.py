@@ -64,6 +64,7 @@ def _intrinsics_command(args: argparse.Namespace) -> None:
             camera_serial=args.camera_serial,
             pipeline=pipeline,
             evidence_kind=args.evidence_kind,
+            model=args.model,
         )
     )
     _write_artifact(args.output, artifact)
@@ -96,6 +97,7 @@ def _parser() -> argparse.ArgumentParser:
     intrinsics.add_argument("--inner-corners", type=_corners, required=True)
     intrinsics.add_argument("--square-size-m", type=float, required=True)
     intrinsics.add_argument("--camera-serial", required=True)
+    intrinsics.add_argument("--model", choices=("pinhole", "fisheye"), default="pinhole")
     intrinsics.add_argument("--pipeline", type=Path, required=True)
     intrinsics.add_argument(
         "--evidence-kind", choices=("synthetic", "recorded_live"), required=True

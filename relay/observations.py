@@ -552,11 +552,92 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
         result["state"] = _text(value["state"], "state")
         return result
     if kind == "pose":
-        value = _exact(raw, frozenset({"kind", "pose"}), "pose payload")
+        fields = frozenset({"kind", "pose"})
+        if "capture_alignment" in raw:
+            fields |= {"capture_alignment"}
+        value = _exact(raw, fields, "pose payload")
         pose = FramedPose.parse(value["pose"])
         if pose.parent_frame != envelope_frame:
             _error("payload_frame_mismatch", "pose parent frame must equal the envelope frame")
-        return {"kind": kind, "pose": pose.to_mapping()}
+        result: dict[str, object] = {"kind": kind, "pose": pose.to_mapping()}
+        if "capture_alignment" in value:
+            alignment = _exact(
+                value["capture_alignment"],
+                frozenset(
+                    {
+                        "v",
+                        "alignment_config_id",
+                        "alignment_config_sha256",
+                        "kinematic_calibration_id",
+                        "kinematic_calibration_sha256",
+                        "frame_pts",
+                        "gimbal_receipt",
+                        "body_attitude_receipt",
+                        "gimbal_attitude",
+                        "body_attitude",
+                        "frame_capture_error_ms",
+                        "gimbal_callback_latency_ms",
+                        "body_attitude_callback_latency_ms",
+                        "gimbal_callback_orientation_error_deg",
+                        "body_attitude_callback_orientation_error_deg",
+                        "gimbal_angular_rate_bound_deg_s",
+                        "body_angular_rate_bound_deg_s",
+                        "max_extrinsics_angle_error_deg",
+                    }
+                ),
+                "pose capture alignment",
+            )
+            if alignment["v"] != 1 or type(alignment["v"]) is not int:
+                _error("invalid_payload", "pose capture alignment requires v 1")
+            for name in (
+                "alignment_config_id",
+                "kinematic_calibration_id",
+            ):
+                _text(alignment[name], name)
+            for name in ("alignment_config_sha256", "kinematic_calibration_sha256"):
+                digest = _text(alignment[name], name)
+                if len(digest) != 64 or any(
+                    character not in "0123456789abcdef" for character in digest
+                ):
+                    _error("invalid_payload", f"{name} must be a lowercase SHA-256")
+            frame_pts = SourceTime.parse(alignment["frame_pts"])
+            gimbal_receipt = SourceTime.parse(alignment["gimbal_receipt"])
+            body_attitude_receipt = SourceTime.parse(alignment["body_attitude_receipt"])
+            result["capture_alignment"] = {
+                "v": 1,
+                "alignment_config_id": alignment["alignment_config_id"],
+                "alignment_config_sha256": alignment["alignment_config_sha256"],
+                "kinematic_calibration_id": alignment["kinematic_calibration_id"],
+                "kinematic_calibration_sha256": alignment["kinematic_calibration_sha256"],
+                "frame_pts": frame_pts.to_mapping(),
+                "gimbal_receipt": gimbal_receipt.to_mapping(),
+                "body_attitude_receipt": body_attitude_receipt.to_mapping(),
+            }
+            for name in ("gimbal_attitude", "body_attitude"):
+                attitude = _exact(
+                    alignment[name],
+                    frozenset({"yaw_deg", "pitch_deg", "roll_deg"}),
+                    name,
+                )
+                result["capture_alignment"][name] = {
+                    field: _number(attitude[field], f"{name}.{field}")
+                    for field in ("yaw_deg", "pitch_deg", "roll_deg")
+                }
+            for name in (
+                "frame_capture_error_ms",
+                "gimbal_callback_latency_ms",
+                "body_attitude_callback_latency_ms",
+                "gimbal_callback_orientation_error_deg",
+                "body_attitude_callback_orientation_error_deg",
+                "gimbal_angular_rate_bound_deg_s",
+                "body_angular_rate_bound_deg_s",
+                "max_extrinsics_angle_error_deg",
+            ):
+                number = _number(alignment[name], name)
+                if number < 0:
+                    _error("invalid_payload", f"{name} must be non-negative")
+                result["capture_alignment"][name] = number
+        return result
     if kind == "range_scan":
         fields = frozenset(
             {
@@ -934,6 +1015,8 @@ def ingest(
     outer_frame = binding.validate(submission, frames)
     _validate_payload_frames(submission, frames, binding, outer_frame)
     if submission.clock_mapping_id is None:
+        if submission.payload["kind"] == "pose" and "capture_alignment" in submission.payload:
+            _error("clock_mapping_required", "capture-aligned poses require a host clock mapping")
         _canonical_json(submission.to_mapping())
         return Observation(submission, ingest_time)
     if submission.clock_mapping_id not in binding.allowed_clock_mapping_ids:
