@@ -45,15 +45,15 @@ class FlightNode(
     }
 
     fun qualifyGroundedAuthority() {
-        _groundedAuthorityQualification.value = GroundedAuthorityQualification(active = true, detail = "Waiting for MSDK authority")
+        _groundedAuthorityQualification.value = GroundedAuthorityQualification(active = true, detail = "Verifying Virtual Stick mode; direct owner remains UNKNOWN")
         executor.qualifyGroundedAuthority(
             object : ReportSink {
                 override fun executing(detail: String?) {
-                    _groundedAuthorityQualification.value = GroundedAuthorityQualification(active = true, detail = detail ?: "Waiting for MSDK authority")
+                    _groundedAuthorityQualification.value = GroundedAuthorityQualification(active = true, detail = detail ?: "Verifying Virtual Stick mode; direct owner remains UNKNOWN")
                 }
 
                 override fun completed(detail: String?) {
-                    _groundedAuthorityQualification.value = GroundedAuthorityQualification(detail = detail ?: "MSDK authority confirmed")
+                    _groundedAuthorityQualification.value = GroundedAuthorityQualification(detail = detail ?: "Virtual Stick mode verified; direct owner remains UNKNOWN")
                 }
 
                 override fun failed(reason: FlightReason, detail: String?) {
