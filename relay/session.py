@@ -532,6 +532,20 @@ class RelaySession:
                         )
                     ]
 
+            if (
+                intent.name is IntentName.GROUND_VELOCITY
+                and not self.registry.selection_includes_ground(intent.selection)
+            ):
+                return [
+                    self._refuse_intent(
+                        raw,
+                        reason="ground_target_required",
+                        detail="ground velocity requires a selected ground node",
+                        now=now,
+                        normalized=intent,
+                    )
+                ]
+
             if intent.name not in _GROUND_SAFE_INTENTS and self.registry.selection_includes_ground(
                 intent.selection
             ):
@@ -2493,7 +2507,9 @@ class RelaySession:
 
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
-_GROUND_SAFE_INTENTS = frozenset({IntentName.SELECT, IntentName.HOLD, IntentName.ESTOP})
+_GROUND_SAFE_INTENTS = frozenset(
+    {IntentName.SELECT, IntentName.HOLD, IntentName.ESTOP, IntentName.GROUND_VELOCITY}
+)
 # These two planner-owned objects share the per-aircraft projection budget. Four
 # maximum aircraft plus both maximum control objects still fit one 1 MiB record.
 MAX_MATERIAL_CONTROL_PROJECTION_BYTES = 128 * 1024

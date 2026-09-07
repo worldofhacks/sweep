@@ -27,6 +27,7 @@ class IntentName(StrEnum):
     CAPTURE_ROOM = "capture_room"
     SURVEY_AREA = "survey_area"
     MAP_AREA = "map_area"
+    GROUND_VELOCITY = "ground_velocity"
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +78,7 @@ C1_IMPLEMENTED_INTENT_NAMES = frozenset(
         IntentName.ESTOP,
         IntentName.CAPTURE_ROOM,
         IntentName.ALTITUDE,
+        IntentName.GROUND_VELOCITY,
     }
 )
 

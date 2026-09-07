@@ -146,8 +146,8 @@ COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingP
         CommandOperation.ESTOP: MappingProxyType({}),
         CommandOperation.GROUND_VELOCITY: MappingProxyType(
             {
-                "velocity_mm_s": "ground_velocity_mm_s",
-                "yaw_mrad_s": "ground_yaw_mrad_s",
+                "linear_mm_s": "ground_linear_mm_s",
+                "angular_mrad_s": "ground_angular_mrad_s",
                 "duration_ms": "ground_duration_ms",
             }
         ),
@@ -1544,11 +1544,11 @@ def _command_arguments(
             result[field] = _nonempty_string(value[field], field, code)
         elif kind == "positive":
             result[field] = _positive_int(value[field], field, code)
-        elif kind == "ground_velocity_mm_s":
+        elif kind == "ground_linear_mm_s":
             result[field] = _nonnegative_int(value[field], field, code)
             if result[field] > MAX_GROUND_VELOCITY_MM_S:
                 raise ContractError(code, f"{field} exceeds the ground speed cap")
-        elif kind == "ground_yaw_mrad_s":
+        elif kind == "ground_angular_mrad_s":
             result[field] = _integer(value[field], field, code)
             if abs(result[field]) > MAX_GROUND_YAW_MRAD_S:
                 raise ContractError(code, f"{field} exceeds the ground yaw cap")
@@ -1558,12 +1558,13 @@ def _command_arguments(
                 raise ContractError(code, f"{field} exceeds the ground duration cap")
         else:
             result[field] = _integer(value[field], field, code)
-    if (
-        operation is CommandOperation.GROUND_VELOCITY
-        and result["velocity_mm_s"]
-        and result["yaw_mrad_s"]
+    if operation is CommandOperation.GROUND_VELOCITY and (
+        (result["linear_mm_s"] and result["angular_mrad_s"])
+        or (not result["linear_mm_s"] and not result["angular_mrad_s"])
     ):
-        raise ContractError(code, "ground velocity cannot combine forward and yaw motion")
+        raise ContractError(
+            code, "ground velocity requires exactly one linear or angular component"
+        )
     return MappingProxyType(result)
 
 

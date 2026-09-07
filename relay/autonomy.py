@@ -35,6 +35,7 @@ from fastapi import FastAPI
 
 from adapters.dispatch import AdapterDispatcher
 from adapters.dji_mini3.remote import CommandRequest, NodeLink
+from adapters.ohmni.dispatcher import GroundCommandDispatcher
 from adapters.sim.camera import SimCameraConfig
 from arbiter.safety import SafetyArbiter, SafetyConfig
 from planner.controller import AutonomyController, RelayExecution
@@ -80,6 +81,7 @@ HOLD_PREEMPTS = frozenset(
         IntentName.SWEEP,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
+        IntentName.GROUND_VELOCITY,
     }
 )
 """Operator motion and camera plans a hold cancels; a running safety plan finishes first."""
@@ -666,19 +668,34 @@ class AutonomySession:
             return _PreemptibleLink(link, job, session)
 
         try:
-            snapshot = current()
-            dispatcher = build_dispatcher(
-                runtime,
-                self.session_id,
-                snapshot,
-                arbiter=self.arbiter,
-                sim_camera_config=self._composition.config.sim_camera,
-                link_wrapper=gate,
-            )
-            controller = AutonomyController(
-                planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
-            )
-            result = controller.execute(intent, snapshot, current_snapshot=current)
+            if intent.name is IntentName.GROUND_VELOCITY:
+                link = gate(
+                    RelayNodeLink(
+                        runtime,
+                        self.session_id,
+                        delivery_timeout_ms=runtime.settings.command_ttl_ms,
+                    )
+                )
+                result = GroundCommandDispatcher(
+                    link,
+                    acknowledgement_timeout_ms=runtime.settings.command_ttl_ms,
+                    command_deadline_ms=runtime.settings.command_deadline_ms,
+                ).dispatch(intent, session.current_state())
+                dispatcher = None
+            else:
+                snapshot = current()
+                dispatcher = build_dispatcher(
+                    runtime,
+                    self.session_id,
+                    snapshot,
+                    arbiter=self.arbiter,
+                    sim_camera_config=self._composition.config.sim_camera,
+                    link_wrapper=gate,
+                )
+                controller = AutonomyController(
+                    planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
+                )
+                result = controller.execute(intent, snapshot, current_snapshot=current)
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             return
@@ -691,6 +708,8 @@ class AutonomySession:
             result = _composition_failure(intent, session, error)
         with self._lock:
             if result.status is LifecycleStatus.EXECUTING:
+                if dispatcher is None:
+                    raise RuntimeError("ground dispatcher returned a nonterminal command result")
                 self._awaiting[intent.intent_id] = _AwaitingExecution(
                     job=job,
                     session=session,

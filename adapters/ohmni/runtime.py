@@ -353,8 +353,8 @@ class OhmniRuntime:
             args = command.args
             try:
                 motion = self.device.drive_velocity(
-                    int(args["velocity_mm_s"]) / 1_000,
-                    math.degrees(int(args["yaw_mrad_s"]) / 1_000),
+                    int(args["linear_mm_s"]) / 1_000,
+                    math.degrees(int(args["angular_mrad_s"]) / 1_000),
                     int(args["duration_ms"]) / 1_000,
                 )
             except (RuntimeError, ValueError) as error:
