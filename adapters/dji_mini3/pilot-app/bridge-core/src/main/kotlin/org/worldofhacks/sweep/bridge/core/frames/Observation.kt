@@ -175,12 +175,66 @@ private object ObservationPayload {
     }
 
     private fun pose(json: JsonObject, frame: String): JsonObject {
-        exact(json, setOf("kind", "pose"), "pose payload")
+        val fields = if ("capture_alignment" in json) {
+            setOf("kind", "pose", "capture_alignment")
+        } else {
+            setOf("kind", "pose")
+        }
+        exact(json, fields, "pose payload")
         val pose = pose(json["pose"])
         if (pose["parent_frame"] != JsonString(frame)) {
             throw ContractError("payload_frame_mismatch", "pose parent frame must equal the envelope frame")
         }
+        if ("capture_alignment" in json) captureAlignment(json["capture_alignment"])
         return copyObject(json)
+    }
+
+    private fun captureAlignment(value: JsonValue?) {
+        val json = value as? JsonObject ?: throw ContractError(CODE, "capture alignment must be an object")
+        exact(
+            json,
+            setOf(
+                "v", "alignment_config_id", "alignment_config_sha256", "kinematic_calibration_id",
+                "kinematic_calibration_sha256", "frame_pts", "gimbal_receipt", "body_attitude_receipt",
+                "gimbal_attitude", "body_attitude", "frame_capture_error_ms", "gimbal_callback_latency_ms",
+                "body_attitude_callback_latency_ms", "gimbal_callback_orientation_error_deg",
+                "body_attitude_callback_orientation_error_deg", "gimbal_angular_rate_bound_deg_s",
+                "body_angular_rate_bound_deg_s", "max_extrinsics_angle_error_deg",
+            ),
+            "pose capture alignment",
+        )
+        if (json["v"] != JsonInt(1)) throw ContractError(CODE, "capture alignment version is invalid")
+        text(json["alignment_config_id"], "alignment_config_id")
+        sha256(json["alignment_config_sha256"], "alignment_config_sha256")
+        text(json["kinematic_calibration_id"], "kinematic_calibration_id")
+        sha256(json["kinematic_calibration_sha256"], "kinematic_calibration_sha256")
+        SourceTime.parse(json["frame_pts"])
+        SourceTime.parse(json["gimbal_receipt"])
+        SourceTime.parse(json["body_attitude_receipt"])
+        attitude(json["gimbal_attitude"], "gimbal attitude")
+        attitude(json["body_attitude"], "body attitude")
+        for (name in setOf(
+            "frame_capture_error_ms", "gimbal_callback_latency_ms", "body_attitude_callback_latency_ms",
+            "gimbal_callback_orientation_error_deg", "body_attitude_callback_orientation_error_deg",
+            "gimbal_angular_rate_bound_deg_s", "body_angular_rate_bound_deg_s", "max_extrinsics_angle_error_deg",
+        )) {
+            if (number(json[name], name) < 0.0) throw ContractError(CODE, "$name must be non-negative")
+        }
+    }
+
+    private fun attitude(value: JsonValue?, name: String) {
+        val json = value as? JsonObject ?: throw ContractError(CODE, "$name must be an object")
+        exact(json, setOf("yaw_deg", "pitch_deg", "roll_deg"), name)
+        number(json["yaw_deg"], "$name yaw", 360.0)
+        number(json["pitch_deg"], "$name pitch", 360.0)
+        number(json["roll_deg"], "$name roll", 360.0)
+    }
+
+    private fun sha256(value: JsonValue?, field: String) {
+        val digest = value as? JsonString
+        if (digest == null || !digest.value.matches(Regex("[0-9a-f]{64}"))) {
+            throw ContractError(CODE, "$field must be lowercase SHA-256")
+        }
     }
 
     private fun rangeScan(json: JsonObject, frame: String): JsonObject {

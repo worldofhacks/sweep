@@ -20,10 +20,12 @@ import org.worldofhacks.sweep.bridge.flight.FlightExecutor
 import org.worldofhacks.sweep.bridge.flight.FlightNode
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
+import org.worldofhacks.sweep.bridge.node.CaptureAlignmentCollector
 import org.worldofhacks.sweep.bridge.node.TelemetryKeyStatus
 import org.worldofhacks.sweep.bridge.publish.BenchSink
 import org.worldofhacks.sweep.bridge.session.AircraftIdentity
 import org.worldofhacks.sweep.bridge.session.AircraftSession
+import org.worldofhacks.sweep.bridge.session.CaptureAlignmentSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
 import org.worldofhacks.sweep.bridge.session.ProbeReport
 import org.worldofhacks.sweep.bridge.session.RawEvidenceExport
@@ -52,7 +54,8 @@ internal class SdkSession(private val application: Application) :
     AircraftSession,
     FpvSessionHost,
     SensorRecordingSession,
-    RawEvidenceSession {
+    RawEvidenceSession,
+    CaptureAlignmentSession {
     private val model = SessionModel()
     private val sensorRawLock = Any()
     private var sensorRelayContext: SensorRelayContext? = null
@@ -95,6 +98,8 @@ internal class SdkSession(private val application: Application) :
         ): SensorRawAppendResult = sensorRaw?.recordGimbalAttitudeDegrees(yawDeg, pitchDeg, rollDeg)
             ?: SensorRawAppendResult.NO_IDENTITY
     }
+    private val captureCollector = CaptureAlignmentCollector()
+
     private val probe = ProbeAircraft(
         phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
         androidVersion = Build.VERSION.RELEASE ?: "",
@@ -102,6 +107,7 @@ internal class SdkSession(private val application: Application) :
         log = { name, detail -> model.event(name, detail) },
         record = { key, event, status -> recordKey(key, event, status) },
         rawRecorder = rawRecorder,
+        captureAlignment = captureCollector,
     )
 
     override fun updateSensorRelayContext(context: SensorRelayContext?) {
@@ -193,7 +199,9 @@ internal class SdkSession(private val application: Application) :
     }
 
     // Phase D hook: local FPV, yaw, and codec evidence (org.worldofhacks.sweep.bridge.video).
-    override val fpv: DjiFpv = DjiFpv(application.filesDir, AndroidPhoneStatus(application)) { name, detail -> model.event(name, detail) }
+    override val fpv: DjiFpv = DjiFpv(application.filesDir, AndroidPhoneStatus(application), { name, detail -> model.event(name, detail) }, captureCollector)
+
+    override val captureAlignmentSamples = captureCollector
 
     override val state: StateFlow<SessionState> = model.state
 

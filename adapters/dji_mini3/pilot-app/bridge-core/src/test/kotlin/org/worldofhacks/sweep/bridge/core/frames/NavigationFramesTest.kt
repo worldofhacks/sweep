@@ -67,6 +67,27 @@ class NavigationFramesTest {
     }
 
     @Test
+    fun `python route fixture parses verifies and binds its goto to the authorized target`() {
+        val fixture = Json.parse(
+            requireNotNull(javaClass.classLoader.getResource("navigation/python_route_pose_fixture.json"))
+                .readText(),
+        ) as JsonObject
+        val key = ((fixture["key_utf8"] as org.worldofhacks.sweep.bridge.core.json.JsonString).value).toByteArray()
+        val authorization = NavigationRouteAuthorization.parse(fixture["route_authorization"] as JsonObject)
+        val pose = NavigationPose.parse(fixture["navigation_pose"] as JsonObject)
+        val goto = fixture["goto"] as JsonObject
+
+        assertTrue(authorization.verifies(key))
+        assertTrue(pose.verifies(key))
+        assertEquals(authorization.routeId, (goto["navigation_route_id"] as org.worldofhacks.sweep.bridge.core.json.JsonString).value)
+        assertEquals(authorization.target(), listOf(
+            (goto["x_mm"] as org.worldofhacks.sweep.bridge.core.json.JsonInt).value,
+            (goto["y_mm"] as org.worldofhacks.sweep.bridge.core.json.JsonInt).value,
+            (goto["z_mm"] as org.worldofhacks.sweep.bridge.core.json.JsonInt).value,
+        ))
+    }
+
+    @Test
     fun `route evidence cannot be downgraded into a legacy goto`() {
         val route = routeAuthorization().signed()
         assertThrows(ContractError::class.java) { CommandFrame.parse(route) }
