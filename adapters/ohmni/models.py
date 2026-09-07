@@ -18,6 +18,8 @@ class GroundStatus:
     drive_authority: bool
     t_ms: int | None = None
     extras: dict[str, Any] = field(default_factory=dict)
+    pose_sample_ns: int | None = None
+    pose_sample_skew_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

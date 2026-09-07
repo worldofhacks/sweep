@@ -32,12 +32,20 @@ def encoder_pair(text: str) -> tuple[int, int] | None:
 
 @dataclass(frozen=True)
 class Pose:
+    """Launch-frame pose with paired encoder timing.
+
+    sample_ns is the right-wheel reply completing the odometry update; sample_skew_ns is
+    the left-to-right reply interval, not a simultaneous sensor-acquisition time.
+    """
+
     x: float
     y: float
     yaw_deg: float
     vx: float = 0.0
     vy: float = 0.0
     quality: float = 0.0
+    sample_ns: int | None = None
+    sample_skew_ns: int | None = None
 
 
 class Odometry:
@@ -47,48 +55,77 @@ class Odometry:
         self._previous: tuple[int, int] | None = None
         self.updated = 0.0
         self.lost = False
+        self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="ohmni-encoders", daemon=True)
 
-    def update(self, pair: tuple[int, int], now: float) -> None:
-        if self.lost:
-            return
-        pose = self.pose
-        if self._previous is not None:
-            dt = now - self.updated
-            if not 0 < dt <= MAX_SAMPLE_GAP_S:
-                # Lost wraps cannot be recovered from absolute 14-bit positions. Do not
-                # quietly restart integrating from a false room pose after a Wi-Fi/IO gap.
-                self.lost = True
-                self.pose = Pose(pose.x, pose.y, pose.yaw_deg)
+    def update(
+        self,
+        pair: tuple[int, int],
+        now: float,
+        *,
+        sample_ns: int | None = None,
+        sample_skew_ns: int | None = None,
+    ) -> None:
+        with self._lock:
+            if self.lost:
                 return
-            left = encoder_delta(self._previous[0], pair[0]) / TICKS_PER_MM
-            right = -encoder_delta(self._previous[1], pair[1]) / TICKS_PER_MM
-            distance = (left + right) / 2000
-            turn = (right - left) / BASE_MM
-            yaw = math.radians(pose.yaw_deg)
-            dx = distance * math.cos(yaw + turn / 2)
-            dy = distance * math.sin(yaw + turn / 2)
-            self.pose = Pose(
-                pose.x + dx, pose.y + dy, math.degrees(yaw + turn) % 360, dx / dt, dy / dt, 0.6
-            )
-        else:
-            self.pose = Pose(pose.x, pose.y, pose.yaw_deg, quality=0.6)
-        self._previous = pair
-        self.updated = now
+            pose = self.pose
+            if self._previous is not None:
+                dt = now - self.updated
+                if not 0 < dt <= MAX_SAMPLE_GAP_S:
+                    # Lost wraps cannot be recovered from absolute 14-bit positions. Do not
+                    # quietly restart integrating from a false room pose after a Wi-Fi/IO gap.
+                    self.lost = True
+                    self.pose = Pose(pose.x, pose.y, pose.yaw_deg)
+                    return
+                left = encoder_delta(self._previous[0], pair[0]) / TICKS_PER_MM
+                right = -encoder_delta(self._previous[1], pair[1]) / TICKS_PER_MM
+                distance = (left + right) / 2000
+                turn = (right - left) / BASE_MM
+                yaw = math.radians(pose.yaw_deg)
+                dx = distance * math.cos(yaw + turn / 2)
+                dy = distance * math.sin(yaw + turn / 2)
+                self.pose = Pose(
+                    pose.x + dx,
+                    pose.y + dy,
+                    math.degrees(yaw + turn) % 360,
+                    dx / dt,
+                    dy / dt,
+                    0.6,
+                    sample_ns,
+                    sample_skew_ns,
+                )
+            else:
+                self.pose = Pose(
+                    pose.x,
+                    pose.y,
+                    pose.yaw_deg,
+                    quality=0.6,
+                    sample_ns=sample_ns,
+                    sample_skew_ns=sample_skew_ns,
+                )
+            self._previous = pair
+            self.updated = now
 
     def snapshot(self, now: float | None = None) -> Pose:
         now = time.monotonic() if now is None else now
-        pose = self.pose
-        if now - self.updated > MAX_SAMPLE_GAP_S or self.lost:
-            return Pose(pose.x, pose.y, pose.yaw_deg)
-        return pose
+        with self._lock:
+            pose = self.pose
+            if now - self.updated > MAX_SAMPLE_GAP_S or self.lost:
+                return Pose(pose.x, pose.y, pose.yaw_deg)
+            return pose
 
     def start(self) -> None:
         self._thread.start()
 
     def _update_paired_sample(self, sample: EncoderPair) -> None:
-        self.update((sample.left, sample.right), sample.right_receipt_ns / 1_000_000_000)
+        self.update(
+            (sample.left, sample.right),
+            sample.right_receipt_ns / 1_000_000_000,
+            sample_ns=sample.right_receipt_ns,
+            sample_skew_ns=sample.right_receipt_ns - sample.left_receipt_ns,
+        )
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -106,8 +143,9 @@ class Odometry:
                 if pair is not None:
                     self.update(pair, time.monotonic())
             except EncoderStreamUnavailable:
-                self.lost = True
-                self.pose = Pose(self.pose.x, self.pose.y, self.pose.yaw_deg)
+                with self._lock:
+                    self.lost = True
+                    self.pose = Pose(self.pose.x, self.pose.y, self.pose.yaw_deg)
             except OSError:
                 pass  # snapshot freshness independently withdraws position quality.
             self._stop.wait(max(0.001, 0.1 - (time.monotonic() - started)))
