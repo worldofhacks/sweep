@@ -74,16 +74,23 @@ class BenchRecorder(private val sink: Appendable, private val clock: Clock) {
      * support answers and the first-value time ride along so any one line tells the key's
      * story, and `grep telemetry_key <log>` shows which keys reported.
      */
-    fun telemetryKey(key: String, event: String, supportedAtAttach: Boolean?, supportedAtConnect: Boolean?, firstValueAtMs: Long?) {
-        write(
-            RecordKind.TELEMETRY_KEY,
-            clock.nowMs(),
+    fun telemetryKey(
+        key: String,
+        event: String,
+        supportedAtAttach: Boolean?,
+        supportedAtConnect: Boolean?,
+        firstValueAtMs: Long?,
+        value: String? = null,
+    ) {
+        val fields = arrayOf(
             "key" to key,
             "event" to event,
             "supported_at_attach" to supportedAtAttach,
             "supported_at_connect" to supportedAtConnect,
             "first_value_at_ms" to firstValueAtMs,
         )
+        if (value == null) write(RecordKind.TELEMETRY_KEY, clock.nowMs(), *fields)
+        else write(RecordKind.TELEMETRY_KEY, clock.nowMs(), *fields, "value" to value)
     }
 
     fun videoFrame(

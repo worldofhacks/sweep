@@ -214,7 +214,7 @@ class FlightControllerTest {
         assertTrue(h.frames.all { it.isNeutral })
         assertFalse(h.model.virtualStickEnabled, "virtual stick is disabled when idle")
         assertEquals("idle", h.controller.status.phase)
-        assertTrue(h.log.any { it.contains("virtual stick enabled") } && h.log.any { it.contains("virtual stick disabled") })
+        assertTrue(h.log.any { it.contains("virtual stick enabled") } && h.log.any { it.contains("virtual stick disable requested") })
     }
 
     @Test
@@ -679,7 +679,7 @@ class FlightControllerTest {
     }
 
     @Test
-    fun `supervised climb fails closed when another owner is reported while authority is pending`() {
+    fun `supervised climb waits through a pre-handover RC authority sample`() {
         val h = Harness(supervisedVertical = SupervisedVerticalConfig(), autoReportVirtualStickOwnership = false)
         h.trackLocalHeight()
         h.join()
@@ -688,10 +688,91 @@ class FlightControllerTest {
         h.tickMs(3_500)
         h.controller.onVirtualStickState(enabled = true, ownedBySdk = false, owner = "RC")
 
-        assertEquals("authority_lost", takeoff.terminal?.second, takeoff.events.toString())
-        assertEquals("virtual_stick_dropped", h.controller.status.authorityLostReason)
-        assertFalse(h.model.virtualStickEnabled)
+        assertNull(takeoff.terminal, takeoff.events.toString())
+        assertEquals("enabling_virtual_stick", h.controller.status.phase)
         assertTrue(h.frames.none { it.verticalThrottle > 0.0 })
+
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = true, owner = "MSDK")
+        h.tick(1)
+
+        assertEquals("supervised_climb", h.controller.status.phase)
+        assertTrue(h.frames.any { it.verticalThrottle > 0.0 })
+    }
+
+    @Test
+    fun `grounded authority qualification confirms MSDK then releases without frames or takeoff`() {
+        val h = Harness(autoReportVirtualStickOwnership = false)
+        h.join()
+        val sink = RecordingSink()
+
+        h.controller.qualifyGroundedAuthority(sink)
+        assertEquals("enabling_virtual_stick", h.controller.status.phase)
+        assertTrue(h.model.virtualStickEnabled)
+        assertEquals("landed", h.model.flightState)
+        assertTrue(h.frames.isEmpty())
+
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = false, owner = "UNKNOWN")
+        assertNull(sink.terminal, sink.events.toString())
+        assertTrue(h.frames.isEmpty())
+
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = true, owner = "MSDK")
+
+        assertEquals("completed", sink.terminal?.first, sink.events.toString())
+        assertEquals("idle", h.controller.status.phase)
+        assertFalse(h.model.virtualStickEnabled)
+        assertTrue(h.frames.isEmpty())
+        assertEquals("landed", h.model.flightState)
+    }
+
+    @Test
+    fun `grounded authority qualification rejects an airborne aircraft before enabling virtual stick`() {
+        val h = Harness()
+        h.join()
+        h.hovering()
+        val sink = RecordingSink()
+
+        h.controller.qualifyGroundedAuthority(sink)
+
+        assertEquals("already_airborne", sink.terminal?.second, sink.events.toString())
+        assertFalse(h.model.virtualStickEnabled)
+        assertTrue(h.frames.isEmpty())
+    }
+
+    @Test
+    fun `grounded authority qualification fails when virtual stick cleanup is refused`() {
+        val h = Harness(autoReportVirtualStickOwnership = false)
+        h.join()
+        h.model.disableResult = PortResult.Failed("device refused disable")
+        val sink = RecordingSink()
+
+        h.controller.qualifyGroundedAuthority(sink)
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = true, owner = "MSDK")
+
+        assertEquals("virtual_stick_unavailable", sink.terminal?.second, sink.events.toString())
+        assertTrue(sink.terminal?.third?.contains("cleanup failed") == true, sink.events.toString())
+        assertTrue(h.model.virtualStickEnabled)
+        assertTrue(h.frames.all { it == StickFrame.NEUTRAL })
+    }
+
+    @Test
+    fun `grounded authority qualification times out and fences a late cleanup callback`() {
+        val h = Harness(autoReportVirtualStickOwnership = false)
+        h.join()
+        h.model.deferDisableTicks = 10_000
+        val sink = RecordingSink()
+
+        h.controller.qualifyGroundedAuthority(sink)
+        h.controller.onVirtualStickState(enabled = true, ownedBySdk = true, owner = "MSDK")
+        assertEquals("releasing_virtual_stick", h.controller.status.phase)
+
+        h.tickMs(4_100)
+        assertEquals("virtual_stick_unavailable", sink.terminal?.second, sink.events.toString())
+        assertEquals("idle", h.controller.status.phase)
+        val terminal = sink.terminal
+
+        h.model.completePendingDisable()
+        assertEquals(terminal, sink.terminal)
+        assertEquals("idle", h.controller.status.phase)
     }
 
     @Test

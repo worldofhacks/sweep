@@ -39,6 +39,7 @@ fun FlightCards(session: AircraftSession) {
 @Composable
 private fun FlightCard(flight: FlightNode, simulation: FlightSimulation?) {
     val status by flight.executor.status.collectAsStateWithLifecycle()
+    val qualification by flight.groundedAuthorityQualification.collectAsStateWithLifecycle()
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Flight (Virtual Stick loop)", style = MaterialTheme.typography.titleMedium)
@@ -72,6 +73,9 @@ private fun FlightCard(flight: FlightNode, simulation: FlightSimulation?) {
                 }
                 Switch(checked = status.mapping.transposed, onCheckedChange = flight::setTransposed)
             }
+            Text("Grounded authority check enables Virtual Stick, waits for MSDK authority, then releases it. It does not take off or send a motion frame.", style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(enabled = !qualification.active, onClick = flight::qualifyGroundedAuthority) { Text("Check authority on ground") }
+            Text(qualification.detail, color = if (qualification.active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodySmall)
             status.lastEvent?.let { Text("Last: $it", style = MaterialTheme.typography.bodySmall) }
             if (simulation != null) {
                 Text("Fake RC (takeover drills without an aircraft)", style = MaterialTheme.typography.bodySmall)

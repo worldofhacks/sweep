@@ -82,6 +82,7 @@ internal class ProbeAircraft(
     private val captureAlignment: CaptureAlignmentCollector? = null,
 ) : AircraftSource, CommandExecutor {
     private val lock = Any()
+    private val connectionTransitions = AircraftConnectionTransitions()
 
     /** The one holder every listener is registered with; `cancelListen(holder)` removes them all. */
     private val holder = Any()
@@ -173,6 +174,9 @@ internal class ProbeAircraft(
     @Volatile
     var onProductConnected: (() -> Unit)? = null
 
+    @Volatile
+    var onAircraftConnectionChanged: ((Boolean) -> Unit)? = null
+
     /**
      * Registers every telemetry listener, whatever `isKeySupported` says at the moment (the
      * SDK is registered, the aircraft usually not yet connected); safe to call again, a key
@@ -229,6 +233,7 @@ internal class ProbeAircraft(
             altitudePoller.connectionChanged(connected)
             if (!connected) {
                 rcConnected = false
+                connectionTransitions.reset()
                 origin = null
                 altitude = null
                 altitudeReceivedAtMonotonicMs = null
@@ -302,7 +307,7 @@ internal class ProbeAircraft(
 
     private fun <T : Any> received(binding: Binding<T>, value: T) {
         val now = System.currentTimeMillis()
-        val (first, sinceAttachMs) = synchronized(lock) {
+        val (first, sinceAttachMs, aircraftConnectionChanged) = synchronized(lock) {
             if (binding.name == "KeyAltitude" && (value as? Double)?.isFinite() == true) {
                 altitudePoller.listenerSampleReceived()
             }
@@ -314,7 +319,11 @@ internal class ProbeAircraft(
                     ?.takeIf { height -> height.isFinite() }
                     ?.let { SystemClock.elapsedRealtime() }
             }
-            Pair(status, ledger.attachedAtMs?.let { now - it })
+            Triple(
+                status,
+                ledger.attachedAtMs?.let { now - it },
+                if (binding.name == "KeyConnection") connectionTransitions.changed(value as Boolean) else null,
+            )
         }
         if (first != null) {
             log("Telemetry key", "${binding.name} first value" + (sinceAttachMs?.let { " $it ms after its listener was registered" } ?: ""))
@@ -335,6 +344,7 @@ internal class ProbeAircraft(
                 captureAlignment?.recordGimbal(AttitudeSample(attitude.yaw, attitude.pitch, attitude.roll, SystemClock.elapsedRealtime()))
             }
         }
+        aircraftConnectionChanged?.let { onAircraftConnectionChanged?.invoke(it) }
         publish()
     }
 
@@ -444,5 +454,15 @@ internal class ProbeAircraft(
         const val PROVISIONAL_FIX_QUALITY = 0.5
         const val METRES_PER_DEGREE_LATITUDE = 110_574.0
         const val METRES_PER_DEGREE_LONGITUDE = 111_320.0
+    }
+}
+
+internal class AircraftConnectionTransitions {
+    private var connected = false
+
+    fun changed(next: Boolean): Boolean? = if (next == connected) null else next.also { connected = it }
+
+    fun reset() {
+        connected = false
     }
 }
