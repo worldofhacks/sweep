@@ -603,13 +603,6 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
             frame_pts = SourceTime.parse(alignment["frame_pts"])
             gimbal_receipt = SourceTime.parse(alignment["gimbal_receipt"])
             body_attitude_receipt = SourceTime.parse(alignment["body_attitude_receipt"])
-            if (frame_pts.clock_id, frame_pts.unit) != ("dji_stream_presentation_ms", "ms"):
-                _error("invalid_payload", "capture alignment frame PTS clock is invalid")
-            if any(
-                (stamp.clock_id, stamp.unit) != ("phone_elapsed_realtime_ms", "ms")
-                for stamp in (gimbal_receipt, body_attitude_receipt)
-            ):
-                _error("invalid_payload", "capture alignment callback clocks are invalid")
             result["capture_alignment"] = {
                 "v": 1,
                 "alignment_config_id": alignment["alignment_config_id"],
