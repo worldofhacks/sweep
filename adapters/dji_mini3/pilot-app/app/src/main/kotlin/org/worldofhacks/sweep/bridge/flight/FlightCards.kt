@@ -133,19 +133,3 @@ private fun shortId(id: String?): String = when {
     id.length <= 13 -> id
     else -> id.take(8) + "…" + id.takeLast(4)
 }
-
-@Composable
-fun GimbalPitchCard(controls: org.worldofhacks.sweep.bridge.session.GimbalPitchControls) {
-    val state by controls.gimbalPitch.collectAsStateWithLifecycle()
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Gimbal pitch (supervised floor-tag test)", style = MaterialTheme.typography.titleMedium)
-            Text("Tilt camera toward floor tags.", style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(enabled = !state.active, onClick = { controls.requestGimbalPitch(-45.0) }) { Text("Tilt −45°") }
-                Button(enabled = !state.active, onClick = { controls.requestGimbalPitch(-75.0) }) { Text("Tilt −75°") }
-            }
-            Text(state.detail, color = if (state.active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
-        }
-    }
-}
