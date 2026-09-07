@@ -82,7 +82,7 @@ def vertical_server(tmp_path: Path) -> Iterator[RelayServer]:
         composition.close()
 
 
-def test_supervised_vertical_round_trip_uses_sdk_height_without_gps_quality(
+def test_supervised_vertical_round_trip_allows_only_home_missing_without_gps_quality(
     vertical_server: RelayServer,
 ) -> None:
     console = ConsoleProbe(vertical_server.url)
@@ -94,6 +94,7 @@ def test_supervised_vertical_round_trip_uses_sdk_height_without_gps_quality(
             token=ADAPTER_KEY.decode(),
             adapter_id="vertical-fake-node",
             telemetry_hz=5.0,
+            home_pose_confirmed=False,
         )
     )
     node._aircraft.pos_quality = 0.0
@@ -102,9 +103,10 @@ def test_supervised_vertical_round_trip_uses_sdk_height_without_gps_quality(
     try:
         _wait_until(
             lambda: (
-                _ready_with_height(vertical_server) and _position_quality(vertical_server) == 0.0
+                _home_only_degraded_with_height(vertical_server)
+                and _position_quality(vertical_server) == 0.0
             ),
-            "GPS-denied ready node with SDK height",
+            "GPS-denied node with only the home-pose readiness gap and SDK height",
         )
 
         select_id, select = _run(console, "select", [], {"ids": [1]})

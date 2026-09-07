@@ -559,14 +559,19 @@ export type RelayTelemetryState = Partial<Omit<RelayTelemetryEvent, 'event_id' |
   heading_deg?: number
   fresh?: boolean
 }
-export type RelayNodeStatusState = Omit<RelayNodeStatusEvent, 'event_id' | 'session' | 'connection_epoch'>
+export type RelayNodeStatusState = Omit<RelayNodeStatusEvent, 'event_id' | 'session' | 'connection_epoch' | 'local_height'> & {
+  local_height?: RelayLocalHeight | RelayProjectedLocalHeight | null
+}
 export type RelayCameraCapabilitiesState = Omit<RelayCapabilitiesEvent, 'event_id' | 'session' | 'connection_epoch'>
 
 export interface RelayLocalHeight {
   z_m: number
   source: 'flight_controller_altitude'
   age_ms: number
-  reported_at_ms?: number
+}
+
+export interface RelayProjectedLocalHeight extends RelayLocalHeight {
+  reported_at_ms: number
 }
 
 export interface RelayNodeStatusEvent extends RelayNodeEventEnvelope {
@@ -1187,8 +1192,9 @@ function isTelemetryState(value: unknown): boolean {
 function isProjectedReport(value: unknown, type: 'node_status' | 'capabilities', droneId: unknown): boolean {
   if (value === undefined || value === null) return true
   if (!isRecord(value) || value.v !== 1 || value.type !== type || value.drone_id !== droneId) return false
+  if (type === 'node_status') return isProjectedNodeStatus(value)
   const frame = { ...value, event_id: 'projection', session: 'projection', connection_epoch: 1 }
-  return type === 'node_status' ? isPublicNodeStatusEvent(frame) : isPublicCapabilitiesEvent(frame)
+  return isPublicCapabilitiesEvent(frame)
 }
 
 /** Bounded JSON mirrors the backend extension; never interpret values as commands or HTML. */
@@ -1378,14 +1384,32 @@ function isPublicNodeStatusEvent(value: Record<string, unknown>): boolean {
 
 function isLocalHeight(value: unknown): value is RelayLocalHeight {
   if (!isRecord(value)) return false
-  const fields = Object.hasOwn(value, 'reported_at_ms')
-    ? ['z_m', 'source', 'age_ms', 'reported_at_ms']
-    : ['z_m', 'source', 'age_ms']
-  return hasExactFields(value, fields) &&
+  return hasExactFields(value, ['z_m', 'source', 'age_ms']) &&
+    isFiniteNumber(value.z_m) &&
+    value.source === 'flight_controller_altitude' &&
+    isNonNegativeInteger(value.age_ms)
+}
+
+function isProjectedNodeStatus(value: Record<string, unknown>): boolean {
+  const frame: Record<string, unknown> = {
+    ...value,
+    event_id: 'projection',
+    session: 'projection',
+    connection_epoch: 1,
+  }
+  const localHeight = frame.local_height
+  delete frame.local_height
+  return isPublicNodeStatusEvent(frame) &&
+    (localHeight === undefined || localHeight === null || isProjectedLocalHeight(localHeight))
+}
+
+function isProjectedLocalHeight(value: unknown): value is RelayProjectedLocalHeight {
+  return isRecord(value) &&
+    hasExactFields(value, ['z_m', 'source', 'age_ms', 'reported_at_ms']) &&
     isFiniteNumber(value.z_m) &&
     value.source === 'flight_controller_altitude' &&
     isNonNegativeInteger(value.age_ms) &&
-    (value.reported_at_ms === undefined || isNonNegativeInteger(value.reported_at_ms))
+    isNonNegativeInteger(value.reported_at_ms)
 }
 
 function isPublicCaptureReadinessEvent(value: Record<string, unknown>): boolean {

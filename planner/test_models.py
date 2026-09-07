@@ -258,6 +258,16 @@ def test_snapshot_observation_completeness_is_strict_and_round_trips() -> None:
         FleetSnapshot.from_mapping(raw)
 
 
+def test_snapshot_ground_ids_round_trip() -> None:
+    raw = FleetSnapshot.from_relay_state(relay_state(), enrichment=enrichment()).to_dict()
+    raw["ground_ids"] = [9]
+
+    snapshot = FleetSnapshot.from_mapping(raw)
+
+    assert snapshot.ground_ids == (9,)
+    assert snapshot.to_dict()["ground_ids"] == [9]
+
+
 def test_execution_projection_rejects_nondeterministic_iterable_bundle() -> None:
     result = ExecutionResult(
         intent_id="intent-1",
