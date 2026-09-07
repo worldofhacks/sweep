@@ -28,6 +28,7 @@ import os
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import get_origin, get_type_hints
 
@@ -44,6 +45,7 @@ from planner.models import (
     FleetSnapshot,
     FlightState,
     LifecycleStatus,
+    PreparedExecution,
     Refusal,
     RefusalReason,
     RelayAircraftSafetyEnrichment,
@@ -65,6 +67,7 @@ from relay.control_localization import (
     ControlLocalizationProjector,
 )
 from relay.intent_v1 import IntentName, IntentV1
+from relay.navigation_wire import NavigationWirePublisher
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 
@@ -464,6 +467,18 @@ class AutonomySession:
                 composition.config.control_localization_projector,
             )
         )
+        self.navigation_wire = (
+            NavigationWirePublisher(
+                navigation_runtime,
+                navigation.wire_profiles,
+                session=session_id,
+                signing_key=composition.runtime.settings.adapter_keys.get,
+                event_ids=composition.runtime.event_ids,
+                clock=composition.runtime.clock,
+            )
+            if navigation_runtime is not None and navigation.approval.mode == "flight"
+            else None
+        )
         self.planner = DeterministicPlanner(
             composition.config.planning,
             self.capability_profile,
@@ -617,6 +632,8 @@ class AutonomySession:
         if not victims or session is None:
             return
         for victim in victims:
+            if self.navigation_wire is not None:
+                self.navigation_wire.retire_intent(victim.intent.intent_id)
             try:
                 event = session.record_lifecycle(
                     intent_id=victim.intent.intent_id,
@@ -692,11 +709,22 @@ class AutonomySession:
                 arbiter=self.arbiter,
                 sim_camera_config=self._composition.config.sim_camera,
                 link_wrapper=gate,
+                navigation_publisher=self.navigation_wire,
             )
             controller = AutonomyController(
                 planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
             )
-            result = controller.execute(intent, snapshot, current_snapshot=current)
+            prepared = controller.prepare(intent, snapshot, current_snapshot=current)
+            if isinstance(prepared, PreparedExecution):
+                scope = (
+                    self.navigation_wire.command_scope(prepared.plan, current)
+                    if self.navigation_wire is not None and prepared.plan.navigation is not None
+                    else nullcontext()
+                )
+                with scope:
+                    result = controller.dispatch_prepared(prepared, current_snapshot=current)
+            else:
+                result = prepared
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             return
@@ -799,14 +827,20 @@ class AutonomySession:
 
         try:
             assert owner.pending.plan is not None
-            return owner.dispatcher.resume_after_completion(
-                owner.pending.plan,
-                owner.pending,
-                token.acknowledgement,
-                owner.snapshot,
-                current_snapshot=current,
-                owner_still_valid=lambda: self._owns_resume(token),
+            scope = (
+                self.navigation_wire.command_scope(owner.pending.plan, current)
+                if self.navigation_wire is not None and owner.pending.plan.navigation is not None
+                else nullcontext()
             )
+            with scope:
+                return owner.dispatcher.resume_after_completion(
+                    owner.pending.plan,
+                    owner.pending,
+                    token.acknowledgement,
+                    owner.snapshot,
+                    current_snapshot=current,
+                    owner_still_valid=lambda: self._owns_resume(token),
+                )
         except Exception as error:
             return _resume_failure(token, error)
 
@@ -956,6 +990,39 @@ class AutonomyComposition:
                 self._sessions[session_id] = session
             return session
 
+    def navigation_events(
+        self, session_id: str, events: list[dict[str, object]]
+    ) -> list[dict[str, object]]:
+        with self._lock:
+            owner = self._sessions.get(session_id)
+        publisher = None if owner is None else owner.navigation_wire
+        if publisher is None:
+            return []
+        session = self.runtime.sessions.get(session_id)
+        if session is None:
+            return []
+        output = []
+        for event in events:
+            if event.get("type") == "control_pose":
+                drone_id = event.get("drone_id")
+                if type(drone_id) is int:
+                    pose = session.control_pose(drone_id)
+                    if pose is not None:
+                        try:
+                            output.extend(publisher.update(pose))
+                        except ValueError:
+                            _LOGGER.warning(
+                                "navigation tracking evidence refused for aircraft %s", drone_id
+                            )
+            elif event.get("status") in {"completed", "failed", "refused", "invalidated"}:
+                command_id = event.get("command_id")
+                intent_id = event.get("intent_id")
+                if isinstance(command_id, str):
+                    publisher.retire(command_id)
+                elif isinstance(intent_id, str):
+                    publisher.retire_intent(intent_id)
+        return output
+
     def close(self, *, timeout_s: float = 5.0) -> None:
         with self._lock:
             sessions = tuple(self._sessions.values())
@@ -979,6 +1046,8 @@ def create_autonomy_app(
     """
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
+    if config.navigation is not None:
+        config.navigation.validate_projector(config.control_localization_projector)
     composition = AutonomyComposition(config, settings.capability_profile)
     control_localization_factory = (
         None
@@ -994,6 +1063,7 @@ def create_autonomy_app(
         leave_authorizer_factory=composition.leave_authorizer_factory,
         control_localization_factory=control_localization_factory,
         transcript_service_factory=transcript_service_factory,
+        navigation_events=composition.navigation_events,
     )
     composition.bind(app)
     return app, composition

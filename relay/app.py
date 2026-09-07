@@ -44,6 +44,7 @@ from relay.voice import MAX_AUDIO_BYTES, MAX_AUDIO_DURATION_MS, TranscriptServic
 
 IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
+NavigationEvents = Callable[[str, list[dict[str, object]]], list[dict[str, object]]]
 _LOGGER = logging.getLogger(__name__)
 ShutdownCallback = Callable[[], None]
 _OUTBOUND_LIMIT = 128
@@ -166,9 +167,11 @@ class RelayRuntime:
         control_localization_factory: ControlLocalizationFactory | None = None,
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         media_monitor: MediaMonitor | None = None,
+        navigation_events: NavigationEvents | None = None,
     ) -> None:
         self.settings = settings
         self.media_monitor = media_monitor
+        self.navigation_events = navigation_events
         self.credential_resolver = credential_resolver or settings.credential_resolver()
         self.clock = clock or _epoch_ms
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
@@ -662,6 +665,8 @@ class RelayRuntime:
         deferred_deliveries: list[asyncio.Future[bool]] | None = None,
     ) -> bool:
         """Queue an event batch atomically with respect to subscription activation."""
+        if self.navigation_events is not None:
+            events = [*events, *self.navigation_events(session_id, events)]
         deliveries: list[asyncio.Future[bool]] = []
         async with self._connection_lock:
             subscriptions = tuple(self._subscriptions.get(session_id, {}).values())
@@ -678,9 +683,14 @@ class RelayRuntime:
                         )
                     ):
                         continue
-                    if event.get("type") == "control_pose" and (
+                    if event.get("type") in {
+                        "control_pose",
+                        "navigation_pose",
+                        "navigation_route_authorization",
+                    } and (
                         subscription.principal.source != "adapter"
-                        or subscription.principal.drone_id != event.get("drone_id")
+                        or subscription.principal.drone_id
+                        != event.get("device_id", event.get("drone_id"))
                     ):
                         continue
                     roster_version = event.get("roster_version")
@@ -915,6 +925,7 @@ def create_app(
     transcript_service_factory: TranscriptServiceFactory | None = None,
     shutdown_callback: ShutdownCallback | None = None,
     media_monitor_factory: MediaMonitorFactory | None = None,
+    navigation_events: NavigationEvents | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -935,6 +946,7 @@ def create_app(
             control_localization_factory=control_localization_factory,
             control_pose_signing_key=control_pose_signing_key,
             media_monitor=build_monitor(active_settings, active_clock),
+            navigation_events=navigation_events,
         )
         application.state.relay_runtime = runtime
         application.state.transcript_service = (

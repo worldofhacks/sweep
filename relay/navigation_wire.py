@@ -310,6 +310,13 @@ class NavigationWirePublisher:
             self._active.pop(command_id, None)
             self._pending.pop(command_id, None)
 
+    def retire_intent(self, intent_id: str) -> None:
+        with self._lock:
+            for commands in (self._active, self._pending):
+                for command_id, active in tuple(commands.items()):
+                    if active.command.intent_id == intent_id:
+                        commands.pop(command_id)
+
     def retire_epoch(self, drone_id: int, connection_epoch: int) -> None:
         with self._lock:
             self._retire_drone(drone_id, connection_epoch)
