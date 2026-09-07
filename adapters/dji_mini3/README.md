@@ -207,6 +207,17 @@ pull it like the Phase D logs; `BenchAnalysis` lists the first values under `not
 aircraft power cycle asks support again without registering a second listener: every
 listener shares one holder object and is cancelled by it.
 
+### Grounded authority check
+
+`Check authority on ground` requires a connected, landed, idle aircraft. It enables Virtual
+Stick, waits for fresh direct Virtual Stick and flight-control-authority keys to report MSDK,
+sends a neutral frame, and waits for Virtual Stick to disable. It never starts takeoff or sends
+a motion frame.
+
+The probe report and `filesDir/bench/telemetry-keys-<stamp>.jsonl` record the key support,
+reads, callbacks, and enable or disable results. A completed check records that grounded
+handoff sequence at that time. Flight qualification remains pending.
+
 ### Raw phone sensor records (diagnostic only)
 
 While the probe flavor has an authenticated, joined relay identity and a connected product,

@@ -64,16 +64,18 @@ class BenchRecorderTest {
         recorder.telemetryKey("KeyAltitude", "attached", supportedAtAttach = false, supportedAtConnect = null, firstValueAtMs = null)
         recorder.telemetryKey("KeyAltitude", "product_connected", supportedAtAttach = false, supportedAtConnect = true, firstValueAtMs = null)
         recorder.telemetryKey("KeyAltitude", "first_value", supportedAtAttach = false, supportedAtConnect = true, firstValueAtMs = 5_000)
+        recorder.telemetryKey("KeyVirtualStickEnabled", "listener_value", supportedAtAttach = null, supportedAtConnect = null, firstValueAtMs = null, value = "true")
         assertEquals(
             listOf(
                 """{"event":"attached","first_value_at_ms":null,"key":"KeyAltitude","kind":"telemetry_key","supported_at_attach":false,"supported_at_connect":null,"t_ms":5000}""",
                 """{"event":"product_connected","first_value_at_ms":null,"key":"KeyAltitude","kind":"telemetry_key","supported_at_attach":false,"supported_at_connect":true,"t_ms":5000}""",
                 """{"event":"first_value","first_value_at_ms":5000,"key":"KeyAltitude","kind":"telemetry_key","supported_at_attach":false,"supported_at_connect":true,"t_ms":5000}""",
+                """{"event":"listener_value","first_value_at_ms":null,"key":"KeyVirtualStickEnabled","kind":"telemetry_key","supported_at_attach":null,"supported_at_connect":null,"t_ms":5000,"value":"true"}""",
             ),
             out.toString().trimEnd().lines(),
         )
         val report = BenchAnalysis.analyze(out.toString())
-        assertEquals(3, report.records)
+        assertEquals(4, report.records)
         assertEquals(0, report.skippedLines)
         assertEquals(listOf("telemetry key KeyAltitude first value"), report.notes)
     }

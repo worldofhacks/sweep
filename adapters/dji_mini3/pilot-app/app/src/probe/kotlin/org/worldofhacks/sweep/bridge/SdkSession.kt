@@ -60,6 +60,9 @@ internal class SdkSession(private val application: Application) :
     RawEvidenceSession,
     CaptureAlignmentSession {
     private val model = SessionModel()
+    private val identityLock = Any()
+    private val identityQueries = IdentityQueryFence()
+    private var aircraftConnected = false
     private val sensorRawLock = Any()
     private var sensorRelayContext: SensorRelayContext? = null
 
@@ -201,6 +204,11 @@ internal class SdkSession(private val application: Application) :
         synchronized(sink) { sink.recorder.telemetryKey(key, event, status.supportedAtAttach, status.supportedAtConnect, status.firstValueAtMs) }
     }
 
+    private fun recordAuthorityKey(key: String, event: String, value: String) {
+        val sink = keyBench ?: return
+        synchronized(sink) { sink.recorder.telemetryKey(key, event, null, null, null, value) }
+    }
+
     // Phase D hook: local FPV, yaw, and codec evidence (org.worldofhacks.sweep.bridge.video).
     override val fpv: DjiFpv = DjiFpv(application.filesDir, AndroidPhoneStatus(application), { name, detail -> model.event(name, detail) }, captureCollector)
 
@@ -217,7 +225,10 @@ internal class SdkSession(private val application: Application) :
     // Phase E hook: DjiFlightPort and FlightExecutor run the Virtual Stick loop. The port's
     // takeover signals attach when ProbeAircraft attaches (SDK registered), and the flight
     // controller's failsafe setting is read, never changed, on every product connection.
-    private val port = DjiFlightPort { name, detail -> model.event(name, detail) }
+    private val port = DjiFlightPort(
+        log = { name, detail -> model.event(name, detail) },
+        recordAuthorityKey = ::recordAuthorityKey,
+    )
     private val flightExecutor = FlightExecutor(
         port,
         probe,
@@ -238,7 +249,7 @@ internal class SdkSession(private val application: Application) :
 
     init {
         probe.onAttached = { port.attach(flightExecutor) }
-        probe.onProductConnected = { port.onProductConnected() }
+        probe.onAircraftConnectionChanged = ::aircraftConnectionChanged
     }
 
     private val callback = object : SDKManagerCallback {
@@ -254,6 +265,7 @@ internal class SdkSession(private val application: Application) :
 
         override fun onProductDisconnect(productId: Int) {
             clearSensorRawIdentity()
+            aircraftConnectionChanged(false)
             model.productDisconnected(productId)
             probe.productConnected(false)
             fpv.productConnected(false)
@@ -292,6 +304,26 @@ internal class SdkSession(private val application: Application) :
         }
     }
 
+    private fun aircraftConnectionChanged(connected: Boolean) {
+        val changed = synchronized(identityLock) {
+            if (aircraftConnected == connected) false
+            else {
+                aircraftConnected = connected
+                identityQueries.invalidate()
+                true
+            }
+        }
+        if (!changed) return
+        model.event("Flight controller connection", "KeyConnection=$connected; identity generation ${identityQueries.current()}")
+        if (!connected) {
+            port.onProductDisconnected()
+            clearSensorRawIdentity()
+            return
+        }
+        port.onProductConnected()
+        queryIdentity(model.current.generation)
+    }
+
     init {
         model.initProgress("SDKManager.init")
         SDKManager.getInstance().init(application.applicationContext, callback)
@@ -299,16 +331,17 @@ internal class SdkSession(private val application: Application) :
 
     /** Reads the identity keys for one connection generation; stale results are dropped by the model. */
     private fun queryIdentity(generation: Long) {
-        read(generation, "Product identity", KeyTools.createKey(ProductKey.KeyProductType)) { productType ->
+        val queryGeneration = identityQueries.issue()
+        read(generation, queryGeneration, "Product identity", KeyTools.createKey(ProductKey.KeyProductType)) { productType ->
             val mini3 = productType == ProductType.DJI_MINI_3
             val detail = "${productType.name} (${productType.value()})" + if (mini3) "" else " UNEXPECTED"
             detail to { identity -> identity.copy(productType = productType.name, isMini3 = mini3) }
         }
-        read(generation, "Aircraft firmware", KeyTools.createKey(ProductKey.KeyFirmwareVersion)) { firmware ->
+        read(generation, queryGeneration, "Aircraft firmware", KeyTools.createKey(ProductKey.KeyFirmwareVersion)) { firmware ->
             firmware.ifBlank { "returned empty" } to { identity -> identity.copy(aircraftFirmware = firmware) }
         }
         read(
-            generation,
+            generation, queryGeneration,
             "Remote controller identity",
             KeyTools.createKey(RemoteControllerKey.KeyRcFirmwareInfo, ComponentIndexType.LEFT_OR_MAIN),
         ) { info ->
@@ -321,7 +354,7 @@ internal class SdkSession(private val application: Application) :
             }
         }
         read(
-            generation,
+            generation, queryGeneration,
             "Remote controller firmware",
             KeyTools.createKey(RemoteControllerKey.KeyFirmwareVersion, ComponentIndexType.LEFT_OR_MAIN),
         ) { firmware ->
@@ -331,13 +364,16 @@ internal class SdkSession(private val application: Application) :
 
     private fun <T : Any> read(
         generation: Long,
+        queryGeneration: Long,
         name: String,
         key: DJIKey<T>,
         onValue: (T) -> Pair<String, (AircraftIdentity) -> AircraftIdentity>,
     ) {
         val keyManager = KeyManager.getInstance()
         if (!keyManager.isKeySupported(key)) {
-            model.identity(generation, name, "key not supported") { it }
+            identityQueries.applyIfCurrent(queryGeneration) {
+                model.identity(generation, name, "key not supported") { it }
+            }
             return
         }
         keyManager.getValue(
@@ -345,14 +381,18 @@ internal class SdkSession(private val application: Application) :
             object : CommonCallbacks.CompletionCallbackWithParam<T> {
                 override fun onSuccess(value: T) {
                     val (detail, transform) = onValue(value)
-                    if (model.identity(generation, name, detail, transform)) {
+                    if (identityQueries.applyIfCurrent(queryGeneration) {
+                            model.identity(generation, name, detail, transform)
+                        } == true) {
                         probe.updateIdentity(model.current.identity)
                         refreshSensorRawIdentity()
                     }
                 }
 
                 override fun onFailure(error: IDJIError) {
-                    model.identity(generation, name, "read failed: ${describe(error)}") { it }
+                    identityQueries.applyIfCurrent(queryGeneration) {
+                        model.identity(generation, name, "read failed: ${describe(error)}") { it }
+                    }
                 }
             },
         )
@@ -385,4 +425,23 @@ internal class SdkSession(private val application: Application) :
         phone = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
         android = "${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT} / build ${Build.DISPLAY}",
     )
+}
+
+internal class IdentityQueryFence {
+    private var generation = 0L
+
+    @Synchronized
+    fun invalidate(): Long = ++generation
+
+    @Synchronized
+    fun issue(): Long = ++generation
+
+    @Synchronized
+    fun current(): Long = generation
+
+    @Synchronized
+    fun current(expected: Long): Boolean = expected == generation
+
+    @Synchronized
+    fun <T> applyIfCurrent(expected: Long, action: () -> T): T? = if (expected == generation) action() else null
 }
