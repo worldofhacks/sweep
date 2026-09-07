@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import App from '../../App'
 import type { ControlClients } from '../../control/use-control-console'
-import { FixtureRelayClient } from '../../testing/fixture-relay-client'
+import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay-client'
+import { C1_BASIC_CONTROL_INTENTS, isConsoleIntentV1 } from '../../relay/contract'
 import { createGestureTestRig, hand } from '../../testing/gesture-fixtures'
 
 const session = 'gesture-module-session'
@@ -64,6 +65,56 @@ const trackingState = () => screen.getByRole('status', { name: 'Tracking state' 
 const enableButton = () => screen.getByRole('button', { name: 'Enable tracking' })
 
 describe('Gesture module', () => {
+  test('Flight buttons work with the camera off and no webcam connection, but only send the selected pulse after dock confirmation', async () => {
+    const { clients, rig } = mount({ withWebcam: false })
+    const user = userEvent.setup()
+    await screen.findByText(/Development fixture active/i)
+    await user.click(screen.getByRole('radio', { name: 'Flight (opt in)' }))
+    const flight = within(screen.getByRole('region', { name: 'Selected flight actions' }))
+    expect(flight.getByRole('button', { name: 'Forward 0.5 seconds' })).toBeDisabled()
+    const t = rig.dependencies.clock.wall()
+    act(() => clients.console.emitServer({
+      v: 1, t, event_id: 'flight-ui-state', state_sequence: 1, type: 'state', session,
+      roster_version: 7, armed: true, estop: false, selection: [1, 2], formation: 'none', spacing: 0.8,
+      mode: 'indoor', capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse'], pending: null, accepted_plan: null,
+      drones: fixtureAircraft(t, 4).slice(0, 2).map((drone) => ({ ...drone, flight_state: 'hovering', adapter_capabilities: ['flight', 'body_pulse_v1'] })),
+    }))
+    expect(flight.getByText('Flight · D-01, D-02')).toBeInTheDocument()
+    expect(flight.getByRole('button', { name: 'Forward 0.5 seconds' })).toBeEnabled()
+    await user.click(flight.getByRole('button', { name: 'Forward 0.5 seconds' }))
+    const dock = within(screen.getByRole('region', { name: 'Pending confirmation' }))
+    expect(dock.getByText('Forward 0.5 seconds', { selector: '.sh-dock-title' })).toBeInTheDocument()
+    expect(clients.console.sent).toHaveLength(0)
+    expect(rig.camera.startCalls).toBe(0)
+    expect(rig.source.loadCalls).toBe(0)
+    await user.click(dock.getByRole('button', { name: 'Confirm and send' }))
+    expect(clients.console.sent).toHaveLength(1)
+    expect(clients.console.sent[0]).toMatchObject({ name: 'body_pulse', source: 'console', selection: [1, 2], args: { forward_mm_s: 250, duration_ms: 500 }, confirm: true })
+    expect(isConsoleIntentV1(clients.console.sent[0])).toBe(true)
+    const quick = within(screen.getByRole('group', { name: 'Quick commands' }))
+    expect(quick.getByRole('button', { name: 'Hold' })).toBeEnabled()
+    expect(quick.getByRole('button', { name: 'Land all' })).toBeEnabled()
+  })
+
+  test('opting into Flight stops tracking and cancels the old profile preview', async () => {
+    const { rig, clients, hold } = mount()
+    const user = userEvent.setup()
+    await screen.findByText(/Development fixture active/i)
+    await user.click(enableButton())
+    hold('Open_Palm', 650)
+    expect(screen.getByRole('region', { name: 'Pending confirmation' })).toBeInTheDocument()
+    await user.click(screen.getByRole('radio', { name: 'Flight (opt in)' }))
+    expect(enableButton()).toHaveAttribute('aria-pressed', 'false')
+    expect(rig.scheduler.pending).toBe(false)
+    expect(rig.source.closed).toBe(true)
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Open palm pair')).toHaveTextContent('previews Arm session')
+    expect(screen.getByLabelText('I love you pair')).toHaveTextContent('previews Land selected')
+    expect(clients.console.sent).toHaveLength(0)
+    expect(clients.webcam?.sent).toHaveLength(0)
+  })
+
   test('opens off by default with the camera list, the pairs, the never-emittable note and the webcam source', async () => {
     const { rig } = mount()
     await screen.findByText(/Development fixture active/i)
@@ -88,16 +139,17 @@ describe('Gesture module', () => {
     expect(trackingState()).toHaveTextContent('webcam source connected')
 
     expect(screen.getByLabelText('Open palm pair')).toHaveTextContent(
-      'Open palmemits capture_room as a preview600 ms dwell · score 0.80',
+      'Open palmemits capture_room as a preview600 ms dwell · score 0.60',
     )
     expect(screen.getByLabelText('Closed fist pair')).toHaveTextContent('emits hold as a preview600 ms dwell')
     expect(screen.getByLabelText('Thumb up pair')).toHaveTextContent('confirms the pending preview400 ms dwell')
     expect(screen.getByLabelText('Thumb down pair')).toHaveTextContent('cancels the pending preview400 ms dwell')
     const never = screen.getByText(/Never gesture-emittable/)
     expect(never).toHaveTextContent('estop')
-    expect(never).toHaveTextContent('arm')
-    expect(never).toHaveTextContent('takeoff')
-    expect(never).toHaveTextContent('translate')
+    expect(never).not.toHaveTextContent('takeoff')
+    expect(screen.getByRole('radio', { name: 'Capture / HOLD (default)' })).toBeChecked()
+    expect(screen.queryByRole('region', { name: 'Selected flight actions' })).not.toBeInTheDocument()
+    expect(never).not.toHaveTextContent('translate')
     expect(never).toHaveTextContent('stay on the console controls and the physical RC')
     expect(screen.getByText(/Nothing recognised yet/)).toBeInTheDocument()
 
@@ -126,6 +178,9 @@ describe('Gesture module', () => {
     hold('Open_Palm', 300)
     expect(context.lineTo).toHaveBeenCalled()
     expect(screen.getByText(/250 \/ 600 ms/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Gesture frame consensus')).toHaveTextContent('6 / 6 strong frames · 80% required')
+    expect(screen.getByLabelText('Open palm pair')).toHaveTextContent('Ready to draft capture_room for D-01.')
+    expect(screen.getByLabelText('Thumb up pair')).toHaveTextContent('Unavailable: No plan preview is pending')
     expect(screen.getByText('Candidate')).toBeInTheDocument()
     expect(screen.getByLabelText('Open palm pair')).toHaveClass('is-dwelling')
 
@@ -133,6 +188,9 @@ describe('Gesture module', () => {
     const previewId = screen.getByText('panel-in…cdef', { selector: '.gs-preview code' })
     expect(previewId).toHaveAttribute('title', 'panel-intent-0123456789abcdef')
     expect(previewId.closest('strong')).toHaveTextContent('Capture room ·')
+    expect(screen.getByText('Targets: D-01.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Thumb up pair')).toHaveTextContent('Ready to confirm pending preview for D-01.')
+    expect(screen.getByLabelText('Open palm pair')).toHaveTextContent('Unavailable: A plan preview is already pending')
     expect(screen.getByText(/Thumb up confirms and sends through the webcam source/)).toBeInTheDocument()
     expect(screen.getAllByText(/Duplicate suppressed/).length).toBeGreaterThan(0)
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
@@ -191,10 +249,10 @@ describe('Gesture module', () => {
     await act(async () => {})
 
     act(() => rig.frame([hand('Open_Palm', 0.4)], 50))
-    expect(screen.getByText(/Low confidence · Open palm at 40% \(needs 80%\)/)).toBeInTheDocument()
+    expect(screen.getByText(/Low confidence · Open palm at 40% \(needs 60%\)/)).toBeInTheDocument()
     const readout = within(screen.getByRole('list', { name: 'Gesture readout' }))
     expect(readout.getByText('low confidence')).toHaveClass('is-blocked')
-    expect(readout.getByText(/Open palm scored 40%; the threshold is 80%\. Nothing was emitted\./)).toBeInTheDocument()
+    expect(readout.getByText(/Open palm scored 40%; the threshold is 60%\. 0\/1 strong frames\. Nothing was emitted\./)).toBeInTheDocument()
 
     hold(null, 100)
     hold('Open_Palm', 200)
@@ -285,4 +343,19 @@ describe('Gesture module', () => {
     expect(clients.webcam?.sent).toHaveLength(0)
     expect(clients.console.sent).toHaveLength(0)
   })
+})
+
+
+test('changing a gesture profile closes tracking and invalidates its previous preview', async () => {
+  const { clients, hold } = mount()
+  const user = userEvent.setup()
+  await user.click(enableButton())
+  hold('Open_Palm', 650)
+  expect(screen.getByRole('region', { name: 'Pending confirmation' })).toBeInTheDocument()
+  await user.click(screen.getByRole('radio', { name: 'Fleet motion (opt in)' }))
+  expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+  expect(enableButton()).toHaveAttribute('aria-pressed', 'false')
+  expect(screen.getByRole('radio', { name: 'Fleet motion (opt in)' })).toBeChecked()
+  expect(screen.getByText(/Point up: north/)).toBeInTheDocument()
+  expect(clients.webcam?.sent).toHaveLength(0)
 })

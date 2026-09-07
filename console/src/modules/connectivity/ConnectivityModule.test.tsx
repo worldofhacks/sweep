@@ -1,12 +1,12 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, test } from 'vitest'
-import { openReferenceTab, renderCatalogConsole } from '../../testing/catalog-console'
+import { openDeviceTab, renderCatalogConsole } from '../../testing/catalog-console'
 
 type User = ReturnType<typeof userEvent.setup>
 
 async function openHealth(user: User) {
-  await openReferenceTab(user, 'Health')
+  await openDeviceTab(user, 'Health')
   expect(screen.getByText(/Connectivity and health — Nodes, services, metrics/)).toBeInTheDocument()
 }
 
@@ -49,7 +49,7 @@ describe('Connectivity module', () => {
       'Storage',
       'Firmware',
     ])
-    expect(cell(rows[0], 'RC controller')).toHaveTextContent('standby · fw 2.4.1')
+    expect(cell(rows[0], 'RC controller')).toHaveTextContent('Sweep control granted · fw 2.4.1')
     expect(cell(rows[0], 'Android bridge')).toHaveTextContent('Pixel 7a · sdk 1.3.0')
     expect(cell(rows[0], 'LAN')).toHaveTextContent('18 ms')
     expect(cell(rows[0], 'Relay')).toHaveTextContent('connected')
@@ -60,16 +60,16 @@ describe('Connectivity module', () => {
     expect(cell(rows[0], 'Firmware')).toHaveTextContent('aircraft 0.9.7')
     expect(within(rows[0]).queryByText(/Adapter connection lost|Telemetry stopped|RC pilot/)).not.toBeInTheDocument()
 
-    expect(cell(rows[2], 'Telemetry')).toHaveTextContent(/^stale /)
+    expect(cell(rows[2], 'Telemetry')).toHaveTextContent('current telemetry unknown')
     expect(cell(rows[2], 'Telemetry')).toHaveClass('tone-warn')
     expect(
-      within(rows[2]).getByText("Telemetry stopped. Check the bridge phone's LAN link before commanding motion."),
+      within(rows[2]).getByText(/Telemetry stopped inside the freshness window/),
     ).toBeInTheDocument()
 
-    expect(cell(rows[3], 'RC controller')).toHaveTextContent('in control · fw 2.4.1')
+    expect(cell(rows[3], 'RC controller')).toHaveTextContent('Sweep control not granted · fw 2.4.1')
     expect(cell(rows[3], 'RC controller')).toHaveClass('tone-danger')
     expect(
-      within(rows[3]).getByText('The RC pilot holds authority. Sweep commands are refused until authority returns.'),
+      within(rows[3]).getByText(/Sweep control is not granted/),
     ).toBeInTheDocument()
 
     expect(cell(rows[4], 'Android bridge')).toHaveTextContent('down')
@@ -78,7 +78,7 @@ describe('Connectivity module', () => {
     expect(cell(rows[4], 'Storage')).toHaveTextContent('unknown')
     expect(
       within(rows[4]).getByText(
-        'Adapter connection lost. Power-cycle the bridge phone, then rejoin; the aircraft returns with a higher epoch.',
+        /Adapter connection lost. Check the bridge phone's LAN and relay connection/,
       ),
     ).toBeInTheDocument()
 
@@ -132,9 +132,9 @@ describe('Connectivity module', () => {
     renderCatalogConsole({ scenario: 'down' })
     await openHealth(user)
 
-    const nodes = within(screen.getByRole('region', { name: 'Per-aircraft nodes' }))
+    const nodes = within(screen.getByRole('region', { name: 'Per-device nodes' }))
     expect(
-      nodes.getByText('No aircraft have joined this session. The relay reports an empty roster.'),
+      nodes.getByText('No devices have joined this session. The relay reports an empty roster.'),
     ).toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
     const services = within(screen.getByRole('region', { name: 'Shared services' }))
@@ -159,7 +159,7 @@ describe('Connectivity module', () => {
     expect(screen.getByText(/does not report shared-service status/)).toBeInTheDocument()
     const rows = within(screen.getByRole('table')).getAllByRole('row')
     expect(rows).toHaveLength(4)
-    expect(cell(rows[0], 'RC controller')).toHaveTextContent('standby · fw unreported')
+    expect(cell(rows[0], 'RC controller')).toHaveTextContent('Sweep control granted · fw unreported')
     expect(cell(rows[0], 'Telemetry')).toHaveTextContent('unreported')
   })
 })

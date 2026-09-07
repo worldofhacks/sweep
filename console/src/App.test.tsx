@@ -32,11 +32,6 @@ async function openControlPane(user: User, label: string) {
   await user.click(tabs.getByRole('button', { name: label }))
 }
 
-async function openLivePane(user: User, label: string) {
-  const tabs = within(screen.getByRole('group', { name: 'Live panes' }))
-  await user.click(tabs.getByRole('button', { name: label }))
-}
-
 class FailingFixtureRelayClient extends FixtureRelayClient {
   override async sendIntent(intent: IntentV1): Promise<void> {
     this.sent.push(intent)
@@ -64,7 +59,7 @@ describe('Control / Capture console', () => {
     expect(await screen.findByText('1 of 4 selected')).toBeInTheDocument()
 
     await openModule(user, 'Live')
-    expect(screen.getByRole('region', { name: 'Wall of 4' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'All devices' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /Focus D-/ })).toHaveLength(4)
     expect(screen.getByRole('button', { name: 'Focus D-01' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Focus D-02' })).toHaveAttribute('aria-pressed', 'false')
@@ -72,15 +67,13 @@ describe('Control / Capture console', () => {
     expect(screen.getAllByText(/No video reported/)).not.toHaveLength(0)
 
     await user.click(screen.getByRole('button', { name: 'Focus D-02' }))
-    expect(screen.getByRole('button', { name: 'Focus D-02' })).toHaveAttribute('aria-pressed', 'true')
-    await openLivePane(user, 'Focus feed')
     expect(screen.getByRole('region', { name: 'Focused aircraft D-02' })).toBeInTheDocument()
 
     await openModule(user, 'Control')
     expect(screen.getByText('1 of 4 selected')).toBeInTheDocument()
     await openModule(user, 'Live')
     expect(screen.getByRole('button', { name: 'Focus D-02' })).toHaveAttribute('aria-pressed', 'true')
-    await openLivePane(user, 'Focus feed')
+    await user.click(screen.getByRole('button', { name: 'Focus D-02' }))
     expect(screen.getByRole('region', { name: 'Focused aircraft D-02' })).toBeInTheDocument()
     expect(clients.console.sent).toHaveLength(0)
   })
@@ -94,13 +87,10 @@ describe('Control / Capture console', () => {
     render(<App sessionId={session} clients={clients} />)
     await screen.findByText(/Development fixture active/i)
     await openModule(user, 'Live')
-    await openLivePane(user, 'Wall of 6')
 
     expect(await screen.findAllByRole('button', { name: /Focus D-/ })).toHaveLength(6)
     await user.click(screen.getByRole('button', { name: 'Focus D-06' }))
-    expect(screen.getByRole('button', { name: 'Focus D-06' })).toHaveAttribute('aria-pressed', 'true')
 
-    await openLivePane(user, 'Focus feed')
     expect(screen.getByRole('region', { name: 'Focused aircraft D-06' })).toHaveTextContent(
       'unreported',
     )
@@ -144,7 +134,6 @@ describe('Control / Capture console', () => {
 
     await openModule(user, 'Live')
     await user.click(screen.getByRole('button', { name: 'Focus D-04' }))
-    await openLivePane(user, 'Focus feed')
     expect(screen.getByRole('region', { name: 'Focused aircraft D-04' })).toHaveTextContent('4 s ago')
   })
 
@@ -269,6 +258,13 @@ describe('Control / Capture console', () => {
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
     expect(within(dock).getByText(/"intent_id": "delayed-capture-intent"/)).toBeInTheDocument()
     currentTime += 30_000
+    // Device reports continue while the operator reads the preview.
+    act(() => clients.console.emitServer({
+      v: 1, t: currentTime, type: 'state', event_id: 'delayed-current-report', session,
+      roster_version: 7, armed: true, estop: false, selection: [1], formation: 'none', spacing: 0.8,
+      mode: 'indoor', ...capabilityFields(), pending: null, accepted_plan: null,
+      drones: fixtureAircraft(currentTime),
+    }))
     await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
 
     await waitFor(() => expect(clients.console.sent).toHaveLength(1))
@@ -589,7 +585,7 @@ describe('Control / Capture console', () => {
     render(<App sessionId={session} clients={clients} />)
     await screen.findByText(/Development fixture active/i)
 
-    await user.click(screen.getByRole('button', { name: /^D-02 / }))
+    await user.click(screen.getByRole('button', { name: 'Select only D-02' }))
     await waitFor(() => expect(clients.console.sent).toHaveLength(1))
     expect(clients.console.sent[0]).toMatchObject({ name: 'select', args: { ids: [2] } })
     expect(screen.getByRole('button', { name: /^D-02 / })).toHaveAttribute('aria-pressed', 'true')

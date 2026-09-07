@@ -1,0 +1,93 @@
+/*
+ * Devices module: connected and departed device cards and the node
+ * configuration block. Values follow the Control module's registry cards.
+ */
+.dv-two { align-items: start; }
+.dv-column { min-width: 0; }
+.dv-eyebrow {
+  margin: 0 0 8px;
+  font-family: var(--font-mono);
+  font-size: var(--text-11);
+  font-weight: var(--weight-500);
+  letter-spacing: var(--tracking-eyebrow-13);
+  text-transform: uppercase;
+  color: var(--color-eyebrow);
+}
+.dv-card + .dv-eyebrow,
+.dv-empty + .dv-eyebrow { margin-top: 22px; }
+.dv-empty { margin: 0 0 12px; font-size: var(--text-13); color: var(--color-ink-2); }
+.dv-card {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+}
+.dv-card-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.dv-id { font-family: var(--font-mono); font-size: var(--text-19); font-weight: var(--weight-600); letter-spacing: var(--tracking-tight); }
+.dv-class { font-size: var(--text-12); color: var(--color-ink-2); }
+.dv-membership { font-family: var(--font-mono); font-size: var(--text-12); }
+.dv-state { font-family: var(--font-mono); font-size: var(--text-12); color: var(--color-ink-2); }
+.dv-rows { margin: 8px 0 0; }
+.dv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-top: 1px solid var(--color-rule-inner);
+  font-size: var(--text-12-5);
+}
+.dv-row dt { flex: 0 0 auto; color: var(--color-ink-2); }
+.dv-row dd { margin: 0; min-width: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+.dv-reasons { margin-top: 8px; font-size: var(--text-12); color: var(--color-ink-2); }
+.dv-reasons p { margin: 2px 0; }
+.dv-reasons code { font-family: var(--font-mono); color: var(--color-danger); }
+.dv-ready { margin: 8px 0 0; font-family: var(--font-mono); font-size: var(--text-12); }
+.dv-refusal { margin: 8px 0 0; font-size: var(--text-12); color: var(--color-ink-3); }
+.dv-refusal code { font-family: var(--font-mono); color: var(--color-danger); }
+.dv-departed { margin-bottom: 12px; padding-top: 10px; border-top: 1px solid var(--color-hairline); font-size: var(--text-12-5); color: var(--color-ink-2); }
+.dv-departed p { margin: 2px 0; }
+.dv-departed-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.dv-departed code { font-family: var(--font-mono); }
+.dv-departed-rejoin { color: var(--color-ink-3); }
+
+/* Node configuration */
+.dv-config { padding: 14px; background: var(--color-panel); border-radius: var(--radius-card); }
+.dv-config-copy { margin: 0 0 12px; max-width: 60ch; font-size: var(--text-13); color: var(--color-ink-2); }
+.dv-config-label { display: flex; flex-direction: column; gap: 5px; font-size: var(--text-12-5); color: var(--color-ink-2); }
+.dv-config-input {
+  width: 120px;
+  min-height: var(--min-h-38);
+  padding: 5px 8px;
+  border: 1px solid var(--color-border-input);
+  background: var(--color-surface);
+  font-family: var(--font-mono);
+  font-size: var(--text-14);
+  font-variant-numeric: tabular-nums;
+}
+.dv-config-input[aria-invalid='true'] { border-color: var(--color-warn); }
+.dv-config-known { margin: 8px 0 0; font-size: var(--text-12); color: var(--color-ink-3); }
+.dv-config-block {
+  margin: 12px 0 0;
+  max-height: var(--size-json-max);
+  padding: 10px 12px;
+  border: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+  font-family: var(--font-mono);
+  font-size: var(--text-12);
+  line-height: var(--leading-1-5);
+  white-space: pre;
+  overflow: auto;
+}
+.dv-config-actions { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 10px; }
+.dv-config-copy-btn {
+  min-height: var(--min-h-38);
+  padding: 7px 12px;
+  border: 1px solid var(--color-ink);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-size: var(--text-12-5);
+  cursor: pointer;
+}
+.dv-config-copy-btn:hover { background: var(--color-ground); }
+.dv-config-status { font-size: var(--text-12); color: var(--color-ink-2); }

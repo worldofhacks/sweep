@@ -439,6 +439,22 @@ class FleetRegistry:
                 provenance="adapter_signature",
             )
 
+    def ready_ground_identity(self, drone_id: int, now_ms: int) -> GroundPoseIdentity | None:
+        """Return the current pose identity only for a ready ground node."""
+        with self._lock:
+            record = self._aircraft.get(drone_id)
+            if (
+                record is None
+                or record.node_type is not NodeType.GROUND
+                or record.membership is not Membership.READY
+                or record.pose_identity is None
+                or record.pose_identity != record.accepted_pose_identity
+                or record.accepted_pose_at is None
+                or now_ms - record.accepted_pose_at > self.telemetry_freshness_ms
+            ):
+                return None
+            return record.pose_identity
+
     def apply_ground_pose_observation(
         self,
         *,
@@ -870,6 +886,13 @@ class FleetRegistry:
         battery = None if telemetry is None else telemetry["battery"]
         link = None if telemetry is None else telemetry["link"]
         pos_quality = None if telemetry is None else telemetry["pos_quality"]
+        ground_readiness = None
+        if record.node_type is NodeType.GROUND:
+            ground_readiness = {
+                "source_id": (
+                    None if record.pose_identity is None else record.pose_identity.source_id
+                ),
+            }
         return {
             "drone_id": record.drone_id,
             "node_type": record.node_type.value,
@@ -913,6 +936,7 @@ class FleetRegistry:
                     else self._media_evidence(record.drone_id, now_ms)
                 ),
             ),
+            **({"ground_readiness": ground_readiness} if ground_readiness is not None else {}),
         }
 
     def _remember(

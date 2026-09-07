@@ -1,18 +1,22 @@
 import { useState } from 'react'
+import { captureGuidance } from '../devices/telemetry'
+import { useSecondTick } from '../live/use-second-tick'
 import './control.css'
 import { Pane, type PaneTab } from '../../shell/Pane'
 import type { ModuleProps } from '../types'
 import { CapturePane } from './CapturePane'
 import { CommandsPane } from './CommandsPane'
 import { FleetPane } from './FleetPane'
+import { GroundPane } from './GroundPane'
 import { RequestsPane } from './RequestsPane'
 import { SwarmPane } from './SwarmPane'
 import type { CaptureReadiness } from './controls'
 
-export type ControlPaneId = 'swarm' | 'capture' | 'commands' | 'requests' | 'fleet'
+export type ControlPaneId = 'swarm' | 'ground' | 'capture' | 'commands' | 'requests' | 'fleet'
 
 const PANES: PaneTab[] = [
   { id: 'swarm', label: 'Swarm' },
+  { id: 'ground', label: 'Ground' },
   { id: 'capture', label: 'Capture' },
   { id: 'commands', label: 'Commands' },
   { id: 'requests', label: 'Requests' },
@@ -41,6 +45,9 @@ export function ControlModule({
   guidance = null,
   initialPane = 'swarm',
 }: ControlModuleProps) {
+  useSecondTick(controller.state.selection.length > 0)
+  const selectedDevice = controller.state.selection.length === 1 ? controller.state.aircraft[controller.state.selection[0]] : undefined
+  const currentGuidance = guidance ?? captureGuidance(selectedDevice, roomId, now())
   const [pane, setPane] = useState<ControlPaneId>(initialPane)
   const [steps, setSteps] = useState(2)
   const [formationPreview, setFormationPreview] = useState<string | null>(null)
@@ -63,8 +70,9 @@ export function ControlModule({
           onFormationPreview={setFormationPreview}
         />
       )}
+      {pane === 'ground' && <GroundPane controller={controller} />}
       {pane === 'capture' && (
-        <CapturePane controller={controller} roomId={roomId} onRoomId={onRoomIdChange} guidance={guidance} />
+        <CapturePane controller={controller} roomId={roomId} onRoomId={onRoomIdChange} guidance={currentGuidance} />
       )}
       {pane === 'commands' && <CommandsPane controller={controller} steps={steps} onSteps={setSteps} />}
       {pane === 'requests' && <RequestsPane controller={controller} />}

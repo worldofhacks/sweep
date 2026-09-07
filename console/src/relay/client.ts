@@ -90,6 +90,16 @@ export class WebSocketRelayClient implements RelayClient {
         return
       }
 
+      if (containsSyntheticAdapter(event)) {
+        // This transport belongs to the operator console, including when its
+        // bootstrap accidentally points at an explicitly enabled test relay.
+        // Close before publishing the frame; a disconnected observation makes
+        // any retained device state unknown and prevents further sends.
+        this.stop()
+        this.emitConnection('disconnected', 'Synthetic test data refused. This operator console requires a hardware relay session; no synthetic device state was accepted.')
+        return
+      }
+
       if (event.type === 'auth.accepted') {
         if (event.session !== this.config.sessionId) {
           this.emitConnection('degraded', 'Relay authenticated a different session; the event was ignored.')
@@ -164,6 +174,14 @@ export class WebSocketRelayClient implements RelayClient {
   private emit(event: RelayClientEvent): void {
     this.listeners.forEach((listener) => listener(event))
   }
+}
+
+function containsSyntheticAdapter(event: RelayServerEvent): boolean {
+  // Shared wire provenance with relay/runtime_mode.py and the fake Android build.
+  const marker = 'test:synthetic'
+  return event.type === 'membership'
+    ? event.capabilities.includes(marker)
+    : event.type === 'state' && event.drones.some((device) => device.adapter_capabilities.includes(marker))
 }
 
 export class UnavailableRelayClient implements RelayClient {

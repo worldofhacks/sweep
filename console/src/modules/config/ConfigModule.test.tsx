@@ -4,14 +4,14 @@ import { describe, expect, test } from 'vitest'
 import {
   openModule,
   openPaneTab,
-  openReferenceTab,
+  openDeviceTab,
   renderCatalogConsole,
 } from '../../testing/catalog-console'
 
 type User = ReturnType<typeof userEvent.setup>
 
 async function openConfig(user: User) {
-  await openReferenceTab(user, 'Config')
+  await openDeviceTab(user, 'Config')
   expect(screen.getByText(/Configuration — Ordinary settings apply now/)).toBeInTheDocument()
 }
 

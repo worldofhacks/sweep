@@ -30,7 +30,7 @@ describe('session recorder', () => {
       kind: 'policy',
       t: 50,
       phase: 'candidate',
-      outcome: { kind: 'candidate', pair: DEFAULT_GESTURE_PAIRS[0], heldMs: 40, progress: 40 / 600 },
+      outcome: { kind: 'candidate', pair: DEFAULT_GESTURE_PAIRS[0], heldMs: 40, progress: 40 / 600, frames: 2, strongFrames: 2 },
     })
     recorder.record({
       kind: 'intent',
@@ -58,10 +58,10 @@ describe('session recorder', () => {
       source: 'webcam',
       wall_t: now,
       pairs: [
-        { gesture: 'Open_Palm', action: 'draft:capture_room', minScore: 0.8, dwellMs: 600 },
+        { gesture: 'Open_Palm', action: 'draft:capture_room', minScore: 0.6, dwellMs: 600 },
         { gesture: 'Closed_Fist', action: 'draft:hold', minScore: 0.8, dwellMs: 600 },
-        { gesture: 'Thumb_Up', action: 'confirm', minScore: 0.8, dwellMs: 400 },
-        { gesture: 'Thumb_Down', action: 'cancel', minScore: 0.8, dwellMs: 400 },
+        { gesture: 'Thumb_Up', action: 'confirm', minScore: 0.6, dwellMs: 400 },
+        { gesture: 'Thumb_Down', action: 'cancel', minScore: 0.7, dwellMs: 400 },
       ],
     })
     expect(lines[1]).toEqual({
@@ -85,7 +85,7 @@ describe('session recorder', () => {
       wall_t: wall + 40,
       kind: 'policy',
       phase: 'candidate',
-      outcome: { kind: 'candidate', gesture: 'Open_Palm', action: 'draft:capture_room', heldMs: 40, progress: 0.0667 },
+      outcome: { kind: 'candidate', gesture: 'Open_Palm', action: 'draft:capture_room', heldMs: 40, progress: 0.0667, frames: 2, strongFrames: 2 },
     })
     expect(lines[3]).toMatchObject({ seq: 3, kind: 'intent', event: 'draft', intent_id: 'intent-1' })
     expect(lines[4]).toMatchObject({ seq: 4, kind: 'status', camera: 'webcam_dropped' })
@@ -116,11 +116,14 @@ describe('session recorder', () => {
     const pair = DEFAULT_GESTURE_PAIRS[2]
     expect(summarizeOutcome({ kind: 'idle' })).toEqual({ kind: 'idle' })
     expect(summarizeOutcome({ kind: 'unmapped', category: 'Victory' })).toEqual({ kind: 'unmapped', category: 'Victory' })
-    expect(summarizeOutcome({ kind: 'low_confidence', pair, score: 0.51 })).toEqual({
+    expect(summarizeOutcome({ kind: 'low_confidence', pair, score: 0.51, heldMs: 100, frames: 4, strongFrames: 2 })).toEqual({
       kind: 'low_confidence',
       gesture: 'Thumb_Up',
       action: 'confirm',
       score: 0.51,
+      heldMs: 100,
+      frames: 4,
+      strongFrames: 2,
     })
     expect(summarizeOutcome({ kind: 'accepted', pair, heldMs: 400 })).toEqual({
       kind: 'accepted',

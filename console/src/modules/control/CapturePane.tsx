@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { isValidRoomId } from '../../control/intent'
-import type { RequestRecord } from '../../control/state'
-import { formatDroneId } from '../../control/state'
+import type { DeviceLabeller, RequestRecord } from '../../control/state'
+import { deviceLabeller } from '../../control/state'
 import { planTitle } from '../../control/plan'
 import { shortId } from '../../shell/format'
 import type { ModuleProps } from '../types'
@@ -146,7 +146,11 @@ export function CapturePane({ controller, roomId, onRoomId, guidance }: CaptureP
       <div className="ct-column">
         <GuidancePanel guidance={guidance} />
         {pendingRequest && (
-          <PlanDetail key={pendingRequest.intent.intent_id} pending={pendingRequest} />
+          <PlanDetail
+            key={pendingRequest.intent.intent_id}
+            pending={pendingRequest}
+            label={deviceLabeller(state.aircraft)}
+          />
         )}
       </div>
     </div>
@@ -198,7 +202,7 @@ export function GuidancePanel({ guidance }: { guidance: CaptureReadiness | null 
 }
 
 /** The plan detail card: title, targets, roster, steps, and the exact Intent v1 draft, open on every draft. */
-function PlanDetail({ pending }: { pending: RequestRecord }) {
+function PlanDetail({ pending, label }: { pending: RequestRecord; label: DeviceLabeller }) {
   const [jsonOpen, setJsonOpen] = useState(true)
   const intent = pending.intent
   return (
@@ -207,7 +211,7 @@ function PlanDetail({ pending }: { pending: RequestRecord }) {
       <h2 className="ct-plan-title">{pending.plan?.title ?? planTitle(intent)}</h2>
       <p className="ct-plan-meta">
         <span className="ct-plan-targets">
-          {intent.selection.map(formatDroneId).join('  ') || 'whole roster'}
+          {intent.selection.map(label).join('  ') || 'whole roster'}
         </span>{' '}
         <span>source {intent.source}</span>{' '}
         <span>roster v{pending.plan?.rosterVersion ?? 'unreported'}</span>{' '}

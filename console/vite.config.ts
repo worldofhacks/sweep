@@ -4,8 +4,25 @@ import { RELAY_BOOTSTRAP_ENDPOINT, relayFromEnvironment } from './src/relay/boot
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), runtimeConfiguration(), relayBootstrap()],
+  plugins: [react(), fixedConsolePort(), runtimeConfiguration(), relayBootstrap()],
+  // A second process must not silently become a competing operator console.
+  server: { host: '127.0.0.1', port: 5173, strictPort: true },
+  preview: { host: '127.0.0.1', port: 5173, strictPort: true },
 })
+
+function fixedConsolePort(): Plugin {
+  return {
+    name: 'sweep-single-console-port',
+    configResolved(config) {
+      if (config.command !== 'serve') return
+      for (const endpoint of [config.server, config.preview]) {
+        if (endpoint.port !== 5173 || !endpoint.strictPort || endpoint.host !== '127.0.0.1') {
+          throw new Error('Sweep uses one laptop console at http://127.0.0.1:5173/. Use python3 tools/console.py start from the canonical checkout.')
+        }
+      }
+    },
+  }
+}
 
 /**
  * Development-only relay bootstrap, the same pattern as the media endpoint

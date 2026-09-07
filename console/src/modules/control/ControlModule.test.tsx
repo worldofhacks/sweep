@@ -225,7 +225,7 @@ describe('Control › Swarm: capability-profile behavior on the fixture client',
     expect(within(panel).getAllByText('Slot 1').length).toBeGreaterThan(0)
     expect(within(panel).queryByText(/^D-01$/)).not.toBeInTheDocument()
     expect(panel).toHaveTextContent(
-      'aircraft-to-slot assignments are not projected by the relay and are therefore not guessed',
+      'device-to-slot assignments are not projected by the relay and are therefore not guessed',
     )
   })
 
@@ -519,13 +519,13 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     await openPane(user, 'Commands')
 
     const motion = within(screen.getByRole('group', { name: 'Motion commands' }))
-    expect(motion.getAllByRole('button')).toHaveLength(11)
+    expect(motion.getAllByRole('button')).toHaveLength(13)
     expect(motion.getByRole('button', { name: /^Survey area/ })).toBeDisabled()
     expect(motion.getByRole('button', { name: /^Map area/ })).toBeDisabled()
     const rows = motion.getAllByRole('button')
-    expect(rows[3]).toHaveTextContent('Land')
-    expect(rows[3]).toHaveTextContent('available')
-    expect(rows[3]).toBeEnabled()
+    expect(rows[5]).toHaveTextContent('Land')
+    expect(rows[5]).toHaveTextContent('available')
+    expect(rows[5]).toBeEnabled()
     expect(rows[0]).toHaveTextContent('Takeoff')
     expect(rows[0]).toHaveTextContent('available')
     expect(screen.getByText('Relay reports none at 0.8 m.')).toBeInTheDocument()
@@ -565,7 +565,7 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     expect(screen.getByText('Registry · roster v9')).toBeInTheDocument()
     const registry = within(screen.getByRole('region', { name: 'Registry' }))
     const d03 = within(registry.getByRole('article', { name: 'D-03 registry card' }))
-    expect(d03.getByText('degraded')).toHaveClass('tone-warn')
+    expect(d03.getByText('stale · current state unknown', { exact: true })).toHaveClass('tone-warn')
     expect(d03.getByText('41%')).toHaveClass('tone-warn')
     expect(d03.getByText('12%')).toHaveClass('tone-danger')
     expect(d03.getByText('9 s ago')).toBeInTheDocument()
@@ -573,7 +573,7 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     expect(d03.getByText(/Telemetry stopped inside the freshness window/)).toBeInTheDocument()
     expect(d03.getByRole('button', { name: 'Select D-03' })).toBeDisabled()
     const d04 = within(registry.getByRole('article', { name: 'D-04 registry card' }))
-    expect(d04.getByText('RC takeover')).toHaveClass('tone-danger')
+    expect(d04.getByText('Sweep control not granted')).toHaveClass('tone-danger')
     expect(d04.getByText('RC safety operator absent')).toHaveClass('tone-danger')
     expect(d04.getByText('epoch 5')).toBeInTheDocument()
 
@@ -600,7 +600,7 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
       reason: 'authenticated_rejoin',
     })
     expect(await screen.findByText('Rejoined as D-05 with a higher connection epoch (4).')).toBeInTheDocument()
-    expect(registry.getByRole('article', { name: 'D-05 registry card' })).toHaveTextContent('registered')
+    expect(registry.getByRole('article', { name: 'D-05 registry card' })).toHaveTextContent('unknown · motion unreported')
     expect(screen.getByText('Registry · roster v10')).toBeInTheDocument()
   })
 

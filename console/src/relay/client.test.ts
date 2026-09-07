@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { WebSocketRelayClient, buildSessionWebSocketUrl } from './client'
+import { publicNodeEvents } from '../testing/public-node-events'
 
 class TestSocket extends EventTarget {
   readyState = 1
@@ -29,6 +30,42 @@ class TestSocket extends EventTarget {
 }
 
 describe('WebSocket relay client', () => {
+  test.each(['console', 'keyboard', 'webcam', 'language'] as const)('keeps %s connected through public phone events and a higher-epoch rejoin', (source) => {
+    const socket = new TestSocket()
+    const statuses: string[] = []
+    const serverTypes: string[] = []
+    const client = new WebSocketRelayClient(
+      { baseUrl: 'ws://localhost:8000', sessionId: 'session-1', source, token: 'test-token' },
+      { now: () => 100, createSocket: () => socket as unknown as WebSocket },
+    )
+    client.subscribe((event) => {
+      if (event.kind === 'connection') statuses.push(event.connection.status)
+      else serverTypes.push(event.event.type)
+    })
+    client.start()
+    socket.open()
+    socket.message({ v: 1, t: 100, type: 'auth.accepted', event_id: 'auth-node-events', session: 'session-1', source, drone_id: null })
+    const joined = { v: 1, t: 101, type: 'membership', event_id: 'join-5', session: 'session-1',
+      roster_version: 12, action: 'join', drone_id: 2, connection_epoch: 5, membership: 'registered',
+      readiness_reasons: ['telemetry_missing'], adapter_id: 'test-android-node', capabilities: ['flight', 'body_pulse_v1'],
+      provenance: 'adapter_signature', reason: null }
+    socket.message(joined)
+    publicNodeEvents('session-1', 5).forEach((event) => socket.message(event))
+    socket.message({ ...joined, event_id: 'lost-5', roster_version: 13, action: 'unexpected_loss', membership: 'disconnected', provenance: 'relay_transport_attestation', reason: 'socket_closed' })
+    socket.message({ ...joined, event_id: 'join-6', roster_version: 14, connection_epoch: 6 })
+    publicNodeEvents('session-1', 6).forEach((event) => socket.message(event))
+    expect(statuses.at(-1)).toBe('connected')
+    expect(statuses).not.toContain('degraded')
+    expect(serverTypes.filter((type) => type === 'capabilities')).toHaveLength(2)
+    expect(serverTypes.filter((type) => type === 'node_status')).toHaveLength(2)
+    const count = serverTypes.length
+    socket.message({ ...publicNodeEvents('session-1')[1], watchdog_state: 'invented' })
+    expect(statuses.at(-1)).toBe('degraded')
+    expect(serverTypes).toHaveLength(count)
+    socket.message({ ...joined, type: 'unknown_frame' })
+    expect(serverTypes).toHaveLength(count)
+  })
+
   test('puts no token in the URL and sends the strict first auth frame', () => {
     const socket = new TestSocket()
     const client = new WebSocketRelayClient(
@@ -180,5 +217,68 @@ describe('WebSocket relay client', () => {
 
     expect(statuses.at(-1)).toBe('connected')
     expect(serverTypes).toEqual(['auth.accepted', 'telemetry'])
+  })
+})
+
+// The parser remains useful for isolated fixtures; only the real operator transport
+// refuses synthetic provenance and closes its ability to send control requests.
+describe('operator transport synthetic-data refusal', () => {
+  test.each(['state', 'membership'] as const)('refuses marked %s before publishing it and invalidates retained live claims', async (kind) => {
+    const { controlReducer, createInitialControlState } = await import('../control/state')
+    const { observedControlState } = await import('../control/observation')
+    const { motionStateWord } = await import('../modules/control/controls')
+    const { deriveStream } = await import('../modules/live/derive-live')
+    const { fixtureAircraft } = await import('../testing/fixture-relay-client')
+    const { C1_BASIC_CONTROL_INTENTS, parseRelayServerEvent } = await import('./contract')
+    const t = 1_756_700_000_000
+    const session = 'operator-hardware-session'
+    const socket = new TestSocket()
+    const forwarded: string[] = []
+    let state = createInitialControlState(session, t)
+    const client = new WebSocketRelayClient(
+      { baseUrl: 'ws://localhost:8000', sessionId: session, source: 'console', token: 'test-token' },
+      { now: () => t, createSocket: () => socket as unknown as WebSocket },
+    )
+    client.subscribe((event) => {
+      if (event.kind === 'connection') state = controlReducer(state, { type: 'connection_changed', connection: event.connection })
+      else {
+        forwarded.push(event.event.event_id)
+        state = controlReducer(state, { type: 'relay_event', event: event.event, receivedAt: t })
+      }
+    })
+    client.start()
+    socket.open()
+    socket.message({ v: 1, t, type: 'auth.accepted', event_id: 'hardware-auth', session, source: 'console', drone_id: null })
+    const accepted = {
+      v: 1, t, type: 'state', event_id: 'hardware-state', session, roster_version: 1,
+      armed: true, estop: false, selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
+      capability_profile: 'c1_basic_control', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null, drones: fixtureAircraft(t).slice(0, 1),
+    }
+    socket.message(accepted)
+    expect(deriveStream(observedControlState(state, t).aircraft[1], t).status).toBe('live')
+    const marked = kind === 'state' ? {
+      ...accepted, event_id: 'refused-synthetic', roster_version: 2,
+      drones: [{ ...accepted.drones[0], drone_id: 2, adapter_capabilities: ['flight', 'test:synthetic'] }],
+    } : {
+      v: 1, t, type: 'membership', event_id: 'refused-synthetic', session,
+      roster_version: 2, action: 'join', drone_id: 2, connection_epoch: 1, membership: 'registered',
+      readiness_reasons: ['telemetry_missing'], adapter_id: 'synthetic-node', capabilities: ['flight', 'test:synthetic'],
+      provenance: 'adapter_signature', reason: null,
+    }
+    expect(parseRelayServerEvent(marked)).not.toBeNull()
+    socket.message(marked)
+    expect(forwarded).not.toContain('refused-synthetic')
+    expect(state.aircraft[2]).toBeUndefined()
+    expect(state.connection.status).toBe('disconnected')
+    expect(state.connection.reason).toContain('Synthetic test data refused')
+    const retained = observedControlState(state, t).aircraft[1]
+    expect(deriveStream(retained, t).status).toBe('unreported')
+    expect(motionStateWord(retained)).toBe('unknown · last reported hovering')
+    await expect(client.sendIntent({ v: 1, t, type: 'intent', intent_id: 'must-not-send', retry_of: null,
+      source: 'console', session, name: 'hold', args: {}, selection: [1], mode: 'indoor', confirm: false,
+    })).rejects.toThrow('not authenticated')
+    socket.message({ ...accepted, event_id: 'late-hardware-state' })
+    expect(forwarded).not.toContain('late-hardware-state')
   })
 })

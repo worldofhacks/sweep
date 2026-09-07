@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import './live.css'
 import { capabilityBlockedReason, isIntentEnabled } from '../../control/state'
-import { Pane, type PaneTab } from '../../shell/Pane'
+import { Pane } from '../../shell/Pane'
 import { sortedAircraft } from '../../shell/derive'
 import { EmptyModule } from '../shared'
 import type { ModuleProps } from '../types'
@@ -9,54 +9,47 @@ import { FocusFeed } from './FocusFeed'
 import { Mosaic } from './Mosaic'
 import { useSecondTick } from './use-second-tick'
 
-type LivePane = 'wall4' | 'wall6' | 'focus'
-
-const PANES: PaneTab[] = [
-  { id: 'wall4', label: 'Wall of 4' },
-  { id: 'wall6', label: 'Wall of 6' },
-  { id: 'focus', label: 'Focus feed' },
-]
-
-/**
- * The Live surface from the Sweep Console v4 design: two walls and the focus
- * feed. Focus is the reducer's selectedFeedId, so it follows a single
- * selection, survives video loss, and clears only when the aircraft leaves.
- */
+/** One dynamic wall, with local device inspection opened from a tile. */
 export function LiveModule({ controller, now, media }: ModuleProps) {
-  const [pane, setPane] = useState<LivePane>('wall4')
+  const [inspecting, setInspecting] = useState(false)
   const { state, selectFeed, toggleAircraft } = controller
-  const aircraft = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
-  useSecondTick(aircraft.some((drone) => drone.video?.last_frame_at != null))
+  const devices = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
+  useSecondTick(devices.length > 0)
   const currentNow = now()
   const focused =
     state.selectedFeedId === null ? null : (state.aircraft[state.selectedFeedId] ?? null)
 
   return (
     <Pane
-      title="Live view"
-      note="Every reported camera source with its focus pane. Detections are not reported yet."
-      tabs={PANES}
-      activeTab={pane}
-      onTabChange={(id) => setPane(id as LivePane)}
-      tabsLabel="Live panes"
+      title={inspecting ? 'Device inspection' : 'All devices'}
+      note={inspecting
+        ? 'Detailed camera and relay state. Return to All devices to see the full wall.'
+        : 'All reported cameras in one wall. Focus a device to inspect its feed.'}
     >
-      {aircraft.length === 0 ? (
+      {inspecting ? (
+        <>
+          <button type="button" className="lv-focus lv-back" onClick={() => setInspecting(false)}>
+            Back to All devices
+          </button>
+          <FocusFeed focused={focused} requests={state.requests} now={currentNow} media={media} />
+        </>
+      ) : devices.length === 0 ? (
         <EmptyModule
           what="camera sources"
-          detail="No aircraft have joined this session, so there is no wall and nothing to focus."
+          detail="No devices have joined this session. Their cameras appear here as they join."
         />
-      ) : pane === 'focus' ? (
-        <FocusFeed focused={focused} requests={state.requests} now={currentNow} media={media} />
       ) : (
         <Mosaic
-          aircraft={aircraft}
-          count={pane === 'wall6' ? 6 : 4}
+          devices={devices}
           now={currentNow}
           focusedId={focused?.drone_id ?? null}
           selection={state.selection}
           selectionEnabled={isIntentEnabled(state, 'select')}
           selectionDisabledReason={capabilityBlockedReason(state, 'select')}
-          onFocus={selectFeed}
+          onFocus={(droneId) => {
+            selectFeed(droneId)
+            setInspecting(true)
+          }}
           onToggleSelection={toggleAircraft}
           media={media}
         />

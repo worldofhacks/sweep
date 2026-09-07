@@ -26,6 +26,9 @@ const deps = { now: () => t, nextId: () => 'intent-1' }
 
 /** The exact args each control sends, per the relay's _parse_args. */
 const ENVELOPES: Record<ConsoleIntentName, { args: IntentArgs; selection: number[] }> = {
+  robot_peripheral: { args: { kind: 'screen', text: 'Ready for inspection' }, selection: [11] },
+  camera_control: { args: { kind: 'photo' }, selection: [1] },
+  body_pulse: { args: { forward_mm_s: 250, duration_ms: 500 }, selection: [1, 2] },
   arm: { args: {}, selection: [1] },
   disarm: { args: {}, selection: [1] },
   estop: { args: {}, selection: [] },
@@ -45,6 +48,8 @@ const ENVELOPES: Record<ConsoleIntentName, { args: IntentArgs; selection: number
     args: { room_id: 'kitchen-01', capture_id: 'capture-intent-1', pattern: 'pano_360' },
     selection: [1],
   },
+  ground_velocity: { args: { linear_mm_s: 80, angular_mrad_s: 0, duration_ms: 250 }, selection: [11] },
+  survey_area: { args: { area_id: 'survey-11' }, selection: [11] },
 }
 
 describe('intent envelopes', () => {

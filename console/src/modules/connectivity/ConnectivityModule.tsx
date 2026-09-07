@@ -7,7 +7,7 @@ import {
   nodeRecordFor,
 } from '../../catalog/derive'
 import type { HealthMetric, ServiceRecord } from '../../catalog/types'
-import { formatDroneId } from '../../control/state'
+import { formatDeviceId } from '../../control/state'
 import type { RelayAircraftState } from '../../relay/contract'
 import { sortedAircraft } from '../../shell/derive'
 import '../catalog.css'
@@ -15,7 +15,7 @@ import { EmptyModule } from '../shared'
 import type { ModuleProps } from '../types'
 
 /**
- * Connectivity and health, rendered under Reference › Health: health metrics,
+ * Connectivity and health, rendered under Devices › Health: health metrics,
  * one row per aircraft node, the shared services, and the degradation ladder.
  * Node rows come from relay aircraft state; versions, RTT, rate and storage
  * come from the catalog and read unreported until a node endpoint exists.
@@ -47,17 +47,17 @@ export function ConnectivityModule({ controller, catalog, now }: ModuleProps) {
 
       <section className="cat-section" aria-labelledby="con-nodes-title">
         <h3 className="cat-h3" id="con-nodes-title">
-          Per-aircraft nodes
+          Per-device nodes
         </h3>
         {fleet.length === 0 ? (
           <p className="cat-line">
-            No aircraft have joined this session. The relay reports an empty roster.
+            No devices have joined this session. The relay reports an empty roster.
           </p>
         ) : (
           <div className="con-table-wrap">
             <table className="con-table">
               <caption>
-                Every cell answers what is wrong and what to do. Versions cover aircraft firmware,
+                Every cell answers what is wrong and what to do. Versions cover device firmware,
                 controller firmware, phone model and SDK release.
               </caption>
               <tbody>
@@ -140,7 +140,7 @@ function NodeRow({
   const error = nodeError(drone)
   return (
     <tr>
-      <th scope="row">{formatDroneId(drone.drone_id)}</th>
+      <th scope="row">{formatDeviceId(drone)}</th>
       <td>
         <dl className="con-cells">
           {nodeCells(drone, node, now).map((cell) => (

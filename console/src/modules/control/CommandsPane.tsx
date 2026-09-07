@@ -63,6 +63,7 @@ export function CommandsPane({ controller, steps, onSteps }: CommandsPaneProps) 
               issueIntent({ name: 'translate', args: createTranslateArgs(direction, steps) })
             }
           />
+          <p className="ct-dpad-note">Robots use room east +x and north +y; aircraft use the relay-configured frame.</p>
           {dpadReason && <p className="ct-dpad-note">{dpadReason}</p>}
         </div>
         <label className="ct-steps is-commands">
