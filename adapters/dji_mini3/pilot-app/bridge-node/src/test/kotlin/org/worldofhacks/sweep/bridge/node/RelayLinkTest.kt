@@ -80,6 +80,26 @@ class RelayLinkTest {
         it.start()
     }
 
+    private fun navigationAdmission() = NavigationAdmissionConfig(
+        navigationConfigId = "navigation-a",
+        navigationConfigSha256 = NAV_HASH,
+        mapVersion = "map-v1",
+        mapSha256 = NAV_HASH,
+        geometrySha256 = NAV_HASH,
+        cameraCalibrationSha256 = NAV_HASH,
+        bodyExtrinsicsSha256 = NAV_HASH,
+        worldTransformSha256 = NAV_HASH,
+        controlSourceIds = listOf("tag-source"),
+        clockLeaseId = "lease-1",
+        clockLeaseExpiresAtMs = Long.MAX_VALUE,
+        maxAuthorizationLifetimeMs = 1_000,
+        approvedEvidenceFiles = listOf(File.createTempFile("approved-navigation", ".evidence").apply {
+            writeText("operator-approved evidence")
+            deleteOnExit()
+        }),
+        enabled = true,
+    )
+
     private fun await(what: String, timeoutMs: Long = 5_000, predicate: () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
@@ -293,7 +313,7 @@ class RelayLinkTest {
         StubRelay(key, emitControlHeartbeats = false).use { stub ->
             val aircraft = FakeAircraft(connected = true)
             val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
-            val navigation = NavigationAdmissionConfig("navigation-a", poseFreshnessMs = 500, maxAuthorizationLifetimeMs = 1_000, enabled = true)
+            val navigation = navigationAdmission()
             link(stub, aircraft, localizationPins = pins, navigationAdmission = navigation).use { link ->
                 await("joined") { link.state.value.joined }
                 stub.sendNavigationAuthorization(signingKey = "wrong-key".toByteArray())
@@ -330,7 +350,7 @@ class RelayLinkTest {
         StubRelay(key, emitControlHeartbeats = false).use { stub ->
             val aircraft = FakeAircraft(connected = true)
             val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
-            val navigation = NavigationAdmissionConfig("navigation-a", poseFreshnessMs = 500, maxAuthorizationLifetimeMs = 1_000, enabled = true)
+            val navigation = navigationAdmission()
             link(stub, aircraft, localizationPins = pins, navigationAdmission = navigation).use { link ->
                 await("joined") { link.state.value.joined }
                 stub.sendNavigationAuthorization()
@@ -923,4 +943,8 @@ class RelayLinkTest {
             }
         }
     }
+    private companion object {
+        const val NAV_HASH = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+
 }

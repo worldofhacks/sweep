@@ -128,10 +128,16 @@ data class FlightConfig(
 
 data class NavigationConfig(
     val navigationConfigId: String,
-    val mapId: String,
-    val geometryId: String,
-    val cameraCalibrationId: String,
-    val bodyExtrinsicsId: String,
+    val navigationConfigSha256: String,
+    val mapVersion: String,
+    val mapSha256: String,
+    val geometrySha256: String,
+    val cameraCalibrationSha256: String,
+    val bodyExtrinsicsSha256: String,
+    val worldTransformSha256: String,
+    val controlSourceIds: List<String>,
+    val clockLeaseId: String,
+    val clockLeaseExpiresAtMs: Long,
     val poseFreshnessMs: Long,
     val authorizationLifetimeMs: Long,
     val lossLandAfterMs: Long,
@@ -140,10 +146,15 @@ data class NavigationConfig(
     val maxPositionUncertaintyM: Double,
 ) {
     init {
-        require(
-            listOf(navigationConfigId, mapId, geometryId, cameraCalibrationId, bodyExtrinsicsId)
-                .all { it.isNotBlank() },
-        ) { "navigation identities must be pinned" }
+        require(navigationConfigId.isNotBlank() && mapVersion.isNotBlank() && clockLeaseId.isNotBlank() && clockLeaseExpiresAtMs > 0) {
+            "navigation identities and clock lease must be pinned"
+        }
+        require(hashes().all { it.length == 64 && it.all { char -> char in '0'..'9' || char in 'a'..'f' } }) {
+            "navigation evidence hashes must be lowercase SHA-256"
+        }
+        require(controlSourceIds.isNotEmpty() && controlSourceIds == controlSourceIds.distinct().sorted()) {
+            "navigation control source identities must be sorted and unique"
+        }
         require(poseFreshnessMs > 0 && authorizationLifetimeMs > 0 && lossLandAfterMs > 0) {
             "navigation timing bounds are invalid"
         }
@@ -153,10 +164,12 @@ data class NavigationConfig(
         ) {
             "navigation measured limits are invalid"
         }
-        require(maxPositionUncertaintyM <= minOf(arrivalHorizontalToleranceM, arrivalVerticalToleranceM)) {
-            "navigation uncertainty must fit inside arrival tolerances"
-        }
     }
+
+    fun hashes(): List<String> = listOf(
+        navigationConfigSha256, mapSha256, geometrySha256, cameraCalibrationSha256,
+        bodyExtrinsicsSha256, worldTransformSha256,
+    )
 
     fun isWithinArrival(
         horizontalDistanceM: Double,

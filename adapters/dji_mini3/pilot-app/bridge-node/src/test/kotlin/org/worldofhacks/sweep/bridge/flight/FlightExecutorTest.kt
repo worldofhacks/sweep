@@ -1,5 +1,6 @@
 package org.worldofhacks.sweep.bridge.flight
 
+import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -7,6 +8,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.worldofhacks.sweep.bridge.core.flight.FlightConfig
 import org.worldofhacks.sweep.bridge.core.flight.FlightReason
+import org.worldofhacks.sweep.bridge.core.flight.NavigationConfig
 import org.worldofhacks.sweep.bridge.core.flight.ReportSink
 import org.worldofhacks.sweep.bridge.core.flight.StickFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
@@ -21,6 +23,7 @@ import org.worldofhacks.sweep.bridge.node.FlightStates
 import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.LinkTiming
 import org.worldofhacks.sweep.bridge.node.NodeConfig
+import org.worldofhacks.sweep.bridge.node.NavigationAdmissionConfig
 import org.worldofhacks.sweep.bridge.node.PhoneStatus
 import org.worldofhacks.sweep.bridge.node.PhoneStatusSource
 import org.worldofhacks.sweep.bridge.node.ReadinessInput
@@ -47,11 +50,11 @@ class FlightExecutorTest {
     }
 
     /** The stub emits the real relay's signed control heartbeat unless a silence test disables it. */
-    private fun node(stub: StubRelay, flying: Boolean, localizationPins: LocalizationPins? = null): Node {
+    private fun node(stub: StubRelay, flying: Boolean, localizationPins: LocalizationPins? = null, navigation: Boolean = false): Node {
         val aircraft = FakeFlightAircraft()
         aircraft.setConnected(true)
         if (flying) aircraft.place(zUp = 1.2, flying = true)
-        val executor = FlightExecutor(aircraft, aircraft, aircraft.fake, config = config, log = { logs += it })
+        val executor = FlightExecutor(aircraft, aircraft, aircraft.fake, config = config.copy(navigation = if (navigation) navigationConfig() else null), log = { logs += it })
         val nodeConfig = NodeConfig(
             stub.url,
             stub.session,
@@ -61,7 +64,7 @@ class FlightExecutorTest {
             listOf("flight"),
             localizationPins,
         )
-        val link = RelayLink(nodeConfig, aircraft, executor, phone, timing = timing, log = { logs += it })
+        val link = RelayLink(nodeConfig, aircraft, executor, phone, timing = timing, log = { logs += it }, navigationAdmission = if (navigation) navigationAdmission() else null)
         // The loop's status feeds the snapshot fields the link reports (the sessions do this on the phone).
         Thread {
             var last = executor.status.value
@@ -86,6 +89,22 @@ class FlightExecutorTest {
         link.start()
         return Node(aircraft, executor, link)
     }
+
+    private fun navigationConfig() = NavigationConfig(
+        navigationConfigId = "navigation-a", navigationConfigSha256 = NAV_HASH, mapVersion = "map-v1", mapSha256 = NAV_HASH,
+        geometrySha256 = NAV_HASH, cameraCalibrationSha256 = NAV_HASH, bodyExtrinsicsSha256 = NAV_HASH, worldTransformSha256 = NAV_HASH,
+        controlSourceIds = listOf("tag-source"), clockLeaseId = "lease-1", clockLeaseExpiresAtMs = Long.MAX_VALUE, poseFreshnessMs = 500, authorizationLifetimeMs = 1_000, lossLandAfterMs = 300,
+        arrivalHorizontalToleranceM = 0.1, arrivalVerticalToleranceM = 0.1, maxPositionUncertaintyM = 0.05,
+    )
+
+    private fun navigationAdmission() = NavigationAdmissionConfig(
+        navigationConfigId = "navigation-a", navigationConfigSha256 = NAV_HASH, mapVersion = "map-v1", mapSha256 = NAV_HASH,
+        geometrySha256 = NAV_HASH, cameraCalibrationSha256 = NAV_HASH, bodyExtrinsicsSha256 = NAV_HASH, worldTransformSha256 = NAV_HASH,
+        controlSourceIds = listOf("tag-source"), clockLeaseId = "lease-1", clockLeaseExpiresAtMs = Long.MAX_VALUE, maxAuthorizationLifetimeMs = 1_000, approvedEvidenceFiles = listOf(File.createTempFile("approved-navigation", ".evidence").apply {
+            writeText("operator approved evidence")
+            deleteOnExit()
+        }), enabled = true,
+    )
 
     private fun await(what: String, timeoutMs: Long = 10_000, predicate: () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -324,4 +343,30 @@ class FlightExecutorTest {
         assertTrue(!aircraft.model.virtualStickEnabled, "virtual stick released when the ticker stopped; log:\n" + logs.joinToString("\n"))
         assertTrue(logs.any { it.contains("flight loop stopped with virtual stick enabled") }, logs.joinToString("\n"))
     }
+    @Test
+    fun `authorized route uses the executor and stale control evidence cannot restart it`() {
+        StubRelay(key).use { stub ->
+            node(stub, flying = true, navigation = true).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                stub.sendNavigationAuthorization(commandId = "route-command-1", routeId = "route-1")
+                await("route authorization") { node.link.state.value.navigationAuthorization?.routeId == "route-1" }
+                stub.sendNavigationPose(commandId = "route-command-1", routeId = "route-1")
+                await("route pose") { node.link.state.value.navigationPose != null }
+                val command = stub.issueCommand(CommandArgs.Goto(1_000, 0, 1_000, 300, "route-1"), commandId = "route-command-1")
+                stub.awaitAck(command.commandId, "executing")
+                await("executor navigation") { node.executor.status.value.phase == "navigating" }
+                await("route stick frame") { node.executor.status.value.sticksSent > 0 && node.executor.status.value.lastFrame?.isNeutral == false }
+                stub.awaitAck(command.commandId, "failed")
+                await("route loss landing") { node.executor.status.value.phase == "landing" || !node.aircraft.model.virtualStickEnabled }
+                Thread.sleep(150)
+                assertTrue(node.executor.status.value.lastFrame?.isNeutral == true)
+                assertTrue(stub.acks(command.commandId).map { it.str("status") }.count { it == "executing" } >= 1)
+            }
+        }
+    }
+
+    private companion object {
+        const val NAV_HASH = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+
 }
