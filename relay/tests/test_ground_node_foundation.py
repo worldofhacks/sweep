@@ -130,9 +130,7 @@ def test_mixed_fleet_audit_accepts_32_aircraft_and_three_ground_nodes_at_the_lim
         _material_state_projection(state)
 
 
-@pytest.mark.parametrize(
-    "name,args", [("takeoff", {}), ("come_home", {}), ("translate", {"dx": 1, "dy": 0})]
-)
+@pytest.mark.parametrize("name,args", [("takeoff", {}), ("translate", {"dx": 1, "dy": 0})])
 def test_aircraft_only_intent_refuses_ground_target_before_sink(tmp_path, name, args):
     dispatched: list[object] = []
     session = RelaySession(

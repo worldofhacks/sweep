@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from .botshell import DEFAULT_PATH, BotShell
 from .camera import Camera
+from .camera import from_environment as camera_from_environment
 from .lidar import Lidar, discover
 from .models import GroundStatus, RangeScan
 from .odometry import BASE_MM, Odometry
@@ -154,6 +155,7 @@ class OhmniDevice:
             pos_quality=pose.quality,
             state=state,
             drive_authority=self.enabled,
+            t_ms=int(time.monotonic() * 1_000),
             extras={
                 "battery_voltage": self.battery_voltage,
                 "obstacle_guard": self.guard_reason() or "available",
@@ -491,16 +493,7 @@ def from_environment(*, key: str = "") -> OhmniDevice:
         spotter_present=os.environ.get("SWEEP_SPOTTER") == "1",
     )
     media_host = os.environ.get("SWEEP_MEDIA_HOST")
-    camera = (
-        Camera(
-            media_host,
-            int(os.environ["SWEEP_DEVICE_UNIT"]),
-            key,
-            os.environ.get("SWEEP_FFMPEG", "/data/local/sweep/ffmpeg"),
-        )
-        if media_host
-        else None
-    )
+    camera = camera_from_environment(media_host, key) if media_host else None
     return OhmniDevice(config, camera=camera)
 
 

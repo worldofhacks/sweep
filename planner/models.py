@@ -122,6 +122,7 @@ class CommandOperation(StrEnum):
     LAND = "land"
     ESTOP = "estop"
     GROUND_VELOCITY = "ground_velocity"
+    GROUND_RETURN = "ground_return"
     CAMERA_CAPABILITIES = "camera_capabilities"
     SET_GIMBAL_PITCH = "set_gimbal_pitch"
     CAMERA_READY = "camera_ready"

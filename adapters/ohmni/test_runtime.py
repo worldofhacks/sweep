@@ -16,8 +16,9 @@ from websockets.sync.client import connect as sync_connect
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
 from planner.models import CommandOperation
 from relay.app import RelayRuntime
+from relay.auth import sign_event
 from relay.autonomy import AutonomyConfig, create_autonomy_app
-from relay.contracts import NodeType
+from relay.contracts import NodeType, command_event, parse_command
 from relay.observation_ingress import ObservationConfiguration
 from relay.observations import FrameDeclaration, FrameRegistry, SourceBinding
 from relay.settings import AdapterBackend, RelaySettings
@@ -25,6 +26,7 @@ from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION
 from tests.autonomy_fixtures import planning_config, safety_config
 
 from .fake import FakeGroundDevice
+from .return_controller import ApprovedReturnRoute, ReturnPoint, ReturnSegment, WorldToOdom
 from .runtime import GroundRuntimeConfig, OhmniRuntime, parse_args
 
 AIRCRAFT_ID = 1
@@ -108,6 +110,7 @@ def relay_server(tmp_path: Path) -> Iterator[_RelayServer]:
         adapter_backend=AdapterBackend.REMOTE,
         node_watchdog_hold_ms=1_000,
         node_watchdog_failsafe_ms=2_000,
+        ground_return_id="room-a-return",
         observation_configuration=_observation_configuration(),
     )
     app, autonomy = create_autonomy_app(
@@ -171,6 +174,154 @@ def test_runtime_arguments_build_the_required_ground_identity() -> None:
 
     assert config.relay_url == "ws://relay.example"
     assert config.adapter_id == "ohmni-9"
+
+
+def test_numeric_dial_address_preserves_the_tls_hostname(monkeypatch):
+    from . import runtime as module
+
+    calls = []
+
+    def refuse_connection(uri, **kwargs):
+        calls.append((uri, kwargs))
+        raise OSError("probe complete")
+
+    monkeypatch.setattr(module, "connect", refuse_connection)
+    node = OhmniRuntime(
+        GroundRuntimeConfig(
+            "wss://relay.example/field",
+            SESSION,
+            GROUND_ID,
+            GROUND_KEY.decode(),
+            "ground-9",
+            relay_connect_host="192.0.2.5",
+        ),
+        FakeGroundDevice(),
+    )
+    with pytest.raises(OSError, match="probe complete"):
+        asyncio.run(node.run())
+    assert calls == [
+        (f"wss://relay.example/field/ws/{SESSION}", {"host": "192.0.2.5", "proxy": None})
+    ]
+
+
+def test_measured_clock_correction_applies_to_envelopes_and_lease_expiry(monkeypatch):
+    monkeypatch.setattr(time, "time_ns", lambda: 131_000_000_000)
+    node = OhmniRuntime(
+        GroundRuntimeConfig(
+            "ws://relay.example",
+            SESSION,
+            GROUND_ID,
+            GROUND_KEY.decode(),
+            "ground-9",
+            relay_clock_offset_ms=-31_000,
+        ),
+        FakeGroundDevice(),
+    )
+    assert node._envelope("membership")["t"] == 100_000
+    node._last_heartbeat_expires_at = 100_001
+    assert not node._lease_expired()
+    node._last_heartbeat_expires_at = 100_000
+    assert node._lease_expired()
+    assert node.config.source_clock_id == "ohmni-monotonic"
+
+
+def _clock_corrected_runtime() -> OhmniRuntime:
+    return OhmniRuntime(
+        GroundRuntimeConfig(
+            "ws://relay.example",
+            SESSION,
+            GROUND_ID,
+            GROUND_KEY.decode(),
+            "ground-9",
+            relay_clock_offset_ms=-31_000,
+        ),
+        FakeGroundDevice(),
+    )
+
+
+def _signed_heartbeat(*, seq: int, issued_at: int, expires_at: int) -> dict[str, object]:
+    frame: dict[str, object] = {
+        "v": 1,
+        "t": issued_at,
+        "type": "control_heartbeat",
+        "event_id": f"heartbeat-clock-boundary-{seq}",
+        "session": SESSION,
+        "source": "relay",
+        "drone_id": GROUND_ID,
+        "connection_epoch": 1,
+        "roster_version": 2,
+        "seq": seq,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+        "hold_after_ms": 2_000,
+        "failsafe_after_ms": 10_000,
+    }
+    frame["signature"] = sign_event(frame, GROUND_KEY)
+    return frame
+
+
+def test_relay_clock_correction_sets_heartbeat_and_command_boundaries(monkeypatch):
+    monkeypatch.setattr(time, "time_ns", lambda: 131_000_000_000)
+    node = _clock_corrected_runtime()
+    node._epoch = 1
+    node._roster_version = 2
+
+    node._on_heartbeat(_signed_heartbeat(seq=1, issued_at=100_000, expires_at=100_001))
+    assert node._last_heartbeat_seq == 1
+    assert node._last_heartbeat_expires_at == 100_001
+
+    node._on_heartbeat(_signed_heartbeat(seq=2, issued_at=100_000, expires_at=100_000))
+    assert node._last_heartbeat_seq == 1
+    assert node._last_heartbeat_expires_at == 100_001
+
+    node._on_heartbeat(_signed_heartbeat(seq=3, issued_at=100_001, expires_at=100_002))
+    assert node._last_heartbeat_seq == 1
+    assert node._last_heartbeat_expires_at == 100_001
+
+    at_expiry = command_event(
+        t=99_999,
+        event_id="command-clock-boundary",
+        session=SESSION,
+        command_id="command-clock-boundary",
+        intent_id="command-clock-boundary",
+        roster_version=2,
+        drone_id=GROUND_ID,
+        connection_epoch=1,
+        seq=1,
+        issued_at=99_999,
+        ttl_ms=1,
+        operation=CommandOperation.HOVER,
+        args={},
+    )
+    at_expiry["signature"] = sign_event(at_expiry, GROUND_KEY)
+    assert node._command_failure(parse_command(at_expiry)) is None
+
+    monkeypatch.setattr(time, "time_ns", lambda: 131_001_000_000)
+    expired = node._command_failure(parse_command(at_expiry))
+    assert expired is not None
+    assert expired[0] == "stale_command"
+
+
+def test_relay_clock_correction_never_changes_sensor_monotonic_receipt(monkeypatch):
+    monkeypatch.setattr(time, "time_ns", lambda: 131_000_000_000)
+    monkeypatch.setattr(time, "monotonic_ns", lambda: 555_000_000)
+    node = _clock_corrected_runtime()
+    node._epoch = 1
+    node._outbound = asyncio.Queue()
+
+    node._publish_observations()
+
+    observations = [node._outbound.get_nowait() for _ in range(node._outbound.qsize())]
+    assert len(observations) == 3
+    assert all(
+        frame["t_source_receipt"]
+        == {
+            "clock_id": "ohmni-monotonic",
+            "unit": "ns",
+            "value": 555_000_000,
+        }
+        for frame in observations
+    )
 
 
 def test_ground_runtime_joins_becomes_ready_acks_velocity_and_stops_on_lease_loss(
@@ -670,3 +821,129 @@ def test_aircraft_estop_reaches_the_live_node_before_a_silent_ground_ack_times_o
     finally:
         aircraft.stop()
         ground.stop()
+
+
+def _approved_return() -> ApprovedReturnRoute:
+    return ApprovedReturnRoute(
+        return_id="room-a-return",
+        approval_id="approval-17",
+        approval_signer="map-operator",
+        session=SESSION,
+        device_id=GROUND_ID,
+        connection_epoch=1,
+        odom_origin_id="origin-7",
+        source_registration_id="registration-9",
+        pose_source_id="ohmni-pose",
+        odom_frame="odom",
+        world_to_odom=WorldToOdom(0.0, 0.0, 0.0, "registration-9"),
+        start=ReturnPoint(0.0, 0.0),
+        segments=(
+            ReturnSegment(
+                ReturnPoint(0.05, 0.0),
+                (
+                    ReturnPoint(-0.5, -0.5),
+                    ReturnPoint(0.5, -0.5),
+                    ReturnPoint(0.5, 0.5),
+                    ReturnPoint(-0.5, 0.5),
+                ),
+            ),
+        ),
+        footprint_radius_m=0.25,
+        arrival_tolerance_m=0.03,
+        geometry_sha256="0" * 64,
+    )
+
+
+def test_confirmed_console_come_home_executes_the_approved_ground_return(
+    relay_server: _RelayServer,
+) -> None:
+    device = FakeGroundDevice()
+    node = OhmniRuntime(
+        GroundRuntimeConfig(
+            relay_url=relay_server.url,
+            session=SESSION,
+            device_id=GROUND_ID,
+            token=GROUND_KEY.decode(),
+            adapter_id="fake-ohmni-9",
+            heartbeat_hold_ms=1_000,
+            heartbeat_failsafe_ms=2_000,
+            lidar_mount_x_m=0.0,
+            lidar_mount_y_m=0.0,
+            lidar_mount_z_m=0.25,
+            lidar_mount_yaw_deg=0.0,
+            return_approval=_approved_return(),
+            odom_origin_id="origin-7",
+        ),
+        device,
+    )
+    node.start()
+    try:
+        session = relay_server.runtime.sessions[SESSION]
+        _wait_for(
+            lambda: (
+                bool(session.current_state()["drones"])
+                and session.current_state()["drones"][0]["membership"] == "ready"
+            ),
+            "ground readiness",
+        )
+        intent_id = "ground-return-e2e"
+        with sync_connect(f"{relay_server.url}/ws/{SESSION}", proxy=None) as console:
+            console.send(
+                json.dumps(
+                    {"v": 1, "type": "auth", "source": "console", "token": CONSOLE_KEY.decode()}
+                )
+            )
+            assert json.loads(console.recv(timeout=WAIT_S))["type"] == "auth.accepted"
+            assert json.loads(console.recv(timeout=WAIT_S))["type"] == "state"
+            console.send(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "t": int(time.time_ns() // 1_000_000),
+                        "type": "intent",
+                        "intent_id": intent_id,
+                        "retry_of": None,
+                        "source": "console",
+                        "session": SESSION,
+                        "name": "come_home",
+                        "args": {},
+                        "selection": [GROUND_ID],
+                        "mode": "indoor",
+                        "confirm": True,
+                    }
+                )
+            )
+            _wait_for(
+                lambda: any(
+                    record["event"].get("type") == "acknowledgement"
+                    and record["event"].get("intent_id") == intent_id
+                    and record["event"].get("source") == "autonomy"
+                    and record["event"].get("status") == "completed"
+                    for record in relay_server.runtime.replay(SESSION)["events"]
+                ),
+                "ground return completion",
+            )
+        records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
+        commands = [
+            record
+            for record in records
+            if record["type"] == "command" and record["intent_id"] == intent_id
+        ]
+        assert [(command["operation"], command["args"]) for command in commands] == [
+            ("ground_return", {"return_id": "room-a-return"})
+        ]
+        lifecycle = [
+            (record["source"], record["status"])
+            for record in records
+            if record["type"] == "acknowledgement" and record.get("intent_id") == intent_id
+        ]
+        assert lifecycle == [
+            ("relay", "accepted"),
+            ("adapter", "accepted"),
+            ("adapter", "executing"),
+            ("adapter", "completed"),
+            ("autonomy", "completed"),
+        ]
+        assert device.x >= 0.024
+    finally:
+        node.stop()

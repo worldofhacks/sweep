@@ -83,6 +83,7 @@ class FakeGroundDevice:
             0.9 if self.lidar_available else 0.0,
             "moving" if self._motion is not None else "idle" if self.enabled else "stopped",
             self.enabled,
+            int(self.monotonic() * 1_000),
             {
                 "lidar_present": self.lidar_available,
                 "camera_present": self.camera_available,

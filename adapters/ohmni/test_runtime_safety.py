@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 import time
@@ -246,3 +247,38 @@ restore()
         if process.poll() is None:
             process.kill()
             process.wait(timeout=2)
+
+
+def test_local_drive_stops_before_waiting_for_websocket_close(monkeypatch) -> None:
+    from . import runtime as module
+
+    runtime, device = _runtime_for_local_test()
+    device.enable()
+    device.stopped = False
+    observed_at_close = []
+
+    class Connection:
+        incoming = iter(({"type": "auth.accepted"}, {"type": "state", "roster_version": 1}))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            observed_at_close.append((device.enabled, device.stopped))
+
+        async def send(self, raw):
+            if json.loads(raw).get("action") == "join":
+                runtime.stop()
+
+        async def recv(self):
+            return json.dumps(next(self.incoming))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.Future()
+
+    monkeypatch.setattr(module, "connect", lambda *_args, **_kwargs: Connection())
+    asyncio.run(runtime.run())
+    assert observed_at_close == [(False, True)]

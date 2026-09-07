@@ -42,7 +42,53 @@ class GroundCommandDispatcher:
         self._monotonic = monotonic
 
     def dispatch(self, intent: IntentV1, state: Mapping[str, object]) -> ExecutionResult:
-        target = self._target(intent, state)
+        return self._dispatch(
+            intent,
+            state,
+            expected_name=IntentName.GROUND_VELOCITY,
+            operation=CommandOperation.GROUND_VELOCITY,
+            parameters=intent.args,
+            timeout_detail=(
+                "ground node did not complete the bounded pulse before its command deadline"
+            ),
+        )
+
+    def dispatch_return(
+        self, intent: IntentV1, state: Mapping[str, object], *, return_id: str | None
+    ) -> ExecutionResult:
+        if not return_id:
+            return self._refused(
+                intent,
+                int(state.get("roster_version", 0))
+                if isinstance(state.get("roster_version"), int)
+                else 0,
+                None,
+                None,
+                RefusalReason.INVALID_PLAN,
+                "no externally approved ground return is configured",
+            )
+        return self._dispatch(
+            intent,
+            state,
+            expected_name=IntentName.COME_HOME,
+            operation=CommandOperation.GROUND_RETURN,
+            parameters={"return_id": return_id},
+            timeout_detail=(
+                "ground node did not report measured return arrival before its command deadline"
+            ),
+        )
+
+    def _dispatch(
+        self,
+        intent: IntentV1,
+        state: Mapping[str, object],
+        *,
+        expected_name: IntentName,
+        operation: CommandOperation,
+        parameters: Mapping[str, object],
+        timeout_detail: str,
+    ) -> ExecutionResult:
+        target = self._target(intent, state, expected_name=expected_name)
         if isinstance(target, ExecutionResult):
             return target
         drone_id, connection_epoch, roster_version = target
@@ -52,8 +98,8 @@ class GroundCommandDispatcher:
             roster_version=roster_version,
             drone_id=drone_id,
             connection_epoch=connection_epoch,
-            operation=CommandOperation.GROUND_VELOCITY,
-            parameters=intent.args,
+            operation=operation,
+            parameters=parameters,
         )
         plan = Plan(
             plan_id=f"plan:{intent.intent_id}",
@@ -80,8 +126,8 @@ class GroundCommandDispatcher:
             roster_version=roster_version,
             drone_id=drone_id,
             connection_epoch=connection_epoch,
-            operation=CommandOperation.GROUND_VELOCITY,
-            args={key: value for key, value in intent.args.items() if isinstance(value, int)},
+            operation=operation,
+            args={key: value for key, value in parameters.items() if isinstance(value, int | str)},
         )
         try:
             self._link.send(request)
@@ -126,7 +172,7 @@ class GroundCommandDispatcher:
             drone_id,
             connection_epoch,
             RefusalReason.ADAPTER_TIMEOUT,
-            "ground node did not complete the bounded pulse before its command deadline",
+            timeout_detail,
         )
 
     def dispatch_stop(self, intent: IntentV1, state: Mapping[str, object]) -> ExecutionResult:
@@ -254,7 +300,7 @@ class GroundCommandDispatcher:
         )
 
     def _target(
-        self, intent: IntentV1, state: Mapping[str, object]
+        self, intent: IntentV1, state: Mapping[str, object], *, expected_name: IntentName
     ) -> tuple[int, int, int] | ExecutionResult:
         roster_version = state.get("roster_version")
         if not isinstance(roster_version, int) or isinstance(roster_version, bool):
@@ -266,14 +312,14 @@ class GroundCommandDispatcher:
                 RefusalReason.INVALID_ROSTER_TRANSITION,
                 "relay state has no current roster version",
             )
-        if intent.name is not IntentName.GROUND_VELOCITY or not intent.confirm:
+        if intent.name is not expected_name or not intent.confirm:
             return self._refused(
                 intent,
                 roster_version,
                 None,
                 None,
                 RefusalReason.CONFIRMATION_REQUIRED,
-                "ground velocity requires a confirmed canonical intent",
+                f"{expected_name.value} requires a confirmed canonical intent",
             )
         if len(intent.selection) != 1:
             return self._refused(
