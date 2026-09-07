@@ -10,6 +10,8 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from tools.map_common import parse_document
+
 SCHEMA_VERSION = "ohmni-camera-capture/v1"
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_RAW_BYTES = 512 * 1024 * 1024
@@ -38,15 +40,17 @@ class _FrameIndex:
     offset_bytes: int
     length_bytes: int
     received_monotonic_ns: int
+    sha256: bytes
 
 
 class CameraCapture:
     """A verified capture whose raw file remains open for bounded iteration."""
 
-    def __init__(self, manifest, frames_handle, frame_index):
+    def __init__(self, manifest, frames_handle, frame_index, fingerprint):
         self.metadata = manifest
         self._frames_handle = frames_handle
         self._frame_index = tuple(frame_index)
+        self._fingerprint = fingerprint
 
     def __enter__(self):
         return self
@@ -64,9 +68,11 @@ class CameraCapture:
             raise CaptureError("camera capture is closed")
         self._frames_handle.seek(0)
         for row in self._frame_index:
+            if _fingerprint(self._frames_handle) != self._fingerprint:
+                raise CaptureError("raw frame file changed after validation")
             self._frames_handle.seek(row.offset_bytes)
             gray8 = self._frames_handle.read(row.length_bytes)
-            if len(gray8) != row.length_bytes:
+            if len(gray8) != row.length_bytes or hashlib.sha256(gray8).digest() != row.sha256:
                 raise CaptureError("raw frame file changed after validation")
             yield CameraFrame(row.index, row.received_monotonic_ns, gray8)
 
@@ -112,7 +118,7 @@ def _capture_directory(path):
 
 
 def _open_regular(directory, name, maximum):
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
     descriptor = os.open(directory / name, flags)
     try:
         entry = os.fstat(descriptor)
@@ -124,15 +130,24 @@ def _open_regular(directory, name, maximum):
         raise
 
 
+def _fingerprint(handle):
+    entry = os.fstat(handle.fileno())
+    return (entry.st_dev, entry.st_ino, entry.st_size, entry.st_mtime_ns, entry.st_ctime_ns)
+
+
 def _sha256(handle):
     digest = hashlib.sha256()
+    fingerprint = _fingerprint(handle)
+    remaining = fingerprint[2]
     handle.seek(0)
-    while True:
-        block = handle.read(1024 * 1024)
-        if not block:
-            handle.seek(0)
-            return digest.hexdigest()
+    while remaining:
+        block = handle.read(min(1024 * 1024, remaining))
+        _require(block, "recording changed while its hash was read")
         digest.update(block)
+        remaining -= len(block)
+    _require(_fingerprint(handle) == fingerprint, "recording changed while its hash was read")
+    handle.seek(0)
+    return digest.hexdigest(), fingerprint
 
 
 def _read_manifest(directory):
@@ -140,8 +155,8 @@ def _read_manifest(directory):
         payload = handle.read(MAX_MANIFEST_BYTES + 1)
     _require(len(payload) <= MAX_MANIFEST_BYTES, "manifest.json exceeds its allowed size")
     try:
-        manifest = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        manifest = parse_document(payload, "manifest.json")
+    except (UnicodeDecodeError, ValueError) as exc:
         raise CaptureError(f"manifest.json is not valid JSON: {exc}") from exc
     _require(isinstance(manifest, dict), "manifest.json must contain an object")
     return manifest
@@ -173,10 +188,42 @@ def _validate_manifest(manifest):
     _require(isinstance(capture, dict), "capture must be an object")
     _text(capture.get("receipt_clock_domain"), "capture.receipt_clock_domain")
     _text(capture.get("receipt_timestamp_meaning"), "capture.receipt_timestamp_meaning")
+    started_monotonic_ns = _integer(
+        capture.get("started_monotonic_ns"), "capture.started_monotonic_ns"
+    )
+    ended_monotonic_ns = _integer(
+        capture.get("ended_monotonic_ns"), "capture.ended_monotonic_ns"
+    )
+    started_utc_ns = _integer(capture.get("started_utc_ns"), "capture.started_utc_ns")
+    ended_utc_ns = _integer(capture.get("ended_utc_ns"), "capture.ended_utc_ns")
+    first_received_ns = _integer(
+        capture.get("first_received_monotonic_ns"), "capture.first_received_monotonic_ns"
+    )
+    last_received_ns = _integer(
+        capture.get("last_received_monotonic_ns"), "capture.last_received_monotonic_ns"
+    )
+    _require(started_monotonic_ns <= ended_monotonic_ns, "capture monotonic times are invalid")
+    _require(started_utc_ns <= ended_utc_ns, "capture UTC times are invalid")
+    _require(
+        started_monotonic_ns <= first_received_ns <= last_received_ns <= ended_monotonic_ns,
+        "capture receipt times are outside the capture interval",
+    )
     correlation = capture.get("utc_monotonic_correlation")
     _require(isinstance(correlation, dict), "capture.utc_monotonic_correlation must be an object")
-    _integer(correlation.get("monotonic_ns"), "capture.utc_monotonic_correlation.monotonic_ns")
-    _integer(correlation.get("utc_ns"), "capture.utc_monotonic_correlation.utc_ns")
+    correlation_monotonic_ns = _integer(
+        correlation.get("monotonic_ns"), "capture.utc_monotonic_correlation.monotonic_ns"
+    )
+    correlation_utc_ns = _integer(
+        correlation.get("utc_ns"), "capture.utc_monotonic_correlation.utc_ns"
+    )
+    _require(
+        started_monotonic_ns <= correlation_monotonic_ns <= ended_monotonic_ns,
+        "capture monotonic correlation is outside the capture interval",
+    )
+    _require(
+        started_utc_ns <= correlation_utc_ns <= ended_utc_ns,
+        "capture UTC correlation is outside the capture interval",
+    )
 
     recording = manifest.get("recording")
     _require(isinstance(recording, dict), "recording must be an object")
@@ -203,18 +250,18 @@ def _validate_manifest(manifest):
         total_bytes == frame_count * frame_bytes,
         "recording bytes do not fit the image layout",
     )
-    return recording, frame_bytes, frame_count
+    return recording, frame_bytes, frame_count, capture
 
 
-def _read_frame_index(handle, count, frame_bytes, total_bytes):
+def _read_frame_index(handle, count, frame_bytes, total_bytes, capture):
     rows = []
     previous_timestamp = None
     for expected in range(count):
         line = handle.readline(MAX_INDEX_LINE_BYTES + 1)
         _require(line and len(line) <= MAX_INDEX_LINE_BYTES, "frame index line is invalid")
         try:
-            row = json.loads(line.decode("ascii"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            row = parse_document(line, "frames.jsonl")
+        except (UnicodeDecodeError, ValueError) as exc:
             raise CaptureError(f"frame index contains invalid JSON: {exc}") from exc
         _require(isinstance(row, dict), "frame index record must be an object")
         _require(
@@ -229,44 +276,83 @@ def _read_frame_index(handle, count, frame_bytes, total_bytes):
         _require(offset == expected * frame_bytes, "frame offsets are not sequential")
         _require(length == frame_bytes, "frame length does not match image layout")
         _require(offset + length <= total_bytes, "frame range exceeds raw file")
+        _require(
+            capture["started_monotonic_ns"] <= timestamp <= capture["ended_monotonic_ns"],
+            "frame receipt timestamp is outside the capture interval",
+        )
         if previous_timestamp is not None:
             _require(timestamp >= previous_timestamp, "frame receipt timestamps are not ordered")
         previous_timestamp = timestamp
-        rows.append(_FrameIndex(index, offset, length, timestamp))
+        rows.append(_FrameIndex(index, offset, length, timestamp, b""))
     _require(not handle.read(1), "frame index has records beyond frame_count")
     _require(
         rows[-1].offset_bytes + rows[-1].length_bytes == total_bytes,
         "frame index misses bytes",
     )
+    _require(
+        rows[0].received_monotonic_ns == capture["first_received_monotonic_ns"],
+        "first frame timestamp disagrees with capture metadata",
+    )
+    _require(
+        rows[-1].received_monotonic_ns == capture["last_received_monotonic_ns"],
+        "last frame timestamp disagrees with capture metadata",
+    )
     return rows
+
+
+def _frame_hashes(handle, frame_index):
+    fingerprint = _fingerprint(handle)
+    digest = hashlib.sha256()
+    rows = []
+    handle.seek(0)
+    for row in frame_index:
+        gray8 = handle.read(row.length_bytes)
+        _require(len(gray8) == row.length_bytes, "recording changed while its hash was read")
+        digest.update(gray8)
+        rows.append(
+            _FrameIndex(
+                row.index,
+                row.offset_bytes,
+                row.length_bytes,
+                row.received_monotonic_ns,
+                hashlib.sha256(gray8).digest(),
+            )
+        )
+    _require(_fingerprint(handle) == fingerprint, "recording changed while its hash was read")
+    handle.seek(0)
+    return digest.hexdigest(), fingerprint, rows
 
 
 def open_capture(path):
     directory = _capture_directory(path)
     _require(not os.path.lexists(directory / "INCOMPLETE"), "camera capture is marked incomplete")
     manifest = _read_manifest(directory)
-    recording, frame_bytes, frame_count = _validate_manifest(manifest)
+    recording, frame_bytes, frame_count, capture = _validate_manifest(manifest)
     frames_handle = _open_regular(directory, recording["frames_file"], MAX_RAW_BYTES)
     try:
         _require(
             os.fstat(frames_handle.fileno()).st_size == recording["bytes"],
             "raw frame file size does not match manifest",
         )
-        _require(_sha256(frames_handle) == recording["frames_sha256"], "raw frame hash mismatch")
         with _open_regular(
             directory, recording["frame_index_file"], MAX_INDEX_BYTES
         ) as index_handle:
-            _require(
-                _sha256(index_handle) == recording["frame_index_sha256"],
-                "frame index hash mismatch",
-            )
+            index_hash, index_fingerprint = _sha256(index_handle)
+            _require(index_hash == recording["frame_index_sha256"], "frame index hash mismatch")
             frame_index = _read_frame_index(
                 index_handle,
                 frame_count,
                 frame_bytes,
                 recording["bytes"],
+                capture,
             )
-        return CameraCapture(manifest, frames_handle, frame_index)
+            _require(
+                _fingerprint(index_handle) == index_fingerprint,
+                "frame index changed after validation",
+            )
+        raw_hash, raw_fingerprint, frame_index = _frame_hashes(frames_handle, frame_index)
+        _require(raw_hash == recording["frames_sha256"], "raw frame hash mismatch")
+        return CameraCapture(manifest, frames_handle, frame_index, raw_fingerprint)
     except Exception:
         frames_handle.close()
         raise

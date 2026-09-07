@@ -1,6 +1,8 @@
 import hashlib
 import json
+import os
 import struct
+import time
 import zlib
 
 import pytest
@@ -41,6 +43,8 @@ def _capture(tmp_path, frames=(b"\x00\x40\x80\xff", b"\xff\x80\x40\x00"), index_
             "receipt_clock_domain": "capture_host_monotonic",
             "receipt_timestamp_meaning": "receiver receipt, not device capture or exposure",
             "utc_monotonic_correlation": {"monotonic_ns": 900, "utc_ns": 2000},
+            "first_received_monotonic_ns": 1000,
+            "last_received_monotonic_ns": 1000 + (len(frames) - 1) * 10,
         },
         "image": {
             "pixel_format": "gray8",
@@ -144,6 +148,45 @@ def test_reader_rejects_marked_incomplete_or_nonsequential_index(tmp_path):
     (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ohmni_camera_frames.CaptureError, match="offsets are not sequential"):
         ohmni_camera_frames.open_capture(directory)
+
+
+def test_reader_rejects_timestamp_contradictions_and_duplicate_json_keys(tmp_path):
+    directory = _capture(tmp_path)
+    index = [
+        {"index": 0, "offset_bytes": 0, "length_bytes": 4, "received_monotonic_ns": 800},
+        {"index": 1, "offset_bytes": 4, "length_bytes": 4, "received_monotonic_ns": 1010},
+    ]
+    index_bytes = b"".join(_canonical_json(row) for row in index)
+    (directory / "frames.jsonl").write_bytes(index_bytes)
+    manifest = json.loads((directory / "manifest.json").read_text())
+    manifest["recording"]["frame_index_sha256"] = hashlib.sha256(index_bytes).hexdigest()
+    (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ohmni_camera_frames.CaptureError, match="outside the capture interval"):
+        ohmni_camera_frames.open_capture(directory)
+
+    (directory / "manifest.json").write_text(
+        '{"status":"complete","status":"incomplete"}', encoding="utf-8"
+    )
+    with pytest.raises(ohmni_camera_frames.CaptureError, match="valid JSON"):
+        ohmni_camera_frames.open_capture(directory)
+
+
+def test_reader_rejects_fifo_without_blocking(tmp_path):
+    directory = _capture(tmp_path)
+    (directory / "frames.gray").unlink()
+    os.mkfifo(directory / "frames.gray")
+    started = time.monotonic()
+    with pytest.raises(ohmni_camera_frames.CaptureError, match="regular file"):
+        ohmni_camera_frames.open_capture(directory)
+    assert time.monotonic() - started < 0.5
+
+
+def test_reader_rejects_raw_mutation_after_open(tmp_path):
+    directory = _capture(tmp_path)
+    with ohmni_camera_frames.open_capture(directory) as capture:
+        (directory / "frames.gray").write_bytes(b"\x01\x02\x03\x04\xff\x80\x40\x00")
+        with pytest.raises(ohmni_camera_frames.CaptureError, match="changed after validation"):
+            next(capture.frames())
 
 
 def test_cli_extracts_bounded_pngs_with_their_source_frame_indices(tmp_path, capsys):
