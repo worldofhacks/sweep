@@ -49,6 +49,14 @@ def _terminal(socket: WebSocketTestSession, intent_id: str) -> dict[str, object]
     raise AssertionError(f"no autonomy terminal result for {intent_id}")
 
 
+def test_simulator_snapshot_supports_thirty_two_aircraft() -> None:
+    snapshot = _initial_snapshot(1_000, 32)
+
+    assert tuple(snapshot.aircraft) == tuple(range(1, 33))
+    with pytest.raises(ValueError, match="1 through 32"):
+        _initial_snapshot(1_000, 33)
+
+
 def test_m14_sim_arbiter_uses_configured_relay_freshness(tmp_path) -> None:
     app = create_m14_sim_app(
         RelaySettings(

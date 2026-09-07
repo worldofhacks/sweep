@@ -144,7 +144,7 @@ def test_sim_c2_release_is_an_explicit_opt_in() -> None:
     assert settings.effective_sim_aircraft_count == 4
 
 
-@pytest.mark.parametrize("count", [4, 5, 6])
+@pytest.mark.parametrize("count", [4, 5, 6, 32])
 def test_sim_c2_aircraft_count_is_explicitly_bounded(count: int) -> None:
     settings = RelaySettings.from_env(
         {
@@ -157,8 +157,8 @@ def test_sim_c2_aircraft_count_is_explicitly_bounded(count: int) -> None:
     assert settings.effective_sim_aircraft_count == count
 
 
-@pytest.mark.parametrize("count", ["0", "3", "7", "four"])
-def test_sim_c2_rejects_aircraft_counts_outside_four_through_six(count: str) -> None:
+@pytest.mark.parametrize("count", ["0", "3", "33", "four"])
+def test_sim_c2_rejects_aircraft_counts_outside_four_through_thirty_two(count: str) -> None:
     with pytest.raises(SettingsError):
         RelaySettings.from_env(
             {
@@ -178,6 +178,26 @@ def test_sim_c1_rejects_counts_above_its_four_aircraft_registry_limit(count: int
                 "SWEEP_SIM_AIRCRAFT_COUNT": str(count),
             }
         )
+
+
+def test_physical_aircraft_capacity_is_explicit_and_bounded() -> None:
+    settings = RelaySettings.from_env(
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_PHYSICAL_AIRCRAFT_LIMIT": "5",
+        }
+    )
+
+    assert settings.physical_aircraft_limit == 5
+
+    for limit in ("0", "33", "five"):
+        with pytest.raises(SettingsError, match="SWEEP_PHYSICAL_AIRCRAFT_LIMIT"):
+            RelaySettings.from_env(
+                {
+                    "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+                    "SWEEP_PHYSICAL_AIRCRAFT_LIMIT": limit,
+                }
+            )
 
 
 def test_remote_backend_and_thresholds_come_from_the_environment() -> None:
