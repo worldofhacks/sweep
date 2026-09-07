@@ -137,6 +137,12 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                 logLine("cannot start the relay link: observation-source.json is invalid")
                 return@launch
             }
+            val navigationAdmission = try {
+                loadNavigationAdmission(application.filesDir)
+            } catch (_: Exception) {
+                logLine("cannot start the relay link: navigation-admission.json is invalid")
+                return@launch
+            }
             val loopback = isLoopback(hostOf(setup.relayUrl))
             val wifi = wifiNetwork
             // Loopback (adb reverse over USB) is not on the Wi-Fi network, so do not bind it there.
@@ -168,6 +174,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     log = { line -> logLine(line) },
                     clientProvider = if (loopback) null else ({ wifi?.binding?.value?.client }),
                     videoPublish = { videoPublish.current() },
+                    navigationAdmission = navigationAdmission,
                 )
                 relayLink = link
                 mirror = scope.launch {
