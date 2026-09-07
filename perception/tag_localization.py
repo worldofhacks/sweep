@@ -41,9 +41,9 @@ def _consensus_config(value):
     rotation = value["maximum_rotation_residual_rad"]
     if (
         type(minimum) is not int
-        or not 1 <= minimum <= 12
+        or not 1 <= minimum <= 6
         or type(maximum) is not int
-        or not minimum <= maximum <= 12
+        or not minimum <= maximum <= 6
         or type(translation) not in (int, float)
         or not np.isfinite(translation)
         or translation <= 0

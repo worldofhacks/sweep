@@ -492,6 +492,13 @@ def test_consensus_bounds_candidate_tags_before_pose_work(tmp_path):
     assert result["maximum_candidate_tags"] == 2
 
 
+def test_consensus_rejects_search_bound_above_six(tmp_path):
+    _, _, _, _, config = scene(tmp_path, count=2)
+
+    with pytest.raises(ValueError, match="consensus"):
+        TagLocalizer(**(config | {"consensus": consensus_config() | {"maximum_candidate_tags": 7}}))
+
+
 def test_consensus_drops_every_candidate_above_the_reprojection_limit(tmp_path, monkeypatch):
     _, _, _, _, config = scene(tmp_path, count=2)
     localizer = TagLocalizer(**(config | {"consensus": consensus_config()}))
