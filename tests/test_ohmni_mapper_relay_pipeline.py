@@ -209,7 +209,9 @@ async def _authenticate(socket, source: str, token: bytes, *, receive_state: boo
         assert state["type"] == "state"
 
 
-async def _join_ground(socket) -> None:
+async def _join_ground(
+    socket, *, drive_authority: bool, safety_operator_present: bool, membership: str
+) -> None:
     unsigned = {
         "v": 1,
         "t": time.time_ns() // 1_000_000,
@@ -266,8 +268,8 @@ async def _join_ground(socket) -> None:
         "drone_id": GROUND_ID,
         "action": "readiness",
         "connection_epoch": 1,
-        "drive_authority": True,
-        "safety_operator_present": True,
+        "drive_authority": drive_authority,
+        "safety_operator_present": safety_operator_present,
         "local_stop_ready": True,
         "heartbeat_ready": True,
         "pose_identity": {
@@ -286,7 +288,7 @@ async def _join_ground(socket) -> None:
         lambda event: (
             event.get("type") == "state"
             and any(
-                drone.get("drone_id") == GROUND_ID and drone.get("membership") == "ready"
+                drone.get("drone_id") == GROUND_ID and drone.get("membership") == membership
                 for drone in event.get("drones", [])
                 if isinstance(drone, dict)
             )
@@ -321,7 +323,14 @@ def _frame() -> CapturedFrame:
     return CapturedFrame(np.zeros((12, 16, 3), dtype=np.uint8), CAPTURE_NS)
 
 
-async def _run_pipeline(url: str, archive_output: Path) -> PipelineResult:
+async def _run_pipeline(
+    url: str,
+    archive_output: Path,
+    *,
+    drive_authority: bool,
+    safety_operator_present: bool,
+    membership: str,
+) -> PipelineResult:
     scope = LiveScope(SESSION, GROUND_ID, 1)
     mapper = _mapper(event_prefix="accepted", receipt_ns=CAPTURE_NS + 1_000_000)
     archive = AcceptedObservationArchive(
@@ -332,7 +341,12 @@ async def _run_pipeline(url: str, archive_output: Path) -> PipelineResult:
     )
     async with connect(f"{url}/ws/{SESSION}") as adapter:
         await _authenticate(adapter, "adapter", GROUND_KEY)
-        await _join_ground(adapter)
+        await _join_ground(
+            adapter,
+            drive_authority=drive_authority,
+            safety_operator_present=safety_operator_present,
+            membership=membership,
+        )
         async with connect(f"{url}/ws/{SESSION}") as localizer:
             await _authenticate(localizer, "localization", LOCALIZATION_KEY, receive_state=False)
             published = await publish_observations(
@@ -368,10 +382,26 @@ async def _run_pipeline(url: str, archive_output: Path) -> PipelineResult:
     return published, manifest, (*observations, role_refusal, epoch_refusal)
 
 
+@pytest.mark.parametrize(
+    ("drive_authority", "safety_operator_present", "membership"),
+    ((True, True, "ready"), (False, False, "degraded")),
+)
 def test_mapper_publishes_accepted_observations_into_the_real_relay_archive(
-    relay_server: _RelayServer, tmp_path: Path
+    relay_server: _RelayServer,
+    tmp_path: Path,
+    drive_authority: bool,
+    safety_operator_present: bool,
+    membership: str,
 ) -> None:
-    published, manifest, events = asyncio.run(_run_pipeline(relay_server.url, tmp_path / "archive"))
+    published, manifest, events = asyncio.run(
+        _run_pipeline(
+            relay_server.url,
+            tmp_path / "archive",
+            drive_authority=drive_authority,
+            safety_operator_present=safety_operator_present,
+            membership=membership,
+        )
+    )
 
     accepted = events[:2]
     role_refusal, epoch_refusal = events[2:]

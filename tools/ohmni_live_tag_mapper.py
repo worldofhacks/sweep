@@ -408,11 +408,11 @@ def scope_from_state(state: object, *, session: str, device_id: int) -> LiveScop
     epoch = drone.get("connection_epoch")
     if (
         drone.get("node_type") != "ground"
-        or drone.get("membership") != "ready"
+        or drone.get("membership") not in {"registered", "ready", "degraded"}
         or type(epoch) is not int
         or epoch <= 0
     ):
-        raise LiveMapperError("target ground node has no current ready epoch")
+        raise LiveMapperError("target ground node has no current active epoch")
     return LiveScope(session=session, device_id=device_id, connection_epoch=epoch)
 
 
@@ -852,29 +852,22 @@ def _covariance(value: str) -> tuple[float, ...]:
 
 
 async def _serve_one(port: int, timeout_s: float) -> socket.socket:
-    received: asyncio.Future[socket.socket] = asyncio.get_running_loop().create_future()
-
-    async def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        if received.done():
-            writer.close()
-            await writer.wait_closed()
-            return
-        sock = writer.get_extra_info("socket")
-        if not isinstance(sock, socket.socket):
-            raise LiveMapperError("PTS sidecar did not provide a socket")
-        received.set_result(sock.dup())
-        writer.close()
-        await writer.wait_closed()
-
-    server = await asyncio.start_server(accept, "127.0.0.1", port)
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
+        listener.bind(("127.0.0.1", port))
+        listener.listen(1)
+        listener.setblocking(False)
         try:
-            return await asyncio.wait_for(received, timeout_s)
+            source, _ = await asyncio.wait_for(
+                asyncio.get_running_loop().sock_accept(listener), timeout_s
+            )
         except TimeoutError as error:
             raise LiveMapperError("timed out waiting for the robot PTS sidecar") from error
+        source.setblocking(True)
+        return source
     finally:
-        server.close()
-        await server.wait_closed()
+        listener.close()
 
 
 def _close_frame_source(source: socket.socket, stream: BinaryIO) -> None:

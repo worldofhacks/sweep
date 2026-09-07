@@ -175,7 +175,8 @@ def test_mapper_rejects_a_receipt_that_precedes_the_actual_v4l2_pts() -> None:
         _mapper(receipt_ns=999_999_999).observations(LiveScope("live-12", 12, 9), _frame())
 
 
-def test_scope_uses_current_ground_epoch_from_relay_state() -> None:
+@pytest.mark.parametrize("membership", ("registered", "ready", "degraded"))
+def test_scope_uses_current_active_ground_epoch_from_relay_state(membership: str) -> None:
     scope = scope_from_state(
         {
             "type": "state",
@@ -184,7 +185,7 @@ def test_scope_uses_current_ground_epoch_from_relay_state() -> None:
                 {
                     "drone_id": 12,
                     "node_type": "ground",
-                    "membership": "ready",
+                    "membership": membership,
                     "connection_epoch": 17,
                 }
             ],
@@ -194,6 +195,25 @@ def test_scope_uses_current_ground_epoch_from_relay_state() -> None:
     )
 
     assert scope == LiveScope("live-12", 12, 17)
+
+
+@pytest.mark.parametrize("membership", ("leaving", "disconnected", "unknown"))
+def test_scope_rejects_a_noncurrent_ground_epoch(membership: str) -> None:
+    state = {
+        "type": "state",
+        "session": "live-12",
+        "drones": [
+            {
+                "drone_id": 12,
+                "node_type": "ground",
+                "membership": membership,
+                "connection_epoch": 17,
+            }
+        ],
+    }
+
+    with pytest.raises(LiveMapperError, match="no current active epoch"):
+        scope_from_state(state, session="live-12", device_id=12)
 
 
 def test_publisher_derives_scope_before_sending_canonical_events() -> None:
@@ -1052,3 +1072,30 @@ def test_mapper_refuses_to_wait_indefinitely_for_the_robot_sidecar() -> None:
 
     with pytest.raises(LiveMapperError, match="timed out waiting"):
         asyncio.run(_serve_one(0, 0.001))
+
+
+def test_sidecar_socket_handoff_preserves_bytes_sent_at_connect() -> None:
+    from tools.ohmni_live_tag_mapper import _serve_one
+
+    payload = b"nut-sidecar-preamble"
+
+    async def receive() -> bytes:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.close()
+        accepting = asyncio.create_task(_serve_one(port, 1))
+        await asyncio.sleep(0)
+        _, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(payload)
+        await writer.drain()
+        source = await accepting
+        try:
+            assert source.getblocking() is True
+            return source.recv(len(payload))
+        finally:
+            source.close()
+            writer.close()
+            await writer.wait_closed()
+
+    assert asyncio.run(receive()) == payload
