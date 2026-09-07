@@ -10,7 +10,7 @@ from pathlib import Path
 from relay.auth import sign_event
 
 from .models import GroundStatus, RangeScan
-from .return_controller import ApprovedReturnRoute, ReturnController
+from .return_controller import ApprovedReturnRoute, ReturnController, read_approval_key
 
 APPROVAL_KEY = b"return-approval-key-that-is-at-least-32-bytes"
 
@@ -258,3 +258,15 @@ def test_return_rejects_concave_footprint_that_cuts_the_fixed_segment(tmp_path: 
         )
     else:
         raise AssertionError("a concave footprint with an unsafe fixed chord was accepted")
+
+
+def test_return_refuses_an_oversized_approval_key_file(tmp_path: Path) -> None:
+    key_path = tmp_path / "return-key"
+    key_path.write_bytes(b"x" * 4_097)
+
+    try:
+        read_approval_key(key_path)
+    except ValueError as error:
+        assert str(error) == "return approval key exceeds the safety limit"
+    else:
+        raise AssertionError("an oversized approval key was accepted")

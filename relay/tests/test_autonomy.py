@@ -19,6 +19,7 @@ from relay.autonomy import (
     AutonomyComposition,
     AutonomyConfig,
     PlanPreempted,
+    _ground_return_selected,
     _Job,
     _PreemptibleLink,
     apply_result,
@@ -873,3 +874,30 @@ def test_localization_config_rejects_duplicate_fields(field: str) -> None:
     raw = raw.replace(marker, f'"{field}": null, {marker}', 1)
     with pytest.raises(SettingsError, match="unique fields"):
         AutonomyConfig.from_env(_env_example() | {"SWEEP_CONTROL_LOCALIZATION_JSON": raw})
+
+
+def test_ground_return_selection_does_not_hijack_a_mixed_come_home() -> None:
+    intent = IntentV1(
+        v=1,
+        t=1,
+        type="intent",
+        intent_id="mixed-return",
+        retry_of=None,
+        source="console",
+        session=SESSION,
+        name=IntentName.COME_HOME,
+        args={},
+        selection=(1, 9),
+        mode=Mode.INDOOR,
+        confirm=True,
+    )
+
+    assert not _ground_return_selected(
+        intent,
+        {
+            "drones": [
+                {"drone_id": 1, "node_type": "aircraft"},
+                {"drone_id": 9, "node_type": "ground"},
+            ]
+        },
+    )

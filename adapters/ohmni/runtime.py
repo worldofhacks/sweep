@@ -25,7 +25,7 @@ from relay.contracts import CommandFrame, ContractError, parse_command
 from relay.observations import ObservationSubmission
 
 from .models import GroundStatus, RangeScan
-from .return_controller import ApprovedReturnRoute, ReturnController
+from .return_controller import ApprovedReturnRoute, ReturnController, read_approval_key
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -851,7 +851,8 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
             None
             if not args.return_approval_file
             else ApprovedReturnRoute.load(
-                Path(args.return_approval_file), Path(args.return_approval_key_file).read_bytes()
+                Path(args.return_approval_file),
+                read_approval_key(Path(args.return_approval_key_file)),
             )
         )
     except (OSError, ValueError) as error:
