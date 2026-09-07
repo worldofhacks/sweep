@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import org.worldofhacks.sweep.bridge.core.video.StreamEvidence
 import org.worldofhacks.sweep.bridge.core.video.StreamFrame
 import org.worldofhacks.sweep.bridge.node.PhoneStatusSource
+import org.worldofhacks.sweep.bridge.node.CaptureAlignmentCollector
 
 /**
  * The probe flavor's FPV (Phase D1): the default camera's stream into the flight display's
@@ -30,6 +31,7 @@ class DjiFpv(
     filesDir: File,
     phone: PhoneStatusSource?,
     private val log: (name: String, detail: String) -> Unit,
+    captureAlignment: CaptureAlignmentCollector? = null,
 ) : FpvSession {
     private val tracker = StreamEvidenceTracker(
         filesDir,
@@ -44,7 +46,7 @@ class DjiFpv(
     override val attitude: StateFlow<AircraftAttitude> = _attitude.asStateFlow()
     override val captureProgress: CaptureProgressSource = IdleCaptureProgress
 
-    private val camera = DjiCameraStream(tracker, log)
+    private val camera = DjiCameraStream(tracker, log, captureAlignment)
     override val cameraStream: CameraStream
         get() = camera
 
@@ -88,6 +90,7 @@ class DjiFpv(
 class DjiCameraStream(
     private val tracker: StreamEvidenceTracker,
     private val log: (name: String, detail: String) -> Unit,
+    private val captureAlignment: CaptureAlignmentCollector? = null,
 ) : CameraStream {
     override val evidence: StateFlow<StreamEvidence?>
         get() = tracker.evidence
@@ -171,6 +174,7 @@ class DjiCameraStream(
     }
 
     private fun onReceiveStream(data: ByteArray, offset: Int, length: Int, info: StreamInfo) {
+        captureAlignment?.recordFrame(info.presentationTimeMs, SystemClock.elapsedRealtime())
         val keyframe = info.isKeyFrame
         tracker.frame(
             StreamFrame(

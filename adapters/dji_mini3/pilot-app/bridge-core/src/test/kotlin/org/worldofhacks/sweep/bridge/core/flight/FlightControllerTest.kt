@@ -7,6 +7,9 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.worldofhacks.sweep.bridge.core.admission.FakeClock
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
+import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization
+import org.worldofhacks.sweep.bridge.core.frames.NavigationSegment
 
 /**
  * The control loop against the kinematic fixture and a stepped clock: acknowledgement
@@ -36,7 +39,7 @@ class FlightControllerTest {
             get() = events.lastOrNull { it.first == "completed" || it.first == "failed" }
     }
 
-    private class Harness {
+    private class Harness(private val navigationLeaseExpiresAtMs: Long = Long.MAX_VALUE) {
         val clock = FakeClock(1_000)
         val model = FakeFlightModel()
         val log = mutableListOf<String>()
@@ -51,6 +54,25 @@ class FlightControllerTest {
             estopLandAfterMs = 2_000,
             yawSettleMs = 200,
             yawMarginMs = 1_000,
+            navigation = NavigationConfig(
+                navigationConfigId = "navigation-a",
+                navigationConfigSha256 = "a".repeat(64),
+                mapVersion = "map-v1",
+                mapSha256 = "a".repeat(64),
+                geometrySha256 = "a".repeat(64),
+                cameraCalibrationSha256 = "a".repeat(64),
+                bodyExtrinsicsSha256 = "a".repeat(64),
+                worldTransformSha256 = "a".repeat(64),
+                controlSourceIds = listOf("tag-source"),
+                clockLeaseId = "lease-1",
+                clockLeaseExpiresAtMs = navigationLeaseExpiresAtMs,
+                poseFreshnessMs = 500,
+                authorizationLifetimeMs = 3_000,
+                lossLandAfterMs = 300,
+                arrivalHorizontalToleranceM = 0.2,
+                arrivalVerticalToleranceM = 0.2,
+                maxPositionUncertaintyM = 0.1,
+            ),
         )
         val controller = FlightController(model, clock, config) { log += it }
         private var link = LinkFacts()
@@ -114,6 +136,41 @@ class FlightControllerTest {
             model.advance(clock.nowMs())
             controller.updateAircraft(model.facts)
         }
+
+        fun navigation(
+            commandId: String = "route-command",
+            routeId: String = "route-1",
+            poseStatus: NavigationPose.Status = NavigationPose.Status.READY,
+            xMm: Long = 0,
+            yMm: Long = 0,
+            zMm: Long = 1_200,
+            expiresAtMs: Long = clock.nowMs() + 2_000,
+            freshUntilMs: Long? = clock.nowMs() + 500,
+        ) {
+            val now = clock.nowMs()
+            val authorization = NavigationRouteAuthorization(
+                t = now, expiresAtMs = expiresAtMs, eventId = "route-event", session = "session-a", deviceId = 1,
+                connectionEpoch = 1, commandId = commandId, routeId = routeId, seq = 1,
+                positionFrame = NavigationRouteAuthorization.POSITION_FRAME, clockLeaseId = "lease-1", maxClockErrorMs = 25,
+                navigationConfigId = "navigation-a", navigationConfigSha256 = "a".repeat(64), mapVersion = "map-v1", mapSha256 = "a".repeat(64),
+                geometrySha256 = "a".repeat(64), cameraCalibrationSha256 = "a".repeat(64), bodyExtrinsicsSha256 = "a".repeat(64), worldTransformSha256 = "a".repeat(64),
+                controlSourceIds = listOf("tag-source"), segments = listOf(NavigationSegment(0, 0, 1_200, 0, 2_000, 1_200, 300)),
+                maxSpeedMmS = 300, maxAccelerationMmS2 = 300, maxDecelerationMmS2 = 300, maxPositionUncertaintyMm = 100, maxCrossTrackMm = 300,
+                arrivalHorizontalToleranceMm = 200, arrivalVerticalToleranceMm = 200, poseFreshnessMs = 500, trackingTimeoutMs = 3_000,
+                flightApproved = true, signature = "0".repeat(64),
+            )
+            val ready = poseStatus == NavigationPose.Status.READY
+            val pose = NavigationPose(
+                t = now, eventId = "pose-event", session = "session-a", deviceId = 1, connectionEpoch = 1,
+                commandId = commandId, routeId = routeId, seq = 2, positionFrame = NavigationRouteAuthorization.POSITION_FRAME,
+                clockLeaseId = "lease-1", navigationConfigId = "navigation-a", navigationConfigSha256 = "a".repeat(64), mapVersion = "map-v1", mapSha256 = "a".repeat(64),
+                geometrySha256 = "a".repeat(64), cameraCalibrationSha256 = "a".repeat(64), bodyExtrinsicsSha256 = "a".repeat(64), worldTransformSha256 = "a".repeat(64),
+                controlSourceIds = listOf("tag-source"), poseTimeMs = if (ready) now else null, fixTimeMs = if (ready) now else null,
+                xMm = if (ready) xMm else null, yMm = if (ready) yMm else null, zMm = if (ready) zMm else null,
+                positionUncertaintyMm = if (ready) 50 else null, status = poseStatus, flightApproved = true, signature = "0".repeat(64),
+            )
+            controller.updateNavigation(NavigationEvidence(authorization, pose, freshUntilMs, relayOffsetMs = 0))
+        }
     }
 
     @Test
@@ -155,6 +212,104 @@ class FlightControllerTest {
         assertEquals(0.0, h.model.xEast, 1e-6)
         assertFalse(h.model.virtualStickEnabled)
         assertTrue(h.controller.status.stickRateHz > 9.0, "stick rate ${h.controller.status.stickRateHz}")
+    }
+
+    @Test
+    fun `signed route streams a bounded velocity and stale evidence holds then lands`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        h.navigation()
+        val route = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        h.tick(2)
+        assertEquals("navigating", h.controller.status.phase)
+        assertTrue(h.frames.any { !it.isNeutral }, "route should stream a velocity frame")
+        assertTrue(h.frames.filter { !it.isNeutral }.all { it.roll in 0.0..0.3 && it.pitch == 0.0 })
+        h.tickMs(400)
+        assertEquals("navigation_lost", route.terminal?.second, route.events.toString())
+        assertEquals("navigation_hold", h.controller.status.phase)
+        assertTrue(h.frames.last().isNeutral, "loss holds neutral sticks")
+        h.tickMs(300)
+        assertEquals("landing", h.controller.status.phase)
+        assertEquals("navigation_lost", h.controller.status.landingReason)
+        assertFalse(h.model.virtualStickEnabled)
+    }
+
+    @Test
+    fun `route authorization expiry is enforced on each navigation tick`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        h.navigation(expiresAtMs = h.clock.nowMs() + 200, freshUntilMs = h.clock.nowMs() + 500)
+        val route = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        h.tick(2)
+        assertEquals("navigation_lost", route.terminal?.second, route.events.toString())
+        assertEquals("navigation_hold", h.controller.status.phase)
+        assertTrue(h.frames.last().isNeutral)
+    }
+
+    @Test
+    fun `signed navigation hold status neutralizes before the bounded loss landing`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        h.navigation()
+        val route = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        h.tick(1)
+        h.navigation(poseStatus = NavigationPose.Status.HOLD, freshUntilMs = null)
+        h.tick(1)
+        assertEquals("navigation_hold", route.terminal?.second, route.events.toString())
+        assertEquals("navigation_hold", h.controller.status.phase)
+        assertTrue(h.model.virtualStickEnabled)
+        assertTrue(h.frames.last().isNeutral)
+        h.tickMs(300)
+        assertEquals("navigation_lost", h.controller.status.landingReason)
+        assertFalse(h.model.virtualStickEnabled)
+    }
+
+    @Test
+    fun `signed navigation land status releases virtual stick and starts landing`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        h.navigation()
+        val route = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        h.tick(1)
+        h.navigation(poseStatus = NavigationPose.Status.LAND)
+        h.tick(1)
+        assertEquals("navigation_land", route.terminal?.second, route.events.toString())
+        assertEquals("landing", h.controller.status.phase)
+        assertEquals("navigation_land", h.controller.status.landingReason)
+        assertFalse(h.model.virtualStickEnabled)
+    }
+
+    @Test
+    fun `signed route rejects a different route and pose outside its 3D tube while accepting arrival`() {
+        val h = Harness()
+        h.hovering()
+        h.join()
+        h.navigation()
+        val unknown = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-other"), "route-command")
+        assertEquals("navigation_not_authorized", unknown.terminal?.second, unknown.events.toString())
+        h.navigation(xMm = 500)
+        val outside = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        assertEquals("navigation_lost", outside.terminal?.second, outside.events.toString())
+        h.navigation(yMm = 1_900)
+        val arrived = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        assertEquals(listOf("executing", "completed"), arrived.statuses, arrived.events.toString())
+        assertFalse(h.model.virtualStickEnabled)
+    }
+
+    @Test
+    fun `private clock lease ends route tracking without another relay frame`() {
+        val h = Harness(navigationLeaseExpiresAtMs = 1_250)
+        h.hovering()
+        h.join()
+        h.navigation(expiresAtMs = 2_500, freshUntilMs = 2_000)
+        val route = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        h.tick(4)
+        assertEquals("navigation_lost", route.terminal?.second, route.events.toString())
+        assertTrue(h.controller.status.phase != "navigating")
     }
 
     @Test

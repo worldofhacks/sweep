@@ -25,6 +25,7 @@ import org.worldofhacks.sweep.bridge.node.RelayLink
 import org.worldofhacks.sweep.bridge.node.VideoPublishSource
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.SensorRecordingSession
+import org.worldofhacks.sweep.bridge.session.CaptureAlignmentSession
 import org.worldofhacks.sweep.bridge.session.SensorRelayContext
 
 /**
@@ -137,6 +138,13 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                 logLine("cannot start the relay link: observation-source.json is invalid")
                 return@launch
             }
+            val captureAlignment = try {
+                loadCaptureAlignment(application.filesDir)
+            } catch (_: Exception) {
+                logLine("cannot start the relay link: capture-alignment.json is invalid")
+                return@launch
+            }
+            if (captureAlignment == null) logLine("body-camera localization disabled: capture-alignment.json is missing")
             val loopback = isLoopback(hostOf(setup.relayUrl))
             val wifi = wifiNetwork
             // Loopback (adb reverse over USB) is not on the Wi-Fi network, so do not bind it there.
@@ -159,6 +167,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     capabilities = AircraftVariant.capabilities,
                     localizationPins = setup.localizationPins,
                     observationSource = observationSource,
+                    captureAlignment = captureAlignment,
                 )
                 val link = RelayLink(
                     config = config,
@@ -168,6 +177,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     log = { line -> logLine(line) },
                     clientProvider = if (loopback) null else ({ wifi?.binding?.value?.client }),
                     videoPublish = { videoPublish.current() },
+                    captureAlignmentSamples = (session as? CaptureAlignmentSession)?.captureAlignmentSamples,
                 )
                 relayLink = link
                 mirror = scope.launch {

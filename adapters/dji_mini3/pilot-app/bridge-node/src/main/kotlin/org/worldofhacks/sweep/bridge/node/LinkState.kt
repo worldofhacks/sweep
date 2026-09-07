@@ -2,6 +2,8 @@ package org.worldofhacks.sweep.bridge.node
 
 import org.worldofhacks.sweep.bridge.core.frames.AuthRefused
 import org.worldofhacks.sweep.bridge.core.frames.ControlPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
+import org.worldofhacks.sweep.bridge.core.frames.NavigationRouteAuthorization
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusBody
 import org.worldofhacks.sweep.bridge.core.frames.RefusalEvent
@@ -18,6 +20,7 @@ data class NodeConfig(
     val capabilities: List<String>,
     val localizationPins: LocalizationPins? = null,
     val observationSource: ObservationSourceConfig? = null,
+    val captureAlignment: CaptureAlignmentConfig? = null,
 ) {
     init {
         require(relayUrl.startsWith("ws://") || relayUrl.startsWith("wss://")) { "relay URL must start with ws:// or wss://" }
@@ -53,6 +56,43 @@ data class NodeConfig(
             }
         }
     }
+}
+
+data class NavigationAdmissionConfig(
+    val navigationConfigId: String,
+    val navigationConfigSha256: String,
+    val mapVersion: String,
+    val mapSha256: String,
+    val geometrySha256: String,
+    val cameraCalibrationSha256: String,
+    val bodyExtrinsicsSha256: String,
+    val worldTransformSha256: String,
+    val controlSourceIds: List<String>,
+    val clockLeaseId: String,
+    val clockLeaseExpiresAtMs: Long,
+    val maxAuthorizationLifetimeMs: Long,
+    val approvedEvidenceFiles: List<java.io.File>,
+    val enabled: Boolean = false,
+) {
+    init {
+        require(pins().all { it.length == 64 && it.all { char -> char in '0'..'9' || char in 'a'..'f' } }) {
+            "navigation evidence hashes must be lowercase SHA-256"
+        }
+        require(mapVersion.isNotBlank() && navigationConfigId.isNotBlank() && clockLeaseId.isNotBlank() && clockLeaseExpiresAtMs > 0 && maxAuthorizationLifetimeMs > 0) {
+            "navigation identity or clock lease is invalid"
+        }
+        require(controlSourceIds.isNotEmpty() && controlSourceIds == controlSourceIds.distinct().sorted()) {
+            "navigation control source identities must be sorted and unique"
+        }
+        if (enabled) require(approvedEvidenceFiles.isNotEmpty() && approvedEvidenceFiles.all { it.isFile && it.canRead() && it.length() > 0 }) {
+            "navigation requires externally approved readable evidence files"
+        }
+    }
+
+    fun pins(): List<String> = listOf(
+        navigationConfigSha256, mapSha256, geometrySha256, cameraCalibrationSha256,
+        bodyExtrinsicsSha256, worldTransformSha256,
+    )
 }
 
 /**
@@ -137,6 +177,9 @@ data class LinkState(
     val controlPose: ControlPose? = null,
     /** Local-clock deadline at which [controlPose] is cleared. */
     val controlPoseExpiresAtMs: Long? = null,
+    val navigationAuthorization: NavigationRouteAuthorization? = null,
+    val navigationPose: NavigationPose? = null,
+    val navigationPoseFreshUntilMs: Long? = null,
     val estop: Boolean = false,
     val lastRefusal: RefusalEvent? = null,
     val lastAuthRefusal: AuthRefused? = null,
