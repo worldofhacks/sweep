@@ -1,16 +1,14 @@
 import json
 import os
-import shutil
 import subprocess
 import sys
 from hashlib import sha256
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from perception.control_localization import BodyExtrinsics, ControlLocalizationSnapshot
+from perception.control_localization import ControlLocalizationSnapshot
 from perception.control_publisher import ControlPublisher, ControlPublisherConfig, LiveBinding
 from perception.world_localization import (
     MeasurementUncertainty,
@@ -18,11 +16,12 @@ from perception.world_localization import (
     WorldLocalizationAdapter,
     WorldLocalizationError,
     WorldLocalizationPins,
-    _pose_matrix,
 )
 from perception.world_localization_runtime import WorldLocalizationRuntime
 from relay.control_frames import ControlLocalizationFrame
 from relay.observations import ClockMapping, Observation
+from tests.test_measured_world_geometry import _authoring, _held_out_world_bundle
+from tools.map_geometry import generate
 
 IDENTITY = ((1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0))
 
@@ -58,7 +57,22 @@ def mapping():
     )
 
 
-def evidence(tmp_path, manifest):
+def measured_geometry(tmp_path):
+    bundle, accepted = _held_out_world_bundle(tmp_path)
+    authoring = _authoring(tmp_path, bundle)
+    output = tmp_path / "geometry"
+    generate(bundle, authoring, output, accepted)
+    return (
+        bundle,
+        accepted,
+        authoring,
+        output,
+        json.loads((output / "geometry.json").read_text()),
+        sha256((output / "geometry.json").read_bytes()).hexdigest(),
+    )
+
+
+def evidence(tmp_path, manifest, geometry_directory, geometry_authoring):
     matrix = [
         [0.0, -1.0, 0.0, 10.0],
         [1.0, 0.0, 0.0, 20.0],
@@ -66,22 +80,38 @@ def evidence(tmp_path, manifest):
         [0.0, 0.0, 0.0, 1.0],
     ]
     documents = {
-        "geometry": {
-            "artifact_id": "geometry-v2",
-            "kind": "geometry",
-            "map_id": manifest["map_id"],
-            "map_version": manifest["bundle_version"],
-        },
         "camera_calibration": {
-            "artifact_id": "mini3-delivered-720p",
-            "kind": "camera_calibration",
-            "camera_pipeline_id": "o2-720p",
+            "schema_version": 2,
+            "model": "fisheye",
+            "status": "offline",
+            "evidence_kind": "recorded_live",
+            "camera_serial": "mini3-camera-1",
+            "pipeline": {"resolution_px": [1280, 720]},
+            "image_size_px": [1280, 720],
+            "camera_matrix": [[600.0, 0.0, 640.0], [0.0, 600.0, 360.0], [0.0, 0.0, 1.0]],
+            "distortion_coefficients": [0.0, 0.0, 0.0, 0.0],
+            "rms_reprojection_error_px": 0.2,
+            "accepted_image_count": 20,
+            "image_sha256": {str(index): f"{index:064x}" for index in range(20)},
+            "quality": {
+                "accepted_image_count": 20,
+                "minimum_accepted_image_count": 20,
+                "rms_reprojection_error_px": 0.2,
+                "maximum_rms_reprojection_error_px": 0.5,
+                "minimum_pose_constraint_ratio": 0.005,
+                "pose_constraint_ratio": 0.01,
+                "opencv_check_cond": True,
+            },
         },
         "uncertainty": {
             "artifact_id": "route-run",
             "kind": "uncertainty",
             "camera_calibration_id": "mini3-delivered-720p",
             "camera_pipeline_id": "o2-720p",
+            "position_covariance_world_m2": [list(row) for row in COVARIANCE],
+            "velocity_covariance_enu_m2ps2": [[0.04, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.06]],
+            "height_variance_enu_m2": 0.07,
+            "evidence_kind": "recorded_live",
         },
         "world_enu": {
             "artifact_id": "world-to-enu",
@@ -90,16 +120,20 @@ def evidence(tmp_path, manifest):
             "map_version": manifest["bundle_version"],
             "physical_datum": manifest["frame"]["physical_datum"],
             "matrix_world_enu": matrix,
+            "measured": True,
         },
         "height_alignment": {
             "artifact_id": "dji-relative-altitude-to-enu-z",
             "kind": "height_alignment",
             "map_id": manifest["map_id"],
+            "map_version": manifest["bundle_version"],
             "telemetry_frame_id": "dji_enu",
             "height_datum_id": "dji-relative-altitude-to-enu-z",
+            "measured": True,
+            "variance_m2": 0.07,
         },
     }
-    paths = {}
+    paths = {"geometry_directory": geometry_directory, "geometry_authoring": geometry_authoring}
     hashes = {}
     for name, document in documents.items():
         encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
@@ -110,14 +144,14 @@ def evidence(tmp_path, manifest):
     return paths, hashes
 
 
-def pins(manifest, hashes, **overrides):
+def pins(manifest, hashes, geometry_report, geometry_sha256, **overrides):
     values = dict(
         drone_id=1,
         map_id=manifest["map_id"],
         map_version=manifest["bundle_version"],
         map_content_sha256=manifest["content_sha256"],
-        geometry_id="geometry-v2",
-        geometry_sha256=hashes["geometry"],
+        geometry_id=geometry_report["authoring_sha256"],
+        geometry_sha256=geometry_sha256,
         physical_datum=manifest["frame"]["physical_datum"],
         tag_source_id="laptop-detector",
         body_pose_source_id="dji-attitude",
@@ -130,6 +164,7 @@ def pins(manifest, hashes, **overrides):
         capture_clock_mapping_id="phone_snapshot_wall_ms",
         camera_calibration_id="mini3-delivered-720p",
         camera_calibration_sha256=hashes["camera_calibration"],
+        camera_serial="mini3-camera-1",
         camera_pipeline_id="o2-720p",
         body_extrinsics_id="dji-gimbal-attitude-capture",
         world_enu=WorldEnuTransform(
@@ -146,7 +181,7 @@ def pins(manifest, hashes, **overrides):
         uncertainty=MeasurementUncertainty(
             "route-run",
             hashes["uncertainty"],
-            "approved_fixture",
+            "recorded_live",
             "mini3-delivered-720p",
             "o2-720p",
             COVARIANCE,
@@ -218,6 +253,18 @@ def body_pose(capture=1_000_000, **overrides):
                 "qz": 0.0,
                 "qw": 1.0,
             },
+            "capture_alignment": {
+                "gimbal_capture": {
+                    "clock_id": "phone_snapshot_wall_ms",
+                    "unit": "ms",
+                    "value": capture,
+                },
+                "attitude_capture": {
+                    "clock_id": "phone_snapshot_wall_ms",
+                    "unit": "ms",
+                    "value": capture,
+                },
+            },
         },
         capture,
         **overrides,
@@ -274,34 +321,18 @@ def telemetry(capture=2_000_000, z=3.0):
 
 @pytest.fixture
 def adapter(tmp_path):
-    bundle = tmp_path / "world"
-    shutil.copytree(Path(__file__).parents[1] / "tests/fixtures/world_bundle", bundle)
+    bundle, accepted, authoring, geometry_directory, report, geometry_sha256 = measured_geometry(
+        tmp_path
+    )
     manifest = json.loads((bundle / "manifest.yaml").read_text())
-    evidence_paths, hashes = evidence(tmp_path, manifest)
-    active_pins = pins(manifest, hashes)
-
-    def measured_extrinsics(event, capture_time):
-        pose = event.submission.payload["pose"]
-        return BodyExtrinsics(
-            extrinsics_id=active_pins.body_extrinsics_id,
-            source_id=active_pins.tag_source_id,
-            matrix=tuple(
-                tuple(float(value) for value in row) for row in _pose_matrix(pose, "test pose")
-            ),
-            capture_time=capture_time,
-            gimbal_time=capture_time,
-            attitude_time=capture_time,
-            measured=True,
-        )
-
+    evidence_paths, hashes = evidence(tmp_path, manifest, geometry_directory, authoring)
+    active_pins = pins(manifest, hashes, report, geometry_sha256)
     return WorldLocalizationAdapter(
         bundle,
-        {manifest["bundle_version"]: manifest["content_sha256"]},
+        accepted,
         active_pins,
         mapping(),
         evidence_paths=evidence_paths,
-        body_extrinsics_at_capture=measured_extrinsics,
-        allow_fixture_evidence=True,
     )
 
 
@@ -343,6 +374,18 @@ def test_dynamic_capture_pose_rotation_enters_the_world_body_transform(adapter):
                     "qy": 0.0,
                     "qz": 2**-0.5,
                     "qw": 2**-0.5,
+                },
+                "capture_alignment": {
+                    "gimbal_capture": {
+                        "clock_id": "phone_snapshot_wall_ms",
+                        "unit": "ms",
+                        "value": 1_000_000,
+                    },
+                    "attitude_capture": {
+                        "clock_id": "phone_snapshot_wall_ms",
+                        "unit": "ms",
+                        "value": 1_000_000,
+                    },
                 },
             },
         ),
@@ -431,53 +474,68 @@ def test_nonpositive_canonical_confidence_is_refused(adapter):
 
 
 def test_evidence_requires_a_pinned_regular_file_hash_and_scope(tmp_path):
-    bundle = tmp_path / "world-evidence"
-    shutil.copytree(Path(__file__).parents[1] / "tests/fixtures/world_bundle", bundle)
+    bundle, accepted, authoring, geometry_directory, report, geometry_sha256 = measured_geometry(
+        tmp_path
+    )
     manifest = json.loads((bundle / "manifest.yaml").read_text())
-    evidence_paths, hashes = evidence(tmp_path, manifest)
+    evidence_paths, hashes = evidence(tmp_path, manifest, geometry_directory, authoring)
 
-    evidence_paths["geometry"].write_text("{}")
+    evidence_paths["camera_calibration"].write_text("{}")
     with pytest.raises(WorldLocalizationError, match="hash"):
         WorldLocalizationAdapter(
             bundle,
-            {manifest["bundle_version"]: manifest["content_sha256"]},
-            pins(manifest, hashes),
+            accepted,
+            pins(manifest, hashes, report, geometry_sha256),
             mapping(),
             evidence_paths=evidence_paths,
-            allow_fixture_evidence=True,
         )
 
-    geometry = {
-        "artifact_id": "wrong-geometry",
-        "kind": "geometry",
-        "map_id": manifest["map_id"],
-        "map_version": manifest["bundle_version"],
+    calibration = {
+        "schema_version": 2,
+        "model": "fisheye",
+        "status": "offline",
+        "evidence_kind": "recorded_live",
+        "camera_serial": "wrong-camera",
+        "pipeline": {"resolution_px": [1280, 720]},
+        "image_size_px": [1280, 720],
+        "camera_matrix": [[600.0, 0.0, 640.0], [0.0, 600.0, 360.0], [0.0, 0.0, 1.0]],
+        "distortion_coefficients": [0.0, 0.0, 0.0, 0.0],
+        "rms_reprojection_error_px": 0.2,
+        "accepted_image_count": 20,
+        "image_sha256": {str(index): f"{index:064x}" for index in range(20)},
+        "quality": {
+            "accepted_image_count": 20,
+            "minimum_accepted_image_count": 20,
+            "rms_reprojection_error_px": 0.2,
+            "maximum_rms_reprojection_error_px": 0.5,
+            "minimum_pose_constraint_ratio": 0.005,
+            "pose_constraint_ratio": 0.01,
+            "opencv_check_cond": True,
+        },
     }
-    encoded = json.dumps(geometry, sort_keys=True, separators=(",", ":")).encode()
-    evidence_paths["geometry"].write_bytes(encoded)
-    scope_hashes = dict(hashes, geometry=sha256(encoded).hexdigest())
-    with pytest.raises(WorldLocalizationError, match="pinned scope"):
+    encoded = json.dumps(calibration, sort_keys=True, separators=(",", ":")).encode()
+    evidence_paths["camera_calibration"].write_bytes(encoded)
+    changed_hashes = dict(hashes, camera_calibration=sha256(encoded).hexdigest())
+    with pytest.raises(WorldLocalizationError, match="pinned detector"):
         WorldLocalizationAdapter(
             bundle,
-            {manifest["bundle_version"]: manifest["content_sha256"]},
-            pins(manifest, scope_hashes),
+            accepted,
+            pins(manifest, changed_hashes, report, geometry_sha256),
             mapping(),
             evidence_paths=evidence_paths,
-            allow_fixture_evidence=True,
         )
 
-    target = evidence_paths["geometry"]
-    symlink = tmp_path / "geometry-link.json"
+    target = evidence_paths["camera_calibration"]
+    symlink = tmp_path / "calibration-link.json"
     symlink.symlink_to(target)
-    symlink_paths = dict(evidence_paths, geometry=symlink)
+    symlink_paths = dict(evidence_paths, camera_calibration=symlink)
     with pytest.raises(WorldLocalizationError, match="opened safely"):
         WorldLocalizationAdapter(
             bundle,
-            {manifest["bundle_version"]: manifest["content_sha256"]},
-            pins(manifest, scope_hashes),
+            accepted,
+            pins(manifest, changed_hashes, report, geometry_sha256),
             mapping(),
             evidence_paths=symlink_paths,
-            allow_fixture_evidence=True,
         )
 
 
@@ -519,20 +577,25 @@ def test_control_snapshot_is_projected_back_to_the_pinned_world_frame(adapter):
 
 
 def test_unproven_pose_cannot_claim_capture_time_gimbal_and_attitude(adapter, tmp_path):
-    bundle = tmp_path / "world-no-extrinsics"
-    shutil.copytree(Path(__file__).parents[1] / "tests/fixtures/world_bundle", bundle)
+    bundle, accepted, authoring, geometry_directory, report, geometry_sha256 = measured_geometry(
+        tmp_path / "unproven"
+    )
     manifest = json.loads((bundle / "manifest.yaml").read_text())
-    evidence_paths, hashes = evidence(tmp_path, manifest)
+    evidence_paths, hashes = evidence(
+        tmp_path / "unproven", manifest, geometry_directory, authoring
+    )
     unproven = WorldLocalizationAdapter(
         bundle,
-        {manifest["bundle_version"]: manifest["content_sha256"]},
-        pins(manifest, hashes),
+        accepted,
+        pins(manifest, hashes, report, geometry_sha256),
         mapping(),
         evidence_paths=evidence_paths,
-        allow_fixture_evidence=True,
     )
-    with pytest.raises(WorldLocalizationError, match="gimbal and attitude timing"):
-        unproven.ingest(body_pose(), connection_epoch=7)
+    raw = body_pose().to_mapping()
+    payload = dict(raw["payload"])
+    payload.pop("capture_alignment")
+    with pytest.raises(WorldLocalizationError, match="capture-aligned"):
+        unproven.ingest(event("body-unproven", "dji-attitude", "body", payload), connection_epoch=7)
 
 
 def test_live_canonical_events_flow_through_the_real_fuser_and_signed_frame(adapter, tmp_path):

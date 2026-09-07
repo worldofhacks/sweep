@@ -552,11 +552,25 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
         result["state"] = _text(value["state"], "state")
         return result
     if kind == "pose":
-        value = _exact(raw, frozenset({"kind", "pose"}), "pose payload")
+        fields = frozenset({"kind", "pose"})
+        if "capture_alignment" in raw:
+            fields |= {"capture_alignment"}
+        value = _exact(raw, fields, "pose payload")
         pose = FramedPose.parse(value["pose"])
         if pose.parent_frame != envelope_frame:
             _error("payload_frame_mismatch", "pose parent frame must equal the envelope frame")
-        return {"kind": kind, "pose": pose.to_mapping()}
+        result: dict[str, object] = {"kind": kind, "pose": pose.to_mapping()}
+        if "capture_alignment" in value:
+            alignment = _exact(
+                value["capture_alignment"],
+                frozenset({"gimbal_capture", "attitude_capture"}),
+                "pose capture alignment",
+            )
+            result["capture_alignment"] = {
+                "gimbal_capture": SourceTime.parse(alignment["gimbal_capture"]).to_mapping(),
+                "attitude_capture": SourceTime.parse(alignment["attitude_capture"]).to_mapping(),
+            }
+        return result
     if kind == "range_scan":
         fields = frozenset(
             {

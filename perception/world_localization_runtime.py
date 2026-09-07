@@ -153,7 +153,8 @@ def _clock_mapping(raw: object) -> ClockMapping:
 
 def _evidence_paths(raw: object, root: Path) -> Mapping[str, Path]:
     names = {
-        "geometry",
+        "geometry_directory",
+        "geometry_authoring",
         "camera_calibration",
         "uncertainty",
         "world_enu",
@@ -189,6 +190,7 @@ def _pins(raw: object) -> WorldLocalizationPins:
         "capture_clock_mapping_id",
         "camera_calibration_id",
         "camera_calibration_sha256",
+        "camera_serial",
         "camera_pipeline_id",
         "body_extrinsics_id",
         "world_enu",
