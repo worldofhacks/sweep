@@ -152,7 +152,8 @@ def test_approval_rejects_tampered_document():
     assert runtime.approval.mode == "simulation"
 
 
-def test_two_aircraft_line_routes_check_each_actual_segment_and_arrival():
+@pytest.mark.parametrize("count", [2, 3, 5])
+def test_line_routes_check_each_actual_segment_and_arrival_for_configured_fleet(count: int):
     from dataclasses import asdict
 
     from planner.planner import DeterministicPlanner
@@ -160,36 +161,46 @@ def test_two_aircraft_line_routes_check_each_actual_segment_and_arrival():
     from tests.autonomy_fixtures import planning_config
 
     runtime, _, _, geometry = setup_runtime()
-    geometry[0] = artifact(slots=(arrival("line-a", 6.5, 1.5), arrival("line-b", 6.5, 3.5)))
+    geometry[0] = artifact(
+        slots=tuple(arrival(f"line-{index}", 6.5, 0.5 + index) for index in range(count))
+    )
     runtime.config = replace(
         runtime.config,
-        frames=(*runtime.config.frames, NavigationFrame(2, "measured-enu-world-2", IDENTITY)),
+        frames=tuple(
+            NavigationFrame(drone_id, f"measured-enu-world-{drone_id}", IDENTITY)
+            for drone_id in range(1, count + 1)
+        ),
         line_zone_id="atrium",
+        max_aircraft=count,
     )
     raw = asdict(runtime.approval)
     raw.update(
         v=1,
         type="navigation_approval",
-        epochs=[[1, 1], [2, 1]],
+        epochs=[[drone_id, 1] for drone_id in range(1, count + 1)],
         evidence_sha256=[],
         configuration_sha256=navigation_configuration_digest(
             geometry[0], runtime.config, PERMISSION, "atrium"
         ),
     )
     runtime.approval = NavigationApproval.verify({**raw, "signature": sign_event(raw, KEY)}, KEY)
-    snapshot = replace_aircraft(
-        replace(make_snapshot(2), spacing=2.0), 1, pose=Position(0.5, 1.5, 1.0)
+    snapshot = make_snapshot(count, spacing=1.0)
+    for drone_id in range(1, count + 1):
+        snapshot = replace_aircraft(snapshot, drone_id, pose=Position(0.5 + drone_id - 1, 0.5, 1.0))
+    intent = make_intent(
+        IntentName.FORMATION_SET,
+        selection=tuple(range(1, count + 1)),
+        args={"name": "line"},
+        confirm=True,
     )
-    snapshot = replace_aircraft(snapshot, 2, pose=Position(2.5, 1.5, 1.0))
-    intent = make_intent(IntentName.FORMATION_SET, args={"name": "line"}, confirm=True)
     plan = DeterministicPlanner(planning_config(), navigation_runtime=runtime).plan(
         intent, snapshot
     )
     assert isinstance(plan, Plan)
     assert plan.formation_update == "line"
+    assert len(plan.navigation.route.arrival_slots) == count
     assert {route.arrival_slot.slot_id for route in plan.navigation.route.routes} == {
-        "line-a",
-        "line-b",
+        f"line-{index}" for index in range(count)
     }
     from arbiter.safety import SafetyArbiter
     from tests.autonomy_fixtures import safety_config
@@ -206,9 +217,9 @@ def test_two_aircraft_line_routes_check_each_actual_segment_and_arrival():
         assert runtime.check(plan, command, snapshot, completed=True, issued_at_ms=issued) is None
     assert sorted(
         (item.pose.x, item.pose.y, item.pose.z) for item in snapshot.aircraft.values()
-    ) == [(6.5, 1.5, 1.0), (6.5, 3.5, 1.0)]
+    ) == [(6.5, 0.5 + index, 1.0) for index in range(count)]
     assert isinstance(
-        runtime.check(plan, plan.commands[-1], replace(snapshot, spacing=1.0)), Refusal
+        runtime.check(plan, plan.commands[-1], replace(snapshot, spacing=0.5)), Refusal
     )
 
 

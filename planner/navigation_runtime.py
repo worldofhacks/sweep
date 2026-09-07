@@ -204,6 +204,36 @@ class NavigationExecution:
         )
 
 
+def _line_slots_match(slots: tuple[object, ...], count: int, spacing: float) -> bool:
+    if len(slots) != count or count < 2 or not np.isfinite(spacing) or spacing <= 0:
+        return False
+    try:
+        points = np.asarray([slot.pose.xyz for slot in slots], dtype=float)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if points.shape != (count, 3) or not np.isfinite(points).all():
+        return False
+    if not np.allclose(points[:, 2], points[0, 2], atol=1e-6, rtol=0):
+        return False
+    deltas = points[:, None, :] - points[None, :, :]
+    distances = np.linalg.norm(deltas, axis=2)
+    np.fill_diagonal(distances, -1.0)
+    first, last = np.unravel_index(np.argmax(distances), distances.shape)
+    extent = distances[first, last]
+    if not np.isclose(extent, spacing * (count - 1), atol=1e-6, rtol=0):
+        return False
+    direction = (points[last] - points[first]) / extent
+    offsets = points - points[first]
+    projections = offsets @ direction
+    residuals = offsets - np.outer(projections, direction)
+    return bool(
+        np.allclose(np.linalg.norm(residuals, axis=1), 0.0, atol=1e-6, rtol=0)
+        and np.allclose(
+            np.sort(projections), np.arange(count, dtype=float) * spacing, atol=1e-6, rtol=0
+        )
+    )
+
+
 def navigation_configuration_digest(
     artifact: NavigationArtifact,
     config: NavigationExecutionConfig,
@@ -302,15 +332,11 @@ class NavigationRuntime:
             if intent.name is IntentName.FORMATION_SET and intent.args.get("name") == "line":
                 destination = self.config.line_zone_id
                 zone = next((zone for zone in artifact.zones if zone.zone_id == destination), None)
-                if zone is None or len(intent.selection) != 2 or len(zone.arrival_slots) != 2:
-                    raise ValueError("line formation requires two aircraft and two approved slots")
-                first, second = (slot.pose for slot in zone.arrival_slots)
-                if (
-                    first.z_m != second.z_m
-                    or abs(dist(first.xyz, second.xyz) - snapshot.spacing) > 1e-6
+                if zone is None or not _line_slots_match(
+                    zone.arrival_slots, len(intent.selection), snapshot.spacing
                 ):
                     raise ValueError(
-                        "line slot height or spacing differs from the selected formation"
+                        "line formation requires one measured, evenly spaced slot per aircraft"
                     )
             elif intent.name is not IntentName.COME_HOME:
                 raise ValueError("navigation runtime has no configured route for this intent")
@@ -401,11 +427,8 @@ class NavigationRuntime:
             destination = self.home_zone_id
             if plan.intent_name is IntentName.FORMATION_SET:
                 destination = self.config.line_zone_id
-                slots = route_plan.arrival_slots
-                if (
-                    len(slots) != 2
-                    or slots[0].pose.z_m != slots[1].pose.z_m
-                    or abs(dist(slots[0].pose.xyz, slots[1].pose.xyz) - snapshot.spacing) > 1e-6
+                if not _line_slots_match(
+                    route_plan.arrival_slots, len(plan.selection), snapshot.spacing
                 ):
                     raise ValueError("line formation spacing or altitude changed")
             if route_plan.destination_zone_id != destination:
