@@ -14,8 +14,8 @@ from relay.settings import RelaySettings
 from tests.test_tag_localization import scene, world_config
 
 
-def webcam_scene(tmp_path, *, count=2):
-    _, image, camera, body_camera, config = scene(tmp_path, count=count)
+def webcam_scene(tmp_path, *, count=2, **scene_kwargs):
+    _, image, camera, body_camera, config = scene(tmp_path, count=count, **scene_kwargs)
     config["pipeline"].update(
         decoder_path="opencv-ffmpeg-rtsp", latency_endpoint="localization_decode"
     )
@@ -199,6 +199,7 @@ def test_consensus_rejection_keeps_the_previous_preview_fix_age(tmp_path):
     config, good, _ = webcam_scene(tmp_path / "good", count=2)
     config["localizer"]["consensus"] = {
         "minimum_distinct_tags": 2,
+        "maximum_candidate_tags": 6,
         "maximum_translation_residual_m": 0.03,
         "maximum_rotation_residual_rad": 0.2,
     }

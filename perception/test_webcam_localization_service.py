@@ -175,6 +175,7 @@ def test_service_uses_shared_decoder_for_configured_two_tag_preview_consensus(tm
     config, image, _ = webcam_scene(tmp_path, count=2)
     config["localizer"]["consensus"] = {
         "minimum_distinct_tags": 2,
+        "maximum_candidate_tags": 6,
         "maximum_translation_residual_m": 0.03,
         "maximum_rotation_residual_rad": 0.2,
     }
@@ -203,6 +204,7 @@ def test_service_keeps_consensus_diagnostics_visible_when_a_frame_loses_quorum(t
     config, _, _ = webcam_scene(tmp_path / "config", count=3)
     config["localizer"]["consensus"] = {
         "minimum_distinct_tags": 2,
+        "maximum_candidate_tags": 6,
         "maximum_translation_residual_m": 0.03,
         "maximum_rotation_residual_rad": 0.2,
     }
@@ -250,3 +252,39 @@ def test_service_keeps_consensus_diagnostics_visible_when_a_frame_loses_quorum(t
     assert rejected["control_eligible"] is False
     assert rejected["localization_consumer_state"] == "revalidating"
     assert sorted(rejected["pose_observation"]["tag_ids"]) == [0, 1]
+
+
+def test_service_rejects_tied_rendered_consensus_clusters(tmp_path):
+    config, image, _ = webcam_scene(
+        tmp_path,
+        count=4,
+        rendered_camera_offsets={2: [0.2, 0, 0], 3: [0.2, 0, 0]},
+    )
+    config["localizer"]["consensus"] = {
+        "minimum_distinct_tags": 2,
+        "maximum_candidate_tags": 6,
+        "maximum_translation_residual_m": 0.03,
+        "maximum_rotation_residual_rad": 0.2,
+    }
+    loop = WebcamLocalization(config, allow_synthetic=True)
+    reader = LiveReader()
+    service = WebcamLocalizationService(
+        loop,
+        "rtsp://media.example/drone1",
+        stream_factory=lambda _url: reader,
+    )
+    try:
+        service.resume(time.monotonic())
+        reader.push(image)
+        state = _poll_until(
+            service,
+            lambda value: (
+                (value.get("pose_observation") or {}).get("reason") == "ambiguous_consensus"
+            ),
+        )
+    finally:
+        service.close()
+
+    assert state["accepted"] is False
+    assert state["control_eligible"] is False
+    assert state["localization_consumer_state"] == "revalidating"
