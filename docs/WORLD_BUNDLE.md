@@ -17,7 +17,7 @@ Each bundle uses JSON syntax in `.yaml` files.
 | `zones.yaml` | Geofence, named zones, and corridors with a centerline, width, altitude range, plus hand-measured clearance and flight-height evidence for every segment. |
 | `obstacles.yaml` | Static obstacle and no-fly volumes. |
 
-Tags use `measured`, `surveyed`, or `auto_registered` provenance. A verified tag requires an `independent_tape_measurement` that names another tag, carries a hashed evidence file, and is within its stated error bound. Its evidence path cannot duplicate the tag's automatic observation reference. An auto-registered tag therefore requires an independent tape tie before it can become verified.
+Tags use `measured`, `surveyed`, or `auto_registered` provenance. A verified tag requires an `independent_tape_measurement` that names another tag, carries a hashed evidence file, and is within its stated error bound. That bound must be positive and at most 0.10 m. Its evidence path cannot duplicate the tag's automatic observation reference. An auto-registered tag therefore requires an independent tape tie before it can become verified.
 
 The occupancy metadata names its local frame and session/device/epoch/source scope, cell size, lower-left local origin, pixel legend, and `row_0: "maximum_y"`. Those source fields must match the hashed local tag input. Registration recomputes a proper planar rotation and translation from at least three non-collinear tag pairs and checks residuals; a claimed residual alone cannot validate the grid. The target tag input pins `world`, the map ID and version, and the physical datum, and its matched coordinates must equal the bundle's world tags. Optional held-out tags are excluded from the fit and checked separately.
 

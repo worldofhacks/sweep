@@ -62,6 +62,23 @@ def test_local_grid_cells_use_measured_rotation_translation_and_png_row_order(bu
         candidate.occupancy_cell_world_xy(3, 0)
 
 
+def test_tape_evidence_cannot_relax_the_ten_centimetre_map_bound(bundle):
+    evidence_path = bundle / "evidence/tape-0-1.json"
+    evidence = json.loads(evidence_path.read_text())
+    evidence["maximum_error_m"] = 100
+    evidence_path.write_text(json.dumps(evidence))
+    mutate(
+        bundle,
+        "tags.yaml",
+        lambda d: d["tags"][0]["tape_verification"].update(
+            maximum_error_m=100,
+            evidence_sha256=hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+        ),
+    )
+    with pytest.raises(ValueError, match="error bound"):
+        validate_candidate(bundle)
+
+
 def test_manifest_and_registration_mutation_cannot_change_validated_snapshot(bundle):
     candidate = validate_candidate(bundle)
     candidate["occupancy"]["origin_xy"][0] = 100
