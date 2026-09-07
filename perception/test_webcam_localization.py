@@ -4,7 +4,13 @@ import json
 import numpy as np
 import pytest
 
-from perception.webcam_localization import WebcamLocalization, load_config
+from perception.webcam_localization import (
+    WebcamLocalization,
+    configured_stream_paths,
+    load_config,
+)
+from relay.contracts import NodeType
+from relay.settings import RelaySettings
 from tests.test_tag_localization import scene, world_config
 
 
@@ -150,3 +156,40 @@ def test_config_loader_rejects_ambiguous_json(tmp_path):
     path.write_text('{"localizer": {}, "localizer": {}, "latency_path": "latency.json"}')
     with pytest.raises(ValueError, match="duplicate key"):
         load_config(path)
+
+
+def test_ground_source_uses_the_configured_device_stream_and_localizes(tmp_path):
+    config, image, expected = webcam_scene(tmp_path)
+    config.update(stream_path="drone12", source_device_id=12)
+    settings = RelaySettings(
+        relay_token=b"r" * 32,
+        adapter_keys={1: b"a" * 32, 11: b"b" * 32, 12: b"c" * 32},
+        node_types={11: NodeType.GROUND, 12: NodeType.GROUND},
+    )
+    streams = configured_stream_paths(settings)
+
+    result = WebcamLocalization(config, allow_synthetic=True, configured_streams=streams).update(
+        image, 10.1, 10.12
+    )
+
+    assert streams[12] == "drone12"
+    assert result["stream_path"] == "drone12"
+    assert np.linalg.norm(np.array(result["position_map_m"]) - expected[:3, 3]) < 0.04
+
+
+@pytest.mark.parametrize(
+    ("source_device_id", "stream_path", "message"),
+    [(13, "drone13", "configured source"), (12, "drone11", "match the configured")],
+)
+def test_configured_source_refuses_unconfigured_or_mismatched_stream(
+    tmp_path, source_device_id, stream_path, message
+):
+    config, _, _ = webcam_scene(tmp_path)
+    config.update(stream_path=stream_path, source_device_id=source_device_id)
+
+    with pytest.raises(ValueError, match=message):
+        WebcamLocalization(
+            config,
+            allow_synthetic=True,
+            configured_streams={11: "drone11", 12: "drone12"},
+        )
