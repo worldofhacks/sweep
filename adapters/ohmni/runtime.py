@@ -128,6 +128,8 @@ class GroundRuntimeConfig:
             for value in mount
         ):
             raise ValueError("lidar mount requires a complete finite transform")
+        if self.lidar_mount_yaw_deg not in (None, 0.0):
+            raise ValueError("lidar scan axes are body-aligned; mount yaw must be zero")
 
 
 class OhmniRuntime:
@@ -832,7 +834,6 @@ class OhmniRuntime:
     def _lidar_sensor_pose(self, scan: RangeScan) -> tuple[float, float, float]:
         assert self.config.lidar_mount_x_m is not None
         assert self.config.lidar_mount_y_m is not None
-        assert self.config.lidar_mount_yaw_deg is not None
         heading = math.radians(scan.pose[2])
         return (
             scan.pose[0]
@@ -841,7 +842,7 @@ class OhmniRuntime:
             scan.pose[1]
             + math.sin(heading) * self.config.lidar_mount_x_m
             + math.cos(heading) * self.config.lidar_mount_y_m,
-            (scan.pose[2] + self.config.lidar_mount_yaw_deg) % 360,
+            scan.pose[2] % 360,
         )
 
     def _return_grant_active(self) -> bool:
