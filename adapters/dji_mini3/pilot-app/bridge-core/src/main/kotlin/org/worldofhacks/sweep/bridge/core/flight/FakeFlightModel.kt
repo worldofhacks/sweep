@@ -29,7 +29,10 @@ class FakeFlightModel(
     var connected: Boolean = true
     var enableResult: PortResult = PortResult.Ok
     var takeoffResult: PortResult = PortResult.Ok
+    var stopTakeoffResult: PortResult = PortResult.Ok
     var landingResult: PortResult = PortResult.Ok
+    var stopTakeoffCalls = 0
+        private set
 
     /**
      * How many [advance] calls an [enableVirtualStick] waits before it answers: 0 answers at
@@ -165,6 +168,23 @@ class FakeFlightModel(
             motorsOn = true
             takingOff = true
             landing = false
+        }
+        onResult(result)
+    }
+
+    override fun stopTakeoff(onResult: (PortResult) -> Unit) {
+        stopTakeoffCalls += 1
+        if (!connected) {
+            onResult(PortResult.Failed("aircraft not connected"))
+            return
+        }
+        val result = stopTakeoffResult
+        if (result == PortResult.Ok) {
+            takingOff = false
+            motorsOn = false
+            landing = false
+            zUp = 0.0
+            vUp = 0.0
         }
         onResult(result)
     }

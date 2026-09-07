@@ -742,6 +742,48 @@ class FlightControllerTest {
     }
 
     @Test
+    fun `supervised vertical cancels an accepted auto takeoff before the aircraft reports airborne`() {
+        fun startingHarness(): Pair<Harness, RecordingSink> {
+            val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+            h.localHeight(0.0)
+            h.join()
+            return h to h.run(CommandArgs.Takeoff(zMm = 1_800))
+        }
+
+        val (stale, staleTakeoff) = startingHarness()
+        stale.clock.advance(600)
+        stale.controlHeartbeat()
+        stale.controller.tick(stale.clock.nowMs())
+        assertEquals("local_height_unavailable", staleTakeoff.terminal?.second, staleTakeoff.events.toString())
+        assertEquals(1, stale.model.stopTakeoffCalls)
+        assertEquals("idle", stale.controller.status.phase)
+
+        val (estopped, estoppedTakeoff) = startingHarness()
+        estopped.estop(true)
+        estopped.controller.tick(estopped.clock.nowMs())
+        assertEquals("estop_asserted", estoppedTakeoff.terminal?.second, estoppedTakeoff.events.toString())
+        assertEquals(1, estopped.model.stopTakeoffCalls)
+        assertEquals("idle", estopped.controller.status.phase)
+    }
+
+    @Test
+    fun `supervised vertical lands if a cancelled auto takeoff still becomes airborne`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+        h.localHeight(0.0)
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_800))
+        h.model.stopTakeoffResult = PortResult.Failed("busy")
+        h.estop(true)
+        h.controller.tick(h.clock.nowMs())
+        h.tick(1)
+
+        assertEquals("estop_asserted", takeoff.terminal?.second, takeoff.events.toString())
+        assertEquals(1, h.model.stopTakeoffCalls)
+        assertEquals("landing", h.controller.status.phase)
+        assertEquals("supervised_takeoff_cancelled", h.controller.status.landingReason)
+    }
+
+    @Test
     fun `supervised vertical continues checking height after takeoff completion and hold`() {
         fun completedHarness(): Harness {
             val h = Harness(supervisedVertical = SupervisedVerticalConfig())

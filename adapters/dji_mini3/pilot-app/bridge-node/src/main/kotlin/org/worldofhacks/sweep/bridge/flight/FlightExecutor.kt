@@ -194,6 +194,8 @@ class FlightExecutor(
 
         override fun startTakeoff(onResult: (PortResult) -> Unit) = inner.startTakeoff { result -> post { onResult(result) } }
 
+        override fun stopTakeoff(onResult: (PortResult) -> Unit) = inner.stopTakeoff { result -> post { onResult(result) } }
+
         override fun startLanding(onResult: (PortResult) -> Unit) = inner.startLanding { result -> post { onResult(result) } }
 
         override fun advance(nowMs: Long) = inner.advance(nowMs)

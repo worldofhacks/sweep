@@ -70,6 +70,8 @@ class FakeFlightAircraft(
 
     override fun startTakeoff(onResult: (PortResult) -> Unit) = model.startTakeoff(onResult)
 
+    override fun stopTakeoff(onResult: (PortResult) -> Unit) = model.stopTakeoff(onResult)
+
     override fun startLanding(onResult: (PortResult) -> Unit) = model.startLanding(onResult)
 
     private fun publish() {
