@@ -73,7 +73,7 @@ private fun FlightCard(flight: FlightNode, simulation: FlightSimulation?) {
                 }
                 Switch(checked = status.mapping.transposed, onCheckedChange = flight::setTransposed)
             }
-            Text("Grounded authority check enables Virtual Stick, waits for MSDK authority, then releases it. It does not take off or send a motion frame.", style = MaterialTheme.typography.bodySmall)
+            Text("Grounded authority check verifies the Virtual Stick mode contract, then releases it. Direct owner remains UNKNOWN. It does not take off or send a motion frame.", style = MaterialTheme.typography.bodySmall)
             OutlinedButton(enabled = !qualification.active, onClick = flight::qualifyGroundedAuthority) { Text("Check authority on ground") }
             Text(qualification.detail, color = if (qualification.active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodySmall)
             status.lastEvent?.let { Text("Last: $it", style = MaterialTheme.typography.bodySmall) }

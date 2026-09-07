@@ -102,10 +102,10 @@ class FlightExecutor(
             }
         } finally {
             // Only cancellation gets here; never leave Virtual Stick on with nobody streaming.
-            if (controller.virtualStickEnabled) {
+            if (controller.virtualStickMayBeEnabled) {
                 rawPort.sendStick(StickFrame.NEUTRAL)
                 rawPort.disableVirtualStick { }
-                log.log("flight loop stopped with virtual stick enabled: neutral sticks sent and virtual stick disabled")
+                log.log("flight loop stopped while virtual stick could be enabled: neutral sticks sent and virtual stick disabled")
             }
         }
     }

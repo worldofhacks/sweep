@@ -345,7 +345,10 @@ internal class SdkSession(private val application: Application) :
         read(generation, queryGeneration, "Product identity", KeyTools.createKey(ProductKey.KeyProductType)) { productType ->
             val mini3 = productType == ProductType.DJI_MINI_3
             val detail = "${productType.name} (${productType.value()})" + if (mini3) "" else " UNEXPECTED"
-            detail to { identity -> identity.copy(productType = productType.name, isMini3 = mini3) }
+            detail to { identity ->
+                port.onProductType(productType)
+                identity.copy(productType = productType.name, isMini3 = mini3)
+            }
         }
         read(generation, queryGeneration, "Aircraft firmware", KeyTools.createKey(ProductKey.KeyFirmwareVersion)) { firmware ->
             firmware.ifBlank { "returned empty" } to { identity -> identity.copy(aircraftFirmware = firmware) }
