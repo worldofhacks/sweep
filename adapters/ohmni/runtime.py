@@ -57,6 +57,7 @@ class GroundRuntimeConfig:
     telemetry_source_id: str = "ohmni-telemetry"
     status_source_id: str = "ohmni-status"
     odom_frame: str = "odom"
+    odom_origin_id: str | None = None
     body_frame: str = "body"
     lidar_source_id: str = "ohmni-lidar"
     lidar_frame: str = "lidar"
@@ -95,6 +96,15 @@ class GroundRuntimeConfig:
             raise ValueError("ground camera dimensions are invalid")
         if self.outbound_queue_limit < 8:
             raise ValueError("ground outbound queue must retain at least eight safety frames")
+        if self.odom_origin_id is not None and (
+            not self.odom_origin_id
+            or len(self.odom_origin_id) > 128
+            or self.odom_origin_id != self.odom_origin_id.strip()
+            or not self.odom_origin_id.isprintable()
+        ):
+            raise ValueError("odometry origin ID must be bounded non-empty text")
+        if self.return_approval is not None and not self.odom_origin_id:
+            raise ValueError("approved return requires an odometry origin ID")
         mount = (
             self.lidar_mount_x_m,
             self.lidar_mount_y_m,
@@ -144,6 +154,9 @@ class OhmniRuntime:
                 stop=device.stop,
                 grant_active=self._return_grant_active,
                 epoch=lambda: self._epoch,
+                session=config.session,
+                device_id=config.device_id,
+                odom_origin_id=config.odom_origin_id or "",
                 pose_source_id=config.pose_source_id,
                 odom_frame=config.odom_frame,
                 monotonic=config.monotonic,
@@ -806,6 +819,7 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
         type=int,
         default=os.environ.get("SWEEP_RELAY_CLOCK_OFFSET_MS", "0"),
     )
+    parser.add_argument("--odom-origin-id", default=os.environ.get("SWEEP_ODOM_ORIGIN_ID"))
     parser.add_argument("--telemetry-hz", type=float, default=5.0)
     parser.add_argument(
         "--return-approval-file", default=os.environ.get("SWEEP_RETURN_APPROVAL_FILE")
@@ -828,6 +842,8 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
     args = parser.parse_args(argv)
     if bool(args.return_approval_file) != bool(args.return_approval_key_file):
         parser.error("return approval and approval key files must be supplied together")
+    if args.return_approval_file and not args.odom_origin_id:
+        parser.error("return approval requires an odometry origin ID")
     if not args.relay or not args.session or not args.token or args.device_id is None:
         parser.error("relay, session, device ID, and adapter token are required")
     try:
@@ -850,6 +866,7 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
         relay_clock_offset_ms=args.relay_clock_offset_ms,
         telemetry_hz=args.telemetry_hz,
         return_approval=approval,
+        odom_origin_id=args.odom_origin_id,
         lidar_mount_x_m=args.lidar_mount_x_m,
         lidar_mount_y_m=args.lidar_mount_y_m,
         lidar_mount_z_m=args.lidar_mount_z_m,

@@ -155,6 +155,7 @@ class OhmniDevice:
             pos_quality=pose.quality,
             state=state,
             drive_authority=self.enabled,
+            t_ms=int(time.monotonic() * 1_000),
             extras={
                 "battery_voltage": self.battery_voltage,
                 "obstacle_guard": self.guard_reason() or "available",
