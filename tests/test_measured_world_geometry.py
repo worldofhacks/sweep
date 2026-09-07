@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,34 @@ FIXTURE = Path(__file__).parent / "fixtures" / "world_bundle"
 
 def _write(path: Path, document: dict) -> None:
     path.write_text(json.dumps(document, indent=2) + "\n")
+
+
+def test_world_geometry_command_writes_v2_artifacts_and_reports_success(tmp_path):
+    bundle, accepted = _held_out_world_bundle(tmp_path)
+    authoring = _authoring(tmp_path, bundle)
+    pins = tmp_path / "accepted.json"
+    _write(pins, accepted)
+    output = tmp_path / "geometry-cli"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tools.map_geometry",
+            str(bundle),
+            str(authoring),
+            str(output),
+            "--accepted-versions",
+            str(pins),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    report = json.loads((output / "geometry.json").read_text())
+    assert summary["routes"] == [{"id": "lobby-spine", "geometry_clear": True}]
+    assert report["schema_version"] == 2 and report["flight_approved"] is False
 
 
 def _seal(bundle: Path) -> dict:
