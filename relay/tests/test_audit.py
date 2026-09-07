@@ -141,7 +141,7 @@ def test_replay_deadline_includes_waiting_to_acquire_the_audit_lock(
     assert [record["seq"] for record in log.replay()] == [1]
 
 
-@pytest.mark.parametrize("slow_phase", ["row_read", "decode"])
+@pytest.mark.parametrize("slow_phase", ["row_fetch", "mirror_read", "decode"])
 def test_live_history_read_times_out_without_blocking_later_appends(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slow_phase: str
 ) -> None:
@@ -150,6 +150,9 @@ def test_live_history_read_times_out_without_blocking_later_appends(
     clock = [0.0]
     real_rows = log._database_rows
     real_loads = json.loads
+    real_open = builtins.open
+    decoded = []
+    mirror_reads = []
 
     def slow_rows():
         for row in real_rows():
@@ -157,18 +160,45 @@ def test_live_history_read_times_out_without_blocking_later_appends(
             yield row
 
     def slow_decode(chunk):
+        started = clock[0]
         record = real_loads(chunk)
-        clock[0] = 2.0
+        decoded.append(started)
+        if slow_phase == "decode" and mirror_reads:
+            clock[0] = 2.0
         return record
+
+    class SlowMirror:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def read(self, size):
+            chunk = self.stream.read(size)
+            mirror_reads.append(size)
+            if slow_phase == "mirror_read":
+                clock[0] = 2.0
+            return chunk
+
+    def slow_open(file, *args, **kwargs):
+        stream = real_open(file, *args, **kwargs)
+        return SlowMirror(stream) if Path(file) == log.path else stream
 
     with monkeypatch.context() as patch:
         patch.setattr("relay.audit.monotonic", lambda: clock[0])
-        if slow_phase == "row_read":
+        patch.setattr("relay.audit.json.loads", slow_decode)
+        patch.setattr(builtins, "open", slow_open)
+        if slow_phase == "row_fetch":
             patch.setattr(log, "_database_rows", slow_rows)
-        else:
-            patch.setattr("relay.audit.json.loads", slow_decode)
         with pytest.raises(AuditLogError, match="live replay deadline"):
             log.replay_snapshot(deadline=1.0)
+        assert all(started < 1.0 for started in decoded)
+        if slow_phase != "row_fetch":
+            assert mirror_reads
 
     assert log.append(_event("after-history"))["seq"] == 2
     assert [record["seq"] for record in log.replay()] == [1, 2]
