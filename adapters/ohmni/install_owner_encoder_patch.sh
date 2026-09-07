@@ -42,8 +42,17 @@ cleanup() {
   printf '%s\n' "rm -rf $stage" | "$adb" -s "$serial" shell -T su 0 sh >/dev/null 2>&1 || true
 }
 trap 'cleanup; rm -rf "$work"' EXIT HUP INT TERM
-"$adb" -s "$serial" push "$work/telebot_node.patched.js" "$stage/telebot_node.js" >/dev/null
-"$adb" -s "$serial" push "$module" "$stage/sweep_paired_encoder_sampler.js" >/dev/null
+stage_file() {
+  source_file=$1
+  destination=$2
+  {
+    printf "set -eu\numask 077\nbase64 -d > %s <<'EOF'\n" "$destination"
+    base64 "$source_file"
+    printf 'EOF\n'
+  } | "$adb" -s "$serial" shell -T su 0 sh
+}
+stage_file "$work/telebot_node.patched.js" "$stage/telebot_node.js"
+stage_file "$module" "$stage/sweep_paired_encoder_sampler.js"
 cat <<EOF | "$adb" -s "$serial" shell -T su 0 sh
 set -eu
 node_dir=$node_dir
@@ -51,6 +60,9 @@ target=\$node_dir/telebot_node.js
 backup=\$node_dir/telebot_node.js.sweep-owner-encoder.backup
 disabled=\$node_dir/telebot_node.js.sweep-owner-encoder.disabled
 module=\$node_dir/sweep_paired_encoder_sampler.js
+[ "\$(stat -c '%u:%g:%a' $stage)" = 0:0:700 ]
+[ "\$(stat -c '%a' $stage/telebot_node.js)" = 600 ]
+[ "\$(stat -c '%a' $stage/sweep_paired_encoder_sampler.js)" = 600 ]
 [ "\$(sha256sum \$target | cut -d ' ' -f 1)" = $source_sha ]
 [ "\$(sha256sum $stage/telebot_node.js | cut -d ' ' -f 1)" = $patched_sha ]
 [ "\$(sha256sum $stage/sweep_paired_encoder_sampler.js | cut -d ' ' -f 1)" = $module_sha ]

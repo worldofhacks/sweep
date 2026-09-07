@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -16,44 +18,79 @@ LF_PATCHED_SHA = "ee0a0665dc1a5931960d97032405cb4e7baf731d0cc6b08738a4d33302a5bf
 NODE_DIR = "/data/data/com.ohmnilabs.telebot_rtc/files/assets/node-files"
 
 
-def _tools(tmp_path: Path) -> tuple[Path, Path]:
+def _tools(
+    tmp_path: Path,
+    *,
+    source: bytes = b"original",
+    root_stage: Path | None = None,
+    fake_patcher: bool = True,
+) -> tuple[Path, Path]:
     calls = tmp_path / "calls.jsonl"
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     adb = bin_dir / "adb"
     adb.write_text(
         f"#!{sys.executable}\n"
-        "import base64, json, os, sys\n"
-        "args = sys.argv[1:]\n"
-        "target = '" + NODE_DIR + "/telebot_node.js'\n"
-        "script = sys.stdin.read() if args[2:] == ['shell', '-T', 'su', '0', 'sh'] else ''\n"
-        "with open(os.environ['OWNER_INSTALL_CALLS'], 'a') as stream:\n"
-        "    stream.write(json.dumps([args, script]) + '\\n')\n"
-        "if args[2] == 'pull': raise SystemExit('unprivileged protected read')\n"
-        "if 'base64 ' + target in script:\n"
-        "    sys.stdout.write(base64.b64encode(b'original').decode() + '\\n')\n"
-        "elif 'sha256sum ' + target in script:\n"
-        "    print(os.environ.get('OWNER_REMOTE_SHA', '"
-        + hashlib.sha256(b"original").hexdigest()
-        + "') + '  ' + target)\n"
-        "elif 'mktemp -d /data/local/tmp/sweep-owner-patch.XXXXXXXX' in script:\n"
-        "    print('/data/local/tmp/sweep-owner-patch.Ab12Cd34')\n"
-    )
-    python = bin_dir / "python3"
-    python.write_text(
-        f"#!{sys.executable}\n"
-        "import pathlib, sys\n"
-        "pathlib.Path(sys.argv[-1]).write_bytes(b'patched')\n"
+        + textwrap.dedent(
+            f"""\
+            import base64, json, os, subprocess, sys
+            args = sys.argv[1:]
+            target = {NODE_DIR + "/telebot_node.js"!r}
+            script = sys.stdin.read() if args[2:] == ['shell', '-T', 'su', '0', 'sh'] else ''
+            with open(os.environ['OWNER_INSTALL_CALLS'], 'a') as stream:
+                stream.write(json.dumps([args, script]) + '\\n')
+            if len(args) > 2 and args[2] == 'push':
+                sys.stderr.write('remote could not create file: Permission denied\\n')
+                raise SystemExit(1)
+            if 'base64 ' + target in script:
+                sys.stdout.write(base64.b64encode({source!r}).decode() + '\\n')
+            elif 'sha256sum ' + target in script:
+                remote_sha = os.environ.get(
+                    'OWNER_REMOTE_SHA', {hashlib.sha256(source).hexdigest()!r}
+                )
+                print(remote_sha + '  ' + target)
+            elif 'mktemp -d /data/local/tmp/sweep-owner-patch.XXXXXXXX' in script:
+                root_stage = os.environ.get('OWNER_ROOT_STAGE')
+                if root_stage:
+                    os.mkdir(root_stage, 0o700)
+                print('/data/local/tmp/sweep-owner-patch.Ab12Cd34')
+            elif 'base64 -d > /data/local/tmp/sweep-owner-patch.Ab12Cd34/' in script:
+                root_stage = os.environ.get('OWNER_ROOT_STAGE')
+                if root_stage:
+                    stage = '/data/local/tmp/sweep-owner-patch.Ab12Cd34'
+                    subprocess.run(
+                        ['sh'],
+                        input=script.replace(stage, root_stage),
+                        text=True,
+                        check=True,
+                    )
+            """
+        )
     )
     adb.chmod(0o700)
-    python.chmod(0o700)
+    if fake_patcher:
+        python = bin_dir / "python3"
+        python.write_text(
+            f"#!{sys.executable}\n"
+            "import pathlib, sys\n"
+            "pathlib.Path(sys.argv[-1]).write_bytes(b'patched')\n"
+        )
+        python.chmod(0o700)
     return bin_dir, calls
 
 
 def _run(
-    script: str, tmp_path: Path, *, remote_sha: str | None = None
+    script: str,
+    tmp_path: Path,
+    *,
+    remote_sha: str | None = None,
+    source: bytes = b"original",
+    root_stage: Path | None = None,
+    fake_patcher: bool = True,
 ) -> list[tuple[list[str], str]]:
-    bin_dir, calls = _tools(tmp_path)
+    bin_dir, calls = _tools(
+        tmp_path, source=source, root_stage=root_stage, fake_patcher=fake_patcher
+    )
     environment = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -61,6 +98,8 @@ def _run(
     }
     if remote_sha is not None:
         environment["OWNER_REMOTE_SHA"] = remote_sha
+    if root_stage is not None:
+        environment["OWNER_ROOT_STAGE"] = str(root_stage)
     subprocess.run(
         ["sh", script, "robot", NODE_DIR],
         env=environment,
@@ -70,6 +109,66 @@ def _run(
         timeout=10,
     )
     return [tuple(json.loads(line)) for line in calls.read_text().splitlines()]
+
+
+def test_root_stage_rejects_adb_push_but_installer_transfers_exact_bytes_through_root_shell(
+    tmp_path: Path,
+) -> None:
+    script = Path(__file__).with_name("install_owner_encoder_patch.sh")
+    source = (
+        Path(__file__).with_name("vendor") / "fixtures" / "telebot_node_reviewed_lf.js"
+    ).read_bytes()
+    root_stage = tmp_path / "root-stage"
+    bin_dir, _ = _tools(tmp_path, source=source, root_stage=root_stage, fake_patcher=False)
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "OWNER_INSTALL_CALLS": str(tmp_path / "calls.jsonl"),
+        "OWNER_ROOT_STAGE": str(root_stage),
+    }
+
+    rejected = subprocess.run(
+        [
+            str(bin_dir / "adb"),
+            "-s",
+            "robot",
+            "push",
+            "fixture",
+            "/data/local/tmp/sweep-owner-patch.Ab12Cd34/telebot_node.js",
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected.returncode == 1
+    assert "Permission denied" in rejected.stderr
+    (tmp_path / "calls.jsonl").unlink()
+
+    subprocess.run(
+        ["sh", str(script), "robot", NODE_DIR],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    from .tools.prepare_owner_encoder_patch import prepare
+
+    assert stat.S_IMODE(root_stage.stat().st_mode) == 0o700
+    assert root_stage.joinpath("telebot_node.js").read_bytes() == prepare(source)
+    assert stat.S_IMODE(root_stage.joinpath("telebot_node.js").stat().st_mode) == 0o600
+    assert (
+        root_stage.joinpath("sweep_paired_encoder_sampler.js").read_bytes()
+        == (Path(__file__).with_name("vendor") / "sweep_paired_encoder_sampler.js").read_bytes()
+    )
+    assert (
+        stat.S_IMODE(root_stage.joinpath("sweep_paired_encoder_sampler.js").stat().st_mode) == 0o600
+    )
+    recorded = (tmp_path / "calls.jsonl").read_text().splitlines()
+    calls = [tuple(json.loads(line)) for line in recorded]
+    assert not any(args[2] == "push" for args, _ in calls)
 
 
 def test_owner_install_reads_and_rehashes_through_one_root_shell_route(tmp_path: Path) -> None:
@@ -88,10 +187,23 @@ def test_owner_install_reads_and_rehashes_through_one_root_shell_route(tmp_path:
         for index, (_, script) in enumerate(calls)
         if f"sha256sum {NODE_DIR}/telebot_node.js" in script
     )
-    push_call = next(index for index, (args, _) in enumerate(calls) if args[2] == "push")
-    assert source_call < rehash_call < push_call
+    transfer_call = next(
+        index
+        for index, (_, script) in enumerate(calls)
+        if "base64 -d > /data/local/tmp/sweep-owner-patch.Ab12Cd34/telebot_node.js" in script
+    )
+    assert source_call < rehash_call < transfer_call
+    assert not any(args[2] == "push" for args, _ in calls)
     assert f"= {source_sha} ]" in install
     assert "[ ! -e $disabled ]" in install
+    assert (
+        "[ \"$(stat -c '%u:%g:%a' /data/local/tmp/sweep-owner-patch.Ab12Cd34)\" = 0:0:700 ]"
+        in install
+    )
+    assert (
+        "[ \"$(stat -c '%a' /data/local/tmp/sweep-owner-patch.Ab12Cd34/telebot_node.js)\" = 600 ]"
+        in install
+    )
     assert "chown 1000:1000 $target $module" in install
     assert "chmod 600 $target $module" in install
     assert "chcon u:object_r:system_app_data_file:s0 $target $module" in install
