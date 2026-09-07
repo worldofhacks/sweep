@@ -1,6 +1,6 @@
 # Sweep production-chain readiness
 
-At the 15:43 UTC checkpoint on 2026-09-07, neither physical flight nor wheel
+At the 16:09 UTC checkpoint on 2026-09-07, neither physical flight nor wheel
 acceptance has passed. The second supervised hover reached 1.0 m while the phone
 waited four seconds for MSDK control authority without a qualifying confirmation.
 Sweep's land command was refused. After the RC landing instruction, telemetry
@@ -159,8 +159,13 @@ source hashes; modes, ownership, and SELinux context matched the reviewed values
 The new plugin directory is mode 0700, and the installed files are mode 0600.
 `plugin-install-verification.json` and `CHANGELOG.md` in
 `/var/tmp/gauntlet/sweep-production/ohmni11-handback-20260907T150000Z` retain the
-record. A normal reboot and a 60-second uninterrupted stationary recording remain
-required before ground motion.
+record. The next normal reboot preserved the plugin, but the qualification reader
+received zero pairs and timed out. A retained-fault diagnostic, source `d3614ae0`,
+then survived another normal reboot and reported `missing_encoder_reply` for
+poll 1. It exposes a missing accepted reply within the sampler deadline; it does
+not establish the underlying serial failure. Both attempts failed qualification,
+and ground motion remains disabled. Their command records and the updated plugin
+backup are retained in the same handback directory.
 
 The lidar-frame fix in #295 prevents a second rotation of scans that already use
 body-relative angles. The operator estimates Ohmni 11's sensor is about 24 inches
@@ -175,6 +180,12 @@ zero, and closed cleanly. Its evidence is
 `/var/tmp/gauntlet/sweep-production/ohmni11-handback-20260907T150000Z/lidar-sensor-probe.json`.
 The descriptor does not prove scan points or visible mechanical rotation. No physical
 drive or local collision-stop test has passed.
+
+The [MSDK control research](MSDK_MINI3_CONTROL_RESEARCH.md) separates accepted
+automatic takeoff from the failed Virtual Stick handoff, records DJI's API
+contracts and exact SDK artifact, and defines the grounded diagnostic needed
+before another flight. Its identified recovery gap remains open: the relay's
+authority gate can refuse land before the phone receives the separate DJI action.
 
 ## Software and remaining evidence
 
