@@ -4,7 +4,7 @@ import { ControlModule } from './control/ControlModule'
 import { DevicesModule } from './devices/DevicesModule'
 import { GestureModule } from './gesture/GestureModule'
 import { LiveModule } from './live/LiveModule'
-import { FleetMap } from './map/FleetMap'
+import { MapModule } from './map/MapModule'
 import { SpeechModule } from './speech/SpeechModule'
 import { WorldsModule } from './worlds/WorldsModule'
 import type { ModuleDefinition, ModuleId } from './types'
@@ -72,7 +72,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     label: 'Map',
     title: 'Fleet map',
     note: 'Reported device positions, LiDAR returns, and the relay occupancy map.',
-    component: FleetMap,
+    component: MapModule,
     context: FleetContext,
   },
 ]

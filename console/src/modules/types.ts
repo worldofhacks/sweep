@@ -1,3 +1,4 @@
+import type { MapAuthoringClient } from './map/authoring/client'
 import type { ComponentType } from 'react'
 import type { CatalogController } from '../catalog/use-catalog'
 import type { useControlConsole } from '../control/use-control-console'
@@ -31,6 +32,8 @@ export type VoiceDependencies = Pick<
  * transcript client means the relay has no transcription endpoint here.
  */
 export interface ModuleServices {
+  /** Explicit saved-map integration; absent backend actions remain unavailable. */
+  mapAuthoring?: MapAuthoringClient
   transcript?: TranscriptClient
   gesture?: GestureProducerDependencies
   voice?: VoiceDependencies

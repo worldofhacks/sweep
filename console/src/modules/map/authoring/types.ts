@@ -75,13 +75,12 @@ export interface RevisionComparison {
   right: MapRevision
   changes: Array<{ path: string; before: string; after: string }>
 }
-export interface CurrentTagObservation {
+export interface WorldPositionObservation {
   observationId: string
   sourceId: string
   deviceId: number
   connectionEpoch: number
   sessionId: string
-  tagId: number
   frame: 'world'
   mapVersion: string
   floorId: string
@@ -92,3 +91,4 @@ export interface CurrentTagObservation {
   /** Must come from an authoritative frame/epoch association, never legacy x/y. */
   frameAssociationVerified: boolean
 }
+export interface CurrentTagObservation extends WorldPositionObservation { tagId: number }

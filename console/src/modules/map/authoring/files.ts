@@ -24,7 +24,7 @@ export function parseLocalDraft(raw: string): MapDraft {
     if (typeof i.dataUrl !== 'string' || i.dataUrl.length > MAX_IMAGE_BYTES * 1.4 || !/^data:image\/(png|jpeg);base64,[a-zA-Z0-9+/]+=*$/.test(i.dataUrl)) fail()
     const width = number(i.width), height = number(i.height)
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > 16_777_216 || !/^[a-f0-9]{64}$/.test(text(i.sha256))) fail()
-    image = { name: text(i.name), dataUrl: i.dataUrl, width, height, sha256: text(i.sha256) }
+    image = { name: text(i.name), dataUrl: i.dataUrl as string, width, height, sha256: text(i.sha256) }
   }
   return {
     format: 'sweep-map-draft-v1',
@@ -33,7 +33,7 @@ export function parseLocalDraft(raw: string): MapDraft {
     features: array(value.features, 256).map((raw): MapFeature => {
       const f = object(raw)
       if (f.kind !== 'zone' && f.kind !== 'geofence' && f.kind !== 'no_fly' && f.kind !== 'corridor') fail()
-      return { id: text(f.id), kind: f.kind, name: text(f.name), aliases: strings(f.aliases), points: array(f.points).map(point), widthM: nullable(f.widthM), flightHeightM: nullable(f.flightHeightM), heightToleranceM: nullable(f.heightToleranceM), heightEvidence: text(f.heightEvidence) }
+      return { id: text(f.id), kind: f.kind as MapFeature['kind'], name: text(f.name), aliases: strings(f.aliases), points: array(f.points).map(point), widthM: nullable(f.widthM), flightHeightM: nullable(f.flightHeightM), heightToleranceM: nullable(f.heightToleranceM), heightEvidence: text(f.heightEvidence) }
     }),
     tags: array(value.tags).map((raw): MapTag => {
       const t = object(raw)
@@ -81,7 +81,11 @@ export async function loadOccupancyImage(file: File): Promise<OccupancyImage> {
 
 export async function loadLocalDraft(file: File): Promise<MapDraft> {
   if (file.size > MAX_DOCUMENT_BYTES) fail()
-  const draft = parseLocalDraft(await readFile(file, 'text'))
+  return verifyDraftImage(parseLocalDraft(await readFile(file, 'text')))
+}
+
+/** Shared for local imports and relay loads before image metadata becomes usable. */
+export async function verifyDraftImage(draft: MapDraft): Promise<MapDraft> {
   if (draft.image) {
     const [size, digest] = await Promise.all([dimensions(draft.image.dataUrl), imageDigest(draft.image.dataUrl)])
     if (size.width !== draft.image.width || size.height !== draft.image.height || digest !== draft.image.sha256) throw new Error('Imported image dimensions or hash do not match its bytes.')

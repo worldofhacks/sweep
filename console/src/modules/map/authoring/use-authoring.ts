@@ -1,35 +1,45 @@
-import { useEffect, useRef, useState } from 'react'
-import { sameRevision, supports, validRevision, type AuthoringOperation, type MapAuthoringClient } from './client'
-import { emptyDraft, validateDraft } from './geometry'
-import { parseLocalDraft } from './files'
+import { observeDevice } from '../../../control/observation'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ControlState } from '../../../control/state'
+import { approvalReceipt, revisionComparison, revisionIdentity, revisionList, sameRevision, supports, validRevision, validationReceipt, type AuthoringOperation, type MapAuthoringClient } from './client'
+import { emptyDraft, invalidateChangedEvidence, validateDraft } from './geometry'
+import { parseLocalDraft, verifyDraftImage } from './files'
 import type { MapApproval, MapDraft, MapRevision, MapValidation, RevisionComparison, RevisionSummary } from './types'
+import { currentWorldObservation, observationClock } from './observations'
 
-export function useMapAuthoring(client: MapAuthoringClient, now: () => number) {
+export function useMapAuthoring(client: MapAuthoringClient, now: () => number, state?: ControlState) {
+  const session = client.status === 'available' ? client.sessionId : null
+  // A→B→A gets a new ownership object, so old receipts cannot become current again.
+  const binding = useMemo(() => ({ client, session }), [client, session])
   const [draft, setDraft] = useState(emptyDraft)
   const [history, setHistory] = useState<MapDraft[]>([])
   const [base, setBase] = useState<MapRevision | null>(null)
   const [dirty, setDirty] = useState(true)
   const [validation, setValidation] = useState<MapValidation | null>(null)
   const [approval, setApproval] = useState<MapApproval | null>(null)
-  const [receiptClient, setReceiptClient] = useState<MapAuthoringClient | null>(null)
+  const [receiptBinding, setReceiptBinding] = useState<typeof binding | null>(null)
   const [revisions, setRevisions] = useState<RevisionSummary[]>([])
+  const [revisionBinding, setRevisionBinding] = useState<typeof binding | null>(null)
   const [comparison, setComparison] = useState<RevisionComparison | null>(null)
   const [notice, setNotice] = useState('Local draft. No relay approval.')
-  const [busy, setBusy] = useState<AuthoringOperation | null>(null)
+  const [pending, setPending] = useState<{ operation: AuthoringOperation; binding: typeof binding } | null>(null)
   const generation = useRef(0)
   const request = useRef(0)
   const inFlight = useRef(false)
-  useEffect(() => () => { request.current += 1; inFlight.current = false }, [client])
+  const latestRoster = useRef(state)
+  useEffect(() => { latestRoster.current = state }, [state])
+  useEffect(() => () => { request.current += 1; inFlight.current = false }, [client, session])
   const issues = validateDraft(draft)
-  const bound = receiptClient === client
+  const bound = receiptBinding === binding
   const currentValidation = bound && !dirty && validation && sameRevision(validation.reference, base) ? validation : null
   const currentApproval = bound && !dirty && approval && sameRevision(approval.reference, base) ? approval : null
+  const busy = pending?.binding === binding ? pending.operation : null
 
-  const changed = (next: MapDraft, retainHistory = true) => {
+  const changed = (next: MapDraft, retainHistory = true, recordedTag?: string) => {
     generation.current += 1
     if (retainHistory) setHistory((previous) => [...previous.slice(-49), draft])
     else setHistory([])
-    setDraft(next)
+    setDraft(invalidateChangedEvidence(draft, next, recordedTag))
     setDirty(true)
     setValidation(null)
     setApproval(null)
@@ -38,8 +48,10 @@ export function useMapAuthoring(client: MapAuthoringClient, now: () => number) {
   }
   const replace = (next: MapDraft) => {
     changed(next, false)
+    // Imported evidence remains a local claim, independent of the previous draft.
+    setDraft(next)
     setBase(null)
-    setReceiptClient(null)
+    setReceiptBinding(null)
   }
   const undo = () => {
     const previous = history.at(-1)
@@ -49,10 +61,14 @@ export function useMapAuthoring(client: MapAuthoringClient, now: () => number) {
   }
   const run = async (operation: AuthoringOperation, work: (current: Extract<MapAuthoringClient, { status: 'available' }>, stillCurrent: () => boolean) => Promise<void>) => {
     if (client.status !== 'available' || !supports(client, operation) || inFlight.current) return
-    const epoch = generation.current, id = ++request.current
+    const epoch = generation.current, id = ++request.current, sessionId = client.sessionId
     inFlight.current = true
-    setBusy(operation)
-    const stillCurrent = () => id === request.current && epoch === generation.current
+    setPending({ operation, binding })
+    let applied = false
+    const stillCurrent = () => {
+      applied = id === request.current && epoch === generation.current && client.sessionId === sessionId && supports(client, operation)
+      return applied
+    }
     try {
       await work(client, stillCurrent)
     } catch (error) {
@@ -60,66 +76,81 @@ export function useMapAuthoring(client: MapAuthoringClient, now: () => number) {
     } finally {
       if (id === request.current) {
         inFlight.current = false
-        setBusy(null)
-        if (epoch !== generation.current) setNotice('The draft changed while the request was pending. Its result cannot validate or approve these changes.')
+        setPending(null)
+        if (epoch !== generation.current && !applied) setNotice('The draft changed while the request was pending. Its result cannot validate or approve these changes.')
       }
     }
   }
   const list = () => run('list', async (api, current) => {
-    const result = await api.list()
-    if (result.length > 256 || result.some((r) => !validRevision(r))) throw new Error('The relay returned invalid revision identities.')
-    if (current()) { setRevisions(result); setReceiptClient(api); setNotice(result.length ? 'Relay revisions loaded.' : 'No saved relay revisions reported.') }
+    const result = revisionList(await api.list())
+    if (current()) { setRevisions(result); setRevisionBinding(binding); setNotice(result.length ? 'Relay revisions loaded.' : 'No saved relay revisions reported.') }
   })
   const load = (reference: MapRevision) => run('load', async (api, current) => {
-    const result = await api.load(reference)
-    if (!sameRevision(result.reference, reference) || !validRevision(result.reference)) throw new Error('The loaded revision does not match the requested identity.')
-    const next = parseLocalDraft(JSON.stringify(result.draft))
+    if (!validRevision(reference)) throw new Error('Select a valid relay revision identity.')
+    const requested = revisionIdentity(reference)
+    const result = await api.load(revisionIdentity(requested))
+    if (!validRevision(result.reference) || !sameRevision(result.reference, requested)) throw new Error('The loaded revision does not match the requested identity.')
+    const loaded = revisionIdentity(result.reference)
+    const next = await verifyDraftImage(parseLocalDraft(JSON.stringify(result.draft)))
     if (current()) {
       replace(next)
-      setBase(result.reference); setDirty(false); setReceiptClient(api)
+      setBase(loaded); setDirty(false); setReceiptBinding(binding)
       setNotice('Relay revision loaded. Approval requires fresh server validation of this exact revision.')
     }
   })
   const save = () => run('save', async (api, current) => {
     if (issues.length) throw new Error('Resolve local checks before saving to the relay.')
-    const result = await api.save(draft, bound ? base : null)
+    const result = await api.save(parseLocalDraft(JSON.stringify(draft)), bound && base ? revisionIdentity(base) : null)
     if (!validRevision(result)) throw new Error('The relay did not return an immutable saved revision.')
     if (bound && base && (result.bundleId !== base.bundleId || (dirty && sameRevision(result, base)))) throw new Error('The relay returned a conflicting or unchanged revision for edited content.')
     if (current()) {
-      setBase(result); setDirty(false); setReceiptClient(api); setValidation(null); setApproval(null)
+      setBase(revisionIdentity(result)); setDirty(false); setReceiptBinding(binding); setValidation(null); setApproval(null)
       setNotice('Saved to the relay. This revision is not yet validated or approved.')
     }
   })
   const validate = () => run('validate', async (api, current) => {
     if (!base || !bound || dirty || issues.length) throw new Error('Save a valid, unchanged draft before relay validation.')
-    const result = await api.validate(base)
-    if (!sameRevision(result.reference, base) || !result.validationId?.trim() || typeof result.valid !== 'boolean' || !Array.isArray(result.issues)) throw new Error('Validation did not match the exact saved revision.')
+    setValidation(null); setApproval(null)
+    const result = validationReceipt(await api.validate(revisionIdentity(base)))
+    if (!sameRevision(result.reference, base)) throw new Error('Validation did not match the exact saved revision.')
     if (current()) { setValidation(result); setApproval(null); setNotice(result.valid && result.issues.length === 0 ? 'Relay validation passed. Review and explicitly approve this revision.' : 'Relay validation refused this revision.') }
   })
   const canApprove = issues.length === 0 && currentValidation?.valid === true && currentValidation.issues.length === 0 && supports(client, 'approve')
   const approve = () => run('approve', async (api, current) => {
     if (!canApprove || !base || !currentValidation) throw new Error('Approval requires passing server validation of the unchanged saved revision.')
-    const result = await api.approve(base, currentValidation.validationId)
-    if (!sameRevision(result.reference, base) || result.validationId !== currentValidation.validationId || !result.auditId?.trim() || !result.approvedBy?.trim() || !Number.isFinite(result.approvedAt)) throw new Error('The relay did not return an audited approval for this exact validation and revision.')
+    const result = approvalReceipt(await api.approve(revisionIdentity(base), currentValidation.validationId))
+    if (!sameRevision(result.reference, base) || result.validationId !== currentValidation.validationId || result.approvedAt < 0 || result.approvedAt > Math.min(now() + 1000, 8.64e15)) throw new Error('The relay did not return an audited approval for this exact validation and revision.')
     if (current()) { setApproval(result); setNotice('The relay returned audited approval for this exact revision.') }
   })
   const compare = (other: MapRevision) => run('compare', async (api, current) => {
     if (!base || !bound || dirty) throw new Error('Save current changes before comparing relay revisions.')
-    const result = await api.compare(base, other)
+    if (!validRevision(other)) throw new Error('Select a valid relay revision identity.')
+    const result = revisionComparison(await api.compare(revisionIdentity(base), revisionIdentity(other)))
     if (!sameRevision(result.left, base) || !sameRevision(result.right, other)) throw new Error('Comparison does not match the requested revisions.')
     if (current()) setComparison(result)
   })
+  const recordTarget = recordingTarget(state, session, now())
   const record = (tagId: string) => run('record', async (api, current) => {
+    const target = recordingTarget(latestRoster.current, api.sessionId, now())
+    if (!target) throw new Error('Select one current ground robot to record its position.')
+    const deviceId = target.drone_id, connectionEpoch = target.connection_epoch
     const tag = draft.tags.find((t) => t.id === tagId)
-    if (!tag || tag.tagId === null || draft.metadata.frame !== 'world') throw new Error('Select a tag with an explicit ID and world-frame map first.')
-    const result = await api.recordCurrentObservation({ mapVersion: draft.metadata.mapVersion, floorId: draft.metadata.floorId, tagId: tag.tagId })
-    const at = now()
-    if (result.frameAssociationVerified !== true || result.frame !== 'world' || result.mapVersion !== draft.metadata.mapVersion || result.floorId !== draft.metadata.floorId || result.tagId !== tag.tagId || result.sessionId !== api.sessionId
-      || !Number.isInteger(result.deviceId) || result.deviceId < 1 || !Number.isInteger(result.connectionEpoch) || result.connectionEpoch < 1
-      || !result.observationId?.trim() || !result.sourceId?.trim() || !Number.isFinite(result.tCapture) || !Number.isFinite(result.tIngest)
-      || result.tCapture > result.tIngest || result.tIngest > at || at - result.tCapture > 1000
-      || !Number.isFinite(result.confidence) || result.confidence < 0 || result.confidence > 1 || !Number.isFinite(result.position.x) || !Number.isFinite(result.position.y)) throw new Error('The observation lacks a fresh, verified map/frame/device association.')
-    if (current()) changed({ ...draft, tags: draft.tags.map((t) => t.id === tagId ? { ...t, position: result.position, source: 'auto_registered', confidence: result.confidence, observations: [...new Set([...t.observations, result.observationId])], tapeVerified: false, tapeEvidence: '' } : t) })
+    if (!tag || tag.tagId === null || !Number.isInteger(tag.tagId) || tag.tagId < 0 || draft.metadata.frame !== 'world' || !draft.metadata.mapVersion.trim() || !draft.metadata.floorId.trim() || !latestRoster.current) throw new Error('Select a tag with an explicit ID, world-frame map, and current relay roster first.')
+    const result = await api.recordCurrentObservation({ mapVersion: draft.metadata.mapVersion, floorId: draft.metadata.floorId, tagId: tag.tagId, deviceId, connectionEpoch })
+    const currentTarget = recordingTarget(latestRoster.current, api.sessionId, now())
+    if (currentTarget?.drone_id !== deviceId || currentTarget.connection_epoch !== connectionEpoch ||
+      result.deviceId !== deviceId || result.connectionEpoch !== connectionEpoch || result.tagId !== tag.tagId || !currentWorldObservation(result, draft.metadata, latestRoster.current, api.sessionId, now())) throw new Error('The observation lacks a fresh, verified map/frame/device association.')
+    if (current()) {
+      changed({ ...draft, tags: draft.tags.map((t) => t.id === tagId ? { ...t, position: { x: result.position.x, y: result.position.y }, source: 'auto_registered', confidence: result.confidence, observations: [...new Set([...t.observations, result.observationId])], tapeVerified: false, tapeEvidence: '' } : t) }, true, tagId)
+      setNotice('Fresh associated observation recorded in the local draft. Tape verification must be repeated.')
+    }
   })
-  return { draft, changed, replace, undo, canUndo: history.length > 0, base: bound ? base : null, dirty, issues, validation: currentValidation, approval: currentApproval, revisions: bound ? revisions : [], comparison: bound ? comparison : null, busy, notice, setNotice, list, load, save, validate, approve, canApprove, compare, record }
+  return { draft, changed, replace, undo, canUndo: history.length > 0, base: bound ? base : null, dirty, issues, validation: currentValidation, approval: currentApproval, revisions: revisionBinding === binding ? revisions : [], comparison: bound ? comparison : null, busy, notice, setNotice, list, load, save, validate, approve, canApprove, compare, record, recordTarget }
+}
+
+/** Drive-over recording names one physical ground robot, never an arbitrary fleet member. */
+function recordingTarget(state: ControlState | undefined, session: string | null, at: number) {
+  if (!state || state.sessionId !== session || state.selection.length !== 1 || !['connected', 'degraded'].includes(state.connection.status)) return null
+  const device = state.aircraft[state.selection[0]]
+  return device?.device_class === 'ground_vehicle' && observeDevice(device, observationClock(state, at)).state === 'current' ? device : null
 }
