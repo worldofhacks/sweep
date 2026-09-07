@@ -17,30 +17,12 @@ from weakref import WeakKeyDictionary
 import httpx
 
 from language.contracts import CompilerReason
+from relay.capabilities import IntentName
 
 PINNED_COMPILER_MODEL = "claude-sonnet-5"
-PROMPT_SCHEMA_VERSION = "intent-v1-compiler-8"
+PROMPT_SCHEMA_VERSION = "intent-v1-compiler-9"
 _CASSETTE_LOCK = Lock()
-_COMPILER_INTENT_NAMES = (
-    "arm",
-    "disarm",
-    "estop",
-    "select",
-    "takeoff",
-    "land",
-    "land_all",
-    "hold",
-    "translate",
-    "altitude",
-    "formation_next",
-    "formation_set",
-    "spacing",
-    "come_home",
-    "sweep",
-    "capture_room",
-    "survey_area",
-    "map_area",
-)
+_COMPILER_INTENT_NAMES = tuple(name.value for name in IntentName)
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +314,10 @@ def _anthropic_body(request: ModelRequest) -> dict[str, object]:
             "explicitly land the fleet. An urgency word does not expand the target set.\n"
             "Arguments: select={ids}; translate={dx,dy}; altitude and spacing={delta}; "
             "formation_set={name}; survey_area and map_area={area_id}; sweep={} or {box}. "
+            "navigate={zone_id}; its zone_id must come from the accepted destination resolver, "
+            "and its separate frozen navigation review never implies takeoff, capture, survey, "
+            "or formation permission. Without a qualified navigation capability return "
+            "unsupported. "
             "capture_room={room_id,pattern}; the host generates capture_id. All other names "
             "use args: {}. Supply only those fields. A vocabulary entry does not prove a "
             "capability is available. Capture needs exactly one selected aircraft, a known "
@@ -442,6 +428,7 @@ def _tool_schema() -> dict[str, object]:
                     },
                     "room_id": {"type": "string", "minLength": 1, "maxLength": 128},
                     "area_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "zone_id": {"type": "string", "minLength": 1, "maxLength": 128},
                     "pattern": {"type": "string", "enum": ["pano_360", "reconstruct_8"]},
                 },
             },

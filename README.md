@@ -18,6 +18,7 @@ See [docs/mvp-plan.md](docs/mvp-plan.md) for the delivery sequence and hardware 
 - [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. M0 freezes five contract groups: intent and WebSocket, telemetry, flight and camera adapters, repository layout, and room-world records.
 - [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped work breakdown.
 - [Modular fleet integration](docs/modular-fleet.md): device identity, capabilities, cameras, sensors, freshness, capacity, and commissioning evidence.
+- [Map and navigation integration](docs/platform-integration.md): authenticated authoring, immutable approvals, active-map selection, qualified observations, and frozen destination reviews.
 - [Decision records](docs/decisions/): why the scaffold and the architecture look the way they do. The [docs index](docs/README.md) lists everything else.
 - The [pull request template](.github/pull_request_template.md) is the working agreement as a checklist.
 
@@ -27,6 +28,7 @@ See [docs/mvp-plan.md](docs/mvp-plan.md) for the delivery sequence and hardware 
 |---|---|---|---|
 | [`console/`](console/) | Interaction | M0+ | Operator console: Vite + React + TypeScript |
 | [`relay/`](relay/) | Platform | M1 | FastAPI WebSocket intent bus, state, JSONL logging, replay |
+| [`spatial/`](spatial/) | Platform, Autonomy | M3 | Explicit frames and the shared bounded observation envelope |
 | [`planner/`](planner/) | Autonomy | M1 | Deterministic formations, sweep lanes, allocation, clamping |
 | [`arbiter/`](arbiter/) | Autonomy | M1 | Safety rules, e-stop, battery return |
 | [`adapters/`](adapters/) | Autonomy | M1, M2 | Shared device/camera contracts, vendor bridges, and isolated simulator tests |

@@ -11,6 +11,7 @@ import {
   type NavigationPreview,
   type NavigationSnapshot,
   type NavigationTarget,
+  type NavigationVerification,
 } from '../../../navigation'
 import './navigation.css'
 
@@ -21,10 +22,13 @@ export interface NavigationPaneProps {
   /** Requests a preview only. Confirmation and any future dispatch belong to the controller. */
   onPreview: (zoneId: string) => void
   onDestinationChange?: () => void
+  verification?: NavigationVerification
+  canVerify?: boolean
+  onVerify?: () => void
 }
 
 /** A destination identity is chosen here; coordinates and routes come from the planner. */
-export function NavigationPane({ state, snapshot, now, onPreview, onDestinationChange }: NavigationPaneProps) {
+export function NavigationPane({ state, snapshot, now, onPreview, onDestinationChange, verification, canVerify, onVerify }: NavigationPaneProps) {
   const [query, setQuery] = useState('')
   const [chosenId, setChosenId] = useState<string | null>(null)
   const catalog = snapshot.catalog
@@ -32,8 +36,8 @@ export function NavigationPane({ state, snapshot, now, onPreview, onDestinationC
   const catalogValidity = navigationCatalogValidity(catalog, state.sessionId, now)
   const selected = navigationTargets(current)
   const result = chosenId === null
-    ? resolveNavigationDestination(catalogValidity.valid ? catalog : null, query, now, selected.map((device) => device.deviceClass))
-    : resolveNavigationZoneId(catalogValidity.valid ? catalog : null, chosenId, now, selected.map((device) => device.deviceClass))
+    ? resolveNavigationDestination(catalogValidity.valid ? catalog : null, query, now, selected.map((device) => device.deviceClass), snapshot.reviewSupported === true)
+    : resolveNavigationZoneId(catalogValidity.valid ? catalog : null, chosenId, now, selected.map((device) => device.deviceClass), snapshot.reviewSupported === true)
   const search = normalizeSearch(query)
   const candidates = catalog?.destinations.filter((destination) =>
     !search || [destination.zoneId, destination.name, ...destination.aliases].some((name) => normalizeSearch(name).includes(search)),
@@ -43,11 +47,11 @@ export function NavigationPane({ state, snapshot, now, onPreview, onDestinationC
     ? snapshot.reason ?? 'Named destinations are unavailable from the relay.'
     : snapshot.status === 'loading'
       ? 'Waiting for the destination review.'
-      : navigationBlockedReason(current) ?? (!catalogValidity.valid ? catalogValidity.reason : result.kind === 'refused' ? result.reason : result.kind === 'ambiguous' ? 'Choose one canonical destination to resolve the ambiguity.' : null)
+      : navigationBlockedReason(current, snapshot.reviewSupported === true) ?? (!catalogValidity.valid ? catalogValidity.reason : result.kind === 'refused' ? result.reason : result.kind === 'ambiguous' ? 'Choose one canonical destination to resolve the ambiguity.' : null)
   const preview = snapshot.preview
   const destinationZoneId = result.kind === 'resolved' ? result.destination.zoneId : query.trim() || chosenId ? null : preview?.destination.zoneId
-  const previewValidity = preview && destinationZoneId && snapshot.status === 'ready' && navigationBlockedReason(current) === null
-    ? navigationPreviewValidity(preview, catalog, { session: state.sessionId, rosterVersion: state.rosterVersion, selected, destinationZoneId, now })
+  const previewValidity = preview && destinationZoneId && snapshot.status === 'ready' && navigationBlockedReason(current, snapshot.reviewSupported === true) === null
+    ? navigationPreviewValidity(preview, catalog, { session: state.sessionId, rosterVersion: state.rosterVersion, selected, destinationZoneId, now, reviewOnly: snapshot.reviewSupported === true })
     : null
   const showPreview = preview !== null && (previewValidity?.valid === true || previewValidity?.code === 'node_refused')
 
@@ -110,9 +114,20 @@ export function NavigationPane({ state, snapshot, now, onPreview, onDestinationC
       <button type="button" className="nv-review" disabled={blocked !== null || result.kind !== 'resolved'} onClick={() => {
         if (blocked === null && result.kind === 'resolved') onPreview(result.destination.zoneId)
       }}>Review destination</button>
-      <p className="nv-note">Navigation execution is unavailable until the relay provides a frozen confirmation contract. Reviewing a destination does not send a motion command.</p>
+      <p className="nv-note">Navigation execution requires a separately qualified route-execution capability. Reviewing a destination does not send a motion command.</p>
 
       {showPreview && <NavigationPreviewDetails preview={preview} now={now} />}
+      {showPreview && onVerify && <div className="nv-section">
+        <button type="button" className="nv-review" disabled={!canVerify} onClick={onVerify}>Verify frozen review</button>
+        <p className="nv-note">Ask the relay to check this exact review once. This check cannot send a motion command.</p>
+      </div>}
+      {verification && verification.status !== 'idle' && <section className="nv-section" aria-label="Frozen review verification" role="status">
+        {verification.status === 'verifying' ? <p>Verifying the captured review with the relay…</p>
+          : verification.outcome ? <>
+            <p>{verification.outcome.status === 'refused' ? 'Refused' : 'Invalidated'} · {verification.outcome.code}: {verification.outcome.detail}</p>
+            <p className="nv-note">Review {verification.outcome.previewId} · intent {verification.outcome.intentId}. No navigation motion was sent.</p>
+          </> : <p>{verification.reason}</p>}
+      </section>}
       {preview && !showPreview && <p className="nv-note is-warning" role="status">The previous destination review is no longer current. {previewValidity?.reason ?? 'Review the current destination and selected devices again.'}</p>}
     </section>
   )

@@ -590,6 +590,7 @@ class CameraCapture(Protocol):
 sweep/
   console/          button controls and operator dashboard (static)
   relay/            FastAPI relay, schemas, logging, replay
+  spatial/          shared explicit frames and bounded observation envelopes
   planner/          formations, sweep, allocation, modes
   arbiter/          safety rules, e-stop, battery return
   adapters/         shared device/camera contracts, vendor bridges, isolated sim tests

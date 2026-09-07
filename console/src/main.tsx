@@ -27,7 +27,19 @@ void resolveRuntime().then((runtime) => {
     webcam: runtime.webcamClient,
     language: runtime.languageClient,
   }
-  const services = { transcript: runtime.transcriptClient ?? undefined }
+  let services = { ...runtime.platform?.getSnapshot(), transcript: runtime.transcriptClient ?? undefined }
+  let media: ReturnType<typeof createMediaRuntime> | undefined
+  const render = () => root.render(
+    <StrictMode>
+      <App sessionId={runtime.sessionId} clients={clients} catalog={runtime.catalogClient}
+        services={services} media={media} relayBaseUrl={runtime.baseUrl ?? undefined}
+        mapEndpoint={runtime.mapEndpoint ?? undefined} />
+    </StrictMode>,
+  )
+  runtime.platform?.subscribe((platform) => {
+    services = { ...platform, transcript: runtime.transcriptClient ?? undefined }
+    render()
+  })
 
   // The console renders at once without media; a valid runtime configuration
   // re-renders the same tree with playback enabled. Relay state is unaffected.
@@ -39,18 +51,7 @@ void resolveRuntime().then((runtime) => {
   const loadMedia = () =>
     loadMediaRuntimeConfiguration((input, init) => fetch(input, init), console.warn, mediaSources)
   bootstrapMediaConfiguration((configuration) => {
-    root.render(
-      <StrictMode>
-        <App
-          sessionId={runtime.sessionId}
-          clients={clients}
-          catalog={runtime.catalogClient}
-          services={services}
-          media={configuration ? createMediaRuntime(configuration) : undefined}
-          relayBaseUrl={runtime.baseUrl ?? undefined}
-          mapEndpoint={runtime.mapEndpoint ?? undefined}
-        />
-      </StrictMode>,
-    )
+    media = configuration ? createMediaRuntime(configuration) : undefined
+    render()
   }, loadMedia)
 })

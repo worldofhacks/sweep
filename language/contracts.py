@@ -590,6 +590,16 @@ def validate_model_outcome(
     items = raw.get("intents")
     if not isinstance(items, list) or not 1 <= len(items) <= MAX_PLAN_STEPS:
         return _invalid(source)
+    if any(isinstance(item, Mapping) and item.get("name") == "navigate" for item in items):
+        # Named navigation owns a separately pinned map/route/configuration
+        # confirmation. A generic model plan cannot carry or manufacture those
+        # receipts, even by preceding navigation with takeoff or capture.
+        return CompilerOutcome(
+            kind=OutcomeKind.UNSUPPORTED,
+            reason=CompilerReason.CAPABILITY_UNAVAILABLE,
+            detail="Named navigation requires the accepted destination review workflow.",
+            source=source,
+        )
     intents: list[ProposedIntent] = []
     expected_selection = facts.selection
     expected_estop = facts.estop

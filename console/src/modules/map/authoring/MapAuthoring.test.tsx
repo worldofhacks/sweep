@@ -16,7 +16,7 @@ test('default operator UI contains no generated map and every relay action expla
   for (const name of ['Load revision list', 'Save to relay', 'Validate saved revision', 'Review approval']) {
     expect(screen.getByRole('button', { name })).toBeDisabled()
   }
-  expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+  expect(screen.getByRole('combobox', { name: 'Distance units' })).toHaveValue('')
 })
 
 test('operator-loaded image requires real metadata before drawing and supports edit, delete, and undo', async () => {
@@ -27,6 +27,10 @@ test('operator-loaded image requires real metadata before drawing and supports e
   await screen.findByAltText('Operator-loaded occupancy image; coordinates not yet configured')
   expect(screen.getByRole('button', { name: 'Draw geofence' })).toBeDisabled()
   for (const [label, value] of [['Map version', 'test-map-v1'], ['Floor ID', 'test-floor'], ['Coordinate frame', 'world'], ['Resolution · metres per pixel', '0.1'], ['Bottom-left origin x · m', '0'], ['Bottom-left origin y · m', '0']]) {
+    fireEvent.change(screen.getByLabelText(label), { target: { value } })
+  }
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Distance units' }), 'm')
+  for (const [label, value] of [['Map created at · UTC', '1970-01-01T00:00:01'], ['Map creation evidence', 'Isolated test source'], ['Original image frame', 'test-map'], ['Registration identity', 'test-registration'], ['Registration measurement evidence', 'Isolated test registration'], ['Measured registration residual · m', '0.01'], ['Accepted registration threshold · m', '0.02']]) {
     fireEvent.change(screen.getByLabelText(label), { target: { value } })
   }
   const canvas = screen.getByRole('img', { name: 'Map authoring canvas' })

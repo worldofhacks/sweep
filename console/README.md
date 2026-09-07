@@ -357,48 +357,69 @@ ambiguous, and refuses excluded, wrong-floor, unreachable, or unsupported destin
 aircraft require a separate takeoff operation; navigation review never drafts capture, survey, or
 formation jobs.
 
-`services.navigation` accepts the explicit frontend `NavigationClient` integration port. Its catalog
+The runtime discovers authenticated platform services on the configured relay and injects the real
+HTTP `NavigationClient` through `services.navigation`. Its catalog
 must identify the accepted map, floor, world frame, approval, content hashes and geometry/navigation
 versions, plus the authoritative motion configuration. A preview binds those inputs to the request,
 roster, selected identities, per-device outcomes, routes, arrival slots and class-specific hold behavior.
 The pane and existing dock show this frozen evidence. Changed inputs, expired evidence, cancelled
 requests and replaced providers retire the review; delayed responses cannot recreate it.
 
-The deployed relay does not implement the catalog, preview, compiler or frozen-confirmation contract.
-The default port therefore reports unavailable and supplies no destinations or routes. `navigate` is
-reserved in the frontend intent model for this integration, is not added to the existing C1/C2 capability
-profiles, and is rejected by all current console transmission paths, including direct calls and retries.
-Even an injected preview cannot enable Confirm and send. No guessed HTTP routes or runtime fixtures
-are included. Backend planning, dispatch and hardware qualification remain outside this console-only
-change; it does not close [issue #143](https://github.com/worldofhacks/sweep/issues/143).
+The relay source implements catalog, name resolution, explicit destination compilation, durable
+preview storage, confirmation revalidation and active-map selection. Catalogs come from the exact
+current approved map and the loaded autonomy configuration. The console can request a read-only
+review when the platform advertises review support, including typed capability refusals and unknown
+route reachability. This does not widen C1/C2 motion capabilities. The shared Intent v1
+`navigate {zone_id}` vocabulary is registered; generic transmission paths, model plans and retries
+cannot bypass its frozen review. No runtime route or device evidence is generated.
+
+Class-qualified route planning and execution remain under #144/#145/#249. Current previews report
+`dispatchEligible: false` and confirmation reports execution unavailable. A static authoring map is
+not a generated flight-clearance artifact. Updating the console alone does not update an older
+running relay: an unupgraded relay, missing approved map or missing measured autonomy configuration
+remains visibly unavailable. See [platform integration](../docs/platform-integration.md) and the
+[navigation HTTP contract](../relay/NAVIGATION.md) for the exact software and deployment boundaries.
 
 ## Shared map authoring — issue #248
 
 Map › Map authoring edits operator-supplied occupancy images and measured map metadata in the existing
 console. Enter the actual resolution, bottom-left origin, map version, floor and registered `world`
-frame before drawing. The editor supports named zones and aliases, corridor centerlines and widths,
-hand-measured flight heights and tolerances, geofences, no-fly polygons, and tags with provenance,
-confidence, observation references and tape-verification evidence. Numeric vertex editing and undo
+frame before drawing, then supply metric units, creation provenance and measured registration
+identity, residual and threshold before validation. The editor supports named zones and aliases, corridor centerlines and widths,
+hand-measured flight heights and tolerances, geofences, static obstacles, no-fly polygons, and tags
+with orientation, provenance, confidence, observation references and tape-verification evidence. Numeric vertex editing and undo
 support precise corrections. A LiDAR occupancy plane does not establish aircraft clearance.
 
 Local drafts can be exported and imported as `sweep-map-draft-v1`; this is an editor document, not the
-backend's accepted-map schema. Image bytes, dimensions and hashes are checked on import. Export local
+published `sweep-world-bundle-v1` schema. Image bytes, dimensions and hashes are checked on import. Export local
 work before leaving the Map module or closing the console. Switching between its Live observations
 and Map authoring tabs retains the local draft. Imported documents cannot confer relay validation or
 approval, and local edits invalidate previously displayed validation and approval evidence.
 
-`services.mapAuthoring` is an explicit frontend integration port for revision listing/loading, saving,
-server validation, exact-revision approval, comparison and recording associated tag observations.
+`services.mapAuthoring` is supplied by the real authenticated HTTP adapter for revision listing/loading,
+saving, server validation, exact-revision approval, comparison, active-map selection and recording
+associated tag observations. Server save runs the world-bundle validator and records its result;
+invalid drafts may remain editable stored revisions but cannot be approved.
 Saving returns an immutable revision/hash; validation and explicit audited approval must refer to that
-same saved identity. Drive-over tag recording names one selected ground robot and its current
-connection epoch; another device's observation is rejected. The editor rejects late responses after edits or provider changes. Local checks
-help correct geometry and evidence, but never replace the #81 backend validator or measured hardware
+same saved identity. Position and drive-over requests carry the exact saved bundle/revision/hash,
+which must match the active approved map and the host-qualified registration. Responses and capture
+receipts retain that reference; repeated map/floor labels cannot associate another map's evidence.
+Drive-over tag recording names one selected ground robot and its current connection epoch;
+another device's observation is rejected. The editor rejects late responses after edits or provider changes. Local checks
+help correct geometry and evidence, but never replace the world-bundle validator or measured hardware
 qualification. Verified live position overlays additionally require the provider's observation capability,
 a matching session/map/floor, a current reported device epoch and fresh world-frame association.
 Generic telemetry coordinates are not promoted into map observations.
 
-The deployed relay does not yet expose these authoring contracts. Its default authoring port reports
-unavailable, so server actions remain disabled and no sample map, device positions, successful save,
-validation or approval is fabricated. Local authoring is available with real operator inputs. Backend
-storage/validation/approval and mapping hardware remain outside this console-only change; it does not
-close [issue #248](https://github.com/worldofhacks/sweep/issues/248).
+The relay stores immutable versioned drafts, published bundles, validation receipts, approvals and
+operator audit records in session-scoped SQLite. Loading and validating an unchanged approved
+revision preserves its original immutable approval binding. Use **Use approved revision for
+navigation** to select its exact approved revision independently of approval. Multiple approved
+maps require this explicit choice; an edited selected map does not silently follow its new head.
+
+Live overlays and drive-over recording are advertised only when the host has configured a qualified
+world-pose producer with its actual device identity, credential, clock domain and approved-map
+registration. They consume the shared observation envelope; legacy x/y is not substituted. Those
+source measurements and the real Level 1 map remain hardware work under #243/#246/#247. The editor
+uses the same workflow for a real replacement map. Synthetic bundle and image fixtures live only in
+isolated tests; the operator runtime starts with real inputs or honest unavailable states.

@@ -1,11 +1,11 @@
 import type {
-  CurrentTagObservation, MapApproval, MapDraft, MapRevision, MapValidation,
+  CurrentTagObservation, MapActivation, MapApproval, MapDraft, MapRevision, MapValidation,
   RevisionComparison, RevisionSummary, SavedMap, WorldPositionObservation,
 } from './types'
 
-export type AuthoringOperation = 'list' | 'load' | 'save' | 'validate' | 'approve' | 'compare' | 'record' | 'observe'
+export type AuthoringOperation = 'list' | 'load' | 'save' | 'validate' | 'approve' | 'compare' | 'record' | 'observe' | 'activate'
 
-/** Host-supplied adapter port. No HTTP routes or backend schema are invented here. */
+/** Shared authoring operations supplied by the authenticated platform HTTP adapter. */
 export type MapAuthoringClient =
   | { status: 'unavailable'; reason: string }
   | {
@@ -18,9 +18,10 @@ export type MapAuthoringClient =
     validate: (reference: MapRevision) => Promise<MapValidation>
     approve: (reference: MapRevision, validationId: string) => Promise<MapApproval>
     compare: (left: MapRevision, right: MapRevision) => Promise<RevisionComparison>
-    recordCurrentObservation: (request: { mapVersion: string; floorId: string; tagId: number; deviceId: number; connectionEpoch: number }) => Promise<CurrentTagObservation>
+    selectForNavigation?: (reference: MapRevision) => Promise<MapActivation>
+    recordCurrentObservation: (request: { reference: MapRevision; mapVersion: string; floorId: string; tagId: number; deviceId: number; connectionEpoch: number }) => Promise<CurrentTagObservation>
     /** Optional, explicitly verified observations; never adapted from generic telemetry. */
-    subscribePositions?: (request: { mapVersion: string; floorId: string }, onObservation: (observation: WorldPositionObservation) => void, onError: (detail: string) => void) => () => void
+    subscribePositions?: (request: { reference: MapRevision; mapVersion: string; floorId: string }, onObservation: (observation: WorldPositionObservation) => void, onError: (detail: string) => void) => () => void
   }
 
 export const UNAVAILABLE_MAP_AUTHORING_CLIENT: MapAuthoringClient = {
@@ -80,6 +81,13 @@ export function approvalReceipt(value: unknown): MapApproval {
   if (!record(value) || !validRevision(value.reference) || !text(value.validationId, 256) || !text(value.auditId, 256)
     || !text(value.approvedBy, 256) || typeof value.approvedAt !== 'number' || !Number.isSafeInteger(value.approvedAt)) throw new Error('The relay returned malformed approval evidence.')
   return { reference: revisionIdentity(value.reference), validationId: value.validationId, auditId: value.auditId, approvedBy: value.approvedBy, approvedAt: value.approvedAt }
+}
+
+export function activationReceipt(value: unknown): MapActivation {
+  if (!record(value) || !validRevision(value.reference) || !text(value.selectionId, 256)
+    || !text(value.selectedBy, 256) || typeof value.selectedAt !== 'number' || !Number.isSafeInteger(value.selectedAt)
+    || value.selectedAt < 0 || value.selectedAt > 8.64e15) throw new Error('The relay returned malformed map selection evidence.')
+  return { reference: revisionIdentity(value.reference), selectionId: value.selectionId, selectedBy: value.selectedBy, selectedAt: value.selectedAt }
 }
 
 export function revisionComparison(value: unknown): RevisionComparison {

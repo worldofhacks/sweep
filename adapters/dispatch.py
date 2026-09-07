@@ -777,6 +777,35 @@ class AdapterDispatcher:
             if plan.roster_version != current.roster_version:
                 acknowledgements = list(pending.acknowledgements)
                 acknowledgements[command_index] = terminal_ack
+                if (
+                    plan.intent_name is IntentName.HOLD
+                    and plan.hold_scope is HoldScope.OPERATOR_SELECTION
+                    and all(ack.status is LifecycleStatus.COMPLETED for ack in acknowledgements)
+                    and all(
+                        (aircraft := current.aircraft.get(completed.drone_id)) is not None
+                        and (original := snapshot.aircraft.get(completed.drone_id)) is not None
+                        and aircraft.connection_epoch == completed.connection_epoch
+                        and aircraft.device_class is original.device_class
+                        and (
+                            aircraft.membership is MembershipState.READY
+                            or (
+                                aircraft.membership is MembershipState.DEGRADED
+                                and original.membership is MembershipState.DEGRADED
+                            )
+                        )
+                        for completed in plan.commands
+                    )
+                ):
+                    # The selected targets have all confirmed their existing
+                    # stops. A newcomer does not require redispatching those
+                    # completed commands or widening the operator's selection.
+                    return ExecutionResult(
+                        intent_id=plan.intent_id,
+                        roster_version=current.roster_version,
+                        status=LifecycleStatus.COMPLETED,
+                        plan=plan,
+                        acknowledgements=tuple(acknowledgements),
+                    )
                 return self._invalidated_resume(
                     plan,
                     current,

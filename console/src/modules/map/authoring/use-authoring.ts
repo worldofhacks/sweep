@@ -1,11 +1,11 @@
 import { observeDevice } from '../../../control/observation'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ControlState } from '../../../control/state'
-import { approvalReceipt, revisionComparison, revisionIdentity, revisionList, sameRevision, supports, validRevision, validationReceipt, type AuthoringOperation, type MapAuthoringClient } from './client'
+import { activationReceipt, approvalReceipt, revisionComparison, revisionIdentity, revisionList, sameRevision, supports, validRevision, validationReceipt, type AuthoringOperation, type MapAuthoringClient } from './client'
 import { emptyDraft, invalidateChangedEvidence, validateDraft } from './geometry'
 import { parseLocalDraft, verifyDraftImage } from './files'
 import type { MapApproval, MapDraft, MapRevision, MapValidation, RevisionComparison, RevisionSummary } from './types'
-import { currentWorldObservation, observationClock } from './observations'
+import { coordinateImageIdentity, coordinateSourceIdentity, currentWorldObservation, observationClock } from './observations'
 
 export function useMapAuthoring(client: MapAuthoringClient, now: () => number, state?: ControlState) {
   const session = client.status === 'available' ? client.sessionId : null
@@ -14,6 +14,7 @@ export function useMapAuthoring(client: MapAuthoringClient, now: () => number, s
   const [draft, setDraft] = useState(emptyDraft)
   const [history, setHistory] = useState<MapDraft[]>([])
   const [base, setBase] = useState<MapRevision | null>(null)
+  const [savedCoordinateSource, setSavedCoordinateSource] = useState<string | null>(null)
   const [dirty, setDirty] = useState(true)
   const [validation, setValidation] = useState<MapValidation | null>(null)
   const [approval, setApproval] = useState<MapApproval | null>(null)
@@ -31,6 +32,9 @@ export function useMapAuthoring(client: MapAuthoringClient, now: () => number, s
   useEffect(() => () => { request.current += 1; inFlight.current = false }, [client, session])
   const issues = validateDraft(draft)
   const bound = receiptBinding === binding
+  const imageIdentity = useMemo(() => coordinateImageIdentity(draft.image), [draft.image])
+  const coordinateSource = useMemo(() => coordinateSourceIdentity(draft.metadata, imageIdentity), [draft.metadata, imageIdentity])
+  const observationReference = bound && base && savedCoordinateSource === coordinateSource ? base : null
   const currentValidation = bound && !dirty && validation && sameRevision(validation.reference, base) ? validation : null
   const currentApproval = bound && !dirty && approval && sameRevision(approval.reference, base) ? approval : null
   const busy = pending?.binding === binding ? pending.operation : null
@@ -51,6 +55,7 @@ export function useMapAuthoring(client: MapAuthoringClient, now: () => number, s
     // Imported evidence remains a local claim, independent of the previous draft.
     setDraft(next)
     setBase(null)
+    setSavedCoordinateSource(null)
     setReceiptBinding(null)
   }
   const undo = () => {
@@ -95,6 +100,7 @@ export function useMapAuthoring(client: MapAuthoringClient, now: () => number, s
     if (current()) {
       replace(next)
       setBase(loaded); setDirty(false); setReceiptBinding(binding)
+      setSavedCoordinateSource(coordinateSourceIdentity(next.metadata, coordinateImageIdentity(next.image)))
       setNotice('Relay revision loaded. Approval requires fresh server validation of this exact revision.')
     }
   })
@@ -105,6 +111,7 @@ export function useMapAuthoring(client: MapAuthoringClient, now: () => number, s
     if (bound && base && (result.bundleId !== base.bundleId || (dirty && sameRevision(result, base)))) throw new Error('The relay returned a conflicting or unchanged revision for edited content.')
     if (current()) {
       setBase(revisionIdentity(result)); setDirty(false); setReceiptBinding(binding); setValidation(null); setApproval(null)
+      setSavedCoordinateSource(coordinateSource)
       setNotice('Saved to the relay. This revision is not yet validated or approved.')
     }
   })
@@ -129,23 +136,31 @@ export function useMapAuthoring(client: MapAuthoringClient, now: () => number, s
     if (!sameRevision(result.left, base) || !sameRevision(result.right, other)) throw new Error('Comparison does not match the requested revisions.')
     if (current()) setComparison(result)
   })
-  const recordTarget = recordingTarget(state, session, now())
+  const activate = () => run('activate', async (api, current) => {
+    if (!base || !bound || dirty || !api.selectForNavigation) throw new Error('Load or save an approved, unchanged revision before selecting the navigation map.')
+    const result = activationReceipt(await api.selectForNavigation(revisionIdentity(base)))
+    if (!sameRevision(result.reference, base)) throw new Error('The relay selected another map revision.')
+    if (current()) setNotice(`Navigation map selected by ${result.selectedBy} · receipt ${result.selectionId}. No motion was requested.`)
+  })
+  const recordTarget = observationReference ? recordingTarget(state, session, now()) : null
   const record = (tagId: string) => run('record', async (api, current) => {
+    if (!observationReference) throw new Error('Load or save this exact coordinate source before recording. Image and registration changes require a new approved source.')
+    const reference = revisionIdentity(observationReference)
     const target = recordingTarget(latestRoster.current, api.sessionId, now())
     if (!target) throw new Error('Select one current ground robot to record its position.')
     const deviceId = target.drone_id, connectionEpoch = target.connection_epoch
     const tag = draft.tags.find((t) => t.id === tagId)
     if (!tag || tag.tagId === null || !Number.isInteger(tag.tagId) || tag.tagId < 0 || draft.metadata.frame !== 'world' || !draft.metadata.mapVersion.trim() || !draft.metadata.floorId.trim() || !latestRoster.current) throw new Error('Select a tag with an explicit ID, world-frame map, and current relay roster first.')
-    const result = await api.recordCurrentObservation({ mapVersion: draft.metadata.mapVersion, floorId: draft.metadata.floorId, tagId: tag.tagId, deviceId, connectionEpoch })
+    const result = await api.recordCurrentObservation({ reference, mapVersion: draft.metadata.mapVersion, floorId: draft.metadata.floorId, tagId: tag.tagId, deviceId, connectionEpoch })
     const currentTarget = recordingTarget(latestRoster.current, api.sessionId, now())
     if (currentTarget?.drone_id !== deviceId || currentTarget.connection_epoch !== connectionEpoch ||
-      result.deviceId !== deviceId || result.connectionEpoch !== connectionEpoch || result.tagId !== tag.tagId || !currentWorldObservation(result, draft.metadata, latestRoster.current, api.sessionId, now())) throw new Error('The observation lacks a fresh, verified map/frame/device association.')
+      result.deviceId !== deviceId || result.connectionEpoch !== connectionEpoch || result.tagId !== tag.tagId || !currentWorldObservation(result, draft.metadata, latestRoster.current, api.sessionId, now(), reference)) throw new Error('The observation lacks a fresh, verified map/frame/device association.')
     if (current()) {
       changed({ ...draft, tags: draft.tags.map((t) => t.id === tagId ? { ...t, position: { x: result.position.x, y: result.position.y }, source: 'auto_registered', confidence: result.confidence, observations: [...new Set([...t.observations, result.observationId])], tapeVerified: false, tapeEvidence: '' } : t) }, true, tagId)
       setNotice('Fresh associated observation recorded in the local draft. Tape verification must be repeated.')
     }
   })
-  return { draft, changed, replace, undo, canUndo: history.length > 0, base: bound ? base : null, dirty, issues, validation: currentValidation, approval: currentApproval, revisions: revisionBinding === binding ? revisions : [], comparison: bound ? comparison : null, busy, notice, setNotice, list, load, save, validate, approve, canApprove, compare, record, recordTarget }
+  return { draft, changed, replace, undo, canUndo: history.length > 0, base: bound ? base : null, observationReference, dirty, issues, validation: currentValidation, approval: currentApproval, revisions: revisionBinding === binding ? revisions : [], comparison: bound ? comparison : null, busy, notice, setNotice, list, load, save, validate, approve, canApprove, compare, activate, record, recordTarget }
 }
 
 /** Drive-over recording names one physical ground robot, never an arbitrary fleet member. */

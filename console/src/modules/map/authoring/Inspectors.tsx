@@ -39,6 +39,7 @@ export function TagInspector({ tag, onChange, onDelete, canRecord, onRecord, rec
     <label>Tag family<input value={tag.family} maxLength={256} onChange={(e) => onChange({ ...tag, family: e.target.value })} /></label>
     <NumberField label="Measured tag size · m" min={0} value={tag.sizeM} onChange={(sizeM) => onChange({ ...tag, sizeM })} />
     <NumberField label="Tag height · m" value={tag.heightM} onChange={(heightM) => onChange({ ...tag, heightM })} />
+    <NumberField label="Measured tag yaw · radians" min={-Math.PI} max={Math.PI} value={tag.yawRad ?? null} onChange={(yawRad) => onChange({ ...tag, yawRad })} />
     <div className="ma-coordinate">{(['x', 'y'] as const).map((axis) => <NumberField key={axis} label={`Tag ${axis} · m`} value={tag.position[axis]} onChange={(value) => {
       if (value !== null && Number.isFinite(value)) onChange({ ...tag, position: { ...tag.position, [axis]: value }, tapeVerified: false, tapeEvidence: '' })
     }} />)}</div>

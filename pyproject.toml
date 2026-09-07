@@ -30,6 +30,7 @@ pythonpath = ["."]
 testpaths = [
   "tests",
   "relay",
+  "spatial",
   "planner",
   "arbiter",
   "adapters",

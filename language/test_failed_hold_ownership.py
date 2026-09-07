@@ -59,6 +59,7 @@ def test_failed_first_hover_keeps_safety_ownership_until_moving_aircraft_is_stop
     assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
         ("goto", (2,)),
         ("hover", (1,)),
+        ("hover", (2,)),
     ]
 
     def acknowledge(command, status, event_id):
@@ -105,6 +106,7 @@ def test_failed_first_hover_keeps_safety_ownership_until_moving_aircraft_is_stop
     assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
         ("goto", (2,)),
         ("hover", (1,)),
+        ("hover", (2,)),
         ("hover", (1,)),
         ("hover", (2,)),
     ]

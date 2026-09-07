@@ -1,3 +1,4 @@
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -251,6 +252,8 @@ def _is_bounded_intent_text(value: object, maximum_chars: int) -> bool:
 
 
 def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
+    if name is IntentName.NAVIGATE:
+        return raw["confirm"] is True and bool(raw["selection"])
     if name is IntentName.CAPTURE_ROOM:
         return raw["confirm"] is True and len(raw["selection"]) == 1
     if name is IntentName.SURVEY_AREA:
@@ -276,6 +279,13 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         if set(value) != {"ids"} or not _is_drone_ids(value["ids"], allow_empty=False):
             raise ValueError
         return MappingProxyType({"ids": tuple(value["ids"])})
+
+    if name is IntentName.NAVIGATE:
+        if set(value) != {"zone_id"} or not isinstance(value["zone_id"], str):
+            raise ValueError
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}", value["zone_id"]) is None:
+            raise ValueError
+        return MappingProxyType({"zone_id": value["zone_id"]})
 
     if name is IntentName.BODY_PULSE:
         if not valid_body_pulse_args(value):

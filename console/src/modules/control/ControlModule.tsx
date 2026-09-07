@@ -72,7 +72,8 @@ export function ControlModule({
       )}
       {pane === 'navigation' && <NavigationPane state={controller.state} snapshot={controller.navigation}
         now={now()} onPreview={(zoneId) => { void controller.prepareNavigation(zoneId) }}
-        onDestinationChange={controller.invalidateNavigation} />}
+        onDestinationChange={controller.invalidateNavigation} verification={controller.navigationVerification}
+        canVerify={controller.canVerifyNavigation} onVerify={() => { void controller.verifyNavigationReview() }} />}
       {pane === 'capture' && (
         <CapturePane controller={controller} roomId={roomId} onRoomId={onRoomIdChange} guidance={currentGuidance} />
       )}

@@ -31,6 +31,7 @@ from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.control_localization import ControlLocalizationProjector
 from relay.intent_v1 import REGISTERED_SOURCES
 from relay.media import MediaEvidence, MediaMonitor, MediaMtxClient
+from relay.platform import PlatformServices, install_platform_routes
 from relay.session import (
     Clock,
     ControlPoseSigningKey,
@@ -211,6 +212,7 @@ class RelayRuntime:
         self._control_heartbeat_last: dict[str, float] = {}
         self._control_heartbeat_sequence: dict[str, int] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
+        self.platform_services: PlatformServices | None = None
 
     def session(self, session_id: str) -> RelaySession:
         _validate_session_id(session_id)
@@ -677,6 +679,10 @@ class RelayRuntime:
         deferred_deliveries: list[asyncio.Future[bool]] | None = None,
     ) -> bool:
         """Queue an event batch atomically with respect to subscription activation."""
+        if self.platform_services is not None:
+            for event in events:
+                if event.get("type") == "state":
+                    await asyncio.to_thread(self.platform_services.observe_state, session_id, event)
         deliveries: list[asyncio.Future[bool]] = []
         async with self._connection_lock:
             subscriptions = tuple(self._subscriptions.get(session_id, {}).values())
@@ -929,6 +935,7 @@ def create_app(
     media_monitor_factory: MediaMonitorFactory | None = None,
     min_home_position_quality: float = 0.0,
     max_home_position_age_ms: int | None = None,
+    platform_services_factory: Callable[[RelayRuntime], PlatformServices] | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -953,18 +960,28 @@ def create_app(
             max_home_position_age_ms=max_home_position_age_ms,
         )
         application.state.relay_runtime = runtime
-        application.state.transcript_service = (
-            TranscriptService()
-            if transcript_service_factory is None
-            else transcript_service_factory(runtime)
-        )
-        await runtime.start()
+        platform = None
         try:
+            platform = (platform_services_factory or PlatformServices)(runtime)
+            runtime.platform_services = platform
+            application.state.platform_services = platform
+            application.state.transcript_service = (
+                TranscriptService()
+                if transcript_service_factory is None
+                else transcript_service_factory(runtime)
+            )
+            await runtime.start()
             yield
         finally:
-            await runtime.stop()
-            if shutdown_callback is not None:
-                shutdown_callback()
+            try:
+                await runtime.stop()
+            finally:
+                try:
+                    if platform is not None:
+                        platform.close()
+                finally:
+                    if shutdown_callback is not None:
+                        shutdown_callback()
 
     application = FastAPI(title="Sweep relay", version="1", lifespan=lifespan)
     application.add_middleware(
@@ -1110,6 +1127,8 @@ def create_app(
         if expected is None or supplied is None or not hmac.compare_digest(supplied, expected):
             raise HTTPException(status_code=401, detail="authentication required")
         return runtime
+
+    install_platform_routes(application, authorized_runtime)
 
     @application.get("/metrics")
     def metrics(authorization: str | None = Header(default=None)) -> dict[str, object]:

@@ -5,6 +5,7 @@ import {
 } from '../media/runtime-config'
 import { HttpTranscriptClient, type TranscriptClient } from '../voice/client'
 import { relayMapEndpoint, type MapEndpoint } from './map-endpoint'
+import { PlatformRuntime } from '../platform/runtime'
 
 export interface SweepRelayRuntimeConfig {
   baseUrl: string
@@ -33,6 +34,7 @@ export interface ConsoleRuntime {
   sessionId: string
   /** The relay base URL a node would connect to; null without a bootstrap. */
   baseUrl: string | null
+  platform: PlatformRuntime | null
 }
 
 declare global {
@@ -61,12 +63,14 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       mediaConfigurationSource: null,
       mapEndpoint: null,
       baseUrl: null,
+      platform: null,
     }
   }
 
   return {
     sessionId: config.sessionId,
     baseUrl: config.baseUrl,
+    platform: new PlatformRuntime(config),
     client: new WebSocketRelayClient({
       baseUrl: config.baseUrl,
       sessionId: config.sessionId,

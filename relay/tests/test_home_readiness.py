@@ -127,9 +127,7 @@ def test_pending_home_and_other_declarations_do_not_survive_rejoin():
     fleet = registry()
     readiness(fleet)
     fleet.disconnect(drone_id=1, connection_epoch=1, t=NOW, event_id="disconnect")
-    fleet.apply_join(
-        parse_membership_request(membership_payload(action="join", event_id="rejoin"))
-    )
+    fleet.apply_join(parse_membership_request(membership_payload(action="join", event_id="rejoin")))
     telemetry(fleet, connection_epoch=2)
     state = drone(fleet)
     assert state["home_pose"] is None
@@ -169,9 +167,7 @@ def test_rejoin_reset_alone_does_not_clear_existing_home_on_fresh_ground_telemet
     readiness(fleet)
     original_home = drone(fleet)["home_pose"]
     fleet.disconnect(drone_id=1, connection_epoch=1, t=NOW, event_id="disconnect")
-    fleet.apply_join(
-        parse_membership_request(membership_payload(action="join", event_id="rejoin"))
-    )
+    fleet.apply_join(parse_membership_request(membership_payload(action="join", event_id="rejoin")))
     telemetry(fleet, connection_epoch=2, x=8.0)
     assert drone(fleet)["home_pose"] == original_home
     assert "home_pose_missing" in drone(fleet)["readiness_reasons"]

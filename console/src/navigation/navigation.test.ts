@@ -79,7 +79,7 @@ describe('accepted map integration contract', () => {
     expect(parseNavigationPreview(preview())).toEqual(preview())
     expect(navigationCatalogValidity(catalog(), 'fixture-session', NOW).valid).toBe(true)
     expect(navigationPreviewValidity(preview(), catalog(), context()).valid).toBe(true)
-    expect(NAVIGATION_CONFIRMATION_UNAVAILABLE).toContain('not implemented')
+    expect(NAVIGATION_CONFIRMATION_UNAVAILABLE).toContain('execution unavailable')
   })
 
   it('returns detached, deeply frozen catalog and preview values', () => {
@@ -318,7 +318,7 @@ describe('current-context and frozen-preview validity', () => {
     const advertised = parseNavigationPreview({ ...preview(), dispatchEligible: true })!
     expect(advertised.dispatchEligible).toBe(true)
     expect(navigationPreviewValidity(advertised, catalog(), context()).valid).toBe(true)
-    expect(NAVIGATION_CONFIRMATION_UNAVAILABLE).toContain('confirmation unavailable')
+    expect(NAVIGATION_CONFIRMATION_UNAVAILABLE).toContain('execution unavailable')
   })
 })
 

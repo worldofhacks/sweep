@@ -3,8 +3,8 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { ControlState } from '../../../control/state'
 import { UNAVAILABLE_MAP_AUTHORING_CLIENT, type MapAuthoringClient } from './client'
 import { currentWorldObservation, snapshotWorldObservation } from './observations'
-import { clientFixture, draftFixture, rosterFixture } from './test-fixtures'
-import type { MapDraft, WorldPositionObservation } from './types'
+import { clientFixture, draftFixture, revision, rosterFixture } from './test-fixtures'
+import type { MapDraft, MapRevision, WorldPositionObservation } from './types'
 import { useWorldObservations } from './use-observations'
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(10_000) })
@@ -12,7 +12,7 @@ afterEach(() => { cleanup(); vi.useRealTimers() })
 
 function sample(overrides: Partial<WorldPositionObservation> = {}): WorldPositionObservation {
   return {
-    observationId: 'observation-1', sourceId: 'verified-test-source', deviceId: 11, connectionEpoch: 2,
+    reference: { ...revision }, observationId: 'observation-1', sourceId: 'verified-test-source', deviceId: 11, connectionEpoch: 2,
     sessionId: 'test-session', frame: 'world', mapVersion: 'test-map-v1', floorId: 'test-floor',
     position: { x: 3, y: 4 }, tCapture: 9500, tIngest: 9600, confidence: 0.95,
     frameAssociationVerified: true, ...overrides,
@@ -32,22 +32,46 @@ function observationClient() {
   return { client, subscriptions, publish: (value = sample()) => act(() => subscriptions.at(-1)!.receive(value)) }
 }
 
-interface Props { client: MapAuthoringClient; draft: MapDraft; state: ControlState | undefined }
-const renderOverlay = (initialProps: Props) => renderHook(({ client, draft, state }: Props) => useWorldObservations(client, draft, state, Date.now), { initialProps })
+interface Props { client: MapAuthoringClient; draft: MapDraft; state: ControlState | undefined; reference?: MapRevision | null }
+const renderOverlay = (initialProps: Props) => renderHook(({ client, draft, state, reference: requested = revision }: Props) => useWorldObservations(client, draft, state, Date.now, requested), { initialProps })
+
+test('unsaved coordinate sources never open an observation subscription', () => {
+  const source = observationClient()
+  const { result } = renderOverlay({ client: source.client, draft: draftFixture(), state: rosterFixture(), reference: null })
+  expect(source.client.subscribePositions).not.toHaveBeenCalled()
+  expect(result.current.positions).toEqual([])
+})
+
+test('duplicate map labels never move observations across exact saved bundle references', () => {
+  const source = observationClient(), props = { client: source.client, draft: draftFixture(), state: rosterFixture() }
+  const { result, rerender } = renderOverlay(props)
+  source.publish()
+  expect(result.current.positions).toHaveLength(1)
+  const other = { ...revision, bundleId: 'same-label-other-bundle' }
+  rerender({ ...props, reference: other })
+  expect(source.subscriptions[0].close).toHaveBeenCalledOnce()
+  source.publish()
+  expect(result.current.positions).toEqual([])
+  source.publish(sample({ reference: other }))
+  expect(result.current.positions).toHaveLength(1)
+})
 
 test('retains detached frozen evidence and actual roster labels, without adopting provider mutations', () => {
   const source = observationClient(), value = sample()
   const { result, rerender } = renderOverlay({ client: source.client, draft: draftFixture(), state: rosterFixture() })
   source.publish(value)
-  expect(source.client.subscribePositions).toHaveBeenCalledWith({ mapVersion: 'test-map-v1', floorId: 'test-floor' }, expect.any(Function), expect.any(Function))
+  expect(source.client.subscribePositions).toHaveBeenCalledWith({ reference: revision, mapVersion: 'test-map-v1', floorId: 'test-floor' }, expect.any(Function), expect.any(Function))
   expect(result.current.positions[0].label).toBe('G-01')
   const retained = result.current.positions[0].observation
   expect(retained).not.toBe(value)
   expect(Object.isFrozen(retained)).toBe(true)
   expect(Object.isFrozen(retained.position)).toBe(true)
+  expect(Object.isFrozen(retained.reference)).toBe(true)
   value.position.x = 99; value.observationId = 'provider-reused'; value.tCapture = 10_000
+  value.reference.bundleId = 'provider-mutated-bundle'
   rerender({ client: source.client, draft: draftFixture(), state: rosterFixture() })
   expect(result.current.positions[0].observation).toMatchObject({ position: { x: 3, y: 4 }, observationId: 'observation-1', tCapture: 9500 })
+  expect(result.current.positions[0].observation.reference).toEqual(revision)
   act(() => vi.advanceTimersByTime(500))
   expect(result.current.positions).toEqual([])
 })
@@ -176,7 +200,7 @@ test.each([
   const value = { ...sample(), ...overrides } as unknown as WorldPositionObservation
   expect(() => source.publish(value)).not.toThrow()
   expect(result.current.positions).toEqual([])
-  expect(currentWorldObservation(value, draftFixture().metadata, rosterFixture(), 'test-session', Date.now())).toBe(false)
+  expect(currentWorldObservation(value, draftFixture().metadata, rosterFixture(), 'test-session', Date.now(), revision)).toBe(false)
 })
 
 test('unavailable observation support never substitutes generic telemetry, and cleanup closes the stream and timer', () => {

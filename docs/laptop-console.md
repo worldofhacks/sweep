@@ -51,15 +51,16 @@ tuning. Flight remains opt-in and requires neutral release and explicit
 confirmation. Hardware availability and capabilities still gate controls.
 
 The current delivery adds modular fleet source changes, per-camera console support,
-and documentation. A reviewed console build can be served here without deploying the
-updated backend. Before that backend deployment, configure measured
+and the authenticated map-authoring and navigation-review services described in
+[platform integration](platform-integration.md). A reviewed console build can be
+served here without deploying the updated backend. Before that backend deployment, configure measured
 `drive_speed_m_s` and `drive_rotate_speed_deg_s` in `SWEEP_PLANNING_JSON` and
 `ground_max_speed_m_s` in `SWEEP_SAFETY_JSON` for the actual robots. These existing
 ground-support fields are missing from the current live configuration. Start a new
 relay session; the existing live session must not be reused for the update. This
 launcher does not perform those steps.
 
-Full nodekit/Ohmni custom telemetry and robot peripheral integration remains paused in
+Device-side nodekit/Ohmni telemetry producers and robot peripheral commissioning remain
 separate work. A visible control or optional telemetry field still requires matching
 support in the deployed relay and device. Aerial infrared readings are not integrated
 or validated by this delivery, and no additional hardware or second-camera feed is

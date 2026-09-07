@@ -16,7 +16,8 @@ export interface MapAuthoringProps { client?: MapAuthoringClient; now?: () => nu
 export function MapAuthoring({ client = UNAVAILABLE_MAP_AUTHORING_CLIENT, now = Date.now, state }: MapAuthoringProps) {
   const editor = useMapAuthoring(client, now, state)
   const { draft } = editor
-  const observations = useWorldObservations(client, draft, state, now)
+  const registration = draft.metadata.registration ?? { sourceFrame: '', transformId: '', residualM: null, thresholdM: null, evidence: '' }
+  const observations = useWorldObservations(client, draft, state, now, editor.observationReference)
   const [tool, setTool] = useState<FeatureKind | 'tag' | 'inspect'>('inspect')
   const [points, setPoints] = useState<XY[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -84,12 +85,21 @@ export function MapAuthoring({ client = UNAVAILABLE_MAP_AUTHORING_CLIENT, now = 
       <NumberField label="Resolution · metres per pixel" value={draft.metadata.resolutionM} min={0} onChange={(resolutionM) => edit({ ...draft, metadata: { ...draft.metadata, resolutionM } })} />
       <NumberField label="Bottom-left origin x · m" value={draft.metadata.originXM} onChange={(originXM) => edit({ ...draft, metadata: { ...draft.metadata, originXM } })} />
       <NumberField label="Bottom-left origin y · m" value={draft.metadata.originYM} onChange={(originYM) => edit({ ...draft, metadata: { ...draft.metadata, originYM } })} />
+      <label>Distance units<select value={draft.metadata.units ?? ''} onChange={(e) => edit({ ...draft, metadata: { ...draft.metadata, units: e.target.value } })}><option value="">Select measured units</option><option value="m">Metres</option></select></label>
+      <label>Map created at · UTC<input type="datetime-local" step="1" value={draft.metadata.createdAt && draft.metadata.createdAt > 0 && draft.metadata.createdAt <= 8.64e15 ? new Date(draft.metadata.createdAt).toISOString().slice(0, 19) : ''} onChange={(e) => {
+        const parsed = e.target.value ? Date.parse(`${e.target.value}Z`) : NaN
+        edit({ ...draft, metadata: { ...draft.metadata, createdAt: Number.isFinite(parsed) ? parsed : null } })
+      }} /></label>
+      <label>Map creation evidence<textarea value={draft.metadata.creationEvidence ?? ''} maxLength={4096} onChange={(e) => edit({ ...draft, metadata: { ...draft.metadata, creationEvidence: e.target.value } })} /></label>
+      {(['sourceFrame', 'transformId', 'evidence'] as const).map((key) => <label key={key}>{({ sourceFrame: 'Original image frame', transformId: 'Registration identity', evidence: 'Registration measurement evidence' })[key]}<input value={registration[key]} maxLength={4096} onChange={(e) => edit({ ...draft, metadata: { ...draft.metadata, registration: { ...registration, [key]: e.target.value } } })} /></label>)}
+      <NumberField label="Measured registration residual · m" min={0} value={registration.residualM} onChange={(residualM) => edit({ ...draft, metadata: { ...draft.metadata, registration: { ...registration, residualM } } })} />
+      <NumberField label="Accepted registration threshold · m" min={0} value={registration.thresholdM} onChange={(thresholdM) => edit({ ...draft, metadata: { ...draft.metadata, registration: { ...registration, thresholdM } } })} />
       <p>Use <code>world</code> only for an image registered to that frame. Enter its actual resolution and bottom-left origin; renaming an unknown frame does not register it.</p>
       {draft.image && <p className="ma-image-details">{draft.image.name} · {draft.image.width} × {draft.image.height} px · SHA-256 <code>{draft.image.sha256}</code></p>}
     </fieldset>
     <div className="ma-workspace"><div>
       <div className="ma-choices" role="group" aria-label="Drawing tool">
-        {(['inspect', 'zone', 'corridor', 'geofence', 'no_fly', 'tag'] as const).map((value) => <button type="button" key={value} aria-pressed={tool === value} disabled={!ready || reading} onClick={() => { setTool(value); setPoints([]) }}>{({ inspect: 'Inspect', zone: 'Draw zone', corridor: 'Draw corridor', geofence: 'Draw geofence', no_fly: 'Draw no-fly area', tag: 'Place tag' })[value]}</button>)}
+        {(['inspect', 'zone', 'corridor', 'geofence', 'no_fly', 'obstacle', 'tag'] as const).map((value) => <button type="button" key={value} aria-pressed={tool === value} disabled={!ready || reading} onClick={() => { setTool(value); setPoints([]) }}>{({ inspect: 'Inspect', zone: 'Draw zone', corridor: 'Draw corridor', geofence: 'Draw geofence', no_fly: 'Draw no-fly area', obstacle: 'Draw obstacle', tag: 'Place tag' })[value]}</button>)}
       </div>
       <div className="ma-canvas-wrap">
         {ready ? <AuthoringCanvas draft={draft} selected={selected} drawing={points} onPoint={addPoint} onSelect={choose} onEdit={editFeature} positions={observations.positions} /> : draft.image ? <img className="ma-image-preview" src={draft.image.dataUrl} alt="Operator-loaded occupancy image; coordinates not yet configured" /> : <div className="ma-empty">Load an actual occupancy image. No map or device positions are generated.</div>}
@@ -108,10 +118,10 @@ export function MapAuthoring({ client = UNAVAILABLE_MAP_AUTHORING_CLIENT, now = 
       {tag && <TagInspector tag={tag} onChange={(next) => edit({ ...draft, tags: draft.tags.map((t) => t.id === next.id ? next : t) })} onDelete={() => { edit({ ...draft, tags: draft.tags.filter((t) => t.id !== tag.id) }); setSelected(null) }}
         canRecord={!disabled('record') && ready && tag.tagId !== null && editor.recordTarget !== null}
         recordLabel={editor.recordTarget ? `Record at ${formatDeviceId(editor.recordTarget)} current position` : undefined} onRecord={() => { setReviewApproval(false); void editor.record(tag.id) }}
-        recordReason={disabled('record') || !state || !['connected', 'degraded'].includes(state.connection.status) ? 'A supported relay observation service with a current session roster and frame/epoch evidence is required.' : 'The selected tag needs its printed ID and a registered world-frame map.'} />}
+        recordReason={!editor.observationReference ? 'Load or save the exact coordinate source first. Image and registration changes require a new approved source.' : disabled('record') || !state || !['connected', 'degraded'].includes(state.connection.status) ? 'A supported relay observation service with a current session roster and frame/epoch evidence is required.' : 'The selected tag needs its printed ID and a registered world-frame map.'} />}
     </aside></div>
     <details className="ma-checks" open={editor.issues.length > 0}><summary>Local checks · {editor.issues.length ? `${editor.issues.length} issues` : 'passed'}</summary>
-      <p>Local checks help edit a draft. They do not replace #81 server validation or hardware evidence.</p>
+      <p>Local checks help edit a draft. Server validation and measurement evidence are required for approval.</p>
       <ul>{editor.issues.map((issue, index) => <li key={`${issue.path}-${index}`}><code>{issue.path}</code> · {issue.message}</li>)}</ul>
     </details>
     <section className="ma-relay" aria-label="Relay map workflow"><h3>Relay versions and approval</h3>
@@ -121,6 +131,7 @@ export function MapAuthoring({ client = UNAVAILABLE_MAP_AUTHORING_CLIENT, now = 
         <button type="button" disabled={disabled('save') || editor.issues.length > 0} title={disabled('save') ? unavailable : 'Save requires passing local checks.'} onClick={() => { setReviewApproval(false); void editor.save() }}>Save to relay</button>
         <button type="button" disabled={disabled('validate') || !editor.base || editor.dirty || editor.issues.length > 0} title={disabled('validate') ? unavailable : 'Save the unchanged draft first.'} onClick={() => { setReviewApproval(false); void editor.validate() }}>Validate saved revision</button>
         <button type="button" disabled={disabled('approve') || !editor.canApprove || editor.approval !== null} title={disabled('approve') ? unavailable : 'Requires passing server validation of this exact revision.'} onClick={() => setReviewApproval(true)}>Review approval</button>
+        <button type="button" disabled={disabled('activate') || !editor.base || editor.dirty} title="Selects only an already approved revision. No motion is requested." onClick={() => { setReviewApproval(false); void editor.activate() }}>Use approved revision for navigation</button>
       </div>
       {editor.base && <p>Saved identity: <code>{editor.base.bundleId} / {editor.base.revision}</code> · <code>{editor.base.contentHash}</code>{editor.dirty ? ' · local changes pending' : ''}</p>}
       {editor.validation && <div><p>Server validation {editor.validation.valid && editor.validation.issues.length === 0 ? 'passed' : 'refused'} · {editor.validation.validationId}</p><ul>{editor.validation.issues.map((issue, index) => <li key={index}>{issue.path} · {issue.message}</li>)}</ul></div>}

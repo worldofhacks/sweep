@@ -18,6 +18,7 @@ export function parseLocalDraft(raw: string): MapDraft {
   const value = object(JSON.parse(raw))
   if (value.format !== 'sweep-map-draft-v1') fail()
   const m = object(value.metadata)
+  const registration = m.registration === undefined ? undefined : object(m.registration)
   let image: OccupancyImage | null = null
   if (value.image !== null) {
     const i = object(value.image)
@@ -28,17 +29,22 @@ export function parseLocalDraft(raw: string): MapDraft {
   }
   return {
     format: 'sweep-map-draft-v1',
-    metadata: { mapVersion: text(m.mapVersion), floorId: text(m.floorId), frame: text(m.frame), resolutionM: nullable(m.resolutionM), originXM: nullable(m.originXM), originYM: nullable(m.originYM) },
+    metadata: { mapVersion: text(m.mapVersion), floorId: text(m.floorId), frame: text(m.frame), resolutionM: nullable(m.resolutionM), originXM: nullable(m.originXM), originYM: nullable(m.originYM),
+      ...(m.units === undefined ? {} : { units: text(m.units) }),
+      ...(m.createdAt === undefined ? {} : { createdAt: nullable(m.createdAt) }),
+      ...(m.creationEvidence === undefined ? {} : { creationEvidence: text(m.creationEvidence) }),
+      ...(registration === undefined ? {} : { registration: { sourceFrame: text(registration.sourceFrame), transformId: text(registration.transformId), residualM: nullable(registration.residualM), thresholdM: nullable(registration.thresholdM), evidence: text(registration.evidence) } }),
+    },
     image,
     features: array(value.features, 256).map((raw): MapFeature => {
       const f = object(raw)
-      if (f.kind !== 'zone' && f.kind !== 'geofence' && f.kind !== 'no_fly' && f.kind !== 'corridor') fail()
+      if (f.kind !== 'zone' && f.kind !== 'geofence' && f.kind !== 'no_fly' && f.kind !== 'obstacle' && f.kind !== 'corridor') fail()
       return { id: text(f.id), kind: f.kind as MapFeature['kind'], name: text(f.name), aliases: strings(f.aliases), points: array(f.points).map(point), widthM: nullable(f.widthM), flightHeightM: nullable(f.flightHeightM), heightToleranceM: nullable(f.heightToleranceM), heightEvidence: text(f.heightEvidence) }
     }),
     tags: array(value.tags).map((raw): MapTag => {
       const t = object(raw)
       if (!['unreported', 'measured', 'surveyed', 'auto_registered'].includes(text(t.source))) fail()
-      return { id: text(t.id), tagId: nullable(t.tagId), family: text(t.family), sizeM: nullable(t.sizeM), position: point(t.position), heightM: nullable(t.heightM), source: t.source as MapTag['source'], confidence: nullable(t.confidence), observations: strings(t.observations), usedForFlight: bool(t.usedForFlight), tapeVerified: bool(t.tapeVerified), tapeEvidence: text(t.tapeEvidence) }
+      return { id: text(t.id), tagId: nullable(t.tagId), family: text(t.family), sizeM: nullable(t.sizeM), position: point(t.position), heightM: nullable(t.heightM), ...(t.yawRad === undefined ? {} : { yawRad: nullable(t.yawRad) }), source: t.source as MapTag['source'], confidence: nullable(t.confidence), observations: strings(t.observations), usedForFlight: bool(t.usedForFlight), tapeVerified: bool(t.tapeVerified), tapeEvidence: text(t.tapeEvidence) }
     }),
   }
 }

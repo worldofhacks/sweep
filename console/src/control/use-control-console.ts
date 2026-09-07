@@ -1,6 +1,7 @@
 import { useNavigationReview } from './use-navigation-review'
+import { useNavigationVerification } from './use-navigation-verification'
 import { navigationBlockedReason, navigationTargets } from './navigation'
-import { navigationPreviewValidity, type NavigationClient, type NavigationPreview } from '../navigation'
+import { navigationPreviewValidity, type NavigationClient, type NavigationConfirmationOutcome, type NavigationPreview } from '../navigation'
 import { motionObservationCurrent, observedControlState } from './observation'
 import { isReady } from '../shell/derive'
 import { peripheralBlockedReason } from './peripherals'
@@ -281,6 +282,12 @@ export function useControlConsole({
   }, [stageForConfirmation])
   const navigation = useNavigationReview({ state, client: navigationClient,
     dependencies: intentDependencies, generationRef: navigationGeneration, reset: navigationReset, onPreview: stageNavigation })
+  const recordNavigationVerification = useCallback((outcome: NavigationConfirmationOutcome) => {
+    dispatch({ type: 'request_invalidated', intentId: outcome.intentId, t: intentDependencies.now(),
+      reasonCode: outcome.code, detail: outcome.detail })
+  }, [intentDependencies])
+  const verification = useNavigationVerification({ state, snapshot: navigation.snapshot, client: navigationClient,
+    now: intentDependencies.now, generationRef: navigationGeneration, onOutcome: recordNavigationVerification })
 
   useEffect(() => {
     for (const request of state.requests) {
@@ -289,9 +296,9 @@ export function useControlConsole({
       const validity = navigationPreviewValidity(navigation.snapshot.preview, navigation.snapshot.catalog, {
         session: state.sessionId, rosterVersion: state.rosterVersion, selected: navigationTargets(state),
         destinationZoneId: preview?.destination.zoneId ?? '', intentId: request.intent.intent_id,
-        frozenPreview: preview ?? undefined, now: intentDependencies.now(),
+        frozenPreview: preview ?? undefined, now: intentDependencies.now(), reviewOnly: navigation.snapshot.reviewSupported === true,
       })
-      const blocked = navigationBlockedReason(state)
+      const blocked = navigationBlockedReason(state, navigation.snapshot.reviewSupported === true)
       if (blocked || navigation.snapshot.status !== 'ready' || !navigation.snapshot.preview ||
         (!validity.valid && validity.code !== 'node_refused')) {
         dispatch({ type: 'request_invalidated', intentId: request.intent.intent_id, t: intentDependencies.now(),
@@ -532,7 +539,7 @@ export function useControlConsole({
   /** Stage the exact relay-minted language draft; no name-specific rewrite is allowed. */
   const prepareVoicePlanStep = useCallback(
     (plan: VoicePlan, step: VoicePlanStep, expiresAt: number): IntentV1 | null => {
-      if (step.name === 'navigate') return null // No navigation compiler/confirmation contract is deployed.
+      if (step.name === 'navigate') return null // Navigation uses its separately pinned review workflow.
       if (
         plan.kind !== 'plan' ||
         plan.plan_digest === null ||
@@ -818,6 +825,9 @@ export function useControlConsole({
     navigation: navigation.snapshot,
     prepareNavigation: navigation.prepare,
     invalidateNavigation: navigation.invalidate,
+    navigationVerification: verification.verification,
+    canVerifyNavigation: verification.canVerify,
+    verifyNavigationReview: verification.verify,
     issueIntent,
     toggleAircraft,
     selectAircraft,

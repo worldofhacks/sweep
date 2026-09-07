@@ -54,6 +54,7 @@ def test_conflict_safety_hold_resumes_through_authenticated_completion(
     assert [(call.operation.value, call.drone_ids) for call in flight.calls] == [
         ("goto", (2,)),
         ("hover", (1,)),
+        ("hover", (2,)),
     ]
     safety = relay.current_state()["accepted_plan"]
     assert safety["intent_id"] == "safety:motion-conflict:motion-1"

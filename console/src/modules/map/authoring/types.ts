@@ -1,4 +1,4 @@
-/** Local editor document. This is not the unfrozen #81 relay wire schema. */
+/** Editor document stored by the relay; approval publishes a validated world bundle. */
 export interface MapDraft {
   format: 'sweep-map-draft-v1'
   metadata: {
@@ -8,6 +8,16 @@ export interface MapDraft {
     resolutionM: number | null
     originXM: number | null
     originYM: number | null
+    units?: string
+    createdAt?: number | null
+    creationEvidence?: string
+    registration?: {
+      sourceFrame: string
+      transformId: string
+      residualM: number | null
+      thresholdM: number | null
+      evidence: string
+    }
   }
   image: OccupancyImage | null
   features: MapFeature[]
@@ -23,7 +33,7 @@ export interface OccupancyImage {
 }
 
 export interface XY { x: number; y: number }
-export type FeatureKind = 'zone' | 'geofence' | 'no_fly' | 'corridor'
+export type FeatureKind = 'zone' | 'geofence' | 'no_fly' | 'obstacle' | 'corridor'
 export interface MapFeature {
   id: string
   kind: FeatureKind
@@ -45,6 +55,7 @@ export interface MapTag {
   sizeM: number | null
   position: XY
   heightM: number | null
+  yawRad?: number | null
   source: TagSource
   confidence: number | null
   observations: string[]
@@ -70,12 +81,19 @@ export interface MapApproval {
   approvedBy: string
   approvedAt: number
 }
+export interface MapActivation {
+  reference: MapRevision
+  selectionId: string
+  selectedBy: string
+  selectedAt: number
+}
 export interface RevisionComparison {
   left: MapRevision
   right: MapRevision
   changes: Array<{ path: string; before: string; after: string }>
 }
 export interface WorldPositionObservation {
+  reference: MapRevision
   observationId: string
   sourceId: string
   deviceId: number

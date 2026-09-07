@@ -28,7 +28,8 @@ import os
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, fields, is_dataclass, replace
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
+from enum import Enum
 from typing import get_origin, get_type_hints
 
 from fastapi import FastAPI
@@ -1001,6 +1002,21 @@ def create_autonomy_app(
         if config.control_localization_projector is None
         else lambda _session_id: config.control_localization_projector
     )
+    from relay.platform import PlatformServices
+
+    def configuration_value(value):
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, frozenset | set):
+            return sorted(value)
+        raise TypeError("Unsupported authoritative motion configuration value")
+
+    motion_configuration = json.loads(
+        json.dumps(
+            {"planning": asdict(config.planning), "safety": asdict(config.safety)},
+            default=configuration_value,
+        )
+    )
     app = create_app(
         settings,
         clock=clock,
@@ -1012,6 +1028,10 @@ def create_autonomy_app(
         min_home_position_quality=config.safety.min_position_quality,
         max_home_position_age_ms=config.safety.max_position_age_ms,
         transcript_service_factory=transcript_service_factory,
+        platform_services_factory=lambda runtime: PlatformServices(
+            runtime,
+            motion_configuration=motion_configuration,
+        ),
     )
     composition.bind(app)
     return app, composition

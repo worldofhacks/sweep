@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
-from dataclasses import dataclass
+from contextlib import ExitStack, asynccontextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event, Thread
 from time import monotonic, sleep
@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from adapters.sim.flight import SimFlightAdapter
 from adapters.sim.runtime import SimBridgeFactory, create_m14_sim_app
 from planner.models import FlightState
 from relay.auth import Principal, sign_event
@@ -49,6 +50,19 @@ class Harness:
     def __init__(self, tmp_path: Path, snapshot, *, auto_start_nodes: bool = False) -> None:  # type: ignore[no-untyped-def]
         self.clock = Clock()
         self.event_ids = EventIds()
+        self.initial_snapshot = snapshot
+        grounded = replace(
+            snapshot,
+            aircraft={
+                drone_id: replace(
+                    aircraft,
+                    pose=aircraft.home,
+                    flight_state=FlightState.DISARMED,
+                    armed=False,
+                )
+                for drone_id, aircraft in snapshot.aircraft.items()
+            },
+        )
         settings = RelaySettings(
             allow_test_adapters=True,
             relay_token=CONSOLE_KEY,
@@ -60,10 +74,28 @@ class Harness:
             settings,
             clock=self.clock,
             event_ids=self.event_ids,
-            initial_snapshot=snapshot,
+            initial_snapshot=grounded,
             auto_start_nodes=auto_start_nodes,
         )
         self.sequence = 0
+        if auto_start_nodes:
+            original_lifespan = self.app.router.lifespan_context
+
+            @asynccontextmanager
+            async def scenario_lifespan(app):  # type: ignore[no-untyped-def]
+                async with original_lifespan(app):
+                    runtime = app.state.relay_runtime
+
+                    def scenario_factory(session):  # type: ignore[no-untyped-def]
+                        bridge = self.factory(session)
+                        self.restore_scenario()
+                        self.factory.nodes[session.session_id].periodic_events()
+                        return bridge
+
+                    runtime.intent_sink_factory = scenario_factory
+                    yield
+
+            self.app.router.lifespan_context = scenario_lifespan
 
     @property
     def factory(self) -> SimBridgeFactory:
@@ -72,6 +104,14 @@ class Harness:
     @property
     def flight(self):  # type: ignore[no-untyped-def]
         return self.factory.flights[SESSION]
+
+    def restore_scenario(self) -> None:
+        # Readiness first records an authenticated, grounded simulator home. Only
+        # then load this test's requested flight scene; production admission must
+        # continue refusing a home claimed for the first time while airborne.
+        scenario = SimFlightAdapter.from_snapshot(self.initial_snapshot)
+        with self.flight._lock:
+            self.flight._aircraft.update(scenario.aircraft)
 
     def next_id(self, prefix: str) -> str:
         self.sequence += 1
@@ -1450,6 +1490,8 @@ def _ready_aircraft(harness: Harness, adapters: dict[int, Any]) -> None:
             ),
         )
         assert ready["membership"] == "ready"
+    harness.restore_scenario()
+    _sync_telemetry(harness, adapters)
 
 
 def _sync_telemetry(harness: Harness, adapters: dict[int, Any]) -> None:

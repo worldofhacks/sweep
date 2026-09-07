@@ -2,7 +2,9 @@ import type { DraftIssue, MapDraft, XY } from './types'
 
 export const emptyDraft = (): MapDraft => ({
   format: 'sweep-map-draft-v1',
-  metadata: { mapVersion: '', floorId: '', frame: '', resolutionM: null, originXM: null, originYM: null },
+  metadata: { mapVersion: '', floorId: '', frame: '', resolutionM: null, originXM: null, originYM: null,
+    units: '', createdAt: null, creationEvidence: '',
+    registration: { sourceFrame: '', transformId: '', residualM: null, thresholdM: null, evidence: '' } },
   image: null, features: [], tags: [],
 })
 
@@ -15,7 +17,7 @@ export function invalidateChangedEvidence(previous: MapDraft, next: MapDraft, re
     tags: next.tags.map((tag) => {
       const before = previous.tags.find((t) => t.id === tag.id)
       if (!before) return tag
-      const changed = mapChanged || before.tagId !== tag.tagId || before.family !== tag.family || before.sizeM !== tag.sizeM || before.heightM !== tag.heightM
+      const changed = mapChanged || before.tagId !== tag.tagId || before.family !== tag.family || before.sizeM !== tag.sizeM || before.heightM !== tag.heightM || before.yawRad !== tag.yawRad
         || before.position.x !== tag.position.x || before.position.y !== tag.position.y || before.source !== tag.source
       return changed ? { ...tag, tapeVerified: false, tapeEvidence: '', observations: !mapChanged && tag.id === recordedTag ? tag.observations : [] } : tag
     }),
@@ -96,6 +98,12 @@ export function validateDraft(draft: MapDraft): DraftIssue[] {
   if (m.frame !== 'world') add('metadata.frame', 'An explicit canonical world frame is required; do not rename an unregistered frame.')
   if (!finite(m.resolutionM) || m.resolutionM <= 0) add('metadata.resolutionM', 'Measured image resolution must be positive metres per pixel.')
   if (!finite(m.originXM) || !finite(m.originYM)) add('metadata.origin', 'The measured bottom-left image origin is required.')
+  if (m.units !== 'm') add('metadata.units', 'Confirm that all distances use metres.')
+  if (!Number.isSafeInteger(m.createdAt) || (m.createdAt ?? 0) <= 0 || (m.createdAt ?? 0) > 8.64e15 || !m.creationEvidence?.trim()) add('metadata.creationEvidence', 'Record the map creation time and source evidence.')
+  const registration = m.registration
+  if (!registration?.sourceFrame.trim() || !registration.transformId.trim() || !registration.evidence.trim()
+    || !finite(registration.residualM) || registration.residualM < 0
+    || !finite(registration.thresholdM) || registration.thresholdM <= 0 || registration.residualM > registration.thresholdM) add('metadata.registration', 'Record the measured frame registration, residual, and passing threshold.')
   if (draft.features.filter((f) => f.kind === 'geofence').length !== 1) add('geofence', 'Exactly one geofence is required.')
   const names = new Set<string>()
   const ids = new Set<string>()
@@ -132,6 +140,7 @@ export function validateDraft(draft: MapDraft): DraftIssue[] {
     if (!finite(t.position.x) || !finite(t.position.y) || (boundary && !inside(t.position, boundary))) add(path, 'Tag position must be finite and inside the geofence.')
     if (t.source === 'unreported' || !finite(t.confidence) || t.confidence < 0 || t.confidence > 1) add(path, 'Report tag provenance and confidence from 0 to 1.')
     if (t.usedForFlight && (!t.tapeVerified || !t.tapeEvidence.trim() || t.observations.length === 0)) add(path, 'Flight tags require tape verification, evidence, and observation references.')
+    if (t.usedForFlight && (!finite(t.yawRad) || Math.abs(t.yawRad) > Math.PI)) add(path, 'Flight tags require a measured yaw from −π to π radians.')
   }
   return issues
 }

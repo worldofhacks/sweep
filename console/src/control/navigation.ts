@@ -11,11 +11,11 @@ export function navigationTargets(state: ControlState): NavigationTarget[] {
 }
 
 /** Eligibility to request a review; this never authorizes navigation dispatch. */
-export function navigationBlockedReason(state: ControlState): string | null {
+export function navigationBlockedReason(state: ControlState, reviewSupported = false): string | null {
   if (state.connection.status !== 'connected') return 'Connect to the relay before reviewing a destination.'
   if (state.estop) return 'Clear the active emergency stop before reviewing a destination.'
   const capability = capabilityBlockedReason(state, 'navigate')
-  if (capability) return capability
+  if (capability && !reviewSupported) return capability
   if (state.selection.length === 0) return 'Select devices to review a destination.'
   for (const id of state.selection) {
     const device = state.aircraft[id]

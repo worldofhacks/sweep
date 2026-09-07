@@ -28,7 +28,7 @@ export function useNavigationReview({ state, client = UNAVAILABLE, dependencies,
   const catalog = useMemo(() => parseNavigationCatalog(source.catalog), [source.catalog])
   const current = observedControlState(state, dependencies.now())
   const catalogValidity = navigationCatalogValidity(catalog, current.sessionId, dependencies.now())
-  const blocked = navigationBlockedReason(current)
+  const blocked = navigationBlockedReason(current, source.reviewSupported === true)
   // Includes all bounded catalog evidence, not just version labels. A provider
   // must not silently replace geometry/configuration under an unchanged label.
   const contextKey = JSON.stringify({ reset, session: current.sessionId, roster: current.rosterVersion,
@@ -52,9 +52,9 @@ export function useNavigationReview({ state, client = UNAVAILABLE, dependencies,
     const at = dependencies.now()
     const before = observedControlState(latest.current.state, at)
     if (source.status !== 'ready' || !navigationCatalogValidity(catalog, before.sessionId, at).valid ||
-      !catalog || navigationBlockedReason(before)) return null
+      !catalog || navigationBlockedReason(before, source.reviewSupported === true)) return null
     const targets = navigationTargets(before)
-    const destination = resolveNavigationZoneId(catalog, zoneId, at, targets.map((target) => target.deviceClass))
+    const destination = resolveNavigationZoneId(catalog, zoneId, at, targets.map((target) => target.deviceClass), source.reviewSupported === true)
     if (destination.kind !== 'resolved' || destination.destination.zoneId !== zoneId) return null
     const intent = createIntent({ name: 'navigate', args: { zone_id: zoneId }, selection: before.selection,
       session: before.sessionId, source: 'console' }, dependencies)
@@ -69,15 +69,15 @@ export function useNavigationReview({ state, client = UNAVAILABLE, dependencies,
       const after = observedControlState(latest.current.state, dependencies.now())
       const validity = navigationPreviewValidity(preview, catalog, { session: after.sessionId,
         rosterVersion: after.rosterVersion, selected: navigationTargets(after), destinationZoneId: zoneId,
-        intentId: intent.intent_id, now: dependencies.now() })
-      const eligibility = navigationBlockedReason(after)
+        intentId: intent.intent_id, now: dependencies.now(), reviewOnly: source.reviewSupported === true })
+      const eligibility = navigationBlockedReason(after, source.reviewSupported === true)
       if (!preview || (!validity.valid && validity.code !== 'node_refused') || eligibility) {
         throw new Error(eligibility ?? validity.reason)
       }
       if (latest.current.sourcePreview !== null) {
         const published = navigationPreviewValidity(parseNavigationPreview(latest.current.sourcePreview), catalog, {
           session: after.sessionId, rosterVersion: after.rosterVersion, selected: navigationTargets(after),
-          destinationZoneId: zoneId, intentId: intent.intent_id, now: dependencies.now(), frozenPreview: preview,
+          destinationZoneId: zoneId, intentId: intent.intent_id, now: dependencies.now(), frozenPreview: preview, reviewOnly: source.reviewSupported === true,
         })
         if (!published.valid && published.code !== 'node_refused') throw new Error(published.reason)
       }
@@ -89,7 +89,7 @@ export function useNavigationReview({ state, client = UNAVAILABLE, dependencies,
         reason: error instanceof Error ? error.message : 'The destination review failed.', catalog, preview: null } })
       return null
     }
-  }, [catalog, client, contextKey, dependencies, generationRef, source.status])
+  }, [catalog, client, contextKey, dependencies, generationRef, source.status, source.reviewSupported])
 
   // Retire a review permanently when its context changes; restoring old
   // values must never resurrect a cancelled or invalidated route.
@@ -99,7 +99,7 @@ export function useNavigationReview({ state, client = UNAVAILABLE, dependencies,
     ? navigationPreviewValidity(parseNavigationPreview(source.preview), catalog, { session: current.sessionId,
       rosterVersion: current.rosterVersion, selected: navigationTargets(current),
       destinationZoneId: active.preview.destination.zoneId, intentId: active.preview.intentId,
-      now: dependencies.now(), frozenPreview: active.preview }) : null
+      now: dependencies.now(), frozenPreview: active.preview, reviewOnly: source.reviewSupported === true }) : null
   if (active?.preview && publishedValidity && !publishedValidity.valid && publishedValidity.code !== 'node_refused') {
     setReview({ client, contextKey, snapshot: { status: 'ready', reason: publishedValidity.reason, catalog, preview: null } })
   }
@@ -109,5 +109,5 @@ export function useNavigationReview({ state, client = UNAVAILABLE, dependencies,
     reason: source.status === 'ready' && !catalogValidity.valid ? catalogValidity.reason : source.reason,
     catalog, preview: null,
   }
-  return { snapshot, prepare, invalidate }
+  return { snapshot: { ...snapshot, reviewSupported: source.reviewSupported === true }, prepare, invalidate }
 }

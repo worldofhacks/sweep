@@ -44,7 +44,8 @@ RF budgets, and measured safety limits remain specific acceptance constraints.
 ## Delivery and deployment boundary
 
 This change delivers modular fleet source updates, per-camera console support, and
-documentation. It does not redeploy the existing live relay or commission additional
+[authenticated map and navigation-review integration](platform-integration.md).
+It does not redeploy the existing live relay or commission additional
 hardware. The running console's build metadata identifies which frontend revision is
 actually served; source changes alone do not update that copied production build.
 
@@ -56,8 +57,8 @@ they are not new settings introduced by this task. Start a new relay session. Do
 session into that deployment or substitute guessed planning speeds. The current live
 relay remains a separate deployment until those requirements are met.
 
-The full nodekit/Ohmni custom telemetry and robot peripheral integration remains
-paused in separate work. Browser support for optional telemetry or controls does not
+Device-side nodekit/Ohmni telemetry producers and robot peripheral commissioning remain
+separate work. Browser support for optional telemetry or controls does not
 mean those backend and device routes are installed or available. The reported aerial
 infrared sensor has no integrated, validated readings in this delivery. Additional
 robots, second-camera feeds, and sensors become connected or qualified only through

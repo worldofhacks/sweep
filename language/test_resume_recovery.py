@@ -50,7 +50,7 @@ def test_terminal_ack_cannot_redispatch_after_resume_failure(
         relay, Principal(source="console", drone_id=None, signing_key=b"x" * 32)
     )(intent)
     assert events[-1]["status"] == "executing"
-    assert len(flight.calls) == 1
+    assert [call.drone_ids for call in flight.calls] == [(1,), (2,)]
     command = prepared.plan.commands[0]
     unavailable = failure_stage == "enrichment"
     if failure_stage == "after_dispatch":
@@ -61,7 +61,8 @@ def test_terminal_ack_cannot_redispatch_after_resume_failure(
             raise RuntimeError("dispatcher failed after adapter I/O")
 
         monkeypatch.setattr(controller.dispatcher, "resume_after_completion", resume_then_raise)
-    expected_calls = 3 if failure_stage == "after_dispatch" and status == "completed" else 2
+    # Each initial and recovery HOLD reaches both devices before awaiting an ACK.
+    expected_calls = 4
     safety_id = f"safety:resume:{intent.intent_id}"
     raw = {
         "v": 1,
@@ -94,7 +95,7 @@ def test_terminal_ack_cannot_redispatch_after_resume_failure(
         assert safety_pending.status is LifecycleStatus.EXECUTING
         assert safety_prepared.intent.name is IntentName.HOLD
         assert flight.calls[-1].operation.value == "hover"
-        assert flight.calls[-1].drone_ids == (safety_prepared.plan.commands[0].drone_id,)
+        assert flight.calls[-1].drone_ids == (safety_prepared.plan.commands[-1].drone_id,)
         return
 
     events = relay.process_frame(raw, principal)
@@ -118,7 +119,7 @@ def test_terminal_ack_cannot_redispatch_after_resume_failure(
     assert relay.current_state()["accepted_plan"]["intent_id"] == safety_id
     assert intent.intent_id not in router._running
     assert all(call.operation.value == "hover" for call in flight.calls)
-    assert flight.calls[-1].drone_ids == (safety_prepared.plan.commands[0].drone_id,)
+    assert flight.calls[-1].drone_ids == (safety_prepared.plan.commands[-1].drone_id,)
     assert events[0]["status"] == status
     assert len(flight.calls) == expected_calls
     retained_safety = router._running[safety_id]

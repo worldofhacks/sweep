@@ -5,7 +5,7 @@ import { DEVICE_FRESH_MS, observeDevice } from '../../../control/observation'
 import { supports, type MapAuthoringClient } from './client'
 import { canDraw } from './geometry'
 import { currentWorldObservation, observationClock, POSITION_FRESH_MS, snapshotWorldObservation } from './observations'
-import type { MapDraft, WorldPositionObservation } from './types'
+import type { MapDraft, MapRevision, WorldPositionObservation } from './types'
 
 interface Binding { client: MapAuthoringClient; context: string }
 interface Batch {
@@ -16,15 +16,15 @@ interface Batch {
   error: string | null
 }
 
-export function useWorldObservations(client: MapAuthoringClient, draft: MapDraft, state: ControlState | undefined, now: () => number) {
+export function useWorldObservations(client: MapAuthoringClient, draft: MapDraft, state: ControlState | undefined, now: () => number, reference: MapRevision | null) {
   const session = client.status === 'available' ? client.sessionId : ''
-  const enabled = supports(client, 'observe') && client.status === 'available' && Boolean(client.subscribePositions) && canDraw(draft)
+  const enabled = reference !== null && supports(client, 'observe') && client.status === 'available' && Boolean(client.subscribePositions) && canDraw(draft)
     && state?.sessionId === session && ['connected', 'degraded'].includes(state.connection.status)
   const localNow = now()
   const at = observationClock(state, localNow)
   const { mapVersion, floorId } = draft.metadata
   const context = JSON.stringify({
-    enabled, session, connection: state?.connection.status, stateSession: state?.sessionId,
+    enabled, session, reference, connection: state?.connection.status, stateSession: state?.sessionId,
     metadata: draft.metadata, image: draft.image && [draft.image.sha256, draft.image.width, draft.image.height],
     devices: Object.values(state?.aircraft ?? {}).map((device) => [device.drone_id, device.device_class,
       device.connection_epoch, observeDevice(device, at).state]).sort((left, right) => Number(left[0]) - Number(right[0])),
@@ -39,7 +39,7 @@ export function useWorldObservations(client: MapAuthoringClient, draft: MapDraft
   useLayoutEffect(() => { latest.current = { state, metadata: draft.metadata, now, binding } }, [state, draft.metadata, now, binding])
 
   useEffect(() => {
-    if (!enabled || client.status !== 'available' || !client.subscribePositions) return
+    if (!enabled || !reference || client.status !== 'available' || !client.subscribePositions) return
     let active = true
     const empty: Batch = { binding, observations: [], cursors: [], error: null }
     const owns = () => active && latest.current.binding === binding
@@ -50,7 +50,7 @@ export function useWorldObservations(client: MapAuthoringClient, draft: MapDraft
     const receive = (value: WorldPositionObservation) => {
       const live = latest.current
       const observation = snapshotWorldObservation(value)
-      if (!owns() || !observation || !currentWorldObservation(observation, live.metadata, live.state, session, live.now())) return
+      if (!owns() || !observation || !currentWorldObservation(observation, live.metadata, live.state, session, live.now(), reference)) return
       setBatch((previous) => {
         const own = previous?.binding === binding ? previous : empty
         const prior = own.cursors.find((item) => item.deviceId === observation.deviceId)
@@ -64,14 +64,14 @@ export function useWorldObservations(client: MapAuthoringClient, draft: MapDraft
       })
     }
     let close: (() => void) | undefined
-    try { close = client.subscribePositions({ mapVersion, floorId }, receive, fail) }
+    try { close = client.subscribePositions({ reference, mapVersion, floorId }, receive, fail) }
     catch { queueMicrotask(() => fail('The verified observation service could not connect.')) }
     return () => { active = false; close?.() }
-  }, [binding, client, enabled, session, mapVersion, floorId])
+  }, [binding, client, enabled, session, mapVersion, floorId, reference])
 
   if (batch && batch.binding !== binding) setBatch(null)
   const own = enabled && batch?.binding === binding ? batch : null
-  const current = (own?.observations ?? []).filter((observation) => currentWorldObservation(observation, draft.metadata, state, session, localNow))
+  const current = (own?.observations ?? []).filter((observation) => currentWorldObservation(observation, draft.metadata, state, session, localNow, reference))
   // Retire stale or invalid samples, instead of merely hiding them until a
   // context or clock value is restored. The reorder cursor survives retirement.
   if (own && current.length !== own.observations.length) setBatch({ ...own, observations: current })
@@ -89,6 +89,6 @@ export function useWorldObservations(client: MapAuthoringClient, draft: MapDraft
 
   return {
     positions,
-    reason: !enabled ? 'Verified live positions are unavailable. A supported observation service and current session/map/frame/epoch association are required.' : own?.error ?? (positions.length ? `${positions.length} fresh, verified world positions. Observations expire after one second.` : 'Waiting for fresh, verified world positions. No legacy telemetry is substituted.'),
+    reason: !reference ? 'Load or save the exact map coordinate source before observing positions. Image and registration changes require a new approved source.' : !enabled ? 'Verified live positions are unavailable. A supported observation service and current session/map/frame/epoch association are required.' : own?.error ?? (positions.length ? `${positions.length} fresh, verified world positions. Observations expire after one second.` : 'Waiting for fresh, verified world positions. No legacy telemetry is substituted.'),
   }
 }

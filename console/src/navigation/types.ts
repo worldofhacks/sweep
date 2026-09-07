@@ -1,6 +1,6 @@
 import type { DeviceClass } from '../relay/contract'
 
-/** Console integration model for #143. This is not an implemented backend wire schema. */
+/** Shared catalog/preview DTOs mirrored by relay/navigation_service.py. */
 export interface ArtifactPin {
   readonly version: string
   readonly contentSha256: string
@@ -36,7 +36,7 @@ export interface NavigationDestination {
 export type NavigationJsonValue = null | boolean | number | string |
   readonly NavigationJsonValue[] | { readonly [key: string]: NavigationJsonValue }
 
-/** Opaque measured configuration until the backend publishes its physical schema. */
+/** Loaded authoritative planner/safety configuration, opaque to the renderer. */
 export type NavigationMotionConfig = { readonly [key: string]: NavigationJsonValue }
 
 export interface NavigationCatalog {
@@ -105,6 +105,8 @@ export interface NavigationContext {
   readonly intentId?: string
   /** Captured parser output when a preview is staged; never replace it with a refresh. */
   readonly frozenPreview?: NavigationPreview
+  /** Allows displaying a non-dispatchable refusal before reachability is qualified. */
+  readonly reviewOnly?: boolean
 }
 
 export interface NavigationPreviewRequest {
@@ -124,12 +126,30 @@ export interface NavigationSnapshot {
   readonly reason: string | null
   readonly catalog: NavigationCatalog | null
   readonly preview: NavigationPreview | null
+  /** Read-only service capability; never widens the motion intent profile. */
+  readonly reviewSupported?: boolean
 }
 
 export interface NavigationValidity {
   readonly valid: boolean
   readonly code: string
   readonly reason: string
+}
+
+/** A server check of frozen evidence. This contract never reports motion success. */
+export interface NavigationConfirmationOutcome {
+  readonly previewId: string
+  readonly intentId: string
+  readonly status: 'refused' | 'invalidated'
+  readonly code: string
+  readonly detail: string
+  readonly dispatchEligible: false
+}
+
+export interface NavigationVerification {
+  readonly status: 'idle' | 'verifying' | 'complete' | 'error' | 'invalidated'
+  readonly reason: string | null
+  readonly outcome: NavigationConfirmationOutcome | null
 }
 
 export type NavigationDestinationResolution =

@@ -28,6 +28,9 @@ class IntentName(StrEnum):
     CAPTURE_ROOM = "capture_room"
     SURVEY_AREA = "survey_area"
     MAP_AREA = "map_area"
+    # Registered shared destination contract. Class route/execution qualification
+    # is separate; neither C1 nor C2 advertises this as an executable capability.
+    NAVIGATE = "navigate"
 
 
 @dataclass(frozen=True, slots=True)

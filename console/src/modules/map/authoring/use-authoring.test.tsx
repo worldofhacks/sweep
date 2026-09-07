@@ -117,10 +117,57 @@ test('a fresh associated observation updates the draft and clears tape claims', 
   const { result } = renderHook(() => useMapAuthoring(client, now, rosterFixture()))
   const draft = draftFixture(); draft.tags = [tagFixture()]
   act(() => result.current.replace(draft))
+  await act(() => result.current.save())
   await act(() => result.current.record('tag-record'))
   expect(result.current.draft.tags[0]).toMatchObject({ position: { x: 3, y: 3 }, tapeVerified: false, tapeEvidence: '', source: 'auto_registered' })
   expect(result.current.draft.tags[0].observations).toContain('new-observation')
   expect(result.current.notice).toContain('Fresh associated observation')
+  expect(result.current.observationReference).toEqual(revision)
+  expect(result.current.dirty).toBe(true)
+})
+
+test('unsaved matching map labels do not authorize recording or an observation overlay', async () => {
+  const client = clientFixture(), draft = draftFixture()
+  draft.tags = [tagFixture()]
+  const { result } = renderHook(() => useMapAuthoring(client, now, rosterFixture()))
+  act(() => result.current.replace(draft))
+  await act(() => result.current.record('tag-record'))
+  expect(result.current.observationReference).toBeNull()
+  expect(result.current.recordTarget).toBeNull()
+  expect(client.recordCurrentObservation).not.toHaveBeenCalled()
+})
+
+test.each(['image', 'bytes', 'registration', 'resolution', 'origin'] as const)('changed %s retires recording and overlays despite unchanged map labels', async (field) => {
+  const client = clientFixture(), draft = draftFixture()
+  draft.tags = [tagFixture()]
+  const { result } = renderHook(() => useMapAuthoring(client, now, rosterFixture()))
+  act(() => result.current.replace(draft))
+  await act(() => result.current.save())
+  expect(result.current.observationReference).toEqual(revision)
+  const next = structuredClone(result.current.draft)
+  if (field === 'image') next.image!.sha256 = 'c'.repeat(64)
+  if (field === 'bytes') next.image!.dataUrl += 'AAAA'
+  if (field === 'registration') next.metadata.registration!.transformId = 'different-transform'
+  if (field === 'resolution') next.metadata.resolutionM = 0.5
+  if (field === 'origin') next.metadata.originXM = 10
+  act(() => result.current.changed(next))
+  await act(() => result.current.record('tag-record'))
+  expect(result.current.observationReference).toBeNull()
+  expect(result.current.recordTarget).toBeNull()
+  expect(client.recordCurrentObservation).not.toHaveBeenCalled()
+})
+
+test('a drive-over receipt for another bundle cannot reuse matching map and floor labels', async () => {
+  const client = clientFixture(), draft = draftFixture()
+  draft.tags = [tagFixture()]
+  const original = await client.recordCurrentObservation()
+  client.recordCurrentObservation.mockResolvedValueOnce({ ...original, reference: { ...revision, bundleId: 'different-bundle' } })
+  const { result } = renderHook(() => useMapAuthoring(client, now, rosterFixture()))
+  act(() => result.current.replace(draft))
+  await act(() => result.current.save())
+  await act(() => result.current.record('tag-record'))
+  expect(result.current.draft.tags[0].position).toEqual({ x: 2, y: 2 })
+  expect(result.current.notice).toContain('fresh, verified')
 })
 
 test.each(['stale', 'unverified', 'wrong frame', 'wrong session', 'wrong epoch'] as const)('rejects %s observations without recording a position', async (mode) => {
@@ -135,6 +182,7 @@ test.each(['stale', 'unverified', 'wrong frame', 'wrong session', 'wrong epoch']
   const { result } = renderHook(() => useMapAuthoring(client, now, rosterFixture()))
   const draft = draftFixture(); draft.tags = [tagFixture()]
   act(() => result.current.replace(draft))
+  await act(() => result.current.save())
   await act(() => result.current.record('tag-record'))
   expect(result.current.draft.tags[0].position).toEqual({ x: 2, y: 2 })
   expect(result.current.notice).toContain('fresh, verified')
@@ -288,6 +336,7 @@ test('recording detaches a position and rechecks the current device epoch after 
   client.recordCurrentObservation.mockResolvedValueOnce(observation)
   const { result, rerender } = renderHook(({ state }) => useMapAuthoring(client, now, state), { initialProps: { state: roster } })
   act(() => result.current.replace(draft))
+  await act(() => result.current.save())
   await act(() => result.current.record('tag-record'))
   observation.position.x = 99
   rerender({ state: roster })
@@ -308,11 +357,12 @@ test('drive-over recording binds one selected ground robot and refuses another r
   roster.aircraft[12] = { ...roster.aircraft[11], drone_id: 12, unit: 2 }
   const { result, rerender } = renderHook(({ state }) => useMapAuthoring(client, now, state), { initialProps: { state: roster } })
   act(() => result.current.replace(draft))
+  await act(() => result.current.save())
   const observation = await client.recordCurrentObservation()
   client.recordCurrentObservation.mockClear()
   client.recordCurrentObservation.mockResolvedValueOnce({ ...observation, deviceId: 12 })
   await act(() => result.current.record('tag-record'))
-  expect(client.recordCurrentObservation).toHaveBeenCalledWith({ mapVersion: draft.metadata.mapVersion,
+  expect(client.recordCurrentObservation).toHaveBeenCalledWith({ reference: revision, mapVersion: draft.metadata.mapVersion,
     floorId: draft.metadata.floorId, tagId: 7, deviceId: 11, connectionEpoch: 2 })
   expect(result.current.draft.tags[0].position).toEqual({ x: 2, y: 2 })
   for (const selection of [[], [11, 12]]) {

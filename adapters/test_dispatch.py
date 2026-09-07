@@ -14,6 +14,7 @@ from planner.models import (
     FlightState,
     HoldScope,
     LifecycleStatus,
+    MembershipState,
     Plan,
     Position,
     RefusalReason,
@@ -22,6 +23,7 @@ from planner.planner import DeterministicPlanner
 from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import (
+    make_ground_vehicle,
     make_intent,
     make_snapshot,
     make_stack,
@@ -365,6 +367,40 @@ def test_safety_plan_resume_proves_full_targets_without_resending() -> None:
         plan.commands[0].command_id,
         plan.commands[1].command_id,
     ]
+
+
+@pytest.mark.parametrize("change", ["epoch", "departed", "degraded", "class", "fleet_scope"])
+def test_completed_hold_never_waives_changed_target_identity_or_fleet_scope(change: str) -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    _, planner, arbiter, _, _, camera = make_stack(snapshot)
+    plan = (
+        planner.emergency_hold_plan(intent_id="safety-hold", snapshot=snapshot)
+        if change == "fleet_scope"
+        else planner.plan(make_intent(IntentName.HOLD, selection=(1,)), snapshot)
+    )
+    assert isinstance(plan, Plan)
+    flight = ExecutingHoverOnceFlight.from_snapshot(snapshot)
+    dispatcher = AdapterDispatcher(flight=flight, camera=camera, arbiter=arbiter)
+    pending = dispatcher.dispatch(plan, snapshot)
+    assert pending.status is LifecycleStatus.EXECUTING
+    terminal = replace(pending.acknowledgements[0], status=LifecycleStatus.COMPLETED)
+    current = replace(snapshot, roster_version=snapshot.roster_version + 1)
+    if change == "epoch":
+        current = replace_aircraft(current, 1, connection_epoch=2)
+    elif change == "departed":
+        current = replace_aircraft(current, 1, membership=MembershipState.DISCONNECTED)
+    elif change == "degraded":
+        current = replace_aircraft(current, 1, membership=MembershipState.DEGRADED)
+    elif change == "class":
+        current = replace(current, aircraft={1: make_ground_vehicle(1, unit=1)})
+
+    result = dispatcher.resume_after_completion(
+        plan, pending, terminal, snapshot, current_snapshot=lambda: current
+    )
+
+    assert result.status is LifecycleStatus.INVALIDATED
+    assert result.refusal is not None and result.refusal.reason is RefusalReason.STALE_ROSTER
+    assert len(flight.calls) == 1
 
 
 class ExecutingLandOnceFlight(SimFlightAdapter):

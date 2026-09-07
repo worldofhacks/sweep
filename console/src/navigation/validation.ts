@@ -2,6 +2,7 @@ import type { DeviceClass } from '../relay/contract'
 import type {
   NavigationCatalog, NavigationContext, NavigationDestination, NavigationDestinationResolution,
   NavigationPreview, NavigationTarget, NavigationValidity,
+  NavigationConfirmationOutcome,
 } from './types'
 
 export const MAX_NAVIGATION_TARGETS = 64
@@ -41,6 +42,15 @@ function identity(value: unknown): value is string {
 
 function integer(value: unknown, minimum = 0, maximum = Number.MAX_SAFE_INTEGER): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum && value <= maximum
+}
+
+export function parseNavigationConfirmation(raw: unknown): NavigationConfirmationOutcome | null {
+  if (!boundedJson(raw, 16 * 1024) ||
+    !exact(raw, ['previewId', 'intentId', 'status', 'code', 'detail', 'dispatchEligible']) ||
+    !identity(raw.previewId) || !identity(raw.intentId) || !identity(raw.code) || !text(raw.detail, 2048) ||
+    (raw.status !== 'refused' && raw.status !== 'invalidated') || raw.dispatchEligible !== false) return null
+  return Object.freeze({ previewId: raw.previewId, intentId: raw.intentId, status: raw.status,
+    code: raw.code, detail: raw.detail, dispatchEligible: false })
 }
 
 function list(value: unknown, maximum: number, predicate: (item: unknown) => boolean, minimum = 0): value is unknown[] {
@@ -206,6 +216,9 @@ function same(left: unknown, right: unknown): boolean {
   return canonical(left) === canonical(right)
 }
 
+/** Compare parsed JSON evidence without depending on object-key insertion order. */
+export const equalNavigationEvidence = same
+
 export function navigationCatalogValidity(catalog: NavigationCatalog | null, session: string, now: number): NavigationValidity {
   if (catalog === null) return fail('catalog_unavailable', 'No accepted destination catalog is available.')
   if (parseNavigationCatalog(catalog) === null) return fail('catalog_invalid', 'The destination catalog does not match the integration contract.')
@@ -218,6 +231,7 @@ export function navigationCatalogValidity(catalog: NavigationCatalog | null, ses
 
 export function resolveNavigationDestination(
   catalog: NavigationCatalog | null, query: string, now: number, selectedClasses: readonly DeviceClass[] = [],
+  reviewOnly = false,
 ): NavigationDestinationResolution {
   const current = navigationCatalogValidity(catalog, catalog?.session ?? '', now)
   if (!current.valid || catalog === null) return { kind: 'refused', code: current.code, reason: current.reason }
@@ -226,26 +240,28 @@ export function resolveNavigationDestination(
   const matches = catalog.destinations.filter((item) => [item.zoneId, item.name, ...item.aliases].some((candidate) => normalized(candidate) === name))
   if (matches.length === 0) return { kind: 'refused', code: 'destination_unknown', reason: 'No accepted destination matches this name.' }
   if (matches.length > 1) return { kind: 'ambiguous', candidates: matches }
-  return destinationEligibility(catalog, matches[0], selectedClasses)
+  return destinationEligibility(catalog, matches[0], selectedClasses, reviewOnly)
 }
 
 /** Explicit selection is a canonical identity, never reinterpreted as another zone's alias. */
 export function resolveNavigationZoneId(
   catalog: NavigationCatalog | null, zoneId: string, now: number, selectedClasses: readonly DeviceClass[] = [],
+  reviewOnly = false,
 ): NavigationDestinationResolution {
   const current = navigationCatalogValidity(catalog, catalog?.session ?? '', now)
   if (!current.valid || catalog === null) return { kind: 'refused', code: current.code, reason: current.reason }
   const found = catalog.destinations.find((item) => item.zoneId === zoneId)
   if (!found) return { kind: 'refused', code: 'destination_unknown', reason: 'This canonical destination is absent from the accepted catalog.' }
-  return destinationEligibility(catalog, found, selectedClasses)
+  return destinationEligibility(catalog, found, selectedClasses, reviewOnly)
 }
 
 function destinationEligibility(
   catalog: NavigationCatalog, found: NavigationDestination, selectedClasses: readonly DeviceClass[],
+  reviewOnly: boolean,
 ): NavigationDestinationResolution {
   if (found.excluded) return { kind: 'refused', code: 'destination_excluded', reason: 'This destination is excluded from navigation.' }
   if (found.floorId !== catalog.map.floorId) return { kind: 'refused', code: 'wrong_floor', reason: 'This destination is on another floor.' }
-  if (found.reachability !== 'reachable') return { kind: 'refused', code: 'destination_unreachable', reason: found.reachability === 'unknown' ? 'Destination reachability has not been established.' : 'This destination is unreachable.' }
+  if (found.reachability !== 'reachable' && !(reviewOnly && found.reachability === 'unknown')) return { kind: 'refused', code: 'destination_unreachable', reason: found.reachability === 'unknown' ? 'Destination reachability has not been established.' : 'This destination is unreachable.' }
   if (selectedClasses.some((item) => !found.allowedClasses.includes(item))) return { kind: 'refused', code: 'unsupported_selection', reason: 'This destination does not support every selected device class.' }
   return { kind: 'resolved', destination: found }
 }
@@ -272,7 +288,7 @@ export function navigationPreviewValidity(
   if (context.frozenPreview !== undefined && (parseNavigationPreview(context.frozenPreview) === null || !same(preview, context.frozenPreview))) return fail('preview_changed', 'The captured preview, route, arrival slot or hold behavior changed. Request a new preview.')
   if (destination?.excluded) return fail('destination_excluded', 'This destination is excluded from navigation.')
   if (destination?.floorId !== catalog.map.floorId) return fail('wrong_floor', 'This destination is on another floor.')
-  if (destination?.reachability !== 'reachable') return fail('destination_unreachable', 'Destination reachability has not been established for this preview.')
+  if (destination?.reachability !== 'reachable' && !(context.reviewOnly === true && preview.dispatchEligible === false && destination?.reachability === 'unknown')) return fail('destination_unreachable', 'Destination reachability has not been established for this preview.')
   if (preview.selected.some((item) => !destination.allowedClasses.includes(item.deviceClass))) return fail('unsupported_selection', 'This destination does not support every selected device class.')
   if (preview.outcomes.some((item) => item.status === 'refused')) return fail('node_refused', 'At least one selected device was refused by the preview provider.')
   return valid

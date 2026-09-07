@@ -5,6 +5,7 @@ Maintained throughout M0 through M4.
 - `prd.md`: the PRD, architecture, capability areas, and delivery milestones (source of truth).
 - `mvp-plan.md`: the dependency-mapped work breakdown for the MVP.
 - `modular-fleet.md`: current additive fleet scope, device identity and capabilities, onboard cameras and sensors, live-data boundaries, and integration evidence. Model-specific historical acceptance counts are not platform limits.
+- `platform-integration.md`: map authoring and approval APIs, explicit active-map selection, qualified live observations, frozen navigation reviews, and deployment prerequisites.
 - `future-perception-manipulation-mapping.md`: evidence-backed M5 and M6 options for visual search, spatial mapping, phone sensing, and aerial manipulation.
 - `prior-art.md`: the platform-wide open-source prior-art pass — DJI/MSDK ecosystem, bridge seeds, swarm frameworks, localization, clearance, perception, networking/video, language/gesture, ROS 2 verdict, and the resulting recommendations for open PRs, issues, MVP architecture, and validation experiments.
 - `prior-art-intent-mapping.md`: prior art for intent mapping, gesture acceptance, language eval datasets, structured output, and the security cross-check.
