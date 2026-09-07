@@ -21,6 +21,7 @@ from perception.control_publisher import (
     _enqueue_json_line,
     _run_live,
     _run_replay,
+    _SocketState,
     _validate_auth_accepted,
 )
 from relay.control_frames import ControlLocalizationFrame
@@ -43,6 +44,7 @@ class FakeTransport:
         self.bindings = dict(bindings)
         self.authenticated = []
         self.frames = []
+        self.observations = {drone_id: [] for drone_id in bindings}
         self.failed_current = set()
         self.failed_send = set()
         self.closed = False
@@ -56,6 +58,11 @@ class FakeTransport:
         if drone_id in self.failed_current:
             raise PublisherTransportError("disconnected")
         return self.bindings[drone_id]
+
+    def take_observations(self, drone_id):
+        observations = tuple(self.observations[drone_id])
+        self.observations[drone_id].clear()
+        return observations
 
     def send(self, drone_id, frame):
         if drone_id in self.failed_send:
@@ -423,7 +430,11 @@ def test_config_schema_is_exact_deeply_copied_and_immutable():
     with pytest.raises(PublisherError, match="fields"):
         ControlPublisherConfig.from_mapping(unknown)
 
-    too_many_drones = config_mapping(drones=(1, 2, 3, 4, 5))
+    thirty_two_aircraft = ControlPublisherConfig.from_mapping(
+        config_mapping(drones=tuple(range(1, 33)))
+    )
+    assert len(thirty_two_aircraft.drones) == 32
+    too_many_drones = config_mapping(drones=tuple(range(1, 34)))
     with pytest.raises(PublisherError, match="drones are invalid"):
         ControlPublisherConfig.from_mapping(too_many_drones)
 
@@ -611,6 +622,32 @@ def test_live_event_ids_are_bounded_and_unique_across_process_runs(tmp_path):
     assert first_id != second_id
     assert len(first_id) <= 128
     assert len(second_id) <= 128
+
+
+def test_localization_binding_accepts_six_aircraft_and_three_ground_nodes():
+    state = {
+        "v": 1,
+        "t": 1,
+        "type": "state",
+        "event_id": "mixed-state",
+        "session": "session-1",
+        "roster_version": 4,
+        "drones": [
+            {
+                "drone_id": number,
+                "connection_epoch": 9,
+                "membership": "ready",
+                "node_type": "aircraft" if number <= 6 else "ground",
+            }
+            for number in range(1, 10)
+        ],
+    }
+    assert _binding_from_state(state, 6, "session-1") == binding(6, 9, 4, "ready")
+    with pytest.raises(PublisherTransportError, match="requires an aircraft"):
+        _binding_from_state(state, 9, "session-1")
+    state["drones"].append({"drone_id": 10})
+    with pytest.raises(PublisherTransportError, match="handshake"):
+        _binding_from_state(state, 6, "session-1")
 
 
 def test_auth_acceptance_and_state_binding_are_strict():
@@ -810,6 +847,51 @@ def test_websocket_transport_cannot_reopen_after_shutdown():
 
     with pytest.raises(PublisherTransportError, match="closed"):
         transport.authenticate(1, "localization-secret-for-drone-1-key", "session-1")
+
+
+def test_websocket_observation_queue_rejects_item_and_total_byte_overflow():
+    class Socket:
+        def __init__(self, messages):
+            self.messages = iter(messages)
+            self.closed = False
+
+        def recv(self):
+            return next(self.messages)
+
+        def close(self):
+            self.closed = True
+
+    oversized = WebSocketPublisherTransport("ws://relay.example/ws")
+    oversized_socket = Socket(
+        [json.dumps({"type": "observation", "device_id": 1, "blob": "x" * 65_536})]
+    )
+    oversized_state = _SocketState(oversized_socket, binding())
+    oversized._states[1] = oversized_state
+    oversized._drain(1, oversized_state)
+    assert oversized_state.failure is not None
+    assert not oversized_state.observations
+
+    bounded = WebSocketPublisherTransport("ws://relay.example/ws")
+    message = json.dumps({"type": "observation", "device_id": 1, "blob": "x" * 50_000})
+    bounded_socket = Socket([message] * 6)
+    bounded_state = _SocketState(bounded_socket, binding())
+    bounded._states[1] = bounded_state
+    bounded._drain(1, bounded_state)
+    assert bounded_state.failure is not None
+    assert len(bounded_state.observations) == 5
+    assert bounded_state.observation_bytes < 4 * 64 * 1024
+
+
+def test_live_observation_drain_uses_the_authenticated_aircraft_socket(tmp_path):
+    publisher, transport, _audit = live_publisher(tmp_path)
+    raw = {"type": "observation", "device_id": 1, "event_id": "camera-1"}
+    transport.observations[1].append(raw)
+
+    live_binding, observations = publisher.take_live_observations(1)
+
+    assert live_binding == binding(1)
+    assert observations == (raw,)
+    assert publisher.take_live_observations(1)[1] == ()
 
 
 def test_live_current_state_roster_only_change_does_not_reset_fuser(tmp_path):
