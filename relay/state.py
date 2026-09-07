@@ -111,6 +111,8 @@ class _AircraftRecord:
     local_stop_ready: bool = False
     heartbeat_ready: bool = False
     pose_identity: GroundPoseIdentity | None = None
+    accepted_pose_identity: GroundPoseIdentity | None = None
+    accepted_pose_at: int | None = None
     telemetry: TelemetryV1 | None = None
     disconnected_at: int | None = None
     history: list[dict[str, object]] = field(default_factory=list)
@@ -214,6 +216,10 @@ class FleetRegistry:
         with self._lock:
             return self._roster_version
 
+    @property
+    def node_capacity(self) -> int:
+        return self.aircraft_limit + MAX_PHYSICAL_GROUND
+
     def connection_epoch(self, drone_id: int) -> int | None:
         with self._lock:
             record = self._aircraft.get(drone_id)
@@ -296,6 +302,8 @@ class FleetRegistry:
                 record.local_stop_ready = False
                 record.heartbeat_ready = False
                 record.pose_identity = None
+                record.accepted_pose_identity = None
+                record.accepted_pose_at = None
                 record.telemetry = None
                 record.disconnected_at = None
                 record.camera_capabilities = None
@@ -396,6 +404,30 @@ class FleetRegistry:
                 reason=None if not reasons else "readiness_gate_failed",
                 provenance="adapter_signature",
             )
+
+    def apply_ground_pose_observation(
+        self,
+        *,
+        drone_id: int,
+        connection_epoch: int,
+        event_id: str,
+        session: str,
+        frame: str,
+        t: int,
+    ) -> None:
+        with self._lock:
+            record = self._require_current(drone_id, connection_epoch)
+            if record.node_type is not NodeType.GROUND:
+                return
+            if not event_id or not session or not frame or t < 0:
+                raise ValueError("ground pose observation identity is invalid")
+            record.accepted_pose_identity = GroundPoseIdentity(
+                event_id=event_id,
+                session=session,
+                connection_epoch=connection_epoch,
+                frame=frame,
+            )
+            record.accepted_pose_at = t
 
     def apply_graceful_leave(self, request: MembershipRequest) -> MembershipTransition:
         if request.action is not MembershipAction.GRACEFUL_LEAVE:
@@ -499,7 +531,12 @@ class FleetRegistry:
             transitions: list[MembershipTransition] = []
             for record, event_id in zip(ready, event_ids, strict=False):
                 reasons = self._readiness_reasons(record, now_ms)
-                if "telemetry_stale" not in reasons:
+                stale_reason = (
+                    "pose_observation_stale"
+                    if record.node_type is NodeType.GROUND
+                    else "telemetry_stale"
+                )
+                if stale_reason not in reasons:
                     continue
                 record.membership = Membership.DEGRADED
                 record.updated_at = now_ms
@@ -507,16 +544,24 @@ class FleetRegistry:
                 self._remember(
                     record,
                     t=now_ms,
-                    action=MembershipAction.TELEMETRY_STALE,
-                    reason="telemetry_stale",
+                    action=(
+                        MembershipAction.OBSERVATION_STALE
+                        if record.node_type is NodeType.GROUND
+                        else MembershipAction.TELEMETRY_STALE
+                    ),
+                    reason=stale_reason,
                 )
                 transitions.append(
                     self._transition(
                         record,
                         t=now_ms,
                         event_id=event_id,
-                        action=MembershipAction.TELEMETRY_STALE,
-                        reason="telemetry_stale",
+                        action=(
+                            MembershipAction.OBSERVATION_STALE
+                            if record.node_type is NodeType.GROUND
+                            else MembershipAction.TELEMETRY_STALE
+                        ),
+                        reason=stale_reason,
                         provenance="relay_freshness_attestation",
                     )
                 )
@@ -682,6 +727,13 @@ class FleetRegistry:
                 reasons.append("heartbeat_not_ready")
             if record.pose_identity is None:
                 reasons.append("pose_identity_missing")
+            elif record.pose_identity != record.accepted_pose_identity:
+                reasons.append("pose_identity_not_accepted")
+            elif (
+                record.accepted_pose_at is None
+                or now_ms - record.accepted_pose_at > self.telemetry_freshness_ms
+            ):
+                reasons.append("pose_observation_stale")
             return tuple(reasons)
         if record.telemetry is None or record.telemetry.connection_epoch != record.connection_epoch:
             reasons.append("telemetry_missing")

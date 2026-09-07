@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
 import math
+import os
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -143,6 +145,7 @@ class OhmniRuntime:
                 tasks = [
                     asyncio.create_task(self._send(socket)),
                     asyncio.create_task(self._receive(socket)),
+                    asyncio.create_task(self._telemetry()),
                     asyncio.create_task(self._watchdog()),
                     asyncio.create_task(self._stop.wait()),
                 ]
@@ -224,6 +227,13 @@ class OhmniRuntime:
                 self._local_stop("watchdog_failsafe", disable=True)
             elif elapsed_ms >= self.config.heartbeat_hold_ms and self._watchdog_state == "nominal":
                 self._local_stop("watchdog_hold", disable=False)
+
+    async def _telemetry(self) -> None:
+        while True:
+            await asyncio.sleep(1 / self.config.telemetry_hz)
+            self._publish_observations()
+            self._publish_readiness()
+            self._publish_status(None)
 
     def _on_membership(self, frame: Mapping[str, object]) -> None:
         if frame.get("action") != "join" or not isinstance(frame.get("connection_epoch"), int):
@@ -580,3 +590,46 @@ class OhmniRuntime:
     def _enqueue(self, frame: dict[str, object]) -> None:
         if self._outbound is not None:
             self._outbound.put_nowait(frame)
+
+
+def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
+    parser = argparse.ArgumentParser(prog="python -m adapters.ohmni.runtime")
+    parser.add_argument("--relay", default=os.environ.get("SWEEP_RELAY_URL"))
+    parser.add_argument("--session", default=os.environ.get("SWEEP_SESSION"))
+    parser.add_argument("--device-id", type=int, default=os.environ.get("SWEEP_DEVICE_UNIT"))
+    parser.add_argument("--token", default=os.environ.get("SWEEP_NODE_KEY"))
+    parser.add_argument("--adapter-id", default=os.environ.get("SWEEP_ADAPTER_ID"))
+    parser.add_argument("--telemetry-hz", type=float, default=5.0)
+    args = parser.parse_args(argv)
+    if not args.relay or not args.session or not args.token or args.device_id is None:
+        parser.error("relay, session, device ID, and adapter token are required")
+    return GroundRuntimeConfig(
+        relay_url=args.relay.rstrip("/"),
+        session=args.session,
+        device_id=args.device_id,
+        token=args.token,
+        adapter_id=args.adapter_id or f"ohmni-{args.device_id}",
+        telemetry_hz=args.telemetry_hz,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    from .device import build
+
+    config = parse_args(argv)
+    device = build()
+    node = OhmniRuntime(config, device)
+    try:
+        asyncio.run(node.run())
+    except KeyboardInterrupt:
+        return 0
+    except (OSError, RuntimeError, WebSocketException) as error:
+        _LOGGER.error("%s", error)
+        return 1
+    finally:
+        device.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

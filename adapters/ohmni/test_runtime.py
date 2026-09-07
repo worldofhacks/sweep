@@ -22,7 +22,7 @@ from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.conftest import CONSOLE_KEY, SESSION
 
 from .fake import FakeGroundDevice
-from .runtime import GroundRuntimeConfig, OhmniRuntime
+from .runtime import GroundRuntimeConfig, OhmniRuntime, parse_args
 
 GROUND_ID = 9
 GROUND_KEY = b"ground-adapter-key-that-is-at-least-32-bytes"
@@ -138,6 +138,24 @@ def _deliver(server: _RelayServer, frame: dict[str, object]) -> bool:
         server.runtime.deliver_to_node(SESSION, GROUND_ID, frame), server.runtime.loop
     )
     return delivered.result(timeout=WAIT_S)
+
+
+def test_runtime_arguments_build_the_required_ground_identity() -> None:
+    config = parse_args(
+        [
+            "--relay",
+            "ws://relay.example/",
+            "--session",
+            "room-1",
+            "--device-id",
+            "9",
+            "--token",
+            GROUND_KEY.decode(),
+        ]
+    )
+
+    assert config.relay_url == "ws://relay.example"
+    assert config.adapter_id == "ohmni-9"
 
 
 def test_ground_runtime_joins_becomes_ready_acks_velocity_and_stops_on_lease_loss(

@@ -47,6 +47,7 @@ class MembershipAction(StrEnum):
     UNEXPECTED_LOSS = "unexpected_loss"
     TELEMETRY_STALE = "telemetry_stale"
     TELEMETRY_RECOVERED = "telemetry_recovered"
+    OBSERVATION_STALE = "observation_stale"
 
 
 class LifecycleStatus(StrEnum):

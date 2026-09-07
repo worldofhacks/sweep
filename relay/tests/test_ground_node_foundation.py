@@ -131,11 +131,37 @@ def test_ground_capacity_is_separate_from_aircraft_capacity():
 def test_ground_readiness_uses_ground_safety_and_pose_evidence():
     registry = FleetRegistry(telemetry_freshness_ms=1_000, node_types={9: NodeType.GROUND})
     registry.apply_join(_ground_join(9, "ground-join"))
+    registry.apply_ground_pose_observation(
+        drone_id=9,
+        connection_epoch=1,
+        event_id="pose-1",
+        session=SESSION,
+        frame="odom",
+        t=1_756_700_000_000,
+    )
 
     transition = registry.apply_readiness(_ground_readiness(9, "ground-ready"))
 
     assert transition.membership.value == "ready"
     assert transition.readiness_reasons == ()
+
+
+def test_ground_readiness_requires_the_accepted_pose_identity():
+    registry = FleetRegistry(telemetry_freshness_ms=1_000, node_types={9: NodeType.GROUND})
+    registry.apply_join(_ground_join(9, "ground-join"))
+    registry.apply_ground_pose_observation(
+        drone_id=9,
+        connection_epoch=1,
+        event_id="accepted-pose",
+        session=SESSION,
+        frame="odom",
+        t=1_756_700_000_000,
+    )
+
+    transition = registry.apply_readiness(_ground_readiness(9, "ground-ready"))
+
+    assert transition.membership.value == "degraded"
+    assert transition.readiness_reasons == ("pose_identity_not_accepted",)
 
 
 def test_mixed_c2_fleet_state_audit_accepts_nine_nodes_and_rejects_ten():
