@@ -6,6 +6,14 @@ The mapper receives its NUT sidecar from the robot through an ADB reverse tunnel
 
 Set `--tag-submit-interval-ms` to at least the tag source's relay ingress interval. Frames with several tag observations use that spacing between tag submissions. A camera observation and its tags retain the same capture timestamp and image ID.
 
+## Accepted observation archive
+
+Set `--archive-output evidence/mapping-events` to preserve the relay's accepted observation echoes for the authenticated ground node. The output directory contains canonical `observations.jsonl` and a manifest with the exact session, device, epoch, sources, frames, limits, counts, and SHA-256 digest. It contains accepted camera frames, tag observations, odom-to-body poses, and lidar scans that match the configured source IDs and local frames. The archive is evidence only and has no candidate or approval field.
+
+The default source and frame values match the Ohmni runtime: `ohmni-pose`, `ohmni-lidar`, `odom`, `body`, and `lidar`. Use `--archive-pose-source-id`, `--archive-lidar-source-id`, `--archive-odom-frame`, `--archive-body-frame`, and `--archive-lidar-frame` when the runtime uses different names. `--archive-max-records` is capped at 1024, `--archive-max-bytes` at 10 MiB, and `--archive-duration-s` at 120 seconds. After the NUT stream ends, `--archive-drain-s` reads the same subscription for up to two seconds by default, which collects relay echoes already queued for the active scope.
+
+The archive writes only observations returned by the relay after authenticated admission. It preserves each accepted `t_capture`, source receipt timestamp, clock mapping ID, and relay-assigned `t_ingest`. A missing pose capture timestamp remains null. Tag fusion needs a pose producer with a measured capture association before it can use that pose for a camera frame.
+
 ## Capture timestamp qualification
 
 The NUT reader preserves encoded PTS values. That proves only what the sidecar contained. It does not prove that an Ohmni V4L2 driver supplied those PTS values in the robot boot-monotonic clock domain. Do not use mapper output as qualified capture evidence until the following record exists for the active camera and ffmpeg command.

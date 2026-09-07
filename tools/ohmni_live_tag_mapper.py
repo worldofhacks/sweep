@@ -7,8 +7,11 @@ import asyncio
 import hashlib
 import json
 import math
+import os
+import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -22,11 +25,17 @@ from websockets.asyncio.client import connect
 from perception.camera_tags import CameraTagDetector, read_calibration
 from perception.ohmni_clock_probe import ClockProbeError, clock_mapping, probe_clock
 from perception.ohmni_pts_capture import CapturedFrame, NutCaptureReader
-from relay.observations import FramedPose, ObservationSubmission, decode_submission
+from relay.observations import FramedPose, Observation, ObservationSubmission, decode_submission
 
 
 class LiveMapperError(ValueError):
     pass
+
+
+ARCHIVE_FORMAT = "ohmni.accepted-mapping-observation-archive.v1"
+MAX_ARCHIVE_RECORDS = 1_024
+MAX_ARCHIVE_BYTES = 10 * 1024 * 1024
+MAX_ARCHIVE_DURATION_S = 120.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +43,237 @@ class LiveScope:
     session: str
     device_id: int
     connection_epoch: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveConfig:
+    pose_source_id: str
+    lidar_source_id: str
+    odom_frame: str
+    body_frame: str
+    lidar_frame: str
+    max_records: int = MAX_ARCHIVE_RECORDS
+    max_bytes: int = MAX_ARCHIVE_BYTES
+    duration_s: float = MAX_ARCHIVE_DURATION_S
+
+    def __post_init__(self) -> None:
+        for name in (
+            "pose_source_id",
+            "lidar_source_id",
+            "odom_frame",
+            "body_frame",
+            "lidar_frame",
+        ):
+            value = getattr(self, name)
+            if (
+                not isinstance(value, str)
+                or not value
+                or value != value.strip()
+                or not value.isprintable()
+            ):
+                raise LiveMapperError(f"archive {name} must be bounded non-empty text")
+        if (
+            "world" in {self.odom_frame, self.body_frame, self.lidar_frame}
+            or len({self.odom_frame, self.body_frame, self.lidar_frame}) != 3
+        ):
+            raise LiveMapperError("archive frames must describe distinct local frames")
+        if type(self.max_records) is not int or not 1 <= self.max_records <= MAX_ARCHIVE_RECORDS:
+            raise LiveMapperError(
+                f"archive max records must be from one through {MAX_ARCHIVE_RECORDS}"
+            )
+        if type(self.max_bytes) is not int or not 1 <= self.max_bytes <= MAX_ARCHIVE_BYTES:
+            raise LiveMapperError(f"archive max bytes must be from one through {MAX_ARCHIVE_BYTES}")
+        if (
+            isinstance(self.duration_s, bool)
+            or not isinstance(self.duration_s, int | float)
+            or not math.isfinite(self.duration_s)
+            or not 0 < self.duration_s <= MAX_ARCHIVE_DURATION_S
+        ):
+            raise LiveMapperError(
+                "archive duration must be greater than zero through "
+                f"{MAX_ARCHIVE_DURATION_S:g} seconds"
+            )
+
+
+class AcceptedObservationArchive:
+    """Persist the relay's canonical acceptance echo for one mapper scope."""
+
+    def __init__(
+        self,
+        output: Path,
+        *,
+        scope: LiveScope,
+        mapper: MapperConfig,
+        config: ArchiveConfig,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.output = output.absolute()
+        self.scope = scope
+        self.mapper = mapper
+        self.config = config
+        if (
+            len(
+                {
+                    mapper.camera_source_id,
+                    mapper.tag_source_id,
+                    config.pose_source_id,
+                    config.lidar_source_id,
+                }
+            )
+            != 4
+        ):
+            raise LiveMapperError("archive camera, tag, pose, and lidar sources must be distinct")
+        self.monotonic = monotonic
+        self.started_at = monotonic()
+        self.count = 0
+        self.byte_count = 0
+        self.digest = hashlib.sha256()
+        self.kinds = {name: 0 for name in ("camera_frame", "tag_observation", "pose", "range_scan")}
+        self._event_ids: set[tuple[str, str]] = set()
+        self._reserved_output = False
+        self._finished = False
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.mkdir(self.output)
+        except FileExistsError as error:
+            raise LiveMapperError(f"archive output already exists: {self.output}") from error
+        self._reserved_output = True
+        try:
+            self._temporary = Path(
+                tempfile.mkdtemp(prefix=f".{self.output.name}.", dir=self.output.parent)
+            )
+            self._stream = (self._temporary / "observations.jsonl").open("xb")
+        except BaseException:
+            shutil.rmtree(self.output, ignore_errors=True)
+            raise
+
+    def observe(self, raw: Mapping[str, object]) -> bool:
+        if self._finished:
+            raise LiveMapperError("archive is already complete")
+        if self.monotonic() - self.started_at > self.config.duration_s:
+            raise LiveMapperError("archive duration expired before the mapper completed")
+        try:
+            observation = Observation.parse(raw)
+        except ValueError as error:
+            raise LiveMapperError("relay sent an invalid accepted observation") from error
+        if not self._selected(observation):
+            return False
+        event_key = (observation.submission.source_id, observation.submission.event_id)
+        if event_key in self._event_ids:
+            return False
+        encoded = observation.encode() + b"\n"
+        if self.count >= self.config.max_records:
+            raise LiveMapperError("archive record bound reached before the mapper completed")
+        if self.byte_count + len(encoded) > self.config.max_bytes:
+            raise LiveMapperError("archive byte bound reached before the mapper completed")
+        self._stream.write(encoded)
+        self.digest.update(encoded)
+        self._event_ids.add(event_key)
+        self.count += 1
+        self.byte_count += len(encoded)
+        self.kinds[observation.submission.payload["kind"]] += 1
+        return True
+
+    def finish(self) -> dict[str, object]:
+        if self._finished:
+            raise LiveMapperError("archive is already complete")
+        if self.monotonic() - self.started_at > self.config.duration_s:
+            raise LiveMapperError("archive duration expired before the mapper completed")
+        self._stream.flush()
+        os.fsync(self._stream.fileno())
+        self._stream.close()
+        manifest = {
+            "format": ARCHIVE_FORMAT,
+            "scope": {
+                "session": self.scope.session,
+                "device_id": self.scope.device_id,
+                "connection_epoch": self.scope.connection_epoch,
+            },
+            "sources": {
+                "camera": self.mapper.camera_source_id,
+                "tag": self.mapper.tag_source_id,
+                "pose": self.config.pose_source_id,
+                "lidar": self.config.lidar_source_id,
+            },
+            "frames": {
+                "odom": self.config.odom_frame,
+                "body": self.config.body_frame,
+                "camera": self.mapper.camera_frame,
+                "lidar": self.config.lidar_frame,
+            },
+            "observations": {
+                "path": "observations.jsonl",
+                "count": self.count,
+                "bytes": self.byte_count,
+                "sha256": self.digest.hexdigest(),
+                "kinds": dict(self.kinds),
+            },
+            "limits": {
+                "max_records": self.config.max_records,
+                "max_bytes": self.config.max_bytes,
+                "duration_s": self.config.duration_s,
+            },
+        }
+        with (self._temporary / "manifest.json").open("x", encoding="utf-8") as stream:
+            json.dump(manifest, stream, allow_nan=False, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        for name in ("observations.jsonl", "manifest.json"):
+            os.replace(self._temporary / name, self.output / name)
+        os.rmdir(self._temporary)
+        self._reserved_output = False
+        self._finished = True
+        return manifest
+
+    def abort(self) -> None:
+        if self._finished:
+            return
+        if not self._stream.closed:
+            self._stream.close()
+        shutil.rmtree(self._temporary, ignore_errors=True)
+        if self._reserved_output:
+            shutil.rmtree(self.output, ignore_errors=True)
+        self._reserved_output = False
+
+    def _selected(self, observation: Observation) -> bool:
+        submission = observation.submission
+        if (
+            submission.session != self.scope.session
+            or submission.device_id != self.scope.device_id
+            or submission.connection_epoch != self.scope.connection_epoch
+            or submission.node_type != "ground"
+        ):
+            return False
+        payload = submission.payload
+        kind = payload["kind"]
+        if (
+            kind == "camera_frame"
+            and submission.source_id == self.mapper.camera_source_id
+            and submission.frame == self.mapper.camera_frame
+        ):
+            return True
+        if (
+            kind == "tag_observation"
+            and submission.source_id == self.mapper.tag_source_id
+            and submission.frame == self.mapper.camera_frame
+        ):
+            return True
+        if kind == "pose" and submission.source_id == self.config.pose_source_id:
+            pose = payload["pose"]
+            return (
+                submission.frame == self.config.odom_frame
+                and pose["parent_frame"] == self.config.odom_frame
+                and pose["child_frame"] == self.config.body_frame
+            )
+        if kind == "range_scan" and submission.source_id == self.config.lidar_source_id:
+            pose = payload["sensor_pose"]
+            return (
+                submission.frame == self.config.lidar_frame
+                and pose["parent_frame"] == self.config.odom_frame
+                and pose["child_frame"] == self.config.lidar_frame
+            )
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +571,7 @@ async def publish_observations(
     *,
     tag_submit_interval_ms: int = 0,
     receive_timeout_s: float = 30.0,
+    archive: AcceptedObservationArchive | None = None,
 ) -> int:
     scope = await _authenticated_scope(socket, mapper, receive_timeout_s)
     count, _ = await _publish_frames(
@@ -340,6 +581,7 @@ async def publish_observations(
         frames,
         tag_submit_interval_ms,
         receive_timeout_s,
+        archive=archive,
     )
     return count
 
@@ -378,12 +620,15 @@ async def _confirm_submission(
     scope: LiveScope,
     event: ObservationSubmission,
     receive_timeout_s: float,
+    archive: AcceptedObservationArchive | None = None,
 ) -> None:
     deadline = asyncio.get_running_loop().time() + _receive_timeout(receive_timeout_s)
     while True:
         raw = json.loads(await _receive_until(socket, deadline))
         if not isinstance(raw, Mapping):
             continue
+        if raw.get("type") == "observation" and archive is not None:
+            archive.observe(raw)
         if raw.get("type") == "state":
             if scope_from_state(raw, session=scope.session, device_id=scope.device_id) != scope:
                 raise LiveMapperError("target ground epoch changed while publishing")
@@ -402,6 +647,7 @@ async def _publish_frames(
     tag_submit_interval_ms: int,
     receive_timeout_s: float,
     last_tag_sent_at: float | None = None,
+    archive: AcceptedObservationArchive | None = None,
 ) -> tuple[int, float | None]:
     if type(tag_submit_interval_ms) is not int or not 0 <= tag_submit_interval_ms <= 1_000:
         raise LiveMapperError("tag submit interval must be from zero through one thousand ms")
@@ -419,7 +665,7 @@ async def _publish_frames(
             )
             if is_tag:
                 last_tag_sent_at = asyncio.get_running_loop().time()
-            await _confirm_submission(socket, scope, event, receive_timeout_s)
+            await _confirm_submission(socket, scope, event, receive_timeout_s, archive)
             count += 1
     return count, last_tag_sent_at
 
@@ -431,6 +677,7 @@ async def _publish_reader(
     frames: Iterator[CapturedFrame],
     tag_submit_interval_ms: int,
     receive_timeout_s: float,
+    archive: AcceptedObservationArchive | None = None,
 ) -> int:
     count = 0
     last_tag_sent_at: float | None = None
@@ -447,8 +694,36 @@ async def _publish_reader(
             tag_submit_interval_ms,
             receive_timeout_s,
             last_tag_sent_at,
+            archive,
         )
         count += published
+
+
+async def _drain_archive(
+    socket: _Socket,
+    scope: LiveScope,
+    archive: AcceptedObservationArchive,
+    duration_s: float,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + duration_s
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return
+        try:
+            received = await asyncio.wait_for(socket.recv(), remaining)
+        except TimeoutError:
+            return
+        raw = json.loads(received)
+        if not isinstance(raw, Mapping):
+            continue
+        if raw.get("type") == "state":
+            if scope_from_state(raw, session=scope.session, device_id=scope.device_id) != scope:
+                raise LiveMapperError("target ground epoch changed while archiving")
+        elif raw.get("type") == "protocol_refusal":
+            raise LiveMapperError(f"relay rejected map evidence: {raw.get('reason')}")
+        elif raw.get("type") == "observation":
+            archive.observe(raw)
 
 
 def _tag_sizes(value: str) -> dict[int, float]:
@@ -583,8 +858,25 @@ async def _main_async(args: argparse.Namespace) -> int:
         covariance_m2=args.covariance,
     )
     mapping = _qualify_clock(args)
+    archive_output = getattr(args, "archive_output", None)
+    archive_config = (
+        None
+        if archive_output is None
+        else ArchiveConfig(
+            pose_source_id=getattr(args, "archive_pose_source_id", "ohmni-pose"),
+            lidar_source_id=getattr(args, "archive_lidar_source_id", "ohmni-lidar"),
+            odom_frame=getattr(args, "archive_odom_frame", "odom"),
+            body_frame=getattr(args, "archive_body_frame", "body"),
+            lidar_frame=getattr(args, "archive_lidar_frame", "lidar"),
+            max_records=getattr(args, "archive_max_records", MAX_ARCHIVE_RECORDS),
+            max_bytes=getattr(args, "archive_max_bytes", MAX_ARCHIVE_BYTES),
+            duration_s=getattr(args, "archive_duration_s", MAX_ARCHIVE_DURATION_S),
+        )
+    )
     _adb_reverse(args.adb, args.adb_serial, args.pts_port)
     source: socket.socket | None = None
+    archive: AcceptedObservationArchive | None = None
+    archive_manifest: dict[str, object] | None = None
     try:
         mapper = LiveTagMapper(
             config, detector, receipt_time_ns=lambda: mapping.robot_time_ns(time.monotonic_ns())
@@ -605,6 +897,13 @@ async def _main_async(args: argparse.Namespace) -> int:
                     )
                 )
                 scope = await _authenticated_scope(relay, mapper, args.relay_receive_timeout_s)
+                if archive_config is not None:
+                    archive = AcceptedObservationArchive(
+                        archive_output,
+                        scope=scope,
+                        mapper=config,
+                        config=archive_config,
+                    )
                 count = await _publish_reader(
                     relay,
                     mapper,
@@ -612,12 +911,24 @@ async def _main_async(args: argparse.Namespace) -> int:
                     frames,
                     args.tag_submit_interval_ms,
                     args.relay_receive_timeout_s,
+                    archive,
                 )
+                if archive is not None:
+                    await _drain_archive(
+                        relay, scope, archive, getattr(args, "archive_drain_s", 2.0)
+                    )
+                    archive_manifest = archive.finish()
     finally:
+        if archive is not None:
+            archive.abort()
         if source is not None:
             source.close()
         _remove_adb_reverse(args.adb, args.adb_serial, args.pts_port)
-    print(json.dumps({"published": count}))
+    result = {"published": count}
+    if archive_manifest is not None:
+        result["archive"] = str(archive_output)
+        result["archived_observations"] = archive_manifest["observations"]["count"]
+    print(json.dumps(result))
     return 0
 
 
@@ -648,6 +959,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--confidence", required=True, type=float)
     parser.add_argument("--covariance", required=True, type=_covariance)
     parser.add_argument("--tag-sizes", required=True, type=_tag_sizes)
+    parser.add_argument("--archive-output", type=Path)
+    parser.add_argument("--archive-pose-source-id", default="ohmni-pose")
+    parser.add_argument("--archive-lidar-source-id", default="ohmni-lidar")
+    parser.add_argument("--archive-odom-frame", default="odom")
+    parser.add_argument("--archive-body-frame", default="body")
+    parser.add_argument("--archive-lidar-frame", default="lidar")
+    parser.add_argument("--archive-max-records", type=int, default=MAX_ARCHIVE_RECORDS)
+    parser.add_argument("--archive-max-bytes", type=int, default=MAX_ARCHIVE_BYTES)
+    parser.add_argument("--archive-duration-s", type=float, default=MAX_ARCHIVE_DURATION_S)
+    parser.add_argument("--archive-drain-s", type=float, default=2.0)
     args = parser.parse_args(argv)
     if (
         args.clock_probes < 1
@@ -659,6 +980,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         or not 0 <= args.tag_submit_interval_ms <= 1_000
         or not 1 <= args.relay_receive_timeout_s <= 120
         or not math.isfinite(args.relay_receive_timeout_s)
+        or not isinstance(args.archive_drain_s, int | float)
+        or isinstance(args.archive_drain_s, bool)
+        or not math.isfinite(args.archive_drain_s)
+        or not 0 <= args.archive_drain_s <= 10
     ):
         parser.error("clock qualification bounds must be nonnegative with at least one probe")
     return asyncio.run(_main_async(args))

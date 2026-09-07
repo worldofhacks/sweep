@@ -8,7 +8,13 @@ import pytest
 
 from perception.ohmni_pts_capture import CapturedFrame
 from relay.observation_ingress import ObservationConfiguration, ObservationIngress
-from relay.observations import ClockMapping, FrameDeclaration, FrameRegistry, SourceBinding
+from relay.observations import (
+    ClockMapping,
+    FrameDeclaration,
+    FrameRegistry,
+    SourceBinding,
+    decode_observation,
+)
 from tools.ohmni_live_tag_mapper import (
     LiveMapperError,
     LiveScope,
@@ -224,6 +230,140 @@ def test_publisher_derives_scope_before_sending_canonical_events() -> None:
     assert {item["connection_epoch"] for item in relay.sent} == {17}
 
 
+def test_publisher_archives_relay_accepted_camera_tag_pose_and_scan_events(tmp_path) -> None:
+    from relay.observations import Observation
+    from tools.ohmni_live_tag_mapper import AcceptedObservationArchive, ArchiveConfig
+
+    mapper = _mapper()
+    scope = LiveScope("live-12", 12, 9)
+
+    def accepted(submission, ingest: int) -> dict[str, object]:
+        return Observation(submission, ingest).to_mapping()
+
+    def pose() -> dict[str, object]:
+        return {
+            "v": 1,
+            "type": "observation",
+            "event_id": "pose-1",
+            "session": "live-12",
+            "device_id": 12,
+            "connection_epoch": 9,
+            "source_id": "ohmni-pose",
+            "node_type": "ground",
+            "frame": "odom",
+            "confidence": 0.8,
+            "t_capture": None,
+            "t_source_receipt": {"clock_id": "ohmni-monotonic", "unit": "ns", "value": 10},
+            "clock_mapping_id": None,
+            "payload": {
+                "kind": "pose",
+                "pose": {
+                    "parent_frame": "odom",
+                    "child_frame": "body",
+                    "x_m": 0.0,
+                    "y_m": 0.0,
+                    "z_m": 0.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "qw": 1.0,
+                },
+            },
+            "t_ingest": 10,
+        }
+
+    def scan() -> dict[str, object]:
+        return {
+            "v": 1,
+            "type": "observation",
+            "event_id": "scan-1",
+            "session": "live-12",
+            "device_id": 12,
+            "connection_epoch": 9,
+            "source_id": "ohmni-lidar",
+            "node_type": "ground",
+            "frame": "lidar",
+            "confidence": 0.8,
+            "t_capture": None,
+            "t_source_receipt": {"clock_id": "ohmni-monotonic", "unit": "ns", "value": 11},
+            "clock_mapping_id": None,
+            "payload": {
+                "kind": "range_scan",
+                "sensor_pose": {
+                    "parent_frame": "odom",
+                    "child_frame": "lidar",
+                    "x_m": 0.0,
+                    "y_m": 0.0,
+                    "z_m": 0.2,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "qw": 1.0,
+                },
+                "angle_min_rad": 0.0,
+                "angle_increment_rad": 1.0,
+                "range_min_m": 0.1,
+                "range_max_m": 8.0,
+                "ranges_m": [1.0],
+                "mount_id": "ohmni-rplidar",
+            },
+            "t_ingest": 11,
+        }
+
+    class Socket:
+        def __init__(self) -> None:
+            self.inbound = [
+                json.dumps({"type": "auth.accepted"}),
+                json.dumps(
+                    {
+                        "type": "state",
+                        "session": "live-12",
+                        "drones": [
+                            {
+                                "drone_id": 12,
+                                "node_type": "ground",
+                                "membership": "joined",
+                                "connection_epoch": 9,
+                            }
+                        ],
+                    }
+                ),
+            ]
+            self.first = True
+
+        async def recv(self) -> str:
+            return self.inbound.pop(0)
+
+        async def send(self, message: str) -> None:
+            from relay.observations import decode_submission
+
+            event = decode_submission(message)
+            if self.first:
+                self.first = False
+                self.inbound.extend((json.dumps(pose()), json.dumps(scan())))
+            self.inbound.append(json.dumps(accepted(event, 12)))
+
+    archive = AcceptedObservationArchive(
+        tmp_path / "archive",
+        scope=scope,
+        mapper=mapper.config,
+        config=ArchiveConfig("ohmni-pose", "ohmni-lidar", "odom", "body", "lidar"),
+    )
+    assert asyncio.run(publish_observations(Socket(), mapper, (_frame(),), archive=archive)) == 3
+    manifest = archive.finish()
+
+    lines = (tmp_path / "archive" / "observations.jsonl").read_bytes().splitlines()
+    observations = [decode_observation(line) for line in lines]
+    assert manifest["observations"]["count"] == len(observations) == 5
+    assert {item.submission.payload["kind"] for item in observations} == {
+        "camera_frame",
+        "tag_observation",
+        "pose",
+        "range_scan",
+    }
+    assert all(item.t_ingest is not None for item in observations)
+
+
 def test_publisher_spaces_multiple_tag_events_from_one_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -332,9 +472,7 @@ def test_publisher_spaces_tag_events_across_consecutive_frames(
     monkeypatch.setattr(ohmni_live_tag_mapper.asyncio, "sleep", wait)
     assert (
         asyncio.run(
-            publish_observations(
-                Socket(), mapper, (_frame(), _frame()), tag_submit_interval_ms=10
-            )
+            publish_observations(Socket(), mapper, (_frame(), _frame()), tag_submit_interval_ms=10)
         )
         == 4
     )
