@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import asyncio
+import time
+
+import pytest
+
+from planner.models import CommandOperation
+from relay.auth import sign_event
+from relay.contracts import command_event
+from relay.tests.conftest import SESSION
+
+from .fake import FakeGroundDevice
+from .runtime import GroundRuntimeConfig, OhmniRuntime
+
+GROUND_ID = 9
+GROUND_KEY = b"ground-adapter-key-that-is-at-least-32-bytes"
+
+
+def _runtime_for_local_test() -> tuple[OhmniRuntime, FakeGroundDevice]:
+    device = FakeGroundDevice()
+    runtime = OhmniRuntime(
+        GroundRuntimeConfig(
+            relay_url="ws://relay.example",
+            session=SESSION,
+            device_id=GROUND_ID,
+            token=GROUND_KEY.decode(),
+            adapter_id="fake-ohmni-9",
+            lidar_mount_x_m=0.1,
+            lidar_mount_y_m=0.0,
+            lidar_mount_z_m=0.25,
+            lidar_mount_yaw_deg=5.0,
+        ),
+        device,
+    )
+    runtime._epoch = 1
+    runtime._roster_version = 1
+    runtime._outbound = asyncio.Queue()
+    return runtime, device
+
+
+def _command(runtime: OhmniRuntime, *, operation: CommandOperation, seq: int) -> dict[str, object]:
+    now = int(time.time_ns() // 1_000_000)
+    unsigned = command_event(
+        t=now,
+        event_id=f"command-{seq}",
+        session=SESSION,
+        command_id=f"command-{seq}",
+        intent_id=f"intent-{seq}",
+        roster_version=1,
+        drone_id=GROUND_ID,
+        connection_epoch=1,
+        seq=seq,
+        issued_at=now,
+        ttl_ms=1_000,
+        operation=operation,
+        args=(
+            {"linear_mm_s": 100, "angular_mrad_s": 0, "duration_ms": 25}
+            if operation is CommandOperation.GROUND_VELOCITY
+            else {}
+        ),
+    )
+    return {**unsigned, "signature": sign_event(unsigned, GROUND_KEY)}
+
+
+def _heartbeat(runtime: OhmniRuntime, *, seq: int) -> dict[str, object]:
+    now = int(time.time_ns() // 1_000_000)
+    unsigned = {
+        "v": 1,
+        "t": now,
+        "type": "control_heartbeat",
+        "event_id": f"heartbeat-{seq}",
+        "session": SESSION,
+        "source": "relay",
+        "drone_id": GROUND_ID,
+        "connection_epoch": 1,
+        "roster_version": 1,
+        "seq": seq,
+        "issued_at": now,
+        "expires_at": now + runtime.config.heartbeat_failsafe_ms,
+        "hold_after_ms": runtime.config.heartbeat_hold_ms,
+        "failsafe_after_ms": runtime.config.heartbeat_failsafe_ms,
+    }
+    return {**unsigned, "signature": sign_event(unsigned, GROUND_KEY)}
+
+
+def test_estop_latches_until_a_local_operator_rearm_and_stops_bypass_the_lease_gate() -> None:
+    runtime, device = _runtime_for_local_test()
+    runtime._on_heartbeat(_heartbeat(runtime, seq=1))
+    assert device.enabled
+
+    runtime._on_command(_command(runtime, operation=CommandOperation.ESTOP, seq=1))
+    assert not device.enabled
+    runtime._on_heartbeat(_heartbeat(runtime, seq=2))
+    assert not device.enabled
+
+    runtime.rearm_after_operator_confirmation()
+    runtime._on_heartbeat(_heartbeat(runtime, seq=3))
+    assert device.enabled
+
+    runtime._local_stop("test", disable=True)
+    runtime._on_command(_command(runtime, operation=CommandOperation.HOVER, seq=2))
+    assert device.stopped
+    acknowledgements = [
+        runtime._outbound.get_nowait()  # type: ignore[union-attr]
+        for _ in range(runtime._outbound.qsize())  # type: ignore[union-attr]
+    ]
+    assert any(
+        frame["type"] == "acknowledgement"
+        and frame["intent_id"] == "intent-2"
+        and frame["status"] == "completed"
+        for frame in acknowledgements
+    )
+
+
+def test_observations_keep_sensor_evidence_distinct_from_camera_metadata() -> None:
+    runtime, device = _runtime_for_local_test()
+    scan = device.latest_scan()
+    device.latest_scan = lambda: scan  # type: ignore[method-assign]
+    runtime._publish_observations()
+    runtime._publish_observations()
+    frames = [
+        runtime._outbound.get_nowait()  # type: ignore[union-attr]
+        for _ in range(runtime._outbound.qsize())  # type: ignore[union-attr]
+    ]
+    observations = [frame for frame in frames if frame["type"] == "observation"]
+    payloads = [frame["payload"] for frame in observations]
+    assert [payload["kind"] for payload in payloads].count("camera_frame") == 0
+    scans = [frame for frame in observations if frame["payload"]["kind"] == "range_scan"]
+    assert len(scans) == 1
+    assert scans[0]["t_source_receipt"]["unit"] == "ms"
+    assert scans[0]["payload"]["sensor_pose"]["x_m"] == pytest.approx(0.1)
+    assert scans[0]["payload"]["sensor_pose"]["z_m"] == pytest.approx(0.25)
+    assert all(
+        frame["confidence"] == pytest.approx(device.status().pos_quality) for frame in observations
+    )
