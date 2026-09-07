@@ -230,10 +230,13 @@ class OhmniRuntime:
                     asyncio.create_task(self._watchdog()),
                     asyncio.create_task(self._stop.wait()),
                 ]
-                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                try:
+                    done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    self._local_stop("watchdog_failsafe", disable=True)
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 if not self._stop.is_set():
                     for task in done:
                         if (error := task.exception()) is not None:

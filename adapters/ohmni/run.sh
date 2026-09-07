@@ -19,7 +19,7 @@ case "${1:-start}" in
       tries=0
       while kill -0 "$pid" 2>/dev/null; do
         tries=$((tries + 1))
-        if [ "$tries" -ge 10 ]; then
+        if [ "$tries" -ge 20 ]; then
           echo 'Node has not exited. Confirm local stop before proceeding.' >&2
           exit 1
         fi
