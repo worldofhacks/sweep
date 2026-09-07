@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from math import isfinite
@@ -16,6 +16,7 @@ from relay.contracts import (
     MembershipAction,
     MembershipRequest,
     NodeStatusFrame,
+    NodeType,
     TelemetryV1,
     VideoPublishState,
 )
@@ -23,6 +24,7 @@ from relay.intent_v1 import FORMATION_NAMES
 from relay.media import MediaEvidenceProvider, project_video
 
 MAX_PHYSICAL_AIRCRAFT = 4
+MAX_PHYSICAL_GROUND = 3
 MAX_SIMULATED_AIRCRAFT = 6
 DEFAULT_MEMBERSHIP_HISTORY_LIMIT = 8
 MAX_MEMBERSHIP_HISTORY_LIMIT = 64
@@ -59,6 +61,7 @@ class MembershipTransition:
     readiness_reasons: tuple[str, ...]
     adapter_id: str | None
     capabilities: tuple[str, ...]
+    node_type: NodeType
     provenance: str
     invalidated_intent_ids: tuple[str, ...] = ()
     invalidation_reason: str | None = None
@@ -81,6 +84,7 @@ class MembershipTransition:
             "readiness_reasons": list(self.readiness_reasons),
             "adapter_id": self.adapter_id,
             "capabilities": list(self.capabilities),
+            "node_type": self.node_type.value,
             "provenance": self.provenance,
         }
 
@@ -90,6 +94,7 @@ class _AircraftRecord:
     drone_id: int
     adapter_id: str
     capabilities: tuple[str, ...]
+    node_type: NodeType
     connection_epoch: int
     membership: Membership
     joined_at: int
@@ -120,6 +125,7 @@ class FleetRegistry:
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         media_evidence: MediaEvidenceProvider | None = None,
         membership_history_limit: int = DEFAULT_MEMBERSHIP_HISTORY_LIMIT,
+        node_types: Mapping[int, NodeType] | None = None,
     ) -> None:
         if telemetry_freshness_ms <= 0:
             raise ValueError("telemetry_freshness_ms must be positive")
@@ -137,6 +143,13 @@ class FleetRegistry:
         self.aircraft_limit = aircraft_limit_for_profile(capability_profile)
         self._media_evidence = media_evidence
         self.membership_history_limit = membership_history_limit
+        configured_node_types = {} if node_types is None else dict(node_types)
+        if any(
+            type(device_id) is not int or device_id <= 0 or not isinstance(node_type, NodeType)
+            for device_id, node_type in configured_node_types.items()
+        ):
+            raise ValueError("node types must map positive device IDs to known node types")
+        self._node_types = configured_node_types
         self._aircraft: dict[int, _AircraftRecord] = {}
         self._roster_version = 0
         self._state_sequence = 0
@@ -211,23 +224,46 @@ class FleetRegistry:
                 return None
             return record.connection_epoch, self._roster_version
 
+    def node_type(self, drone_id: int) -> NodeType:
+        with self._lock:
+            record = self._aircraft.get(drone_id)
+            if record is not None:
+                return record.node_type
+            return self._node_types.get(drone_id, NodeType.AIRCRAFT)
+
+    def selection_includes_ground(self, drone_ids: tuple[int, ...]) -> bool:
+        with self._lock:
+            return any(self.node_type(drone_id) is NodeType.GROUND for drone_id in drone_ids)
+
     def apply_join(self, request: MembershipRequest) -> MembershipTransition:
         if request.action is not MembershipAction.JOIN:
             raise ValueError("apply_join requires a join request")
         assert request.adapter_id is not None
         with self._lock:
+            node_type = self._node_types.get(request.drone_id, NodeType.AIRCRAFT)
+            claimed_node_type = request.node_type or NodeType.AIRCRAFT
+            if claimed_node_type is not node_type:
+                raise RegistryError(
+                    "node_type_mismatch",
+                    f"device {request.drone_id} is configured as {node_type.value}",
+                )
             record = self._aircraft.get(request.drone_id)
             rejoining = record is not None
             if record is None:
-                if len(self._aircraft) >= self.aircraft_limit:
+                capacity = (
+                    self.aircraft_limit if node_type is NodeType.AIRCRAFT else MAX_PHYSICAL_GROUND
+                )
+                occupied = sum(item.node_type is node_type for item in self._aircraft.values())
+                if occupied >= capacity:
                     raise RegistryError(
                         "fleet_capacity",
-                        f"session already contains {self.aircraft_limit} stable aircraft IDs",
+                        f"session already contains {capacity} stable {node_type.value} IDs",
                     )
                 record = _AircraftRecord(
                     drone_id=request.drone_id,
                     adapter_id=request.adapter_id,
                     capabilities=request.capabilities,
+                    node_type=node_type,
                     connection_epoch=1,
                     membership=Membership.REGISTERED,
                     joined_at=request.t,
@@ -589,10 +625,11 @@ class FleetRegistry:
         reasons: list[str] = []
         if not record.identity_verified:
             reasons.append("identity_unverified")
+        required_capability = "flight" if record.node_type is NodeType.AIRCRAFT else "ground_drive"
         if not record.capabilities:
             reasons.append("adapter_capabilities_missing")
-        elif "flight" not in record.capabilities:
-            reasons.append("flight_capability_missing")
+        elif required_capability not in record.capabilities:
+            reasons.append(f"{required_capability}_capability_missing")
         if record.telemetry is None or record.telemetry.connection_epoch != record.connection_epoch:
             reasons.append("telemetry_missing")
         elif now_ms - record.telemetry.t > self.telemetry_freshness_ms:
@@ -654,6 +691,7 @@ class FleetRegistry:
             readiness_reasons=readiness_reasons,
             adapter_id=record.adapter_id,
             capabilities=record.capabilities,
+            node_type=record.node_type,
             provenance=provenance,
             invalidated_intent_ids=invalidated_intent_ids,
             invalidation_reason=invalidation_reason,
@@ -685,6 +723,7 @@ class FleetRegistry:
         pos_quality = None if telemetry is None else telemetry["pos_quality"]
         return {
             "drone_id": record.drone_id,
+            "node_type": record.node_type.value,
             "connection_epoch": record.connection_epoch,
             "membership": record.membership.value,
             "readiness_reasons": list(reasons),

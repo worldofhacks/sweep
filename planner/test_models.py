@@ -12,6 +12,7 @@ from planner.models import (
     RelayAircraftSafetyEnrichment,
     RelaySnapshotEnrichment,
 )
+from relay.autonomy import relay_snapshot
 
 
 def relay_state() -> dict[str, object]:
@@ -105,6 +106,16 @@ def test_relay_projection_requires_explicit_safety_enrichment() -> None:
     assert aircraft.pose == Position(1.0, 2.0, 0.0)
     assert aircraft.heading_deg == 90.0
     assert aircraft.physical_rc_available is True
+
+
+def test_aircraft_snapshot_excludes_ground_nodes_even_with_airborne_telemetry():
+    raw = relay_state()
+    raw["drones"].append({"drone_id": 9, "node_type": "ground", "telemetry": {"state": "airborne"}})
+    snapshot = FleetSnapshot.from_relay_state(raw, enrichment=enrichment())
+    assert tuple(snapshot.aircraft) == (1,)
+    remote = relay_snapshot(raw, operator_last_seen_ms=0)
+    assert tuple(remote.aircraft) == (1,)
+    assert remote.fleet_observation_complete
 
 
 def test_relay_projection_fails_closed_without_enrichment() -> None:
