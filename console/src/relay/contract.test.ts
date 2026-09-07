@@ -43,6 +43,57 @@ function aircraft(overrides: Record<string, unknown> = {}) {
   }
 }
 
+describe('mixed-node relay frames', () => {
+  test('accepts authoritative ground class and capability metadata while normalizing legacy aircraft state', () => {
+    const base = {
+      v: 1, t: 100, type: 'state', event_id: 'mixed-node-state', session,
+      roster_version: 1, armed: false, estop: false, selection: [], formation: 'none', spacing: 0.8,
+      mode: 'indoor', capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS], pending: null, accepted_plan: null,
+    }
+    expect(parseRelayServerEvent({ ...base, drones: [aircraft()] })).toMatchObject({
+      type: 'state', drones: [expect.objectContaining({ node_type: 'aircraft' })],
+    })
+    expect(parseRelayServerEvent({
+      ...base,
+      drones: [aircraft({ drone_id: 9, node_type: 'ground', adapter_capabilities: ['ground_drive'] })],
+    })).toMatchObject({ type: 'state', drones: [expect.objectContaining({ node_type: 'ground' })] })
+  })
+
+  test('does not require aircraft-only state from a ground node', () => {
+    const ground: Record<string, unknown> = aircraft({
+      drone_id: 9, node_type: 'ground', adapter_capabilities: ['ground_drive'],
+    })
+    for (const field of [
+      'flight_state', 'battery', 'link', 'pos_quality', 'control_authority',
+      'rc_safety_operator_present', 'last_seen_at', 'camera_patterns', 'selectable',
+      'home_pose', 'telemetry', 'membership_history', 'membership_history_truncated',
+    ]) delete ground[field]
+    const parsed = parseRelayServerEvent({
+      v: 1, t: 100, type: 'state', event_id: 'ground-minimal-state', session,
+      roster_version: 1, armed: false, estop: false, selection: [], formation: 'none', spacing: 0.8,
+      mode: 'indoor', capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS], pending: null, accepted_plan: null,
+      drones: [ground],
+    })
+    expect(parsed).toMatchObject({
+      type: 'state',
+      drones: [expect.objectContaining({ node_type: 'ground', control_authority: false, home_pose: null })],
+    })
+  })
+
+  test('rejects malformed node class and noncanonical capability lists', () => {
+    const base = {
+      v: 1, t: 100, type: 'state', event_id: 'bad-node-state', session,
+      roster_version: 1, armed: false, estop: false, selection: [], formation: 'none', spacing: 0.8,
+      mode: 'indoor', capability_profile: 'c1_basic_control',
+      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS], pending: null, accepted_plan: null,
+    }
+    expect(parseRelayServerEvent({ ...base, drones: [aircraft({ node_type: 'boat' })] })).toBeNull()
+    expect(parseRelayServerEvent({ ...base, drones: [aircraft({ adapter_capabilities: ['ground_drive', 'ground_drive'] })] })).toBeNull()
+  })
+})
+
 describe('M1.1 wire compatibility', () => {
   test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {
     const event = parseRelayServerEvent({

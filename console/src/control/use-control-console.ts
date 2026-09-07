@@ -26,6 +26,7 @@ import {
   type IntentFactoryDependencies,
 } from './intent'
 import { buildPlanPreview } from './plan'
+import { aircraftControlSelectionReason, isAircraftNode } from '../modules/control/controls'
 import {
   capabilityBlockedReason,
   controlReducer,
@@ -244,7 +245,7 @@ export function useControlConsole({
 
   const issueIntent = useCallback(
     <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
-      if (!isIntentEnabled(state, request.name)) return null
+      if (!isIntentEnabled(state, request.name) || aircraftControlSelectionReason(state, request.name) !== null) return null
       const intent = createIntent(
         {
           name: request.name,
@@ -317,7 +318,7 @@ export function useControlConsole({
 
   const selectAllReady = useCallback(() => {
     const ready = Object.values(state.aircraft)
-      .filter((drone) => drone.membership === 'ready' && drone.selectable)
+      .filter((drone) => isAircraftNode(drone) && drone.membership === 'ready' && drone.selectable)
       .map((drone) => drone.drone_id)
       .sort((a, b) => a - b)
     sendSelection(ready)
@@ -339,7 +340,7 @@ export function useControlConsole({
       const selectedId = state.selection[0]
       if (state.selection.length !== 1 || !selectedId) return null
       const aircraft = state.aircraft[selectedId]
-      if (!aircraft || aircraft.membership !== 'ready' || !aircraft.selectable) return null
+      if (!isAircraftNode(aircraft) || aircraft.membership !== 'ready' || !aircraft.selectable) return null
       if (!aircraft.camera_patterns.includes(pattern)) return null
       const trimmedRoomId = roomId.trim()
       if (!isValidRoomId(trimmedRoomId)) return null
@@ -413,7 +414,7 @@ export function useControlConsole({
       source: DraftSource = 'console',
       expiresAt?: number,
     ): IntentV1 | null => {
-      if (!isIntentEnabled(state, request.name)) return null
+      if (!isIntentEnabled(state, request.name) || aircraftControlSelectionReason(state, request.name) !== null) return null
       const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
       const selection = fleetWide ? [] : request.targets ?? state.selection
       if (!fleetWide && selection.length === 0) return null

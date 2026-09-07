@@ -182,3 +182,54 @@ describe('WebSocket relay client', () => {
     expect(serverTypes).toEqual(['auth.accepted', 'telemetry'])
   })
 })
+
+function observationFrame() {
+  return {
+    v: 1,
+    type: 'observation',
+    event_id: 'observation-socket-1',
+    session: 'session-1',
+    device_id: 1,
+    connection_epoch: 2,
+    source_id: 'ohmni-lidar',
+    node_type: 'ground',
+    frame: 'odom',
+    confidence: 0.9,
+    t_capture: null,
+    t_source_receipt: { clock_id: 'ohmni', unit: 'ms', value: 101 },
+    clock_mapping_id: null,
+    payload: {
+      kind: 'telemetry',
+      position: { frame: 'odom', x_m: 1, y_m: 2, z_m: 0 },
+      velocity: { frame: 'odom', x_m_s: 0, y_m_s: 0, z_m_s: 0 },
+      battery: 0.8,
+      link: 0.9,
+      pos_quality: 0.7,
+      state: 'ready',
+    },
+    t_ingest: 102,
+  }
+}
+
+describe('observation socket events', () => {
+  test('forwards a validated observation payload after console authentication', () => {
+    const socket = new TestSocket()
+    const events: string[] = []
+    const client = new WebSocketRelayClient(
+      { baseUrl: 'ws://localhost:8000', sessionId: 'session-1', source: 'console', token: 'token' },
+      { now: () => 100, createSocket: () => socket as unknown as WebSocket },
+    )
+    client.subscribe((event) => {
+      if (event.kind === 'server_event') events.push(event.event.type)
+    })
+    client.start()
+    socket.open()
+    socket.message({
+      v: 1, t: 101, type: 'auth.accepted', event_id: 'auth-observation', session: 'session-1',
+      source: 'console', drone_id: null,
+    })
+    socket.message(observationFrame())
+
+    expect(events).toEqual(['auth.accepted', 'observation'])
+  })
+})

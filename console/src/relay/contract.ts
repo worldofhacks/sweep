@@ -1,3 +1,5 @@
+import { parseObservation, type Observation } from './observation'
+
 /**
  * Console-side mirror of the frozen Intent v1 contract in relay/intent_v1.py.
  *
@@ -7,6 +9,7 @@
  */
 
 export type DroneId = number
+export type NodeType = 'aircraft' | 'ground'
 export type CapturePattern = 'pano_360' | 'reconstruct_8'
 export type IntentSource = 'console' | 'keyboard' | 'webcam' | 'language'
 export const FORMATION_NAMES = ['line', 'column', 'wedge', 'diamond'] as const
@@ -242,6 +245,7 @@ export interface MediaStreamState {
 
 export interface RelayAircraftState {
   drone_id: DroneId
+  node_type?: NodeType
   connection_epoch: number
   membership: MembershipState
   readiness_reasons: string[]
@@ -311,6 +315,7 @@ export interface RelayMembershipEvent {
   readiness_reasons: string[]
   adapter_id: string | null
   capabilities: string[]
+  node_type?: NodeType
   provenance:
     | 'adapter_signature'
     | 'relay_transport_attestation'
@@ -421,6 +426,7 @@ export type RelayServerEvent =
   | RelayAuthAcceptedEvent
   | RelayAuthRefusedEvent
   | RelayMembershipEvent
+  | Observation
   | RelayRefusalEvent
   | RelayStateEvent
   | RelaySafetyActionEvent
@@ -760,6 +766,24 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
+function isNodeType(value: unknown): value is NodeType {
+  return value === 'aircraft' || value === 'ground'
+}
+
+function isCapabilities(value: unknown): value is string[] {
+  if (!Array.isArray(value) || value.length > 64 || new Set(value).size !== value.length) return false
+  if (!value.every((item) => isCanonicalStateText(item))) return false
+  return new TextEncoder().encode(JSON.stringify(value)).length <= 8 * 1024
+}
+
+function isCanonicalStateText(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value === value.trim() &&
+    !/[\p{C}\p{Zl}\p{Zp}]/u.test(value) &&
+    new TextEncoder().encode(value).length <= 512
+}
+
 function isCapabilityAdvertisement(profile: unknown, enabled: unknown): enabled is ConsoleIntentName[] {
   if (
     typeof profile !== 'string' ||
@@ -810,6 +834,7 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
 
   return (
     isDroneId(value.drone_id) &&
+    (value.node_type === undefined || isNodeType(value.node_type)) &&
     isNonNegativeInteger(value.connection_epoch) &&
     MEMBERSHIP_STATES.has(value.membership as MembershipState) &&
     isStringArray(readinessReasons) &&
@@ -824,13 +849,44 @@ export function isRelayAircraftState(value: unknown): value is RelayAircraftStat
     typeof value.selectable === 'boolean' &&
     typeof value.adapter_id === 'string' &&
     value.adapter_id.length > 0 &&
-    isStringArray(value.adapter_capabilities) &&
+    isCapabilities(value.adapter_capabilities) &&
     'home_pose' in value &&
     'telemetry' in value &&
     Array.isArray(value.membership_history) &&
     isNonNegativeInteger(value.membership_history_truncated) &&
     isVideoStreamState(value.video)
   )
+}
+
+function normalizeRelayNodeState(value: unknown): unknown {
+  if (!isRecord(value)) return value
+  const nodeType = Object.hasOwn(value, 'node_type') ? value.node_type : 'aircraft'
+  if (nodeType !== 'ground') {
+    return {
+      ...value,
+      node_type: nodeType,
+      membership_history_truncated: Object.hasOwn(value, 'membership_history_truncated')
+        ? value.membership_history_truncated
+        : 0,
+    }
+  }
+  return {
+    flight_state: null,
+    battery: null,
+    link: null,
+    pos_quality: null,
+    control_authority: false,
+    rc_safety_operator_present: false,
+    last_seen_at: null,
+    camera_patterns: [],
+    selectable: false,
+    home_pose: null,
+    telemetry: null,
+    membership_history: [],
+    membership_history_truncated: 0,
+    ...value,
+    node_type: 'ground',
+  }
 }
 
 function isVideoStreamState(value: unknown): value is MediaStreamState | undefined {
@@ -858,15 +914,17 @@ function hasBaseEvent(value: Record<string, unknown>): boolean {
 
 /** Parses the M1.1 event seam; unknown frames fail closed. */
 export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
-  if (!isRecord(value) || !hasBaseEvent(value) || typeof value.type !== 'string') return null
+  if (!isRecord(value) || typeof value.type !== 'string') return null
+
+  if (value.type === 'observation') {
+    return parseObservation(value)
+  }
+
+  if (!hasBaseEvent(value)) return null
 
   if (value.type === 'state') {
     const drones = Array.isArray(value.drones)
-      ? value.drones.map((drone) =>
-          isRecord(drone) && !Object.hasOwn(drone, 'membership_history_truncated')
-            ? { ...drone, membership_history_truncated: 0 }
-            : drone,
-        )
+      ? value.drones.map(normalizeRelayNodeState)
       : value.drones
     if (
       !isNonNegativeInteger(value.roster_version) ||
@@ -919,7 +977,8 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !MEMBERSHIP_STATES.has(value.membership as MembershipState) ||
       !isStringArray(value.readiness_reasons) ||
       !(value.adapter_id === null || typeof value.adapter_id === 'string') ||
-      !isStringArray(value.capabilities) ||
+      !isCapabilities(value.capabilities) ||
+      !(value.node_type === undefined || isNodeType(value.node_type)) ||
       ![
         'adapter_signature',
         'relay_transport_attestation',
@@ -930,7 +989,7 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
     ) {
       return null
     }
-    return value as unknown as RelayMembershipEvent
+    return { ...value, node_type: value.node_type ?? 'aircraft' } as unknown as RelayMembershipEvent
   }
 
   if (value.type === 'auth.accepted') {

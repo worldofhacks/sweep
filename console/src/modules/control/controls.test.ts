@@ -152,6 +152,16 @@ describe('control gating', () => {
     expect(byKey.sweep).toMatchObject({ enabled: false })
   })
 
+  test('a ground selection permits hold and stop while disabling aircraft controls', () => {
+    const ground = { ...fixtureAircraft(t)[0], node_type: 'ground' as const, adapter_capabilities: ['ground_drive'] }
+    const state = connected([1], { drones: [ground] })
+    const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((spec) => [spec.key, spec]))
+    expect(byKey.hold.enabled).toBe(true)
+    expect(byKey.arm.note).toBe('D-01 is a ground node. Aircraft controls stay disabled.')
+    expect(byKey.takeoff.note).toBe('D-01 is a ground node. Aircraft controls stay disabled.')
+    expect(dpadBlockedReason(state)).toBe('D-01 is a ground node. Aircraft controls stay disabled.')
+  })
+
   test('stop active: motion is blocked with the stop reason, the pad follows stop before selection', () => {
     const state = connected([], { estop: true })
     const byKey = Object.fromEntries([...fleetControls(state), ...motionControls(state)].map((s) => [s.key, s]))

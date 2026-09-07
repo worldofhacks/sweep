@@ -10,6 +10,7 @@ import type {
   RelayServerEvent,
 } from '../relay/contract'
 import { followsSelection } from '../relay/contract'
+import type { Observation } from '../relay/observation'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'degraded' | 'disconnected'
 export type RelayTransport = 'websocket' | 'fixture' | 'unavailable'
@@ -88,6 +89,10 @@ export interface OperatorNotice {
   t: number
 }
 
+export const MAX_LATEST_OBSERVATIONS = 256
+
+export type ObservationKey = string
+
 export interface ControlState {
   sessionId: string
   connection: RelayConnection
@@ -96,6 +101,8 @@ export interface ControlState {
   languageConnection: RelayConnection
   rosterVersion: number
   aircraft: Record<DroneId, RelayAircraftState>
+  /** One latest parsed payload per live producer identity and payload kind. */
+  latestObservations: Readonly<Record<ObservationKey, Observation>>
   selection: DroneId[]
   /** Formation and spacing the relay reports in its state frame; null until the first frame. */
   formation: string | null
@@ -161,6 +168,7 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     },
     rosterVersion: 0,
     aircraft: {},
+    latestObservations: {},
     selection: [],
     formation: null,
     spacing: null,
@@ -335,7 +343,9 @@ function reduceRelayEvent(
   event: RelayServerEvent,
   source: IntentSource,
 ): ControlState {
+  if (event.type === 'observation') return reduceObservation(state, event)
   if (state.seenEventIds.includes(event.event_id)) return state
+  const eventTime = event.t
   const stateWithEvent = {
     ...state,
     seenEventIds: [event.event_id, ...state.seenEventIds].slice(0, 256),
@@ -346,11 +356,11 @@ function reduceRelayEvent(
       notices: prependNotice(
         state.notices,
         makeNotice(
-          `wrong-session-${event.t}`,
+          `wrong-session-${eventTime}`,
           'warning',
           'Ignored relay event',
           `Event belongs to session ${event.session}; this console is ${state.sessionId}.`,
-          event.t,
+          eventTime,
         ),
       ),
     }
@@ -518,6 +528,7 @@ function reduceStateEvent(
     ...state,
     rosterVersion: event.roster_version,
     aircraft,
+    latestObservations: retainCurrentObservations(state.latestObservations, aircraft, state.sessionId),
     selection,
     formation: event.formation,
     spacing: event.spacing,
@@ -672,6 +683,9 @@ function reduceMembershipEvent(
       ...state,
       rosterVersion: event.roster_version,
       aircraft: { ...state.aircraft, [event.drone_id]: drone },
+      latestObservations: event.action === 'join'
+        ? dropObservationsForDevice(state.latestObservations, event.drone_id)
+        : state.latestObservations,
       selection,
     }
     const staleRosterRequests = next.requests
@@ -731,6 +745,7 @@ function projectMembershipEvent(
 ): RelayAircraftState {
   return {
     drone_id: event.drone_id,
+    node_type: event.node_type ?? 'aircraft',
     connection_epoch: event.connection_epoch,
     membership: event.membership,
     readiness_reasons: [...event.readiness_reasons],
@@ -751,6 +766,65 @@ function projectMembershipEvent(
     membership_history_truncated: previous?.membership_history_truncated ?? 0,
     video: previous?.connection_epoch === event.connection_epoch ? previous.video : undefined,
   }
+}
+
+export function observationKey(observation: Pick<Observation, 'session' | 'device_id' | 'connection_epoch' | 'source_id' | 'node_type' | 'payload'>): ObservationKey {
+  return JSON.stringify([
+    observation.session,
+    observation.device_id,
+    observation.connection_epoch,
+    observation.source_id,
+    observation.node_type,
+    observation.payload.kind,
+  ])
+}
+
+function reduceObservation(state: ControlState, observation: Observation): ControlState {
+  const current = state.aircraft[observation.device_id]
+  if (
+    observation.session !== state.sessionId ||
+    current === undefined ||
+    current.connection_epoch !== observation.connection_epoch ||
+    (current.node_type ?? 'aircraft') !== observation.node_type
+  ) {
+    return state
+  }
+  const key = observationKey(observation)
+  const prior = state.latestObservations[key]
+  if (prior !== undefined && prior.t_ingest >= observation.t_ingest) return state
+  const latest = { ...state.latestObservations }
+  delete latest[key]
+  latest[key] = observation
+  const entries = Object.entries(latest)
+  const bounded = entries.length <= MAX_LATEST_OBSERVATIONS
+    ? latest
+    : Object.fromEntries(entries.slice(entries.length - MAX_LATEST_OBSERVATIONS))
+  return { ...state, latestObservations: bounded }
+}
+
+function retainCurrentObservations(
+  observations: Readonly<Record<ObservationKey, Observation>>,
+  aircraft: Record<DroneId, RelayAircraftState>,
+  sessionId: string,
+): Readonly<Record<ObservationKey, Observation>> {
+  return Object.fromEntries(
+    Object.entries(observations).filter(([, observation]) => {
+      const current = aircraft[observation.device_id]
+      return observation.session === sessionId &&
+        current !== undefined &&
+        current.connection_epoch === observation.connection_epoch &&
+        (current.node_type ?? 'aircraft') === observation.node_type
+    }),
+  )
+}
+
+function dropObservationsForDevice(
+  observations: Readonly<Record<ObservationKey, Observation>>,
+  deviceId: DroneId,
+): Readonly<Record<ObservationKey, Observation>> {
+  return Object.fromEntries(
+    Object.entries(observations).filter(([, observation]) => observation.device_id !== deviceId),
+  )
 }
 
 function reduceAuthRefusal(
