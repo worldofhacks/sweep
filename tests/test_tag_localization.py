@@ -492,6 +492,28 @@ def test_consensus_bounds_candidate_tags_before_pose_work(tmp_path):
     assert result["maximum_candidate_tags"] == 2
 
 
+def test_consensus_drops_every_candidate_above_the_reprojection_limit(tmp_path, monkeypatch):
+    _, _, _, _, config = scene(tmp_path, count=2)
+    localizer = TagLocalizer(**(config | {"consensus": consensus_config()}))
+
+    def camera_at(x):
+        camera = np.eye(4)
+        camera[0, 3] = x
+        return camera
+
+    def candidates(_points, _pixels, identifiers):
+        if identifiers == [0]:
+            return [(1.0, camera_at(0)), (3.0, camera_at(1))]
+        return [(1.0, camera_at(0.2)), (3.0, camera_at(1))]
+
+    monkeypatch.setattr(localizer, "_pose_candidates", candidates)
+    inliers, reason, diagnostics = localizer._consensus([0, 1], {0: None, 1: None})
+
+    assert inliers is None
+    assert reason == "insufficient_tag_consensus"
+    assert diagnostics["consensus_candidate_tag_ids"] == [0, 1]
+
+
 def test_two_disagreeing_tags_do_not_produce_a_pose(tmp_path):
     _, image, _, _, config = scene(tmp_path, count=2, inconsistent_tag=1)
     localizer = TagLocalizer(**(config | {"consensus": consensus_config()}))
