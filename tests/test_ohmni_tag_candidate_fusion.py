@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -516,9 +518,23 @@ def test_run_pins_inputs_and_writes_a_bounded_create_only_candidate(tmp_path: Pa
     request_path.write_text(json.dumps(request))
     output = tmp_path / "candidate.json"
 
-    result = run(request_path, evidence, output)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tools.ohmni_tag_candidate_fusion",
+            str(request_path),
+            str(evidence),
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
-    assert output.exists()
-    assert result["checkpoint"]["passes"] is True
+    assert result.returncode == 0, result.stdout
+    assert json.loads(result.stdout)["valid"] is True
+    candidate = json.loads(output.read_text())
+    assert candidate["checkpoint"]["passes"] is True
     with pytest.raises(FileExistsError):
         run(request_path, evidence, output)
