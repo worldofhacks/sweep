@@ -19,7 +19,6 @@ from relay.session import RelayLimits
 from relay.state import (
     DEFAULT_PHYSICAL_AIRCRAFT,
     MAX_PHYSICAL_AIRCRAFT,
-    aircraft_limit_for_profile,
 )
 
 DEFAULT_CONSOLE_ORIGINS = (
@@ -191,14 +190,6 @@ class RelaySettings:
             raise SettingsError(
                 "SWEEP_PHYSICAL_AIRCRAFT_LIMIT must be an integer from 1 through "
                 f"{MAX_PHYSICAL_AIRCRAFT}"
-            )
-        profile_limit = aircraft_limit_for_profile(
-            self.capability_profile, physical_aircraft_limit=self.physical_aircraft_limit
-        )
-        if self.effective_sim_aircraft_count > profile_limit:
-            raise SettingsError(
-                f"the {self.capability_release.value.upper()} simulator supports at most "
-                f"{profile_limit} aircraft"
             )
         if not 5 <= self.virtual_stick_hz <= 25:
             raise SettingsError("SWEEP_VIRTUAL_STICK_HZ must be within the documented 5 to 25")

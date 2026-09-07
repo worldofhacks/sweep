@@ -169,26 +169,28 @@ def test_sim_c2_rejects_aircraft_counts_outside_four_through_thirty_two(count: s
         )
 
 
-@pytest.mark.parametrize("count", [5, 6])
-def test_sim_c1_rejects_counts_above_its_four_aircraft_registry_limit(count: int) -> None:
-    with pytest.raises(SettingsError, match="C1 simulator supports at most 4 aircraft"):
-        RelaySettings.from_env(
-            {
-                "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
-                "SWEEP_SIM_AIRCRAFT_COUNT": str(count),
-            }
-        )
+@pytest.mark.parametrize("count", [5, 6, 32])
+def test_sim_c1_accepts_the_configured_fleet_capacity(count: int) -> None:
+    settings = RelaySettings.from_env(
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_SIM_AIRCRAFT_COUNT": str(count),
+        }
+    )
+
+    assert settings.effective_sim_aircraft_count == count
 
 
 def test_physical_aircraft_capacity_is_explicit_and_bounded() -> None:
     settings = RelaySettings.from_env(
         {
             "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
-            "SWEEP_PHYSICAL_AIRCRAFT_LIMIT": "5",
+            "SWEEP_ADAPTER_BACKEND": "remote",
+            "SWEEP_PHYSICAL_AIRCRAFT_LIMIT": "1",
         }
     )
 
-    assert settings.physical_aircraft_limit == 5
+    assert settings.physical_aircraft_limit == 1
 
     for limit in ("0", "33", "five"):
         with pytest.raises(SettingsError, match="SWEEP_PHYSICAL_AIRCRAFT_LIMIT"):
