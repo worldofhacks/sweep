@@ -357,7 +357,8 @@ class OhmniRuntime:
                     math.degrees(int(args["angular_mrad_s"]) / 1_000),
                     int(args["duration_ms"]) / 1_000,
                 )
-            except (RuntimeError, ValueError) as error:
+            except (OSError, RuntimeError, ValueError) as error:
+                self._local_stop("ground_drive_io_failure", disable=True)
                 self._enqueue(self._ack(command, "failed", "local_guard_refused", str(error)))
                 return
             self._enqueue(self._ack(command, "executing"))
@@ -380,7 +381,12 @@ class OhmniRuntime:
     async def _complete_motion(self, command: CommandFrame, motion: str) -> None:
         while True:
             await asyncio.sleep(0.02)
-            completed = self.device.motion_done(motion)
+            try:
+                completed = self.device.motion_done(motion)
+            except OSError as error:
+                self._local_stop("ground_motion_io_failure", disable=True)
+                self._enqueue(self._ack(command, "failed", "motion_failed", str(error)))
+                return
             if completed is False:
                 continue
             if completed is True:

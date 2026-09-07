@@ -340,3 +340,125 @@ def test_confirmed_console_ground_velocity_uses_signed_relay_command_lifecycle(
         ]
     finally:
         node.stop()
+
+
+@pytest.mark.parametrize(
+    ("intent_name", "selection", "operation"),
+    [
+        ("hold", [GROUND_ID], CommandOperation.HOVER),
+        ("estop", [], CommandOperation.ESTOP),
+    ],
+)
+def test_console_stop_sends_a_signed_terminal_ground_stop_while_the_robot_is_moving(
+    relay_server: _RelayServer,
+    intent_name: str,
+    selection: list[int],
+    operation: CommandOperation,
+) -> None:
+    device = FakeGroundDevice()
+    node = OhmniRuntime(
+        GroundRuntimeConfig(
+            relay_url=relay_server.url,
+            session=SESSION,
+            device_id=GROUND_ID,
+            token=GROUND_KEY.decode(),
+            adapter_id="fake-ohmni-9",
+            heartbeat_hold_ms=100,
+            heartbeat_failsafe_ms=200,
+            lidar_mount_x_m=0.0,
+            lidar_mount_y_m=0.0,
+            lidar_mount_z_m=0.25,
+            lidar_mount_yaw_deg=0.0,
+        ),
+        device,
+    )
+    node.start()
+    try:
+        session = relay_server.runtime.sessions[SESSION]
+        _wait_for(
+            lambda: (
+                bool(session.current_state()["drones"])
+                and session.current_state()["drones"][0]["membership"] == "ready"
+            ),
+            "ground readiness",
+        )
+        state = session.current_state()["drones"][0]
+        motion = session.issue_command(
+            command_id=f"moving-before-{intent_name}",
+            intent_id=f"moving-before-{intent_name}",
+            roster_version=session.current_state()["roster_version"],
+            drone_id=GROUND_ID,
+            connection_epoch=state["connection_epoch"],
+            operation=CommandOperation.GROUND_VELOCITY,
+            args={"linear_mm_s": 100, "angular_mrad_s": 0, "duration_ms": 500},
+            signing_key=GROUND_KEY,
+        )
+        assert _deliver(relay_server, motion)
+        _wait_for(lambda: device.status().state == "moving", "ground motion")
+
+        intent_id = f"{intent_name}-ground-stop-e2e"
+        with sync_connect(f"{relay_server.url}/ws/{SESSION}", proxy=None) as console:
+            console.send(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "type": "auth",
+                        "source": "console",
+                        "token": CONSOLE_KEY.decode(),
+                    }
+                )
+            )
+            assert json.loads(console.recv(timeout=WAIT_S))["type"] == "auth.accepted"
+            assert json.loads(console.recv(timeout=WAIT_S))["type"] == "state"
+            console.send(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "t": int(time.time_ns() // 1_000_000),
+                        "type": "intent",
+                        "intent_id": intent_id,
+                        "retry_of": None,
+                        "source": "console",
+                        "session": SESSION,
+                        "name": intent_name,
+                        "args": {},
+                        "selection": selection,
+                        "mode": "indoor",
+                        "confirm": False,
+                    }
+                )
+            )
+            terminal = _receive_until(
+                console,
+                lambda frame: (
+                    frame.get("type") == "acknowledgement"
+                    and frame.get("intent_id") == intent_id
+                    and frame.get("source") == "autonomy"
+                    and frame.get("status") == "completed"
+                ),
+        )
+        assert terminal["command_id"] is None
+        assert device.status().state != "moving"
+        records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
+        commands = [
+            record
+            for record in records
+            if record["type"] == "command" and record["intent_id"] == intent_id
+        ]
+        assert [(command["drone_id"], command["operation"]) for command in commands] == [
+            (GROUND_ID, operation.value)
+        ]
+        lifecycle = [
+            (record["source"], record["status"])
+            for record in records
+            if record["type"] == "acknowledgement" and record.get("intent_id") == intent_id
+        ]
+        assert lifecycle == [
+            ("relay", "accepted"),
+            ("adapter", "accepted"),
+            ("adapter", "executing"),
+            ("adapter", "completed"),
+            ("autonomy", "completed"),
+        ]
+    finally:
+        node.stop()

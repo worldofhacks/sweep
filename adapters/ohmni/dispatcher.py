@@ -127,6 +127,130 @@ class GroundCommandDispatcher:
             "ground node did not complete the bounded pulse before its command deadline",
         )
 
+    def dispatch_stop(self, intent: IntentV1, state: Mapping[str, object]) -> ExecutionResult:
+        """Fan a confirmed hold or global emergency stop to every selected ground node."""
+        target = self._stop_targets(intent, state)
+        if isinstance(target, ExecutionResult):
+            return target
+        roster_version, operation, targets = target
+        commands = tuple(
+            Command(
+                command_id=self._command_ids(),
+                intent_id=intent.intent_id,
+                roster_version=roster_version,
+                drone_id=drone_id,
+                connection_epoch=connection_epoch,
+                operation=operation,
+                parameters={},
+            )
+            for drone_id, connection_epoch in targets
+        )
+        plan = Plan(
+            plan_id=f"plan:{intent.intent_id}:ground-{operation.value}",
+            intent_id=intent.intent_id,
+            intent_name=intent.name,
+            roster_version=roster_version,
+            selection=intent.selection,
+            confirmed=True,
+            commands=commands,
+        )
+        acknowledgements: list[CommandAcknowledgement] = []
+        issued: list[tuple[Command, CommandRequest]] = []
+        for command in commands:
+            if self._link.connection_epoch(command.drone_id) != command.connection_epoch:
+                acknowledgements.append(
+                    self._acknowledgement(
+                        command,
+                        LifecycleStatus.FAILED,
+                        RefusalReason.STALE_CONNECTION_EPOCH,
+                        "ground node reconnected before stop release",
+                    )
+                )
+                continue
+            request = CommandRequest(
+                command_id=command.command_id,
+                intent_id=command.intent_id,
+                roster_version=command.roster_version,
+                drone_id=command.drone_id,
+                connection_epoch=command.connection_epoch,
+                operation=command.operation,
+                args={},
+            )
+            try:
+                self._link.send(request)
+            except AdapterError as error:
+                acknowledgements.append(
+                    self._acknowledgement(
+                        command,
+                        LifecycleStatus.FAILED,
+                        RefusalReason.ADAPTER_FAILURE,
+                        str(error),
+                    )
+                )
+                continue
+            issued.append((command, request))
+
+        for command, request in issued:
+            replies = self._collect(request)
+            acknowledgements.extend(replies)
+            terminal = replies[-1] if replies else None
+            if terminal is None or terminal.status not in {
+                LifecycleStatus.COMPLETED,
+                LifecycleStatus.FAILED,
+                LifecycleStatus.INVALIDATED,
+            }:
+                acknowledgements.append(
+                    self._acknowledgement(
+                        command,
+                        LifecycleStatus.FAILED,
+                        RefusalReason.ADAPTER_TIMEOUT,
+                        "ground node did not complete the stop before its command deadline",
+                    )
+                )
+
+        failed = next(
+            (
+                acknowledgement
+                for acknowledgement in acknowledgements
+                if acknowledgement.status in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
+            ),
+            None,
+        )
+        if failed is None:
+            return ExecutionResult(
+                intent_id=intent.intent_id,
+                roster_version=roster_version,
+                status=LifecycleStatus.COMPLETED,
+                plan=plan,
+                acknowledgements=tuple(acknowledgements),
+            )
+        return ExecutionResult(
+            intent_id=intent.intent_id,
+            roster_version=roster_version,
+            status=LifecycleStatus.FAILED,
+            plan=plan,
+            acknowledgements=tuple(acknowledgements),
+            refusal=Refusal(
+                intent_id=intent.intent_id,
+                roster_version=roster_version,
+                drone_id=failed.drone_id,
+                connection_epoch=failed.connection_epoch,
+                reason=failed.reason or RefusalReason.ADAPTER_FAILURE,
+                detail=failed.detail or "a ground node did not complete the stop",
+                status=LifecycleStatus.FAILED,
+            ),
+            degraded_aircraft=tuple(
+                sorted(
+                    {
+                        acknowledgement.drone_id
+                        for acknowledgement in acknowledgements
+                        if acknowledgement.status
+                        in {LifecycleStatus.FAILED, LifecycleStatus.INVALIDATED}
+                    }
+                )
+            ),
+        )
+
     def _target(
         self, intent: IntentV1, state: Mapping[str, object]
     ) -> tuple[int, int, int] | ExecutionResult:
@@ -206,6 +330,66 @@ class GroundCommandDispatcher:
             )
         return drone_id, connection_epoch, roster_version
 
+    def _stop_targets(
+        self, intent: IntentV1, state: Mapping[str, object]
+    ) -> tuple[int, CommandOperation, tuple[tuple[int, int], ...]] | ExecutionResult:
+        roster_version = state.get("roster_version")
+        if not isinstance(roster_version, int) or isinstance(roster_version, bool):
+            return self._refused(
+                intent,
+                0,
+                None,
+                None,
+                RefusalReason.INVALID_ROSTER_TRANSITION,
+                "relay state has no current roster version",
+            )
+        operation = (
+            CommandOperation.HOVER
+            if intent.name is IntentName.HOLD
+            else CommandOperation.ESTOP
+            if intent.name is IntentName.ESTOP
+            else None
+        )
+        if operation is None:
+            return self._refused(
+                intent,
+                roster_version,
+                None,
+                None,
+                RefusalReason.INVALID_PLAN,
+                "only hold and estop are ground stop commands",
+            )
+        drones = state.get("drones", ())
+        if not isinstance(drones, (list, tuple)):
+            drones = ()
+        selected = set(intent.selection)
+        targets: list[tuple[int, int]] = []
+        for drone in drones:
+            if not isinstance(drone, Mapping) or drone.get("node_type") != "ground":
+                continue
+            drone_id = drone.get("drone_id")
+            connection_epoch = drone.get("connection_epoch")
+            if (
+                not isinstance(drone_id, int)
+                or isinstance(drone_id, bool)
+                or not isinstance(connection_epoch, int)
+                or isinstance(connection_epoch, bool)
+            ):
+                continue
+            if operation is CommandOperation.HOVER and drone_id not in selected:
+                continue
+            targets.append((drone_id, connection_epoch))
+        if not targets:
+            return self._refused(
+                intent,
+                roster_version,
+                None,
+                None,
+                RefusalReason.INVALID_SELECTION,
+                "the stop did not select an authenticated ground node",
+            )
+        return roster_version, operation, tuple(sorted(targets))
+
     def _collect(self, request: CommandRequest) -> list[CommandAcknowledgement]:
         deadline = self._monotonic() + self._command_deadline_ms / 1_000
         acknowledgements: list[CommandAcknowledgement] = []
@@ -234,6 +418,21 @@ class GroundCommandDispatcher:
             }:
                 break
         return acknowledgements
+
+    @staticmethod
+    def _acknowledgement(
+        command: Command, status: LifecycleStatus, reason: RefusalReason, detail: str
+    ) -> CommandAcknowledgement:
+        return CommandAcknowledgement(
+            command_id=command.command_id,
+            intent_id=command.intent_id,
+            roster_version=command.roster_version,
+            drone_id=command.drone_id,
+            connection_epoch=command.connection_epoch,
+            status=status,
+            reason=reason,
+            detail=detail,
+        )
 
     @staticmethod
     def _refused(

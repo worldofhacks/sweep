@@ -134,3 +134,58 @@ def test_observations_keep_sensor_evidence_distinct_from_camera_metadata() -> No
     assert all(
         frame["confidence"] == pytest.approx(device.status().pos_quality) for frame in observations
     )
+
+
+def test_drive_io_failure_after_accepted_command_stops_and_reports_failed_terminal_ack() -> None:
+    runtime, device = _runtime_for_local_test()
+    runtime._on_heartbeat(_heartbeat(runtime, seq=1))
+
+    def fail_drive(*_args: object) -> str:
+        raise OSError("serial link lost")
+
+    device.drive_velocity = fail_drive  # type: ignore[method-assign]
+    runtime._on_command(_command(runtime, operation=CommandOperation.GROUND_VELOCITY, seq=1))
+
+    frames = [
+        runtime._outbound.get_nowait()  # type: ignore[union-attr]
+        for _ in range(runtime._outbound.qsize())  # type: ignore[union-attr]
+    ]
+    acknowledgements = [
+        frame
+        for frame in frames
+        if frame["type"] == "acknowledgement" and frame["intent_id"] == "intent-1"
+    ]
+    assert [frame["status"] for frame in acknowledgements] == ["accepted", "failed"]
+    assert acknowledgements[-1]["reason"] == "local_guard_refused"
+    assert not device.enabled
+    assert device.stopped
+
+
+def test_motion_io_failure_after_executing_command_stops_and_reports_failed_terminal_ack() -> None:
+    runtime, device = _runtime_for_local_test()
+    runtime._on_heartbeat(_heartbeat(runtime, seq=1))
+
+    def fail_completion(_identity: str) -> bool | None:
+        raise OSError("serial link lost")
+
+    device.motion_done = fail_completion  # type: ignore[method-assign]
+    asyncio.run(runtime._complete_motion(_command_frame(), "motion-1"))
+
+    frames = [
+        runtime._outbound.get_nowait()  # type: ignore[union-attr]
+        for _ in range(runtime._outbound.qsize())  # type: ignore[union-attr]
+    ]
+    acknowledgements = [frame for frame in frames if frame["type"] == "acknowledgement"]
+    assert acknowledgements[-1]["status"] == "failed"
+    assert acknowledgements[-1]["reason"] == "motion_failed"
+    assert not device.enabled
+    assert device.stopped
+
+
+def _command_frame():
+    from relay.contracts import parse_command
+
+    runtime, _ = _runtime_for_local_test()
+    return parse_command(
+        _command(runtime, operation=CommandOperation.GROUND_VELOCITY, seq=1)
+    )
