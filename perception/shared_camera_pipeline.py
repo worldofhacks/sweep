@@ -334,6 +334,9 @@ class SelectedKeyframeWorker:
     def close(self) -> None:
         self._stop.set()
         if self._thread is not None:
+            if self._thread is threading.current_thread():
+                self._subscription.close()
+                return
             self._thread.join(self._sample_interval_s + 0.2)
         self._subscription.close()
 
@@ -523,7 +526,10 @@ class SharedCameraPipeline:
         errors: list[Exception] = []
         self._deactivate_callbacks()
         if self._detector is not None:
-            self._detector.close()
+            try:
+                self._detector.close()
+            except Exception as error:
+                errors.append(error)
             if self._detector.failure_reason == "shutdown_timeout":
                 errors.append(RuntimeError("camera detector did not stop"))
         if self._detector_subscription is not None:

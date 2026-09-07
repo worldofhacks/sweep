@@ -75,6 +75,14 @@ class InvalidDetector:
     pass
 
 
+class ImmediateDetector:
+    target_labels = ("person",)
+    detector_config_sha256 = "a" * 64
+
+    def detect(self, _image):
+        return ()
+
+
 def _wait(predicate) -> None:
     deadline = time.monotonic() + 1
     while time.monotonic() < deadline:
@@ -201,6 +209,33 @@ def test_close_waits_for_an_inflight_detection_callback() -> None:
     callback_thread.join(1)
     close_thread.join(1)
     assert closed.is_set()
+
+
+def test_detection_callback_can_close_the_pipeline_and_release_the_decoder() -> None:
+    stream = Stream()
+    closed = threading.Event()
+    pipeline_ref = []
+
+    def on_detection(_event):
+        pipeline_ref[0].close()
+        closed.set()
+
+    pipeline = SharedCameraPipeline(
+        "rtsp://camera/drone1",
+        Localizer(),
+        source_id="drone1",
+        stream_factory=lambda _url: stream,
+        detector=ImmediateDetector(),
+        mission_id="mission1",
+        on_detection=on_detection,
+        config=_config(),
+    ).start()
+    pipeline_ref.append(pipeline)
+    stream.push(1, time.monotonic())
+
+    _wait(closed.is_set)
+    assert stream.closed
+    assert pipeline.subscriber_count == 0
 
 
 def test_blocked_detector_cannot_call_back_after_pipeline_close() -> None:
