@@ -76,6 +76,7 @@ class RelaySettings:
     media_read_password: str | None = field(default=None, repr=False)
     audit_state_interval_ms: int = 10_000
     state_membership_history: int = 8
+    ground_return_id: str | None = None
     observation_configuration: ObservationConfiguration | None = None
 
     def __post_init__(self) -> None:
@@ -127,6 +128,13 @@ class RelaySettings:
                 "SWEEP_NODE_TYPES_JSON must map configured adapter IDs to aircraft or ground"
             )
         object.__setattr__(self, "node_types", MappingProxyType(node_types))
+        if self.ground_return_id is not None and (
+            not self.ground_return_id
+            or len(self.ground_return_id) > 128
+            or self.ground_return_id != self.ground_return_id.strip()
+            or not self.ground_return_id.isprintable()
+        ):
+            raise SettingsError("SWEEP_GROUND_RETURN_ID must be a bounded non-empty identifier")
         if self.observation_configuration is not None:
             for binding in self.observation_configuration.bindings:
                 if (
@@ -305,6 +313,7 @@ class RelaySettings:
                 values.get("SWEEP_STATE_MEMBERSHIP_HISTORY", "8"),
                 "SWEEP_STATE_MEMBERSHIP_HISTORY",
             ),
+            ground_return_id=_optional(values.get("SWEEP_GROUND_RETURN_ID")),
         )
 
     def media_runtime_config(self) -> dict[str, str] | None:

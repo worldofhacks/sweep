@@ -25,6 +25,7 @@ from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION
 from tests.autonomy_fixtures import planning_config, safety_config
 
 from .fake import FakeGroundDevice
+from .return_controller import ApprovedReturnRoute, ReturnPoint, ReturnSegment, WorldToOdom
 from .runtime import GroundRuntimeConfig, OhmniRuntime, parse_args
 
 AIRCRAFT_ID = 1
@@ -108,6 +109,7 @@ def relay_server(tmp_path: Path) -> Iterator[_RelayServer]:
         adapter_backend=AdapterBackend.REMOTE,
         node_watchdog_hold_ms=1_000,
         node_watchdog_failsafe_ms=2_000,
+        ground_return_id="room-a-return",
         observation_configuration=_observation_configuration(),
     )
     app, autonomy = create_autonomy_app(
@@ -137,9 +139,7 @@ def relay_server(tmp_path: Path) -> Iterator[_RelayServer]:
         autonomy.close()
 
 
-def _deliver(
-    server: _RelayServer, frame: dict[str, object], *, drone_id: int = GROUND_ID
-) -> bool:
+def _deliver(server: _RelayServer, frame: dict[str, object], *, drone_id: int = GROUND_ID) -> bool:
     assert server.runtime.loop is not None
     delivered: Future[bool] = asyncio.run_coroutine_threadsafe(
         server.runtime.deliver_to_node(SESSION, drone_id, frame), server.runtime.loop
@@ -440,7 +440,7 @@ def test_console_stop_sends_a_signed_terminal_ground_stop_while_the_robot_is_mov
                     and frame.get("source") == "autonomy"
                     and frame.get("status") == "completed"
                 ),
-        )
+            )
         assert terminal["command_id"] is None
         assert device.status().state != "moving"
         records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
@@ -482,9 +482,7 @@ def _mixed_ready(session: object) -> bool:
     )
 
 
-def _console_intent(
-    *, intent_id: str, name: str, selection: list[int]
-) -> dict[str, object]:
+def _console_intent(*, intent_id: str, name: str, selection: list[int]) -> dict[str, object]:
     return {
         "v": 1,
         "t": int(time.time_ns() // 1_000_000),
@@ -674,3 +672,124 @@ def test_aircraft_estop_reaches_the_live_node_before_a_silent_ground_ack_times_o
     finally:
         aircraft.stop()
         ground.stop()
+
+
+def _approved_return() -> ApprovedReturnRoute:
+    return ApprovedReturnRoute(
+        return_id="room-a-return",
+        approval_id="approval-17",
+        approval_signer="map-operator",
+        source_registration_id="registration-9",
+        pose_source_id="ohmni-pose",
+        odom_frame="odom",
+        world_to_odom=WorldToOdom(0.0, 0.0, 0.0, "registration-9"),
+        start=ReturnPoint(0.0, 0.0),
+        segments=(
+            ReturnSegment(
+                ReturnPoint(0.05, 0.0),
+                (
+                    ReturnPoint(-0.1, -0.2),
+                    ReturnPoint(0.2, -0.2),
+                    ReturnPoint(0.2, 0.2),
+                    ReturnPoint(-0.1, 0.2),
+                ),
+            ),
+        ),
+        footprint_radius_m=0.25,
+        arrival_tolerance_m=0.03,
+        geometry_sha256="0" * 64,
+    )
+
+
+def test_confirmed_console_come_home_executes_the_approved_ground_return(
+    relay_server: _RelayServer,
+) -> None:
+    device = FakeGroundDevice()
+    node = OhmniRuntime(
+        GroundRuntimeConfig(
+            relay_url=relay_server.url,
+            session=SESSION,
+            device_id=GROUND_ID,
+            token=GROUND_KEY.decode(),
+            adapter_id="fake-ohmni-9",
+            heartbeat_hold_ms=1_000,
+            heartbeat_failsafe_ms=2_000,
+            lidar_mount_x_m=0.0,
+            lidar_mount_y_m=0.0,
+            lidar_mount_z_m=0.25,
+            lidar_mount_yaw_deg=0.0,
+            return_approval=_approved_return(),
+        ),
+        device,
+    )
+    node.start()
+    try:
+        session = relay_server.runtime.sessions[SESSION]
+        _wait_for(
+            lambda: (
+                bool(session.current_state()["drones"])
+                and session.current_state()["drones"][0]["membership"] == "ready"
+            ),
+            "ground readiness",
+        )
+        intent_id = "ground-return-e2e"
+        with sync_connect(f"{relay_server.url}/ws/{SESSION}", proxy=None) as console:
+            console.send(
+                json.dumps(
+                    {"v": 1, "type": "auth", "source": "console", "token": CONSOLE_KEY.decode()}
+                )
+            )
+            assert json.loads(console.recv(timeout=WAIT_S))["type"] == "auth.accepted"
+            assert json.loads(console.recv(timeout=WAIT_S))["type"] == "state"
+            console.send(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "t": int(time.time_ns() // 1_000_000),
+                        "type": "intent",
+                        "intent_id": intent_id,
+                        "retry_of": None,
+                        "source": "console",
+                        "session": SESSION,
+                        "name": "come_home",
+                        "args": {},
+                        "selection": [GROUND_ID],
+                        "mode": "indoor",
+                        "confirm": True,
+                    }
+                )
+            )
+            _wait_for(
+                lambda: any(
+                    record["event"].get("type") == "acknowledgement"
+                    and record["event"].get("intent_id") == intent_id
+                    and record["event"].get("source") == "autonomy"
+                    and record["event"].get("status") == "completed"
+                    for record in relay_server.runtime.replay(SESSION)["events"]
+                ),
+                "ground return completion",
+            )
+        records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
+        commands = [
+            record
+            for record in records
+            if record["type"] == "command" and record["intent_id"] == intent_id
+        ]
+        assert [(command["operation"], command["args"]) for command in commands] == [
+            ("ground_return", {"return_id": "room-a-return"})
+        ]
+        lifecycle = [
+            (record["source"], record["status"])
+            for record in records
+            if record["type"] == "acknowledgement" and record.get("intent_id") == intent_id
+        ]
+        assert lifecycle == [
+            ("relay", "accepted"),
+            ("adapter", "accepted"),
+            ("adapter", "executing"),
+            ("adapter", "completed"),
+            ("autonomy", "completed"),
+        ]
+        assert device.x >= 0.024
+    finally:
+        node.stop()
