@@ -61,6 +61,7 @@ class RelayNodeLink:
 
     def send(self, request: CommandRequest) -> None:
         loop = self._worker_loop()
+        navigation_frames: list[dict[str, object]] = []
         key = self._runtime.credential_resolver.resolve("adapter", request.drone_id)
         if key is None:
             raise AdapterError(
@@ -84,6 +85,7 @@ class RelayNodeLink:
                 raise AdapterError(str(error)) from error
             for navigation_frame in navigation_frames:
                 if not self._deliver(loop, request.drone_id, navigation_frame):
+                    self._navigation_publisher.retire(request.command_id)
                     raise AdapterError(
                         "navigation evidence for command "
                         f"{request.command_id} could not be delivered"
@@ -100,13 +102,23 @@ class RelayNodeLink:
                 signing_key=key,
             )
         except ValueError as error:
+            if self._navigation_publisher is not None:
+                self._navigation_publisher.retire(request.command_id)
             raise AdapterError(str(error)) from error
         if not self._deliver(loop, request.drone_id, frame):
             self._session.discard_command_waiter(request.command_id)
+            if self._navigation_publisher is not None:
+                self._navigation_publisher.retire(request.command_id)
             raise AdapterError(
                 f"command {request.command_id} could not be delivered to aircraft "
                 f"{request.drone_id}"
             )
+        if navigation_frames and self._navigation_publisher is not None:
+            try:
+                self._navigation_publisher.activate(request.command_id)
+            except ValueError as error:
+                self._session.discard_command_waiter(request.command_id)
+                raise AdapterError(str(error)) from error
 
     def _deliver(
         self, loop: asyncio.AbstractEventLoop, drone_id: int, frame: dict[str, object]
@@ -168,6 +180,7 @@ def build_adapters(
     *,
     sim_camera_config: SimCameraConfig | None = None,
     link_wrapper: LinkWrapper | None = None,
+    navigation_publisher: NavigationWirePublisher | None = None,
 ) -> AdapterPair:
     """Construct the adapters ``SWEEP_ADAPTER_BACKEND`` selects for one session.
 
@@ -195,7 +208,12 @@ def build_adapters(
         )
         return AdapterPair(flight=flight, camera=camera)
     if backend is AdapterBackend.REMOTE:
-        node_link = RelayNodeLink(runtime, session_id, delivery_timeout_ms=settings.command_ttl_ms)
+        node_link = RelayNodeLink(
+            runtime,
+            session_id,
+            delivery_timeout_ms=settings.command_ttl_ms,
+            navigation_publisher=navigation_publisher,
+        )
         link: NodeLink = node_link if link_wrapper is None else link_wrapper(node_link)
         remote = RemoteBridgeAdapter.from_snapshot(
             link,
@@ -215,6 +233,7 @@ def build_dispatcher(
     arbiter: SafetyArbiter,
     sim_camera_config: SimCameraConfig | None = None,
     link_wrapper: LinkWrapper | None = None,
+    navigation_publisher: NavigationWirePublisher | None = None,
 ) -> AdapterDispatcher:
     """Construct a session's ``AdapterDispatcher`` on the configured backend."""
     adapters = build_adapters(
@@ -223,6 +242,7 @@ def build_dispatcher(
         snapshot,
         sim_camera_config=sim_camera_config,
         link_wrapper=link_wrapper,
+        navigation_publisher=navigation_publisher,
     )
     return AdapterDispatcher(flight=adapters.flight, camera=adapters.camera, arbiter=arbiter)
 
