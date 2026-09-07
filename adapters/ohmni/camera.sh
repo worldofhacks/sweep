@@ -38,8 +38,14 @@ fi
 chmod 600 node.env camera.env
 set -a
 . ./node.env
+node_device_unit=${SWEEP_DEVICE_UNIT:?Missing SWEEP_DEVICE_UNIT in node.env}
 . ./camera.env
 set +a
+if [ "${SWEEP_DEVICE_UNIT:-}" != "$node_device_unit" ]; then
+  echo 'camera.env must not change the node device ID.' >&2
+  exit 1
+fi
+export SWEEP_DEVICE_UNIT="$node_device_unit"
 export PYTHONPATH=/data/local/sweep
 umask 077
 nohup ./lib/ld-musl-x86_64.so.1 ./python/bin/python3.12 -m adapters.ohmni.camera_runner >camera.log 2>&1 &
