@@ -11,9 +11,12 @@ import stat
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+import numpy as np
+
 from perception.camera_tags import CameraTagDetector
 from relay.observations import Observation, decode_observation
 from tools.map_common import finite_number, parse_document, validate_transform
+from tools.ohmni_world_registration import apply_transform
 
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_INPUT_BYTES = 10 * 1024 * 1024
@@ -26,6 +29,7 @@ MAX_ASSOCIATION_NS = 100_000_000
 MAX_TRANSLATION_SPREAD_M = 1.0
 MAX_ROTATION_SPREAD_RAD = math.pi
 MAX_TAPE_ERROR_M = 0.10
+MAX_VERTICAL_ERROR_M = 0.10
 
 
 def _require(condition: bool, message: str) -> None:
@@ -88,6 +92,27 @@ def _scope(value: object, name: str = "source_scope") -> dict[str, object]:
 def _same_scope(event: Observation, scope: Mapping[str, object]) -> bool:
     submission = event.submission
     return all(getattr(submission, key) == value for key, value in scope.items())
+
+
+def _source_scopes(value: object) -> dict[str, dict[str, object]]:
+    _require(
+        isinstance(value, Mapping) and set(value) == {"pose", "camera", "tag"},
+        "source_scopes requires pose, camera, and tag identities",
+    )
+    scopes = {name: _scope(value[name], f"source_scopes.{name}") for name in value}
+    identity = {key: scopes["pose"][key] for key in ("session", "device_id", "connection_epoch")}
+    _require(
+        all(
+            all(scope[key] == expected for key, expected in identity.items())
+            for scope in scopes.values()
+        ),
+        "source scopes must share session, device, and connection epoch",
+    )
+    _require(
+        scopes["pose"]["source_id"] != scopes["camera"]["source_id"],
+        "pose and camera sources must be distinct",
+    )
+    return scopes
 
 
 def _matrix(value: object, name: str) -> list[list[float]]:
@@ -230,44 +255,163 @@ def _mount(document: object, calibration: Mapping[str, object]) -> dict[str, obj
 
 
 def _registration(
-    document: object, scope: Mapping[str, object], odom_frame: str
-) -> list[list[float]]:
+    document: object, pose_scope: Mapping[str, object], odom_frame: str
+) -> dict[str, object]:
     _require(isinstance(document, Mapping), "registration must be an object")
+    allowed = {
+        "schema_version",
+        "kind",
+        "approval_status",
+        "source",
+        "target",
+        "T_target_source",
+        "fit_tag_ids",
+        "held_out_tag_ids",
+        "residuals",
+        "max_residual_m",
+        "rms_residual_m",
+        "held_out_residuals",
+        "max_held_out_residual_m",
+    }
+    if "input_provenance" in document:
+        allowed.add("input_provenance")
+    _require(set(document) == allowed, "registration candidate schema is invalid")
     _require(
-        document.get("schema_version") == 1
-        and document.get("kind") == "ohmni_world_registration_candidate"
-        and document.get("approval_status") == "unapproved",
+        document["schema_version"] == 1
+        and document["kind"] == "ohmni_world_registration_candidate"
+        and document["approval_status"] == "unapproved",
         "registration must be an unapproved Ohmni world-registration candidate",
     )
-    source = document.get("source")
-    target = document.get("target")
+    source = document["source"]
+    target = document["target"]
     _require(
         isinstance(source, Mapping) and isinstance(target, Mapping),
         "registration source and target are required",
     )
     _require(
-        source.get("frame") == odom_frame and target.get("frame") == "world",
-        "registration frames do not bind odom to world",
+        set(source)
+        == {"frame", "session", "device_id", "connection_epoch", "source_id", "name", "sha256"}
+        and source["frame"] == odom_frame
+        and all(source[key] == value for key, value in pose_scope.items()),
+        "registration source scope mismatches pose observations",
     )
+    _text(source["name"], "registration.source.name")
+    _digest(source["sha256"], "registration.source.sha256")
     _require(
-        all(source.get(key) == value for key, value in scope.items()),
-        "registration source scope mismatches observations",
+        set(target) == {"frame", "map_id", "map_version", "physical_datum", "name", "sha256"}
+        and target["frame"] == "world",
+        "registration target is invalid",
     )
-    transform = document.get("T_target_source")
+    for key in ("map_id", "map_version", "physical_datum", "name"):
+        _text(target[key], f"registration.target.{key}")
+    _digest(target["sha256"], "registration.target.sha256")
+    transform = document["T_target_source"]
     _require(
         isinstance(transform, Mapping) and set(transform) == {"dx_m", "dy_m", "yaw_rad"},
         "registration transform is invalid",
     )
-    dx = _number(transform["dx_m"], "registration.dx_m")
-    dy = _number(transform["dy_m"], "registration.dy_m")
-    yaw = _number(transform["yaw_rad"], "registration.yaw_rad")
-    cosine, sine = math.cos(yaw), math.sin(yaw)
-    return [
-        [cosine, -sine, 0.0, dx],
-        [sine, cosine, 0.0, dy],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ]
+    transform = {
+        "dx_m": _number(transform["dx_m"], "registration.dx_m"),
+        "dy_m": _number(transform["dy_m"], "registration.dy_m"),
+        "yaw_rad": _number(transform["yaw_rad"], "registration.yaw_rad"),
+    }
+    fit_ids = _tag_ids(document["fit_tag_ids"], "registration.fit_tag_ids", minimum=3)
+    held_out_ids = _tag_ids(document["held_out_tag_ids"], "registration.held_out_tag_ids")
+    _require(not set(fit_ids) & set(held_out_ids), "registration fit and held-out tags overlap")
+    residuals = _residual_rows(document["residuals"], fit_ids, transform, "registration.residuals")
+    held_out = _residual_rows(
+        document["held_out_residuals"], held_out_ids, transform, "registration.held_out_residuals"
+    )
+    _summary_matches(
+        document["max_residual_m"], document["rms_residual_m"], residuals, "registration"
+    )
+    if held_out:
+        maximum = max(row["residual_m"] for row in held_out)
+        _require(
+            math.isclose(
+                _number(
+                    document["max_held_out_residual_m"], "registration.max_held_out_residual_m"
+                ),
+                maximum,
+                rel_tol=0,
+                abs_tol=1e-9,
+            ),
+            "registration held-out residual summary is invalid",
+        )
+    else:
+        _require(
+            document["max_held_out_residual_m"] is None, "registration held-out summary is invalid"
+        )
+    if "input_provenance" in document:
+        provenance = document["input_provenance"]
+        _require(
+            isinstance(provenance, Mapping)
+            and set(provenance) == {"observed_document_sha256", "known_document_sha256"},
+            "registration input provenance is invalid",
+        )
+        for key in provenance:
+            _digest(provenance[key], f"registration.{key}")
+    return {"transform": transform, "fit_tag_ids": fit_ids, "target": dict(target)}
+
+
+def _tag_ids(value: object, name: str, *, minimum: int = 0) -> list[int]:
+    _require(isinstance(value, list) and minimum <= len(value) <= MAX_TAGS, f"{name} is invalid")
+    ids = [_integer(item, name, maximum=586) for item in value]
+    _require(ids == sorted(set(ids)), f"{name} must be sorted unique IDs")
+    return ids
+
+
+def _xy(value: object, name: str) -> tuple[float, float]:
+    _require(isinstance(value, list) and len(value) == 2, f"{name} must be XY")
+    return (_number(value[0], f"{name}.x"), _number(value[1], f"{name}.y"))
+
+
+def _residual_rows(
+    value: object, expected_ids: Sequence[int], transform: Mapping[str, float], name: str
+) -> list[dict[str, object]]:
+    _require(isinstance(value, list) and len(value) == len(expected_ids), f"{name} is invalid")
+    rows: list[dict[str, object]] = []
+    for expected, row in zip(expected_ids, value, strict=True):
+        _require(
+            isinstance(row, Mapping)
+            and set(row)
+            == {"tag_id", "source_xy_m", "target_xy_m", "registered_target_xy_m", "residual_m"}
+            and row["tag_id"] == expected,
+            f"{name} does not match its tie IDs",
+        )
+        source = _xy(row["source_xy_m"], f"{name}.source")
+        target = _xy(row["target_xy_m"], f"{name}.target")
+        registered = _xy(row["registered_target_xy_m"], f"{name}.registered")
+        recomputed = apply_transform(dict(transform), source)
+        _require(
+            math.dist(registered, recomputed) <= 1e-9,
+            f"{name} registered point does not match its transform",
+        )
+        residual = math.dist(recomputed, target)
+        _require(
+            math.isclose(
+                _number(row["residual_m"], f"{name}.residual"), residual, rel_tol=0, abs_tol=1e-9
+            ),
+            f"{name} residual does not match its transform",
+        )
+        rows.append({"residual_m": residual})
+    return rows
+
+
+def _summary_matches(
+    maximum: object, rms: object, rows: Sequence[Mapping[str, object]], name: str
+) -> None:
+    actual_maximum = max(row["residual_m"] for row in rows)
+    actual_rms = math.sqrt(sum(row["residual_m"] ** 2 for row in rows) / len(rows))
+    _require(
+        math.isclose(
+            _number(maximum, f"{name}.max_residual_m"), actual_maximum, rel_tol=0, abs_tol=1e-9
+        )
+        and math.isclose(
+            _number(rms, f"{name}.rms_residual_m"), actual_rms, rel_tol=0, abs_tol=1e-9
+        ),
+        f"{name} residual summary is invalid",
+    )
 
 
 def _request(document: object) -> dict[str, object]:
@@ -277,7 +421,7 @@ def _request(document: object) -> dict[str, object]:
         == {
             "schema_version",
             "kind",
-            "source_scope",
+            "source_scopes",
             "odom_frame",
             "calibration_id",
             "maximum_association_error_ns",
@@ -288,12 +432,13 @@ def _request(document: object) -> dict[str, object]:
             "calibration",
             "mount",
             "registration",
+            "vertical_datum",
             "tape_checkpoint",
         },
         "fusion request schema is invalid",
     )
     _require(
-        document["schema_version"] == 2
+        document["schema_version"] == 3
         and document["kind"] == "ohmni_tag_candidate_fusion_request",
         "fusion request version is invalid",
     )
@@ -324,16 +469,77 @@ def _request(document: object) -> dict[str, object]:
         and rotation_spread <= MAX_ROTATION_SPREAD_RAD,
         "fusion spread limits exceed the bounded envelope",
     )
+    vertical_datum = document["vertical_datum"]
+    if vertical_datum is not None:
+        _require(
+            isinstance(vertical_datum, Mapping) and set(vertical_datum) == {"path", "sha256"},
+            "vertical_datum requires a pinned artifact or null",
+        )
     return {
         **document,
-        "source_scope": _scope(document["source_scope"]),
+        "source_scopes": _source_scopes(document["source_scopes"]),
         "odom_frame": _text(document["odom_frame"], "odom_frame"),
         "calibration_id": _text(document["calibration_id"], "calibration_id", maximum=512),
         "maximum_association_error_ns": maximum_association,
         "maximum_translation_spread_m": translation_spread,
         "maximum_rotation_spread_rad": rotation_spread,
         "minimum_observations_per_tag": minimum_observations,
+        "vertical_datum": vertical_datum,
     }
+
+
+def _vertical_datum(
+    document: object,
+    pose_scope: Mapping[str, object],
+    odom_frame: str,
+    target: Mapping[str, object],
+) -> float | None:
+    if document is None:
+        return None
+    _require(
+        isinstance(document, Mapping)
+        and set(document)
+        == {
+            "schema_version",
+            "kind",
+            "measurement_kind",
+            "source",
+            "target",
+            "z_offset_m",
+            "maximum_error_m",
+            "measured",
+        },
+        "vertical datum proof schema is invalid",
+    )
+    _require(
+        document["schema_version"] == 1
+        and document["kind"] == "ohmni_vertical_datum_measurement"
+        and document["measurement_kind"] == "scoped_odom_to_world_height"
+        and document["measured"] is True,
+        "vertical datum must be a measured scoped height proof",
+    )
+    source = document["source"]
+    target_document = document["target"]
+    _require(
+        isinstance(source, Mapping)
+        and set(source) == {"frame", "session", "device_id", "connection_epoch", "source_id"}
+        and source["frame"] == odom_frame
+        and all(source[key] == value for key, value in pose_scope.items()),
+        "vertical datum source scope mismatches pose observations",
+    )
+    _require(
+        isinstance(target_document, Mapping)
+        and set(target_document) == {"frame", "map_id", "map_version", "physical_datum"}
+        and all(target_document.get(key) == target[key] for key in target_document),
+        "vertical datum target mismatches registration",
+    )
+    _require(
+        0
+        < _number(document["maximum_error_m"], "vertical datum maximum_error_m")
+        <= MAX_VERTICAL_ERROR_M,
+        "vertical datum maximum_error_m must be in (0, 0.10]",
+    )
+    return _number(document["z_offset_m"], "vertical datum z_offset_m")
 
 
 def _capture_time(event: Observation) -> tuple[str, int] | None:
@@ -347,7 +553,18 @@ def _weight(payload: Mapping[str, object]) -> float:
     covariance = payload.get("covariance_m2")
     if not isinstance(covariance, tuple | list) or len(covariance) != 9:
         raise ValueError("accepted tag observation requires a 3x3 measured covariance")
-    trace = sum(_number(covariance[index], "tag covariance", minimum=0) for index in (0, 4, 8))
+    try:
+        matrix = np.asarray(covariance, dtype=float).reshape(3, 3)
+    except (TypeError, ValueError) as error:
+        raise ValueError("accepted tag observation requires a 3x3 measured covariance") from error
+    if not np.isfinite(matrix).all() or not np.allclose(matrix, matrix.T, rtol=0, atol=1e-12):
+        raise ValueError("accepted tag observation covariance must be symmetric PSD")
+    try:
+        if np.linalg.eigvalsh(matrix).min() < -1e-12:
+            raise ValueError("accepted tag observation covariance must be symmetric PSD")
+    except np.linalg.LinAlgError as error:
+        raise ValueError("accepted tag observation covariance must be symmetric PSD") from error
+    trace = float(np.trace(matrix))
     if trace <= 0:
         raise ValueError("tag covariance trace must be positive for weighted fusion")
     return 1 / trace
@@ -392,7 +609,7 @@ def _quaternion_from_rotation(
 
 
 def _weighted_pose(
-    samples: Sequence[dict[str, object]], request: Mapping[str, object]
+    samples: Sequence[dict[str, object]], request: Mapping[str, object], pose_key: str
 ) -> dict[str, object]:
     _require(
         len(samples) >= request["minimum_observations_per_tag"],
@@ -440,7 +657,7 @@ def _weighted_pose(
         }
     )
     return {
-        "T_world_tag": fused_transform,
+        pose_key: fused_transform,
         "observation_count": len(samples),
         "translation_spread_max_m": maximum_translation,
         "rotation_spread_max_rad": maximum_rotation,
@@ -450,7 +667,10 @@ def _weighted_pose(
 
 
 def _checkpoint(
-    document: object, candidates: Mapping[int, Mapping[str, object]]
+    document: object,
+    candidates: Mapping[int, Mapping[str, object]],
+    pose_key: str,
+    fit_tag_ids: Sequence[int],
 ) -> dict[str, object]:
     _require(
         isinstance(document, Mapping)
@@ -477,6 +697,10 @@ def _checkpoint(
         "tape checkpoint needs two distinct tag IDs",
     )
     first, second = (_integer(item, "tape checkpoint tag_id", maximum=586) for item in ids)
+    _require(
+        first not in fit_tag_ids and second not in fit_tag_ids,
+        "tape checkpoint tags must be independent of registration fit ties",
+    )
     measured = _number(document["measured_distance_m"], "tape measured_distance_m", minimum=0)
     maximum = _number(document["maximum_error_m"], "tape maximum_error_m", minimum=0)
     _require(0 < maximum <= MAX_TAPE_ERROR_M, "tape maximum_error_m must be in (0, 0.10]")
@@ -490,8 +714,8 @@ def _checkpoint(
             "reason": "checkpoint_tags_not_fused",
         }
     actual = math.dist(
-        _translation(candidates[first]["T_world_tag"]),
-        _translation(candidates[second]["T_world_tag"]),
+        _translation(candidates[first][pose_key]),
+        _translation(candidates[second][pose_key]),
     )
     error = abs(actual - measured)
     return {
@@ -512,14 +736,18 @@ def fuse_observations(
     request: Mapping[str, object],
     calibration: Mapping[str, object],
     mount: Mapping[str, object],
-    registration: Sequence[Sequence[float]],
+    registration: Mapping[str, object],
     input_pins: Mapping[str, Mapping[str, str]],
 ) -> dict[str, object]:
     """Fuse only typed, captured canonical observations into an unapproved candidate."""
     _require(
         1 <= len(observations) <= MAX_OBSERVATIONS, "observation count is outside the fusion bound"
     )
-    scope = request["source_scope"]
+    _require(
+        set(registration) == {"transform", "fit_tag_ids", "target", "vertical_offset_m"},
+        "registration evidence is invalid",
+    )
+    scopes = request["source_scopes"]
     event_ids = [event.submission.event_id for event in observations]
     _require(len(event_ids) == len(set(event_ids)), "observation event IDs must be unique")
     camera_by_image: dict[tuple[str, str, int], Observation] = {}
@@ -527,18 +755,23 @@ def fuse_observations(
     diagnostics: list[dict[str, object]] = []
     for event in observations:
         _require(isinstance(event, Observation), "fusion core accepts typed Observation values")
-        if not _same_scope(event, scope):
-            diagnostics.append(
-                {"event_id": event.submission.event_id, "reason": "source_scope_mismatch"}
-            )
-            continue
         payload = event.submission.payload
         kind = payload["kind"]
         captured = _capture_time(event)
         if kind == "camera_frame":
+            if not _same_scope(event, scopes["camera"]):
+                diagnostics.append(
+                    {"event_id": event.submission.event_id, "reason": "camera_scope_mismatch"}
+                )
+                continue
             if captured is None:
                 diagnostics.append(
                     {"event_id": event.submission.event_id, "reason": "missing_capture_time"}
+                )
+                continue
+            if event.submission.confidence <= 0:
+                diagnostics.append(
+                    {"event_id": event.submission.event_id, "reason": "nonpositive_confidence"}
                 )
                 continue
             if event.submission.frame != mount["camera_frame"]:
@@ -555,6 +788,21 @@ def fuse_observations(
             _require(image_key not in camera_by_image, "camera evidence identity is duplicated")
             camera_by_image[image_key] = event
         elif kind == "pose":
+            if not _same_scope(event, scopes["pose"]):
+                diagnostics.append(
+                    {"event_id": event.submission.event_id, "reason": "pose_scope_mismatch"}
+                )
+                continue
+            if captured is None:
+                diagnostics.append(
+                    {"event_id": event.submission.event_id, "reason": "missing_capture_time"}
+                )
+                continue
+            if event.submission.confidence <= 0:
+                diagnostics.append(
+                    {"event_id": event.submission.event_id, "reason": "nonpositive_confidence"}
+                )
+                continue
             pose = payload["pose"]
             if (
                 captured is not None
@@ -566,12 +814,18 @@ def fuse_observations(
     fused_samples: dict[int, list[dict[str, object]]] = {}
     for event in observations:
         payload = event.submission.payload
-        if payload["kind"] != "tag_observation" or not _same_scope(event, scope):
+        if payload["kind"] != "tag_observation":
             continue
         event_id = event.submission.event_id
+        if not _same_scope(event, scopes["tag"]):
+            diagnostics.append({"event_id": event_id, "reason": "tag_scope_mismatch"})
+            continue
         captured = _capture_time(event)
         if captured is None:
             diagnostics.append({"event_id": event_id, "reason": "missing_capture_time"})
+            continue
+        if event.submission.confidence <= 0:
+            diagnostics.append({"event_id": event_id, "reason": "nonpositive_confidence"})
             continue
         if (
             event.submission.frame != mount["camera_frame"]
@@ -583,6 +837,13 @@ def fuse_observations(
             continue
         if payload["pose_accepted"] is not True or payload["tag_pose"] is None:
             diagnostics.append({"event_id": event_id, "reason": "tag_pose_not_accepted"})
+            continue
+        tag_pose = payload["tag_pose"]
+        if (
+            tag_pose["parent_frame"] != mount["camera_frame"]
+            or tag_pose["child_frame"] != f"tag:{payload['tag_id']}"
+        ):
+            diagnostics.append({"event_id": event_id, "reason": "tag_pose_frame_mismatch"})
             continue
         image = camera_by_image.get((payload["image_id"], *captured))
         if image is None:
@@ -611,10 +872,9 @@ def fuse_observations(
         except ValueError as error:
             diagnostics.append({"event_id": event_id, "reason": str(error)})
             continue
-        tag_pose = payload["tag_pose"]
-        world_tag = _multiply(
+        odom_tag = _multiply(
             _multiply(
-                _multiply(registration, _pose_matrix(body.submission.payload["pose"])),
+                _pose_matrix(body.submission.payload["pose"]),
                 mount["T_body_camera"],
             ),
             _pose_matrix(tag_pose),
@@ -623,19 +883,29 @@ def fuse_observations(
         fused_samples.setdefault(identifier, []).append(
             {
                 "event_id": event_id,
-                "transform": world_tag,
-                "translation": _translation(world_tag),
+                "transform": odom_tag,
+                "translation": _translation(odom_tag),
                 "weight": weight,
             }
         )
     _require(len(fused_samples) <= MAX_TAGS, "fused tag count exceeds the global bound")
+    vertical_offset = registration["vertical_offset_m"]
+    pose_key = "T_world_tag" if vertical_offset is not None else "T_odom_tag"
+    transform = registration["transform"]
     candidates: dict[int, dict[str, object]] = {}
     for identifier, samples in sorted(fused_samples.items()):
         try:
-            candidates[identifier] = _weighted_pose(samples, request)
+            candidate = _weighted_pose(samples, request, "T_odom_tag")
+            if vertical_offset is not None:
+                candidate["T_world_tag"] = _multiply(
+                    _planar_world_odom(transform, vertical_offset), candidate.pop("T_odom_tag")
+                )
+            candidates[identifier] = candidate
         except ValueError as error:
             diagnostics.append({"tag_id": identifier, "reason": str(error)})
-    checkpoint = _checkpoint(request["tape_checkpoint"], candidates)
+    checkpoint = _checkpoint(
+        request["tape_checkpoint"], candidates, pose_key, registration["fit_tag_ids"]
+    )
     if checkpoint["status"] == "not_evaluated":
         diagnostics.append({"reason": "checkpoint_not_evaluated"})
         candidates = {}
@@ -647,8 +917,12 @@ def fuse_observations(
             "Offline XYZ tag-center estimates only. This candidate does not approve flight "
             "or aerial clearance."
         ),
-        "source_scope": dict(scope),
+        "source_scopes": {name: dict(scope) for name, scope in scopes.items()},
+        "candidate_frame": "world" if vertical_offset is not None else request["odom_frame"],
         "registration": dict(input_pins["registration"]),
+        "vertical_datum": None
+        if input_pins.get("vertical_datum") is None
+        else dict(input_pins["vertical_datum"]),
         "calibration": dict(input_pins["calibration"]),
         "mount": dict(input_pins["mount"]),
         "observations": dict(input_pins["observations"]),
@@ -662,6 +936,19 @@ def fuse_observations(
     encoded = json.dumps(candidate, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
     _require(len(encoded) <= MAX_OUTPUT_BYTES, "fusion output exceeds the global byte limit")
     return candidate
+
+
+def _planar_world_odom(
+    transform: Mapping[str, object], vertical_offset: object
+) -> list[list[float]]:
+    yaw = _number(transform["yaw_rad"], "registration.yaw_rad")
+    cosine, sine = math.cos(yaw), math.sin(yaw)
+    return [
+        [cosine, -sine, 0.0, _number(transform["dx_m"], "registration.dx_m")],
+        [sine, cosine, 0.0, _number(transform["dy_m"], "registration.dy_m")],
+        [0.0, 0.0, 1.0, _number(vertical_offset, "vertical datum z_offset_m")],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
 
 
 def _read_request(path: Path) -> tuple[dict[str, object], str, int]:
@@ -710,9 +997,22 @@ def run(request_path: Path, evidence_root: Path, output: Path) -> dict[str, obje
     )
     registration = _registration(
         parse_document(registration_payload, registration_pin["path"]),
-        request["source_scope"],
+        request["source_scopes"]["pose"],
         request["odom_frame"],
     )
+    vertical_pin: dict[str, str] | None = None
+    if request["vertical_datum"] is None:
+        registration["vertical_offset_m"] = None
+    else:
+        vertical_payload, vertical_pin = snapshots.read(
+            request["vertical_datum"], "vertical_datum", maximum=1024 * 1024
+        )
+        registration["vertical_offset_m"] = _vertical_datum(
+            parse_document(vertical_payload, vertical_pin["path"]),
+            request["source_scopes"]["pose"],
+            request["odom_frame"],
+            registration["target"],
+        )
     candidate = fuse_observations(
         observations,
         request=request,
@@ -724,6 +1024,7 @@ def run(request_path: Path, evidence_root: Path, output: Path) -> dict[str, obje
             "calibration": calibration_pin,
             "mount": mount_pin,
             "registration": registration_pin,
+            "vertical_datum": vertical_pin,
         },
     )
     candidate["request_sha256"] = request_hash
