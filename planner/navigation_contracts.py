@@ -371,7 +371,7 @@ class NavigationPermission:
 @dataclass(frozen=True, slots=True)
 class NavigationEvidence:
     geometry_status: Literal["offline_authoring"]
-    evidence_kind: Literal["synthetic", "surveyed"]
+    evidence_kind: Literal["synthetic", "surveyed", "measured"]
     flight_approved: bool
     camera_visibility_verified: bool
     blocking_gaps: tuple[str, ...]
@@ -379,7 +379,7 @@ class NavigationEvidence:
     def __post_init__(self) -> None:
         if self.geometry_status != "offline_authoring":
             raise ValueError("navigation geometry must remain offline authoring evidence")
-        if self.evidence_kind not in {"synthetic", "surveyed"}:
+        if self.evidence_kind not in {"synthetic", "surveyed", "measured"}:
             raise ValueError("navigation evidence kind is unsupported")
         if self.flight_approved is not False or self.camera_visibility_verified is not False:
             raise ValueError(
@@ -394,7 +394,9 @@ class NavigationEvidence:
             raise ValueError("navigation evidence must carry every canonical blocking gap")
 
 
-def preview_evidence(evidence_kind: Literal["synthetic", "surveyed"]) -> NavigationEvidence:
+def preview_evidence(
+    evidence_kind: Literal["synthetic", "surveyed", "measured"],
+) -> NavigationEvidence:
     gaps = (
         "geometry_acceptance_missing",
         "camera_visibility_unverified",
