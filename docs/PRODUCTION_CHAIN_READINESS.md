@@ -1,31 +1,65 @@
 # Sweep production-chain readiness
 
-At the 12:50 UTC checkpoint on 2026-09-07, the composed supervised service
-is live. `sweep-supervised-relay` listens on loopback port 18794, and the public
-`/field/` routes use session `sweep-field-20260907-v1`. An authenticated WebSocket
-reports the `supervised_vertical` profile, `armed: false`, and no connected devices.
-The former observer relay remains active on port 18793 for rollback. The public
-field-console assets match staged SHA-256
-`745071f6e9d4ad3a153f46a7bcbfe01f665f5cfd5af65279d97492cd6f0b36af`.
+At the 14:35 UTC checkpoint on 2026-09-07, the first physical supervised
+hover attempt has failed. The aircraft lifted and hovered at about 1.1 m, but
+Sweep lost Virtual Stick authority before reaching the 1.8 m target. The operator
+landed it with the controller. The phone subsequently reported landed at 0.0 m;
+network stop is latched. The session arm flag remains true. Another flight requires
+fresh local readiness and a supervised test of the repaired authority transition.
 
-The profile permits one supervised 1.8 m takeoff, hold, and landing using fresh
-local height and the operator-declared 2.5908 m ceiling. World navigation remains
-a separate deployment. The supervised APK is published and available at
-`https://sweep.hollowatlas.xyz/releases/SweepBridge-supervised-af0bf300.apk` with
-SHA-256 `8f34a116cdea7c09990e7a1deb2d496e58b9bd573e48567ec20a0caeda04238a`.
-It has not been installed on the phone.
+The composed service remains live on loopback port 18794 under
+`sweep-field-20260907-v1`; the public `/field/` route uses that service. The older
+observer process remains on port 18793 for rollback. Neither service was restarted.
+At 14:29 UTC the phone received supervised APK `eb137e73`, SHA-256
+`b81e3422ac877436773f15bbc0f6de4345d1a3bf08070060957c674ea7af9c7d`,
+verified from the installed package. It rejoined at epoch 4 with stop preserved.
+The local control and RC-presence switches reset, video is connecting, and current
+local height is unavailable. A second physical flight test has not occurred.
 
-No physical movement or acceptance evidence has been recorded for this deployment.
-Ground and aircraft activation remain pending the operator's return and the stated
-physical checks.
+The preceding APK `296cc180` height-polling fix passed a 30-second stationary
+check: all 30 samples reported
+0.0 m with effective ages from -192 to 183 ms, within the configured clock-skew and
+freshness bounds. This check supplies height evidence only.
 
-The next physical sequence begins when the operator returns: install the supervised
-APK, hand the phone to session `sweep-field-20260907-v1`, power the replacement
-aircraft, then wait for fresh telemetry and named readiness. The actual aircraft
-cannot provide fresh telemetry while it is off. Ground mapping follows its own
-camera, odometry, collision-stop, route, and measured-registration checks.
+World navigation, wheel motion, and mapping acceptance remain pending. Ohmni 11
+is unavailable. Ohmni 12 became unreachable at about 14:29 UTC; ADB reconnection
+was refused. Its last inspection found the vendor owner and camera publisher
+running, while the Sweep runtime had exited after the relay interruption. Its
+owner encoder patch has not been installed. A private handback capture preserves
+its original vendor source, metadata, and
+recorded Sweep changes. The first installer attempt failed because ADB could not
+write into the root-owned staging directory, before vendor source mutation.
+[#300](https://github.com/worldofhacks/sweep/pull/300) now transfers the reviewed
+payloads through the root shell and verifies their bytes and permissions. Its
+repair passed 78 adapter tests and an independent run of all 7 installer tests;
+application to the robot and the 60-second encoder qualification remain pending.
 
 ## Observed field behavior
+
+The physical takeoff command at 13:51:23.560 UTC specified `z_mm: 1800` and was
+accepted by the phone. Native takeoff reported hovering at 0.90 m, then an enabled
+Virtual Stick callback with owner `UNKNOWN` caused `authority_lost`. The safety
+hold also failed against that authority latch. The later `land_all` intent was
+refused before a device command because control authority was unavailable. The
+operator's manual landing completed the physical recovery; Sweep did not complete
+the requested takeoff/hold/land sequence. The bounded command record is
+`/home/gauntlet/sweep-deploy/evidence/quick-hover-1788789081405/command-evidence.json`.
+
+A separate full-history request after the flight failure exposed a relay defect:
+replay scanned the roughly 415 MB audit log under its storage lock without checking
+the live replay deadline during the scan. Phone heartbeats and reconnects stalled.
+The phone recovered at connection epoch 3 before the later app update. A reviewed
+source fix in [#302](https://github.com/worldofhacks/sweep/pull/302) checks the deadline
+while reading and validating each record. Its main-based head `bc80cf8d` passed
+190 audit, rollback, and session tests. Deployment and its recovery check remain
+pending. Avoid the full-history endpoint on this live process.
+
+At 13:58 UTC, a landed camera check saved 20 D-01 frames at 1280×720, with 18
+distinct image hashes. No tag36h11 ID decoded. The floor tags were visible at a
+strongly foreshortened angle. Gimbal aiming and detection during a controlled hover
+remain pending; this result supplies no metric localization evidence.
+
+The following table retains earlier field observations.
 
 The deployed relay accepts the authenticated aircraft and ground identities and
 retains their observations in distinct local frames. These frames have no measured
@@ -69,15 +103,14 @@ zero. Ohmni 12 was already unreachable and received no update.
 At 12:55 UTC, a bounded ADB connection attempt to Ohmni 11 was refused and
 `adb devices` was empty. No node configuration changed. The last observation still
 belongs to the old session and connection epoch; the node is currently unreachable.
-The new public session has zero devices as expected. APK installation and phone
-handoff to the new session remain pending the operator's return.
+At that checkpoint the new public session had zero devices; installation and
+phone handoff were still pending.
 
-A grounded DJI camera check detected no raw AprilTags in 20 frames. The floor
+An earlier grounded DJI camera check detected no raw AprilTags in 20 frames. The floor
 tags were strongly foreshortened in that view. This is a visibility diagnostic;
 no hover or flight command was issued. The deployed profile isolates supervised
-vertical control from mapped navigation. The replacement aircraft still needs a
-grounded identity check, a near-zero height baseline, and measured callback
-freshness before flight.
+vertical control from mapped navigation. The replacement aircraft was later identified as DJI Mini 3, firmware
+01.00.0500, and passed the stationary height check described above.
 
 An isolated fake-node relay was driven through the production console bundle on a local test server in a real browser.
 The browser authenticated, selected and armed D-01, confirmed takeoff, recorded a
@@ -93,14 +126,17 @@ no physical flight evidence.
 The owner-side encoder sampler in #298 has not been installed. It waits for
 vendor servo initialization before polling and withdraws an existing stream when
 reinitialization begins. Restarting the vendor process enables wheel torque and
-initializes the neck, so that operation waits for the operator's return. A
+initializes the neck, so activation requires a supervised normal robot reboot. A
 60-second uninterrupted stationary recording must pass before ground motion.
 
 The lidar-frame fix in #295 prevents a second rotation of scans that already use
-body-relative angles. The operator estimates the sensor is about 24 inches above
-the floor and 22 inches diagonally from the drive-wheel midpoint, toward the
-rear-left at about 135 degrees. These are rough measurements. The mount remains
-unconfigured pending direct offsets and a stationary target check. No physical
+body-relative angles. The operator estimates Ohmni 11's sensor is about 24 inches
+above the floor and 22 inches diagonally from the drive-wheel midpoint at 135
+degrees counterclockwise from forward. Ohmni 12's sensor is about 21 inches high
+and 20 inches diagonally from the midpoint at 120–135 degrees counterclockwise.
+Both wheel radii are roughly 3 inches. These rough measurements are not installed
+calibration. Both mounts remain unconfigured pending measured offsets and a
+stationary target check. No physical
 drive or local collision-stop test has passed.
 
 ## Software and remaining evidence
@@ -142,6 +178,16 @@ The map-authoring UI in #248 and destination-intent backend in #143 remain
 teammate-owned. Their integration and review are separate dependencies.
 
 ## Review order and validation
+
+The stationary-height polling fix is published as [#299](https://github.com/worldofhacks/sweep/pull/299),
+stacked on #297. Its head `1d87e3dce6aecf5c6d813ece33effe8dc417c8f4` passed all five
+CI jobs at the 14:13 UTC check; local validation passed 46 bridge-node tests and 39
+app tests. The Virtual Stick transition repair is published in [#301](https://github.com/worldofhacks/sweep/pull/301),
+head `183725070f24d080c38067afe9cedcbf8132e8f7`. It waits for confirmed SDK
+control ownership before starting the supervised climb and handles timeout,
+cancellation, and late callbacks. Local source validation passed 184 core, 46
+bridge-node, and 39 app tests. The installed APK includes it; hardware verification
+remains pending.
 
 The draft stack starts from main `cf2f4ead3e0f002932d60972f1f17683dbb40e6a`.
 Prerequisite-only branches combine already published source so individual PRs can
