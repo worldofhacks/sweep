@@ -2,12 +2,15 @@ import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin } from 'vite'
 import { RELAY_BOOTSTRAP_ENDPOINT, relayFromEnvironment } from './src/relay/bootstrap-endpoint.ts'
 
+const CANONICAL_CONSOLE_PORT = 5173
+const M14_BROWSER_PORT = 14173
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), fixedConsolePort(), runtimeConfiguration(), relayBootstrap()],
   // A second process must not silently become a competing operator console.
-  server: { host: '127.0.0.1', port: 5173, strictPort: true },
-  preview: { host: '127.0.0.1', port: 5173, strictPort: true },
+  server: { host: '127.0.0.1', port: CANONICAL_CONSOLE_PORT, strictPort: true },
+  preview: { host: '127.0.0.1', port: CANONICAL_CONSOLE_PORT, strictPort: true },
 })
 
 function fixedConsolePort(): Plugin {
@@ -15,11 +18,8 @@ function fixedConsolePort(): Plugin {
     name: 'sweep-single-console-port',
     configResolved(config) {
       if (config.command !== 'serve') return
-      for (const endpoint of [config.server, config.preview]) {
-        if (endpoint.port !== 5173 || !endpoint.strictPort || endpoint.host !== '127.0.0.1') {
-          throw new Error('Sweep uses one laptop console at http://127.0.0.1:5173/. Use python3 tools/console.py start from the canonical checkout.')
-        }
-      }
+      assertConsoleEndpoint(config.server, expectedServerPort(process.env))
+      assertConsoleEndpoint(config.preview, CANONICAL_CONSOLE_PORT)
     },
   }
 }
@@ -57,6 +57,19 @@ function relayBootstrap(): Plugin {
  * answers 503 and the console runs with playback disabled. Reconcile when #68
  * merges.
  */
+export function expectedServerPort(env: NodeJS.ProcessEnv): number {
+  return env.SWEEP_CONSOLE_TEST_MODE === 'm14-browser' ? M14_BROWSER_PORT : CANONICAL_CONSOLE_PORT
+}
+
+export function assertConsoleEndpoint(
+  endpoint: { host?: string; port?: number; strictPort?: boolean },
+  expectedPort: number,
+) {
+  if (endpoint.port !== expectedPort || !endpoint.strictPort || endpoint.host !== '127.0.0.1') {
+    throw new Error('Sweep uses one laptop console at http://127.0.0.1:5173/. Use python3 tools/console.py start from the canonical checkout.')
+  }
+}
+
 function runtimeConfiguration(): Plugin {
   return {
     name: 'sweep-runtime-configuration',
