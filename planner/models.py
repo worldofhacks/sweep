@@ -118,6 +118,7 @@ class CommandOperation(StrEnum):
     HOVER = "hover"
     LAND = "land"
     ESTOP = "estop"
+    GROUND_VELOCITY = "ground_velocity"
     CAMERA_CAPABILITIES = "camera_capabilities"
     SET_GIMBAL_PITCH = "set_gimbal_pitch"
     CAMERA_READY = "camera_ready"

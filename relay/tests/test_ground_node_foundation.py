@@ -4,7 +4,7 @@ import pytest
 
 from relay.app import RelayRuntime
 from relay.audit import AuditLogError, SessionAuditLog
-from relay.auth import Principal
+from relay.auth import Principal, sign_event
 from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE
 from relay.contracts import NodeType, parse_membership_request
 from relay.session import (
@@ -38,6 +38,31 @@ def _ground_join(device_id: int, event_id: str) -> object:
             capabilities=["ground_drive"],
         )
     )
+
+
+def _ground_readiness(device_id: int, event_id: str, *, authority: bool = True) -> object:
+    payload = {
+        "v": 1,
+        "t": 1_756_700_000_000,
+        "type": "membership",
+        "event_id": event_id,
+        "session": SESSION,
+        "drone_id": device_id,
+        "action": "readiness",
+        "connection_epoch": 1,
+        "drive_authority": authority,
+        "safety_operator_present": True,
+        "local_stop_ready": True,
+        "heartbeat_ready": authority,
+        "pose_identity": {
+            "event_id": "pose-1",
+            "session": SESSION,
+            "connection_epoch": 1,
+            "frame": "odom",
+        },
+    }
+    payload["signature"] = sign_event(payload, GROUND_KEY)
+    return parse_membership_request(payload)
 
 
 def test_host_node_type_controls_authenticated_join_and_state(tmp_path):
@@ -101,6 +126,16 @@ def test_ground_capacity_is_separate_from_aircraft_capacity():
     with pytest.raises(RegistryError) as error:
         registry.apply_join(_ground_join(12, "ground-overflow"))
     assert error.value.code == "fleet_capacity"
+
+
+def test_ground_readiness_uses_ground_safety_and_pose_evidence():
+    registry = FleetRegistry(telemetry_freshness_ms=1_000, node_types={9: NodeType.GROUND})
+    registry.apply_join(_ground_join(9, "ground-join"))
+
+    transition = registry.apply_readiness(_ground_readiness(9, "ground-ready"))
+
+    assert transition.membership.value == "ready"
+    assert transition.readiness_reasons == ()
 
 
 def test_mixed_c2_fleet_state_audit_accepts_nine_nodes_and_rejects_ten():
