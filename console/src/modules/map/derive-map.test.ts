@@ -1,6 +1,7 @@
 import { publicNodeEvents } from '../../testing/public-node-events'
 import { describe, expect, test } from 'vitest'
 import type { RelayAircraftState, RelaySensorEvent } from '../../relay/contract'
+import type { Observation } from '../../relay/observation'
 import type { SensorSnapshot } from '../../sensor/store'
 import { canonicalMapDevices, scanningDevices, mapDevices, scanTrail, telemetryPose } from './derive-map'
 
@@ -70,7 +71,36 @@ describe('map derivation', () => {
       payload: { kind: 'pose' as const, pose: { parent_frame: 'world', child_frame: 'base_link', x_m: 2, y_m: -1, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } }, t_ingest: 101,
     }
     const localScan = { ...worldPose, event_id: 'ground-local-scan', frame: 'lidar', payload: { kind: 'range_scan' as const, sensor_pose: { parent_frame: 'odom', child_frame: 'lidar', x_m: 0, y_m: 0, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 }, angle_min_rad: 0, angle_increment_rad: 0.1, range_min_m: 0.1, range_max_m: 8, ranges_m: [1], mount_id: 'lidar' } }
-    expect(canonicalMapDevices([device({ node_type: 'ground' })], [worldPose, localScan])).toMatchObject([{ label: 'G-01', x: 2, y: -1 }])
+    expect(canonicalMapDevices([device({ node_type: 'ground' })], [worldPose, localScan], 102)).toMatchObject([
+      { label: 'G-01', x: 2, y: -1, source: 'observation' },
+    ])
+  })
+
+  test('renders only the newest fresh, accepted world pose from a ground source of record', () => {
+    const worldPose = (overrides: Partial<Observation> = {}): Observation => ({
+      v: 1 as const, type: 'observation' as const, event_id: 'ground-pose', session: 'derive-map-test', device_id: 11,
+      connection_epoch: 3, source_id: 'ohmni-pose', node_type: 'ground' as const, frame: 'world', confidence: 0.9,
+      t_capture: null, t_source_receipt: { clock_id: 'ohmni-ms', unit: 'ms' as const, value: 200 }, clock_mapping_id: null,
+      payload: { kind: 'pose' as const, pose: { parent_frame: 'world', child_frame: 'base_link', x_m: 2, y_m: -1, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } }, t_ingest: 200,
+      ...overrides,
+    })
+    const sourceOfRecord = device({ node_type: 'ground', ground_readiness: { source_id: 'ohmni-pose' } })
+    const wrongSource = worldPose({ event_id: 'other-source', source_id: 'other-pose', t_ingest: 202, payload: { kind: 'pose', pose: { parent_frame: 'world', child_frame: 'base_link', x_m: 99, y_m: 99, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } } })
+    const newest = worldPose({ event_id: 'newest', t_ingest: 201, payload: { kind: 'pose', pose: { parent_frame: 'world', child_frame: 'base_link', x_m: 5, y_m: 6, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } } })
+
+    const authoritative = canonicalMapDevices([sourceOfRecord], [worldPose(), wrongSource, newest], 202)
+    expect(authoritative).toHaveLength(1)
+    expect(authoritative).toMatchObject([{ x: 5, y: 6 }])
+    const unconstrained = canonicalMapDevices([device({ node_type: 'ground' })], [worldPose(), wrongSource, newest], 202)
+    expect(unconstrained).toHaveLength(1)
+    expect(unconstrained).toMatchObject([{ x: 99, y: 99 }])
+    expect(canonicalMapDevices([sourceOfRecord], [
+      worldPose({ event_id: 'no-confidence', confidence: 0 }),
+      worldPose({ event_id: 'stale', t_ingest: 202 - 5_001 }),
+      worldPose({ event_id: 'wrong-epoch', connection_epoch: 2 }),
+      worldPose({ event_id: 'wrong-node', node_type: 'aircraft' }),
+      worldPose({ event_id: 'wrong-device', device_id: 12 }),
+    ], 202)).toEqual([])
   })
   test('a telemetry projection places a device; a heading rides in heading_deg or yaw_deg', () => {
     expect(telemetryPose({ x: 1.5, y: -2, z: 0, vx: 0, vy: 0, vz: 0 })).toEqual({

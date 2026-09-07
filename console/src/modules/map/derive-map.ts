@@ -1,4 +1,4 @@
-import { observationCurrent, motionObservationCurrent } from '../../control/observation'
+import { DEVICE_FRESH_MS, observationCurrent, motionObservationCurrent } from '../../control/observation'
 import { telemetryGroup } from '../devices/telemetry'
 import { isFreshScan } from '../../sensor/status'
 import { formatDeviceId } from '../../control/state'
@@ -17,8 +17,8 @@ export interface MapDevice {
   y: number
   /** Degrees counter-clockwise from +x; null when nothing reports a heading. */
   headingDeg: number | null
-  /** Whether the position came from the relay's telemetry projection or a scan pose. */
-  source: 'telemetry' | 'scan'
+  /** Whether the position came from the relay's telemetry projection, a scan pose, or a signed observation. */
+  source: 'telemetry' | 'scan' | 'observation'
 }
 
 /**
@@ -84,13 +84,34 @@ export function mapDevices(
 export function canonicalMapDevices(
   fleet: readonly RelayAircraftState[],
   observations: readonly Observation[],
+  now: number,
 ): MapDevice[] {
   const byId = new Map(fleet.map((device) => [device.drone_id, device]))
-  const devices: MapDevice[] = []
+  const newest = new Map<number, Observation>()
   for (const observation of observations) {
     if (observation.payload.kind !== 'pose' || observation.payload.pose.parent_frame !== 'world') continue
     const device = byId.get(observation.device_id)
-    if (!device || device.connection_epoch !== observation.connection_epoch) continue
+    if (
+      !device ||
+      device.node_type !== 'ground' ||
+      device.connection_epoch !== observation.connection_epoch ||
+      observation.node_type !== 'ground' ||
+      observation.confidence <= 0 ||
+      observation.t_ingest > now ||
+      now - observation.t_ingest > DEVICE_FRESH_MS ||
+      (device.ground_readiness?.source_id !== null && device.ground_readiness?.source_id !== undefined &&
+        device.ground_readiness.source_id !== observation.source_id)
+    ) continue
+    const prior = newest.get(device.drone_id)
+    if (!prior || observation.t_ingest > prior.t_ingest ||
+      (observation.t_ingest === prior.t_ingest && observation.event_id > prior.event_id)) {
+      newest.set(device.drone_id, observation)
+    }
+  }
+  const devices: MapDevice[] = []
+  for (const [droneId, observation] of newest) {
+    const device = byId.get(droneId)
+    if (!device || observation.payload.kind !== 'pose') continue
     devices.push({
       droneId: device.drone_id,
       label: formatDeviceId(device),
@@ -99,7 +120,7 @@ export function canonicalMapDevices(
       x: observation.payload.pose.x_m,
       y: observation.payload.pose.y_m,
       headingDeg: null,
-      source: 'scan',
+      source: 'observation',
     })
   }
   return devices
