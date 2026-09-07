@@ -203,6 +203,40 @@ def test_refuses_stale_timing_drift_and_missing_capture_provenance() -> None:
     assert "candidate" not in result
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("max_translation_drift_m", 0.0011, "stage_translation_drift"),
+        ("max_yaw_drift_deg", 0.11, "stage_yaw_drift"),
+    ],
+)
+def test_refuses_stage_motion_beyond_the_settled_capture_bound(
+    field: str, value: float, reason: str
+) -> None:
+    capture = _capture()
+    capture["stages"]["after_yaw"][field] = value
+
+    result = fit_capture(capture)
+
+    assert result["approval_status"] == "refused"
+    assert reason in result["refusal_reasons"]
+    assert "candidate" not in result
+
+
+def test_refuses_sparse_scan_support_without_attempting_geometry_eigendecomposition() -> None:
+    capture = _capture()
+    for stage in capture["stages"].values():
+        for revolution in stage["revolutions"]:
+            revolution["points"] = revolution["points"][:1]
+
+    result = fit_capture(capture)
+
+    assert result["approval_status"] == "refused"
+    assert result["refusal_reasons"] == ["sparse_scan_support"]
+    assert result["metrics"]["registration_skipped"] is True
+    assert result["metrics"]["geometry_eigenvalues_m2"] == []
+
+
 def test_normalizes_an_equivalent_offset_at_the_wrap_boundary() -> None:
     result = fit_capture(_capture(179.6, -1))
 

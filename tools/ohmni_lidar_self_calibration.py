@@ -26,6 +26,8 @@ MIN_STAGE_POINTS = 80
 MIN_TRANSLATION_M = 0.04
 MIN_YAW_RAD = 0.1
 MAX_ENCODER_REVOLUTION_DELTA_S = 2.0
+MAX_STAGE_TRANSLATION_DRIFT_M = 0.001
+MAX_STAGE_YAW_DRIFT_DEG = 0.1
 MAX_RMS_M = 0.12
 MAX_HELD_OUT_RMS_M = 0.15
 MAX_OFFSET_UNCERTAINTY_DEG = 5.0
@@ -215,10 +217,13 @@ def _stage(value: object, name: str) -> dict[str, object]:
         quality_refusals.append("encoder_revolution_time_stale")
     if (
         _number(raw["max_translation_drift_m"], f"{name}.max_translation_drift_m", minimum=0.0)
-        > 0.01
+        > MAX_STAGE_TRANSLATION_DRIFT_M
     ):
         quality_refusals.append("stage_translation_drift")
-    if _number(raw["max_yaw_drift_deg"], f"{name}.max_yaw_drift_deg", minimum=0.0) > 2.0:
+    if (
+        _number(raw["max_yaw_drift_deg"], f"{name}.max_yaw_drift_deg", minimum=0.0)
+        > MAX_STAGE_YAW_DRIFT_DEG
+    ):
         quality_refusals.append("stage_yaw_drift")
     return {
         "pose": pose,
@@ -422,25 +427,29 @@ def _candidate(
     baseline = stages["baseline"]
     changed = [stages["after_forward"], stages["after_yaw"]]
     base_fit = _bounded_points(baseline["revolutions"], held_out=False)  # type: ignore[arg-type]
-    rank, eigenvalues, weak_geometry_normal = _geometry_rank(base_fit)
+    changed_fit = {
+        name: _bounded_points(stages[name]["revolutions"], held_out=False)  # type: ignore[arg-type]
+        for name in ("after_forward", "after_yaw")
+    }
+    point_counts = {
+        "baseline": len(base_fit),
+        **{name: len(points) for name, points in changed_fit.items()},
+    }
     refusals = _motion_refusals(stages)
     refusals.extend(reason for stage in stages.values() for reason in stage["quality_refusals"])
-    if len(base_fit) < MIN_STAGE_POINTS or any(
-        len(_bounded_points(stage["revolutions"], held_out=False)) < MIN_STAGE_POINTS
-        for stage in changed
-    ):  # type: ignore[arg-type]
+    if any(count < MIN_STAGE_POINTS for count in point_counts.values()):
         refusals.append("sparse_scan_support")
-    if rank < MIN_GEOMETRY_RANK:
+        rank, eigenvalues, weak_geometry_normal = 0.0, [], []
+    else:
+        rank, eigenvalues, weak_geometry_normal = _geometry_rank(base_fit)
+    if not refusals and rank < MIN_GEOMETRY_RANK:
         refusals.append("single_surface_geometry")
     initial_metrics = {
         "geometry_eigenvalues_m2": eigenvalues,
         "geometry_rank": rank,
         "weak_geometry_normal": weak_geometry_normal,
         "stage_timing": {name: stages[name]["timing"] for name in STAGE_NAMES},
-        "point_counts": {
-            name: len(_bounded_points(stages[name]["revolutions"], held_out=False))
-            for name in STAGE_NAMES
-        },  # type: ignore[arg-type]
+        "point_counts": point_counts,
     }
     if refusals:
         return {
