@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -37,6 +38,17 @@ MAX_ARCHIVE_RECORDS = 1_024
 MAX_ARCHIVE_BYTES = 10 * 1024 * 1024
 MANIFEST_RESERVE_BYTES = 4 * 1024
 MAX_ARCHIVE_DURATION_S = 120.0
+ADB_CLOCK_QUERY_TIMEOUT_S = 5.0
+OHMNI_LOADER = "/data/local/sweep/lib/ld-musl-x86_64.so.1"
+OHMNI_PYTHON = "/data/local/sweep/python/bin/python3.12"
+_ROBOT_MONOTONIC_QUERY = """import time
+from pathlib import Path
+
+boot_id = Path('/proc/sys/kernel/random/boot_id').read_text(encoding='ascii').strip()
+monotonic_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+print(boot_id)
+print(f'{monotonic_ns // 1_000_000_000}.{monotonic_ns % 1_000_000_000:09d}')
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -875,18 +887,23 @@ def _close_frame_source(source: socket.socket, stream: BinaryIO) -> None:
 
 
 def _adb_clock_query(adb: str, serial: str) -> str:
-    result = subprocess.run(
-        [
-            adb,
-            "-s",
-            serial,
-            "shell",
-            "cat /proc/sys/kernel/random/boot_id; cat /proc/uptime",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    command = shlex.join((OHMNI_LOADER, OHMNI_PYTHON, "-c", _ROBOT_MONOTONIC_QUERY))
+    try:
+        result = subprocess.run(
+            [
+                adb,
+                "-s",
+                serial,
+                "shell",
+                command,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=ADB_CLOCK_QUERY_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise LiveMapperError("ADB clock probe timed out") from error
     if result.returncode != 0:
         raise LiveMapperError("ADB clock probe failed")
     return result.stdout

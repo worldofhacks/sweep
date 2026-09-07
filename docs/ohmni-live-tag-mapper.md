@@ -16,7 +16,7 @@ The archive writes only observations returned by the relay after authenticated a
 
 ## Capture timestamp qualification
 
-The NUT reader preserves encoded PTS values. That proves only what the sidecar contained. It does not prove that an Ohmni V4L2 driver supplied those PTS values in the robot boot-monotonic clock domain. Do not use mapper output as qualified capture evidence until the following record exists for the active camera and ffmpeg command.
+The NUT reader preserves encoded PTS values. That proves only what the sidecar contained. It does not prove that an Ohmni V4L2 driver supplied those PTS values in the robot boot-monotonic clock domain. The mapper queries the robot's `CLOCK_MONOTONIC` through its installed Python runtime; it does not use `/proc/uptime`, because Linux defines that clock and proc uptime differently across suspend. See [`clock_gettime(2)`](https://man7.org/linux/man-pages/man2/clock_gettime.2.html) and [`proc_uptime(5)`](https://man7.org/linux/man-pages/man5/proc_uptime.5.html). Do not use mapper output as qualified capture evidence until the following record exists for the active camera and ffmpeg command.
 
 1. Record the reviewed ffmpeg argument vector. It must show the V4L2 input, `-timestamps default`, `-copyts`, `-fps_mode passthrough`, and the NUT tee leg with `avoid_negative_ts=disabled`.
 2. While that ffmpeg process is already reading the active V4L2 node, collect a short read-only `VIDIOC_DQBUF` trace if the device permits it. Preserve each buffer sequence, timestamp, and flags. The trace must show `V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC`; a driver that reports an unspecified or realtime domain needs a different mapping and is refused by this procedure.

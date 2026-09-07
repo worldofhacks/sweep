@@ -3,12 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from perception.ohmni_clock_probe import parse_probe_reply, probe_clock
 from perception.ohmni_pts_capture import CapturedFrame
 from relay.observation_ingress import ObservationConfiguration, ObservationIngress
 from relay.observations import (
@@ -985,6 +989,39 @@ def test_clock_qualification_requires_the_pinned_robot_boot_id(
     mapping = ohmni_live_tag_mapper._qualify_clock(args)
 
     assert mapping.boot_id == args.boot_id
+
+
+def test_adb_clock_query_executes_the_robot_monotonic_protocol_through_adb(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tools import ohmni_live_tag_mapper
+
+    loader = tmp_path / "loader"
+    loader.write_text('#!/bin/sh\nexec "$@"\n')
+    loader.chmod(0o755)
+    monkeypatch.setattr(ohmni_live_tag_mapper, "OHMNI_LOADER", str(loader))
+    monkeypatch.setattr(ohmni_live_tag_mapper, "OHMNI_PYTHON", sys.executable)
+    local_run = subprocess.run
+    replies: list[str] = []
+
+    def adb_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert command[:4] == ["adb", "-s", "robot:5555", "shell"]
+        assert kwargs["timeout"] == ohmni_live_tag_mapper.ADB_CLOCK_QUERY_TIMEOUT_S
+        completed = local_run(["sh", "-c", command[4]], check=False, capture_output=True, text=True)
+        replies.append(completed.stdout)
+        return completed
+
+    monkeypatch.setattr(ohmni_live_tag_mapper.subprocess, "run", adb_run)
+    sample = probe_clock(
+        lambda: ohmni_live_tag_mapper._adb_clock_query("adb", "robot:5555"),
+        monotonic_ns=lambda: time.clock_gettime_ns(time.CLOCK_MONOTONIC),
+    )
+    boot_id, timestamp_ns, resolution_ns = parse_probe_reply(replies[0])
+
+    assert boot_id == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    assert timestamp_ns == sample.robot_monotonic_ns
+    assert resolution_ns == 1
+    assert sample.host_before_ns <= sample.robot_monotonic_ns <= sample.host_after_ns
 
 
 def test_mapper_sets_up_and_removes_the_robot_to_host_sidecar_tunnel(
