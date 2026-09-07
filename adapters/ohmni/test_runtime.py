@@ -137,9 +137,7 @@ def relay_server(tmp_path: Path) -> Iterator[_RelayServer]:
         autonomy.close()
 
 
-def _deliver(
-    server: _RelayServer, frame: dict[str, object], *, drone_id: int = GROUND_ID
-) -> bool:
+def _deliver(server: _RelayServer, frame: dict[str, object], *, drone_id: int = GROUND_ID) -> bool:
     assert server.runtime.loop is not None
     delivered: Future[bool] = asyncio.run_coroutine_threadsafe(
         server.runtime.deliver_to_node(SESSION, drone_id, frame), server.runtime.loop
@@ -482,9 +480,7 @@ def _mixed_ready(session: object) -> bool:
     )
 
 
-def _console_intent(
-    *, intent_id: str, name: str, selection: list[int]
-) -> dict[str, object]:
+def _console_intent(*, intent_id: str, name: str, selection: list[int]) -> dict[str, object]:
     return {
         "v": 1,
         "t": int(time.time_ns() // 1_000_000),

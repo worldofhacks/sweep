@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -206,3 +209,40 @@ def test_lost_pose_confidence_stops_the_ground_runtime_and_withdraws_readiness()
     assert readiness[-1]["drive_authority"] is False
     assert readiness[-1]["heartbeat_ready"] is False
     assert readiness[-1]["pose_identity"]["source_id"] == runtime.config.pose_source_id
+
+
+def test_sigterm_stops_the_runtime_before_the_process_exits(tmp_path: Path) -> None:
+    marker = tmp_path / "stopped"
+    program = """import signal
+import sys
+from pathlib import Path
+from adapters.ohmni.runtime import _install_sigterm_stop
+
+class Node:
+    stopped = False
+    def stop(self):
+        self.stopped = True
+        Path(sys.argv[1]).write_text("stopped")
+
+node = Node()
+restore = _install_sigterm_stop(node)
+print("ready", flush=True)
+while not node.stopped:
+    signal.pause()
+restore()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", program, str(marker)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "ready"
+        process.terminate()
+        assert process.wait(timeout=2) == 0
+        assert marker.read_text() == "stopped"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
