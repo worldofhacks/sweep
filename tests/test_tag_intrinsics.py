@@ -106,37 +106,33 @@ def test_tag_candidate_refuses_single_square_fisheye_fit(tmp_path: Path) -> None
         )
 
 
-def test_tag_fisheye_fit_remains_unqualified_without_external_validation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    evidence = tmp_path / "corners.json"
-    rotations = [
-        np.array([0.35 * np.sin(index), 0.35 * np.cos(index), 0.1 * index])
-        for index in range(25)
-    ]
-    _evidence(evidence, rotations)
+def test_fisheye_heldout_reprojection_calls_opencv_and_rejects_perturbed_corners() -> None:
+    from calibration.tag_intrinsics import _fisheye_heldout_rms
 
-    def module_views(*_args):
-        points = np.zeros((6, 3))
-        pixels = np.zeros((6, 2))
-        return [(points, pixels)] * 25
-
-    monkeypatch.setattr("calibration.tag_intrinsics._module_views", module_views)
-    monkeypatch.setattr(
-        cv2.fisheye,
-        "calibrate",
-        lambda *_args, **_kwargs: (0.1, np.eye(3), np.zeros((4, 1)), [], []),
+    camera = np.array([[500.0, 0.0, 640.0], [0.0, 505.0, 360.0], [0.0, 0.0, 1.0]])
+    distortion = np.array([[-0.08], [0.01], [0.0], [0.0]])
+    objects = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.1, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [0.0, 0.1, 0.0],
+            [0.1, 0.1, 0.0],
+            [0.2, 0.1, 0.0],
+        ]
+    ).reshape(-1, 1, 3)
+    pixels, _ = cv2.fisheye.projectPoints(
+        objects,
+        np.array([[0.25], [-0.2], [0.1]]),
+        np.array([[0.02], [-0.03], [0.8]]),
+        camera,
+        distortion,
     )
 
-    result = calibrate_tag_candidate(
-        TagCandidateRequest(
-            evidence=evidence,
-            tag_size_m=0.199898,
-            pipeline=_pipeline(),
-            model="fisheye",
-            frames_dir=tmp_path,
-        )
-    )
+    accurate = _fisheye_heldout_rms([objects], [pixels], camera, distortion)
+    perturbed = pixels.copy()
+    perturbed[0, 0] += [8.0, -7.0]
+    corrupted = _fisheye_heldout_rms([objects], [perturbed], camera, distortion)
 
-    assert result["status"] == "rejected"
-    assert "fisheye fit is unqualified" in result["rejection_reasons"][0]
+    assert accurate < 1e-4
+    assert corrupted > 0.5

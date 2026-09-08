@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from math import atan, degrees, isfinite
+from math import acos, atan, degrees, isfinite
 from pathlib import Path
 
 import cv2
@@ -23,7 +23,12 @@ from calibration.tag_modules import extract_module_corners
 from perception.tag_localization import tag_corners
 
 _MINIMUM_VIEWS = 20
+_MINIMUM_FISHEYE_VIEWS = 25
 _MINIMUM_EDGE_PX = 60.0
+_MAXIMUM_FISHEYE_HELDOUT_RMS_PX = 0.5
+_MAXIMUM_FISHEYE_FOCAL_DRIFT = 0.05
+_MAXIMUM_FISHEYE_PRINCIPAL_DRIFT = 0.02
+_MAXIMUM_FISHEYE_DISTORTION_DRIFT = 0.2
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,31 +105,58 @@ def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
             reasons.append("fisheye fitting requires --frames-dir with the raw images")
             return report
         module_views = _module_views(selected, request.frames_dir, request.tag_size_m, image_size)
-        if len(module_views) < _MINIMUM_VIEWS:
-            reasons.append("fewer than 20 frames have six validated observed tag corners")
+        if len(module_views) < _MINIMUM_FISHEYE_VIEWS:
+            reasons.append("fewer than 25 frames have six validated observed tag corners")
             return report
         objects = [view[0].reshape(-1, 1, 3).astype(np.float64) for view in module_views]
         pixels = [view[1].reshape(-1, 1, 2).astype(np.float64) for view in module_views]
         try:
-            rms, camera_matrix, distortion, _, _ = cv2.fisheye.calibrate(
-                objects, pixels, image_size, None, None, flags=_FISHEYE_CALIBRATION_FLAGS,
-                criteria=_FISHEYE_CRITERIA,
+            rms, camera_matrix, distortion = _fit_fisheye(objects, pixels, image_size)
+            train_indices = [index for index in range(len(objects)) if index % 5]
+            heldout_indices = [index for index in range(len(objects)) if not index % 5]
+            train_rms, train_matrix, train_distortion = _fit_fisheye(
+                [objects[index] for index in train_indices],
+                [pixels[index] for index in train_indices],
+                image_size,
+            )
+            heldout_rms = _fisheye_heldout_rms(
+                [objects[index] for index in heldout_indices],
+                [pixels[index] for index in heldout_indices],
+                train_matrix,
+                train_distortion,
             )
         except cv2.error:
             reasons.append("fisheye calibration is ill-conditioned")
             return report
+        stability = _fisheye_stability(
+            camera_matrix, distortion, train_matrix, train_distortion, image_size
+        )
+        fov = _fisheye_fov(camera_matrix, distortion, image_size)
         report.update(
             rms_reprojection_error_px=float(rms),
             camera_matrix=camera_matrix.tolist(),
             distortion_coefficients=distortion.reshape(-1).tolist(),
             validated_module_view_count=len(module_views),
+            fisheye_fov_deg=fov,
+            quality={
+                "fit_rms_reprojection_error_px": float(rms),
+                "training_rms_reprojection_error_px": float(train_rms),
+                "heldout_rms_reprojection_error_px": heldout_rms,
+                "maximum_heldout_rms_reprojection_error_px": _MAXIMUM_FISHEYE_HELDOUT_RMS_PX,
+                "parameter_stability": stability,
+            },
         )
         if not isfinite(float(rms)) or rms >= _MAXIMUM_RMS_REPROJECTION_ERROR_PX:
             reasons.append("RMS reprojection error is at least 0.5 pixels")
+        if not isfinite(heldout_rms) or heldout_rms >= _MAXIMUM_FISHEYE_HELDOUT_RMS_PX:
+            reasons.append("held-out RMS reprojection error is at least 0.5 pixels")
+        if not stability["passes"]:
+            reasons.append("fisheye parameters are unstable after withholding views")
+        bounds = pipeline.get("fov_bounds_deg")
+        if not _fov_within_bounds(fov, bounds):
+            reasons.append("estimated fisheye FOV lacks valid independent bounds")
         if not reasons:
-            reasons.append(
-                "fisheye fit is unqualified without held-out error, stability, and FOV validation"
-            )
+            report["status"] = "candidate"
         return report
     rms, camera_matrix, distortion, _, _, stddev, _, _ = cv2.calibrateCameraExtended(
         object_points, image_points, image_size, None, None
@@ -230,6 +262,120 @@ def _module_views(
         if module is not None:
             views.append((module.object_points, module.image_points))
     return views
+
+
+def _fit_fisheye(
+    objects: list[np.ndarray], pixels: list[np.ndarray], image_size: tuple[int, int]
+) -> tuple[float, np.ndarray, np.ndarray]:
+    rms, camera_matrix, distortion, _, _ = cv2.fisheye.calibrate(
+        objects,
+        pixels,
+        image_size,
+        None,
+        None,
+        flags=_FISHEYE_CALIBRATION_FLAGS,
+        criteria=_FISHEYE_CRITERIA,
+    )
+    return float(rms), camera_matrix, distortion
+
+
+def _fisheye_heldout_rms(
+    objects: list[np.ndarray],
+    pixels: list[np.ndarray],
+    camera_matrix: np.ndarray,
+    distortion: np.ndarray,
+) -> float:
+    squared_error = 0.0
+    point_count = 0
+    for object_points, observed in zip(objects, pixels, strict=True):
+        undistorted = cv2.fisheye.undistortPoints(observed, camera_matrix, distortion)
+        solved, rotation, translation = cv2.solvePnP(
+            object_points,
+            undistorted,
+            np.eye(3),
+            None,
+            flags=cv2.SOLVEPNP_ITERATIVE,
+        )
+        if not solved:
+            return float("inf")
+        projected, _ = cv2.fisheye.projectPoints(
+            object_points, rotation, translation, camera_matrix, distortion
+        )
+        residual = projected.reshape(-1, 2) - observed.reshape(-1, 2)
+        squared_error += float(np.sum(residual * residual))
+        point_count += len(residual)
+    return float(np.sqrt(squared_error / point_count)) if point_count else float("inf")
+
+
+def _fisheye_stability(
+    full_matrix: np.ndarray,
+    full_distortion: np.ndarray,
+    train_matrix: np.ndarray,
+    train_distortion: np.ndarray,
+    image_size: tuple[int, int],
+) -> dict[str, float | bool]:
+    full_focal = full_matrix.diagonal()[:2]
+    focal_drift = float(np.max(np.abs(train_matrix.diagonal()[:2] - full_focal) / full_focal))
+    principal_drift = float(
+        np.max(np.abs(train_matrix[:2, 2] - full_matrix[:2, 2]) / np.asarray(image_size))
+    )
+    distortion_drift = float(
+        np.max(
+            np.abs(train_distortion.reshape(-1) - full_distortion.reshape(-1))
+            / np.maximum(np.abs(full_distortion.reshape(-1)), 0.01)
+        )
+    )
+    passes = (
+        np.isfinite([focal_drift, principal_drift, distortion_drift]).all()
+        and focal_drift <= _MAXIMUM_FISHEYE_FOCAL_DRIFT
+        and principal_drift <= _MAXIMUM_FISHEYE_PRINCIPAL_DRIFT
+        and distortion_drift <= _MAXIMUM_FISHEYE_DISTORTION_DRIFT
+    )
+    return {
+        "focal_relative_drift": focal_drift,
+        "principal_point_relative_drift": principal_drift,
+        "distortion_relative_drift": distortion_drift,
+        "maximum_focal_relative_drift": _MAXIMUM_FISHEYE_FOCAL_DRIFT,
+        "maximum_principal_point_relative_drift": _MAXIMUM_FISHEYE_PRINCIPAL_DRIFT,
+        "maximum_distortion_relative_drift": _MAXIMUM_FISHEYE_DISTORTION_DRIFT,
+        "passes": bool(passes),
+    }
+
+
+def _fisheye_fov(
+    camera_matrix: np.ndarray, distortion: np.ndarray, image_size: tuple[int, int]
+) -> dict[str, float]:
+    width, height = image_size
+
+    def ray(point: tuple[float, float]) -> np.ndarray:
+        normalized = cv2.fisheye.undistortPoints(
+            np.asarray(point, dtype=np.float64).reshape(1, 1, 2), camera_matrix, distortion
+        ).reshape(2)
+        return np.array([normalized[0], normalized[1], 1.0])
+
+    def angle(first: np.ndarray, second: np.ndarray) -> float:
+        cosine = np.dot(first, second) / (np.linalg.norm(first) * np.linalg.norm(second))
+        return degrees(acos(float(np.clip(cosine, -1, 1))))
+
+    return {
+        "horizontal": angle(ray((0, height / 2)), ray((width, height / 2))),
+        "vertical": angle(ray((width / 2, 0)), ray((width / 2, height))),
+    }
+
+
+def _fov_within_bounds(fov: dict[str, float], bounds: object) -> bool:
+    if not isinstance(bounds, dict):
+        return False
+    for axis in ("horizontal", "vertical"):
+        interval = bounds.get(axis)
+        if (
+            not isinstance(interval, list)
+            or len(interval) != 2
+            or not all(isinstance(value, (int, float)) and isfinite(value) for value in interval)
+            or not interval[0] <= fov[axis] <= interval[1]
+        ):
+            return False
+    return True
 
 
 def _fov(camera_matrix: np.ndarray, image_size: tuple[int, int]) -> dict[str, float]:
