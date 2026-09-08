@@ -268,3 +268,79 @@ def test_terminal_stop_blocks_a_queued_next_route_dispatch(stop: str) -> None:
     service._dispatch_navigation("s", preview["previewId"], 1, workflow.views[1])
     assert navigation.confirmed["intentId"] == first_intent
     assert navigation.discarded == ["preview-south-zone"]
+
+
+def test_tracking_hold_terminalizes_other_confirmed_multiview_workflows() -> None:
+    from collections import deque
+    from threading import Condition, Event, RLock
+    from types import SimpleNamespace
+
+    from relay.autonomy import AutonomyComposition, AutonomySession, _Job
+    from relay.intent_v1 import IntentName as RelayIntentName
+
+    navigation = _Navigation()
+    service = MultiviewService(navigation)
+    previews = []
+    children = []
+    for suffix in ("a", "b"):
+        preview = service.preview(
+            "s",
+            {
+                "intentId": f"workflow-{suffix}",
+                "selected": [{"id": 1, "deviceClass": "aircraft", "epoch": 2}],
+                "viewpoints": [
+                    {"viewpointId": suffix, "zoneId": f"zone-{suffix}", "captureId": suffix}
+                ],
+            },
+        )
+        service.confirm(
+            "s", {key: preview[key] for key in ("previewId", "intentId", "previewHash")}
+        )
+        previews.append(preview["previewId"])
+        children.append(navigation.confirmed["intentId"])
+    session = SimpleNamespace(
+        record_lifecycle=lambda **kwargs: kwargs,
+        clock=lambda: 10_000,
+        admit_safety_stop=lambda intent: {"type": "lifecycle", "intent_id": intent.intent_id},
+    )
+    victim = _Job(SimpleNamespace(intent_id=children[1], name=RelayIntentName.NAVIGATE), session)
+    owner = SimpleNamespace(
+        _lock=RLock(),
+        _platform_stop_generation=0,
+        _platform_navigation_reservations={},
+        _platform_navigation_intents_by_preview={},
+        _platform_dispatch={},
+        _platform_ground_dispatch={},
+        _awaiting={},
+        navigation_wire=None,
+        ground_navigation=None,
+        session_id="s",
+        _normal=SimpleNamespace(running=None, pending=deque([victim])),
+        _hold=SimpleNamespace(ready=Condition(RLock()), pending=deque()),
+    )
+    composition = SimpleNamespace(
+        _multiview_listener=service.observe_execution, runtime_if_bound=lambda: None
+    )
+    owner._composition = composition
+    owner._cancel = lambda *args, **kwargs: AutonomySession._cancel(owner, *args, **kwargs)
+    owner._route = lambda *args, **kwargs: AutonomySession._route(owner, *args, **kwargs)
+    owner._defer_multiview_callback = lambda *args: AutonomySession._defer_multiview_callback(
+        owner, *args
+    )
+    owner._report_navigation_tracking_hold = lambda *args: (
+        AutonomySession._report_navigation_tracking_hold(owner, *args)
+    )
+    reported = Event()
+    composition.report_multiview_lifecycle = lambda *args: (
+        AutonomyComposition.report_multiview_lifecycle(composition, *args),
+        reported.set(),
+    )
+    AutonomySession._queue_navigation_tracking_hold(
+        owner, session, SimpleNamespace(intent_id=children[0], selection=(1,))
+    )
+    assert reported.wait(1)
+    assert victim.cancelled_by is not None
+    assert [service.status("s", preview_id)["status"] for preview_id in previews] == [
+        "failed",
+        "failed",
+    ]
