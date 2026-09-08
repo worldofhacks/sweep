@@ -147,6 +147,21 @@ def _validate_recorded_live_provenance(
     provenance = document.get("recorded_live_provenance")
     if not isinstance(provenance, dict) or request.frames_dir is None:
         raise ValueError("recorded live export requires capture provenance")
+    if "session_file" in provenance or "session_sha256" in provenance:
+        _validate_recorded_live_session(document, request, selected, hashes, provenance)
+        return
+    _validate_single_recorded_live_provenance(document, request, selected, hashes)
+
+
+def _validate_single_recorded_live_provenance(
+    document: dict[str, object],
+    request: TagCandidateRequest,
+    selected: list[object],
+    hashes: dict[str, str],
+) -> None:
+    provenance = document.get("recorded_live_provenance")
+    if not isinstance(provenance, dict) or request.frames_dir is None:
+        raise ValueError("recorded live export requires capture provenance")
     manifest_name = provenance.get("manifest_file")
     manifest_hash = provenance.get("manifest_sha256")
     stream = provenance.get("stream_id")
@@ -325,6 +340,303 @@ def _validate_recorded_live_provenance(
                 or not np.array_equal(observed[tag], points)
             ):
                 raise ValueError("selected tag corners do not match the hashed raster")
+
+
+def _validate_recorded_live_session(
+    document: dict[str, object],
+    request: TagCandidateRequest,
+    selected: list[object],
+    hashes: dict[str, str],
+    provenance: dict[str, object],
+) -> None:
+    assert request.frames_dir is not None
+    session_name = provenance.get("session_file")
+    session_hash = provenance.get("session_sha256")
+    stream = provenance.get("stream_id")
+    if (
+        not isinstance(session_name, str)
+        or Path(session_name).name != session_name
+        or not isinstance(session_hash, str)
+        or not isinstance(stream, str)
+    ):
+        raise ValueError("recorded live session provenance is invalid")
+    session_path = request.evidence.parent / session_name
+    if not session_path.is_file() or _sha256(session_path) != session_hash:
+        raise ValueError("calibration session is missing or changed")
+    try:
+        session = json.loads(session_path.read_text())
+    except json.JSONDecodeError as error:
+        raise ValueError("calibration session is invalid") from error
+    if (
+        not isinstance(session, dict)
+        or session.get("schema_version") != "ohmni-calibration-session/v1"
+        or session.get("status") != "complete"
+        or session.get("stream_id") != stream
+        or not isinstance(session.get("camera_pipeline"), dict)
+        or not isinstance(session.get("sources"), list)
+        or not isinstance(session.get("frames"), list)
+    ):
+        raise ValueError("calibration session is invalid")
+    sources = _session_sources(session, session_path.parent, stream)
+    aggregate = _session_frame_bindings(session, sources)
+    document_frames: dict[int, dict[str, object]] = {}
+    for frame in document["frames"]:
+        if not isinstance(frame, dict) or type(frame.get("frame_index")) is not int:
+            raise ValueError("aggregate frame index is invalid")
+        index = frame["frame_index"]
+        if index in document_frames:
+            raise ValueError("aggregate frame indexes are duplicated")
+        document_frames[index] = frame
+    groups: dict[int, list[tuple[int, dict[str, object], dict[str, object]]]] = {}
+    for index in selected:
+        if type(index) is not int:
+            raise ValueError("candidate frame index is invalid")
+        frame = document_frames.get(index)
+        binding = aggregate.get(index)
+        if frame is None or binding is None:
+            raise ValueError("selected frame is absent from the calibration session")
+        source_index = binding["source_session_index"]
+        source = sources.get(source_index)
+        if source is None:
+            raise ValueError("aggregate frame has an unknown source")
+        _validate_aggregate_frame(
+            frame, binding, source, request.frames_dir, hashes, session_path.parent
+        )
+        groups.setdefault(source_index, []).append((index, frame, binding))
+    for source_index, frames in groups.items():
+        source = sources[source_index]
+        source_document = source["result"]
+        source_request = TagCandidateRequest(
+            evidence=source["result_path"],
+            tag_size_m=request.tag_size_m,
+            pipeline=request.pipeline,
+            minimum_frame_gap=request.minimum_frame_gap,
+            maximum_views=request.maximum_views,
+            model=request.model,
+            frames_dir=source["directory"],
+        )
+        source_selected = [binding["source_frame_index"] for _, _, binding in frames]
+        source_frames = {
+            item["frame_index"]: item
+            for item in source_document.get("frames", [])
+            if isinstance(item, dict) and type(item.get("frame_index")) is int
+        }
+        source_hashes = {}
+        for source_index in source_selected:
+            source_frame = source_frames.get(source_index)
+            if not isinstance(source_frame, dict) or not isinstance(
+                source_frame.get("image_file"), str
+            ):
+                raise ValueError("selected source frame is invalid")
+            image_name = source_frame["image_file"]
+            source_hashes[image_name] = _sha256(source["directory"] / image_name)
+        _validate_single_recorded_live_provenance(
+            source_document, source_request, source_selected, source_hashes
+        )
+
+
+def _session_sources(
+    session: dict[str, object], root: Path, stream: str
+) -> dict[int, dict[str, object]]:
+    expected_pipeline = session["camera_pipeline"]
+    assert isinstance(expected_pipeline, dict)
+    sources: dict[int, dict[str, object]] = {}
+    session_sources = session["sources"]
+    assert isinstance(session_sources, list)
+    if len(session_sources) < 2:
+        raise ValueError("calibration session has fewer than two sources")
+    collections: set[str] = set()
+    for entry in session_sources:
+        if not isinstance(entry, dict) or type(entry.get("source_session_index")) is not int:
+            raise ValueError("calibration session source is invalid")
+        index = entry["source_session_index"]
+        if index in sources:
+            raise ValueError("calibration session source indexes are duplicated")
+        collection = entry.get("raw_capture_collection")
+        if not isinstance(collection, str) or not collection or collection in collections:
+            raise ValueError("calibration session source collections are invalid")
+        collections.add(collection)
+        if entry.get("stream_id") != stream or entry.get("camera_pipeline") != expected_pipeline:
+            raise ValueError("calibration session camera pipelines differ")
+        directory = _session_path(root, entry.get("result_file"), "source result file").parent
+        result_path = _session_path(root, entry.get("result_file"), "source result file")
+        manifest_path = _session_path(root, entry.get("manifest_file"), "source manifest file")
+        result_hash, manifest_hash = entry.get("result_sha256"), entry.get("manifest_sha256")
+        if (
+            not result_path.is_file()
+            or not manifest_path.is_file()
+            or not isinstance(result_hash, str)
+            or not isinstance(manifest_hash, str)
+            or _sha256(result_path) != result_hash
+            or _sha256(manifest_path) != manifest_hash
+        ):
+            raise ValueError("calibration session source hashes changed")
+        files = entry.get("files")
+        if not isinstance(files, dict) or not files:
+            raise ValueError("calibration session source files are invalid")
+        for name, digest in files.items():
+            path = _session_path(root, name, "source file")
+            if not isinstance(digest, str) or not path.is_file() or _sha256(path) != digest:
+                raise ValueError("calibration session source file changed")
+        try:
+            result = json.loads(result_path.read_text())
+            manifest = json.loads(manifest_path.read_text())
+        except json.JSONDecodeError as error:
+            raise ValueError("calibration session source document is invalid") from error
+        if not isinstance(result, dict) or not isinstance(manifest, dict):
+            raise ValueError("calibration session source document is invalid")
+        cameras = manifest.get("capture_pipeline")
+        if (
+            not isinstance(cameras, dict)
+            or not isinstance(cameras.get(stream), dict)
+            or cameras[stream] != expected_pipeline
+            or entry.get("boot_id") != manifest.get("boot_id")
+            or entry.get("raw_capture_collection") != manifest.get("raw_capture_collection")
+            or entry.get("capture_pipeline_sha256") != manifest.get("capture_pipeline_sha256")
+        ):
+            raise ValueError("calibration session source binding is invalid")
+        frames = entry.get("frames")
+        if not isinstance(frames, list) or not frames:
+            raise ValueError("calibration session source frame bindings are invalid")
+        sources[index] = {
+            "entry": entry,
+            "directory": directory,
+            "result_path": result_path,
+            "result": result,
+            "frames": frames,
+        }
+    if set(sources) != set(range(len(sources))):
+        raise ValueError("calibration session source indexes are invalid")
+    return sources
+
+
+def _session_frame_bindings(
+    session: dict[str, object], sources: dict[int, dict[str, object]]
+) -> dict[int, dict[str, object]]:
+    bindings: dict[int, dict[str, object]] = {}
+    source_mappings: set[tuple[int, int]] = set()
+    frames = session["frames"]
+    assert isinstance(frames, list)
+    for binding in frames:
+        if (
+            not isinstance(binding, dict)
+            or type(binding.get("frame_index")) is not int
+            or type(binding.get("source_session_index")) is not int
+            or type(binding.get("source_frame_index")) is not int
+        ):
+            raise ValueError("calibration session frame binding is invalid")
+        index = binding["frame_index"]
+        source_index = binding["source_session_index"]
+        if index in bindings or source_index not in sources:
+            raise ValueError("calibration session frame mapping is invalid")
+        source_mapping = (source_index, binding["source_frame_index"])
+        if source_mapping in source_mappings:
+            raise ValueError("calibration session frame mapping is duplicated")
+        source_mappings.add(source_mapping)
+        source_bindings = sources[source_index]["frames"]
+        assert isinstance(source_bindings, list)
+        source_frame = next(
+            (
+                item
+                for item in source_bindings
+                if isinstance(item, dict)
+                and item.get("source_frame_index") == binding["source_frame_index"]
+            ),
+            None,
+        )
+        if source_frame is None:
+            raise ValueError("calibration session frame has no source binding")
+        for key in ("image_file", "image_sha256", "source_file", "source_sha256"):
+            if not isinstance(binding.get(key), str):
+                raise ValueError("calibration session aggregate file binding is invalid")
+        bindings[index] = binding
+    if not bindings:
+        raise ValueError("calibration session has no frame bindings")
+    return bindings
+
+
+def _session_path(root: Path, value: object, label: str) -> Path:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} is invalid")
+    relative = Path(value)
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise ValueError(f"{label} is unsafe")
+    path = root / relative
+    if root not in path.parents and path != root:
+        raise ValueError(f"{label} is unsafe")
+    return path
+
+
+def _validate_aggregate_frame(
+    frame: dict[str, object],
+    binding: dict[str, object],
+    source: dict[str, object],
+    frames_dir: Path,
+    hashes: dict[str, str],
+    session_root: Path,
+) -> None:
+    source_frames = source["result"].get("frames")
+    assert isinstance(source_frames, list)
+    original = next(
+        (
+            item
+            for item in source_frames
+            if isinstance(item, dict) and item.get("frame_index") == binding["source_frame_index"]
+        ),
+        None,
+    )
+    if original is None:
+        raise ValueError("aggregate frame source is absent from its result")
+    aggregate_index = binding["frame_index"]
+    original_raw = original.get("source_file")
+    if not isinstance(aggregate_index, int) or not isinstance(original_raw, str):
+        raise ValueError("aggregate frame mapping is invalid")
+    canonical_image = f"frame-{aggregate_index:06}.png"
+    canonical_raw = f"raw-{aggregate_index:06}{Path(original_raw).suffix}"
+    if binding.get("image_file") != canonical_image or binding.get("source_file") != canonical_raw:
+        raise ValueError("aggregate frame filenames are invalid")
+    expected = dict(original)
+    expected.update(
+        frame_index=aggregate_index,
+        image_file=canonical_image,
+        source_file=canonical_raw,
+        source_session_index=binding["source_session_index"],
+        source_frame_index=binding["source_frame_index"],
+    )
+    for key in ("image_sha256", "source_sha256"):
+        expected[key] = binding[key]
+    if frame != expected:
+        raise ValueError("aggregate frame does not match its source frame")
+    image_name = frame["image_file"]
+    raw_name = frame["source_file"]
+    assert isinstance(image_name, str) and isinstance(raw_name, str)
+    image = frames_dir / image_name
+    raw = frames_dir / raw_name
+    if (
+        not image.is_file()
+        or not raw.is_file()
+        or hashes.get(image_name) != frame.get("image_sha256")
+        or _sha256(raw) != frame.get("source_sha256")
+    ):
+        raise ValueError("aggregate raster or raw source changed")
+    source_frame = next(
+        (
+            item
+            for item in source["frames"]
+            if isinstance(item, dict)
+            and item.get("source_frame_index") == binding["source_frame_index"]
+        ),
+        None,
+    )
+    if not isinstance(source_frame, dict):
+        raise ValueError("aggregate frame source binding is invalid")
+    source_image = _session_path(session_root, source_frame.get("image_file"), "source image file")
+    source_raw = _session_path(session_root, source_frame.get("source_file"), "source raw file")
+    if (
+        _sha256(source_image) != frame["image_sha256"]
+        or _sha256(source_raw) != frame["source_sha256"]
+    ):
+        raise ValueError("aggregate files differ from their retained source")
 
 
 def _sha256(path: Path) -> str:

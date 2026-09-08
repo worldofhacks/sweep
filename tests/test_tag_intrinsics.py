@@ -19,6 +19,7 @@ from calibration.tag_modules import ModuleCorners
 from perception.camera_tags import CameraTagDetector
 from perception.tag_localization import tag_corners
 from tools import ohmni_dual_calibration_capture as dual_capture
+from tools.ohmni_calibration_session import create_session
 
 
 def _pipeline() -> dict[str, object]:
@@ -493,6 +494,167 @@ def test_recorded_live_export_revalidates_rendered_raw_capture_provenance(
     evidence.pop("recorded_live_provenance")
     request.evidence.write_text(json.dumps(evidence))
     with pytest.raises(ValueError, match="capture provenance"):
+        export_tag_calibration(
+            request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+        )
+
+
+def test_recorded_live_session_exports_multiple_verified_capture_collections(
+    tmp_path: Path, monkeypatch
+) -> None:
+    camera = np.array([[850.0, 0.0, 640.0], [0.0, 830.0, 360.0], [0.0, 0.0, 1.0]])
+    marker = cv2.aruco.generateImageMarker(
+        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11), 14, 1200
+    )
+    marker_corners = np.float32([[0, 0], [1199, 0], [1199, 1199], [0, 1199]])
+    marker_points = np.array(
+        [[0, 0, 0], [0.199898, 0, 0], [0.199898, 0.199898, 0], [0, 0.199898, 0]],
+        np.float32,
+    )
+    raws = []
+    for index in range(26):
+        pixels, _ = cv2.projectPoints(
+            marker_points,
+            np.array([0.35 * np.sin(index * 0.7), 0.35 * np.cos(index * 0.45), 0.1 * index]),
+            np.array([(index % 5 - 2) * 0.08, (index % 4 - 1.5) * 0.06, 1.4 + index * 0.02]),
+            camera,
+            None,
+        )
+        image = np.full((720, 1280), 255, np.uint8)
+        image = cv2.warpPerspective(
+            marker,
+            cv2.getPerspectiveTransform(marker_corners, pixels.reshape(4, 2).astype(np.float32)),
+            (1280, 720),
+            dst=image,
+            borderMode=cv2.BORDER_TRANSPARENT,
+        )
+        raws.append(
+            cv2.cvtColor(cv2.cvtColor(image, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2YUV_UYVY).tobytes()
+        )
+
+    boot = "boot-1"
+    active_raws: list[bytes] = []
+
+    def check_output(command, **_kwargs):
+        if "boot_id" in command[-1]:
+            return f"{boot}\n"
+        _, _, _, name, pixel_format, shape, vendor, product = dual_capture.CAMERAS[0]
+        return (
+            "usb_parent=/sys/devices/usb/video0\n"
+            f"id_vendor={vendor}\n"
+            f"id_product={product}\n"
+            f"name={name}\n"
+            "Format Video Capture:\n"
+            f"\tWidth/Height : {shape[0]}/{shape[1]}\n"
+            f"\tPixel Format : '{pixel_format}'\n"
+        )
+
+    def run(command, **_kwargs):
+        if "pull" in command:
+            index = int(re.search(r"raw-(\d+)", Path(command[-1]).name)[1])
+            Path(command[-1]).write_bytes(active_raws[index])
+        return subprocess.CompletedProcess(command, 0)
+
+    def fingerprint(_serial, remote, _deadline_ns):
+        index = int(re.search(r"-(\d+)-main", remote)[1])
+        raw = active_raws[index]
+        return len(raw), hashlib.sha256(raw).hexdigest()
+
+    monkeypatch.setattr(dual_capture.subprocess, "check_output", check_output)
+    monkeypatch.setattr(dual_capture.subprocess, "run", run)
+    monkeypatch.setattr(dual_capture, "_remote_raw_fingerprint", fingerprint)
+    monkeypatch.setattr(dual_capture.time, "monotonic_ns", lambda: 100)
+    first, second = tmp_path / "capture-a", tmp_path / "capture-b"
+    active_raws = raws[:13]
+    dual_capture.run(
+        "serial-1",
+        first,
+        expected_boot_id=boot,
+        count=len(active_raws),
+        duration_s=30,
+        camera="main",
+    )
+    boot = "boot-2"
+    active_raws = raws[13:]
+    dual_capture.run(
+        "serial-1",
+        second,
+        expected_boot_id=boot,
+        count=len(active_raws),
+        duration_s=30,
+        camera="main",
+    )
+
+    session = tmp_path / "session"
+    create_session(session, [first / "main", second / "main"])
+    source_manifest = json.loads((first / "manifest.json").read_text())
+    pipeline = source_manifest["cameras"]["main"]["calibration_pipeline"] | {
+        "capture_pipeline_sha256": source_manifest["capture_pipeline_sha256"],
+        "fov_bounds_deg": {"horizontal": [70, 80], "vertical": [40, 55]},
+    }
+    request = TagCandidateRequest(
+        evidence=session / "result.json",
+        tag_size_m=0.199898,
+        pipeline=pipeline,
+        frames_dir=session,
+        minimum_frame_gap=1,
+        maximum_views=26,
+    )
+
+    artifact = export_tag_calibration(
+        request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+    )
+
+    assert artifact["accepted_image_count"] == 26
+
+    result_path, session_path = session / "result.json", session / "session.json"
+    result_bytes, session_bytes = result_path.read_bytes(), session_path.read_bytes()
+
+    result = json.loads(result_bytes)
+    result["frames"][0]["corners_px"][0][0][0] += 0.1
+    result_path.write_text(json.dumps(result))
+    with pytest.raises(ValueError, match="aggregate frame"):
+        export_tag_calibration(
+            request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+        )
+    result_path.write_bytes(result_bytes)
+
+    def replace_session(mutator) -> None:
+        session_document = json.loads(session_bytes)
+        mutator(session_document)
+        session_path.write_text(json.dumps(session_document, sort_keys=True) + "\n")
+        result = json.loads(result_bytes)
+        result["recorded_live_provenance"]["session_sha256"] = hashlib.sha256(
+            session_path.read_bytes()
+        ).hexdigest()
+        result_path.write_text(json.dumps(result, sort_keys=True) + "\n")
+
+    replace_session(
+        lambda value: value["sources"][0]["files"].__setitem__(
+            "sources/source-000000/raw-000000.uyvy", "0" * 64
+        )
+    )
+    with pytest.raises(ValueError, match="source file changed"):
+        export_tag_calibration(
+            request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+        )
+    session_path.write_bytes(session_bytes)
+    result_path.write_bytes(result_bytes)
+
+    replace_session(lambda value: value["frames"][0].__setitem__("source_session_index", 1))
+    with pytest.raises(ValueError, match="frame mapping is duplicated"):
+        export_tag_calibration(
+            request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+        )
+    session_path.write_bytes(session_bytes)
+    result_path.write_bytes(result_bytes)
+
+    replace_session(
+        lambda value: value["sources"][1]["camera_pipeline"].__setitem__(
+            "android_device_id", "different-device"
+        )
+    )
+    with pytest.raises(ValueError, match="camera pipelines differ"):
         export_tag_calibration(
             request, camera_serial="fixture-camera", evidence_kind="recorded_live"
         )
