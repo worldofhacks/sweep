@@ -57,7 +57,7 @@ LOCALIZATION_KEY = b"localization-test-key-32-characters"
 def _env_example() -> dict[str, str]:
     """Parse the dotenv file the way ``uv run --env-file`` does for single-quoted values."""
     values: dict[str, str] = {}
-    for line in (REPO_ROOT / ".env.example").read_text().splitlines():
+    for line in (REPO_ROOT / "tests/fixtures/autonomy-sim.env").read_text().splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
@@ -166,7 +166,7 @@ def _autonomy_outcome(socket: WebSocketTestSession, intent_id: str) -> dict[str,
     )
 
 
-def test_env_example_autonomy_values_are_the_ci_fixtures() -> None:
+def test_isolated_autonomy_fixture_values_are_the_ci_fixtures() -> None:
     config = AutonomyConfig.from_env(_env_example())
 
     assert config.planning == replace(

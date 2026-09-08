@@ -122,7 +122,11 @@ def test_supervised_vertical_round_trip_without_home_pose_or_gps_quality(
         commands = [event for event in records if event.get("type") == "command"]
         takeoff_command = next(event for event in commands if event["intent_id"] == takeoff_id)
         assert takeoff_command["operation"] == "takeoff"
-        assert takeoff_command["args"] == {"z_mm": 1_800}
+        assert takeoff_command["args"] == {
+            "z_mm": 1_800,
+            "maximum_height_mm": 2_000,
+            "max_local_height_age_ms": 500,
+        }
         assert [select_id, arm_id] != ["", ""]
 
         translate_id, translate = _run(console, "translate", [1], {"dx": 1, "dy": 0})
@@ -503,3 +507,89 @@ def _wait_until(predicate: object, what: str) -> None:
             return
         time.sleep(0.02)
     raise AssertionError(f"timed out waiting for {what}")
+
+
+def test_takeoff_policy_is_bounded_by_declared_clearance_and_rounds_down() -> None:
+    config = replace(
+        _vertical_config(), maximum_height_m=2.1, operator_declared_vertical_clearance_m=1.9009
+    )
+    assert config.takeoff_parameters() == {
+        "z": 1.8,
+        "maximum_height_mm": 1900,
+        "max_local_height_age_ms": 500,
+    }
+
+
+@pytest.mark.parametrize(
+    "reason,admitted", [("virtual_stick_dropped", True), ("rc_takeover", False)]
+)
+def test_signed_current_node_status_controls_land_recovery(vertical_server, reason, admitted):
+    class RecoveringNode(FakeNode):
+        loss_reason = None
+        announced_loss = False
+
+        def _node_status_frame(self):
+            if self.loss_reason is not None and not self.announced_loss:
+                self.announced_loss = True
+                self._enqueue(
+                    self._signed_membership(
+                        "readiness",
+                        connection_epoch=self._connection_epoch,
+                        home_pose_confirmed=True,
+                        control_authority=False,
+                        rc_safety_operator_present=True,
+                    )
+                )
+            frame = super()._node_status_frame()
+            if self.loss_reason is not None:
+                frame.update(control_authority=False, authority_change_reason=self.loss_reason)
+            return frame
+
+    console = ConsoleProbe(vertical_server.url)
+    node = RecoveringNode(
+        FakeNodeConfig(
+            relay_url=vertical_server.url,
+            session=SESSION,
+            drone_id=1,
+            token=ADAPTER_KEY.decode(),
+            adapter_id="recovery-test-node",
+            telemetry_hz=5.0,
+        )
+    )
+    console.start()
+    node.start()
+    try:
+        _wait_until(lambda: _ready_with_height(vertical_server), "recovery node ready")
+        assert _run(console, "select", [], {"ids": [1]})[1]["status"] == "completed"
+        assert _run(console, "arm", [])[1]["status"] == "completed"
+        assert _run(console, "takeoff", [1], confirm=True)[1]["status"] == "completed"
+        node.loss_reason = reason
+
+        def loss_visible():
+            state = vertical_server.runtime.sessions[SESSION].current_state()["drones"][0]
+            status = state.get("node_status")
+            return (
+                state["control_authority"] is False
+                and isinstance(status, dict)
+                and status.get("authority_change_reason") == reason
+            )
+
+        _wait_until(loss_visible, "signed authority loss")
+        land_id, result = _run(console, "land", [1], confirm=True)
+        if admitted:
+            assert result["status"] == "completed", result
+            _wait_until(lambda: _telemetry_state(vertical_server) == "landed", "recovered land")
+        else:
+            assert result["status"] == "refused", result
+            assert result["reason"] == "control_authority", result
+        events = [item["event"] for item in vertical_server.runtime.replay(SESSION)["events"]]
+        commands = [
+            event
+            for event in events
+            if event.get("type") == "command" and event.get("intent_id") == land_id
+        ]
+        assert bool(commands) is admitted
+        assert all(event["operation"] == "land" for event in commands)
+    finally:
+        node.stop()
+        console.stop()

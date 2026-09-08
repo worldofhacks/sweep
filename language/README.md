@@ -1,5 +1,11 @@
 # language
 
+Current platform scope: one console for an additive fleet of aerial drones and ground robots,
+with explicit onboard camera/sensor inventory and real live data only. See the
+[modular fleet contract](../docs/modular-fleet.md) and its current implementation/qualification boundaries.
+Model-specific milestones and recorded tests below retain their original evidence scope.
+
+
 Capability areas: Interaction and Platform. Milestones: M1 (speech capture, relay-side Whisper transcription, one pinned compiler), M4 (resolvers, full eval, local fallback).
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to the plan schema, `validate_plan`, or ordered emission name one change owner and require cross-review.
@@ -29,3 +35,7 @@ Model telemetry uses a lazy Langfuse client when its public and secret keys are 
 The CI corpus loader pins the reviewed 53-case `datasets/utterances/transcript_plan_cases.jsonl` release and retains the initial JSON corpus as a compatibility fixture. Synthetic responses exercise the pipeline while reviewed provider recordings are assembled. New replay cassettes bind `claude-sonnet-5`, `intent-v1-compiler-8`, one immutable byte digest, and the recorded origin label; prior provider artifacts remain immutable evidence for their recorded prompt versions. Replay output reports `unverified_replay` because an editable cassette cannot authenticate that label. A replay never falls through to a live request.
 
 PRD: sections 4.3, 4.4, 4.5, 5.10, 8.4.
+
+Ground pulse vocabulary uses exactly one selected authenticated ground node. `pulse forward`, `pulse left`, and `pulse right` propose requested values of 80 mm/s forward or ±350 mrad/s yaw for 250 ms. `return home` proposes `come_home {}` only when that intent is enabled; the dispatcher must resolve a separately approved configured return. Metric distances, angles and multi-step ground routes are refused, and local odometry is never relabelled as world coordinates. Ground plans retain the real wire ID, configured display unit, connection epoch, declared pose source and authoritative drive readiness in the audit and one-shot binding. Motion admission still belongs to the signed ground dispatcher.
+
+The console provides the same bounded phrases as an explicitly typed fallback using source `console`. Spoken plans retain source `language`, require the configured `SWEEP_QUALIFIED_VOICE_INTENTS` pair, and are unavailable with an empty allowlist. Synthetic tests establish software contracts only; they do not qualify speech recognition, measured movement or hardware. The supervised vertical deployment now composes this same audited compiler with its narrow effective capability profile and no invented translation policy. Prompt/schema version 9 includes the ground vocabulary; older provider recordings are not relabelled as new evidence.

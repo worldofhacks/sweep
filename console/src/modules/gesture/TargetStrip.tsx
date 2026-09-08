@@ -131,7 +131,7 @@ export function TargetStrip({ controller }: { controller: Controller }) {
   const fleet = sortedAircraft(state.aircraft)
   const ready = fleet.filter(isReady).map((drone) => drone.drone_id)
   const blockers = fleet.filter((drone) => !isReady(drone))
-  const needsHelp = fleet.filter((drone) => readinessNotes(drone, state.capabilityProfile).length > 0)
+  const needsHelp = fleet.filter((drone) => readinessNotes(drone).length > 0)
   const noPosition = fleet.filter((drone) => drone.pos_quality === 0)
   const canSelect = isIntentEnabled(state, 'select')
   const rosterWord = rosterNoun(fleet)
@@ -156,7 +156,7 @@ export function TargetStrip({ controller }: { controller: Controller }) {
             ? lastSelected
               ? `Intent v1 requires at least one ${deviceNoun(drone.device_class)} in a select request.`
               : undefined
-            : readinessNotes(drone, state.capabilityProfile).map(({ text }) => text).join(' ') || humanizeCode(drone.membership)
+            : readinessNotes(drone).map(({ text }) => text).join(' ') || humanizeCode(drone.membership)
           const classes = ['tg-chip']
           if (on) classes.push('is-selected')
           if (!can) classes.push('is-blocked')
@@ -226,7 +226,7 @@ export function TargetStrip({ controller }: { controller: Controller }) {
           {needsHelp.map((drone) => (
             <div key={drone.drone_id} aria-label={`${formatDeviceId(drone)} readiness help`}>
               <strong>{formatDeviceId(drone)}</strong>
-              <ReadinessHelp drone={drone} className="fleet-reasons" capabilityProfile={state.capabilityProfile} />
+              <ReadinessHelp drone={drone} className="fleet-reasons" />
             </div>
           ))}
         </details>

@@ -8,6 +8,7 @@ export type DeviceObservation = {
   reason: string
   /** Relay-clock estimate anchored to an accepted snapshot's local receipt. */
   now: number
+  connectionCurrent?: boolean
   ground?: GroundObservation
 }
 
@@ -15,7 +16,9 @@ export type GroundObservation = {
   lastReportAt: number | null
   pose: Observation | null
   telemetry: Observation | null
+  scan: Observation | null
   poseCurrent: boolean
+  readySnapshotCurrent: boolean
 }
 
 /** Browser freshness never rewrites a relay membership, motion, or authority fact. */
@@ -34,9 +37,10 @@ export function observationCurrent(device: RelayAircraftState | undefined): bool
 
 /** A connected bridge does not make an old flight/drive report current. */
 export function motionObservationCurrent(device: RelayAircraftState | undefined): boolean {
-  if (!observationCurrent(device)) return false
-  if (device?.node_type === 'ground') return device.client_observation?.ground?.poseCurrent === true
-  if (!device?.telemetry || device.telemetry.fresh === false) return false
+  if (device?.node_type === 'ground') return Boolean(observationCurrent(device) &&
+    device.control_authority && device.client_observation?.ground?.poseCurrent &&
+    device.client_observation.ground.readySnapshotCurrent)
+  if (!observationCurrent(device) || !device?.telemetry || device.telemetry.fresh === false) return false
   const reportedAt = device.telemetry.t
   if (reportedAt === undefined) return device.telemetry.fresh === true
   const now = device.client_observation?.now ?? device.last_seen_at
@@ -54,11 +58,11 @@ export function observedControlState(state: ControlState, localNow: number): Con
   const now = last?.receivedAt === undefined ? localNow : last.t + Math.max(0, localNow - last.receivedAt)
   const connected = ['connected', 'degraded'].includes(state.connection.status)
   return { ...state, aircraft: Object.fromEntries(Object.entries(state.aircraft).map(([id, device]) => {
-    const ground = groundObservation(device, Object.values(state.latestObservations), now)
+    const ground = groundObservation(device, Object.values(state.latestObservations), now, last?.t)
     const observation = ground && ground.lastReportAt !== null
       ? observeGroundDevice(device, now, connected, ground)
       : observeDevice(device, now, connected)
-    return [id, { ...device, client_observation: observation }]
+    return [id, { ...device, client_observation: { ...observation, connectionCurrent: connected } }]
   })) }
 }
 
@@ -85,6 +89,7 @@ function groundObservation(
   device: RelayAircraftState,
   observations: readonly Observation[],
   now: number,
+  stateTime: number | undefined,
 ): GroundObservation | undefined {
   if (device.node_type !== 'ground') return undefined
   const current = observations.filter((observation) => observation.device_id === device.drone_id &&
@@ -102,6 +107,8 @@ function groundObservation(
     lastReportAt: latest?.t_ingest ?? null,
     pose,
     telemetry,
+    scan: newestOf('range_scan'),
+    readySnapshotCurrent: pose !== null && stateTime !== undefined && stateTime >= pose.t_ingest,
     poseCurrent: pose !== null && pose.confidence > 0 && now >= pose.t_ingest && now - pose.t_ingest <= DEVICE_FRESH_MS,
   }
 }

@@ -1,17 +1,10 @@
 import type { RelayAircraftState } from '../relay/contract'
 import { deviceNoun } from '../control/state'
 import { humanizeCode } from './format'
-import {
-  readinessSentence,
-  SUPERVISED_VERTICAL_ZERO_POSITION_QUALITY_HELP,
-  ZERO_POSITION_QUALITY_HELP,
-} from './sentences'
+import { readinessSentence, ZERO_POSITION_QUALITY_HELP } from './sentences'
 
 /** Display guidance only. Selection and command admission remain relay-owned. */
-export function readinessNotes(
-  drone: RelayAircraftState,
-  capabilityProfile: string | null = null,
-): { code: string | null; text: string }[] {
+export function readinessNotes(drone: RelayAircraftState): { code: string | null; text: string }[] {
   const notes: { code: string | null; text: string }[] = drone.readiness_reasons.map((code) => ({
     code,
     text: readinessSentence(code, deviceNoun(drone.device_class)) ?? humanizeCode(code),
@@ -24,13 +17,6 @@ export function readinessNotes(
       }
     }
   }
-  if (drone.pos_quality === 0) {
-    notes.push({
-      code: null,
-      text: capabilityProfile === 'supervised_vertical' && drone.device_class !== 'ground_vehicle'
-        ? SUPERVISED_VERTICAL_ZERO_POSITION_QUALITY_HELP
-        : ZERO_POSITION_QUALITY_HELP,
-    })
-  }
+  if (drone.pos_quality === 0) notes.push({ code: null, text: ZERO_POSITION_QUALITY_HELP })
   return notes
 }

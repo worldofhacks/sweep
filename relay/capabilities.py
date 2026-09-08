@@ -64,6 +64,7 @@ class CapabilityProfile:
     def state_value(self) -> dict[str, object]:
         return {
             "capability_profile": self.name,
+            **({"requires_home_pose": False} if not self.requires_home_pose else {}),
             "enabled_intent_names": sorted(name.value for name in self.enabled_intent_names),
         }
 

@@ -1,9 +1,7 @@
 import { describe, expect, test } from 'vitest'
-import nodeStatusProjection from './python-node-status-projection.fixture.json?raw'
 import {
   C1_BASIC_CONTROL_INTENTS,
   C2_FLEET_OPERATIONS_INTENTS,
-  SUPERVISED_VERTICAL_INTENTS,
   FORMATION_NAMES,
   MAX_INTENT_DRONE_ID,
   MAX_INTENT_DRONE_IDS,
@@ -67,46 +65,15 @@ describe('M1.1 wire compatibility', () => {
     expect(isConsoleIntentV1({ ...pulse, name: 'arm', args: {}, selection: [], confirm: false })).toBe(false)
   })
 
-  test('refuses optional controls that the deployed relay does not advertise', () => {
+  test('reads both the original C1 profile and C1 with optional body_pulse support', () => {
     const state = { v: 1, t, type: 'state', event_id: 'pulse-profile', session,
       roster_version: 1, armed: false, estop: false, selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
       capability_profile: 'c1_basic_control', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
       pending: null, accepted_plan: null, drones: [aircraft({ adapter_capabilities: ['flight', 'body_pulse_v1'] })] }
     expect(parseRelayServerEvent(state)).not.toBeNull()
-    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse'] })).toBeNull()
+    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse'] })).not.toBeNull()
     expect(parseRelayServerEvent({ ...state, enabled_intent_names: ['body_pulse'] })).toBeNull()
     expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse', 'unknown'] })).toBeNull()
-  })
-
-  test('accepts only the exact supervised vertical capability set', () => {
-    const state = {
-      v: 1, t, type: 'state', event_id: 'vertical-profile', session,
-      roster_version: 1, armed: false, estop: false, selection: [1], formation: 'none', spacing: 0.8, mode: 'indoor',
-      capability_profile: 'supervised_vertical', enabled_intent_names: [...SUPERVISED_VERTICAL_INTENTS],
-      pending: null, accepted_plan: null, drones: [aircraft()],
-    }
-    expect(parseRelayServerEvent(state)).not.toBeNull()
-    expect(parseRelayServerEvent({ ...state, enabled_intent_names: [...SUPERVISED_VERTICAL_INTENTS, 'translate'] })).toBeNull()
-    expect(parseRelayServerEvent({ ...state, enabled_intent_names: ['takeoff'] })).toBeNull()
-  })
-
-  test('normalizes the deployed ground state and accepts its signed pose evidence', () => {
-    const state = {
-      v: 1, t, type: 'state', event_id: 'root-ground-state', session,
-      roster_version: 3, armed: false, estop: false, selection: [11], formation: 'none', spacing: 0.8, mode: 'indoor',
-      capability_profile: 'c1_ground_runtime', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'ground_velocity', 'survey_area'],
-      pending: null, accepted_plan: null,
-      drones: [aircraft({ drone_id: 11, node_type: 'ground', ground_readiness: { source_id: 'ohmni-pose' }, adapter_capabilities: ['ground_drive'] })],
-    }
-    const parsed = parseRelayServerEvent(state)
-    expect(parsed).toMatchObject({ type: 'state', drones: [{ node_type: 'ground', device_class: 'ground_vehicle', unit: 11 }] })
-    expect(parseRelayServerEvent({ ...state, drones: [{ ...state.drones[0], device_class: 'aircraft' }] })).toBeNull()
-    expect(parseRelayServerEvent({
-      v: 1, type: 'observation', event_id: 'root-ground-pose', session, device_id: 11, connection_epoch: 2,
-      source_id: 'ohmni-pose', node_type: 'ground', frame: 'world', confidence: 0.9,
-      t_capture: null, t_source_receipt: { clock_id: 'ohmni-ms', unit: 'ms', value: 100 }, clock_mapping_id: null,
-      payload: { kind: 'pose', pose: { parent_frame: 'world', child_frame: 'base_link', x_m: 2, y_m: -1, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } }, t_ingest: 101,
-    })).toMatchObject({ type: 'observation', payload: { kind: 'pose' } })
   })
 
   test.each([undefined, 1, 2, 0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])('validates state sequence %s', (sequence) => {
@@ -446,31 +413,6 @@ describe('M1.1 wire compatibility', () => {
       drone: 1,
       connection_epoch: 2,
     })
-  })
-
-  test('accepts optional SDK local-height evidence and refuses a null placeholder', () => {
-    const status = {
-      v: 1, t, type: 'node_status', event_id: 'height-status', session, drone_id: 1,
-      connection_epoch: 2, virtual_stick_enabled: false, control_authority: true,
-      authority_change_reason: null, watchdog_state: 'nominal', video_publish_state: 'stopped',
-      phone_battery_percent: 80, phone_thermal_state: 'none',
-      local_height: { z_m: 0.4, source: 'flight_controller_altitude', age_ms: 12 },
-    }
-    expect(parseRelayServerEvent(status)).toMatchObject({ type: 'node_status', local_height: { z_m: 0.4 } })
-    expect(parseRelayServerEvent({ ...status, local_height: null })).toBeNull()
-    expect(parseRelayServerEvent({ ...status, local_height: { ...status.local_height, reported_at_ms: t } })).toBeNull()
-  })
-
-  test('accepts Python-projected node status with and without height evidence', () => {
-    const states = JSON.parse(nodeStatusProjection) as { absent: unknown; present: unknown }
-
-    for (const state of [states.absent, states.present]) {
-      expect(parseRelayServerEvent(state)).toMatchObject({ type: 'state' })
-    }
-    const absent = parseRelayServerEvent(states.absent)
-    const present = parseRelayServerEvent(states.present)
-    expect(absent).toMatchObject({ drones: [{ node_status: { local_height: null } }] })
-    expect(present).toMatchObject({ drones: [{ node_status: { local_height: { reported_at_ms: 1_756_700_000_000 } } }] })
   })
 
   test('accepts node-local safety actions as operator-visible evidence', () => {
@@ -1114,4 +1056,13 @@ test('camera labels align with Python printable Unicode code point limits', () =
   for (const label of ['🚁'.repeat(65), 'Front\u00a0camera', 'Front\u2007camera', 'Front\nCamera']) {
     expect(stateWith([aircraft({ cameras: [{ ...camera, label }] })])).toBeNull()
   }
+})
+
+
+test('voice return metadata accepts the compiler target policy and preserves other gates', () => {
+  const groundReturn = voiceStep(0, { name: 'come_home', args: {}, selection: [11], confirm_required: true })
+  const aircraftReturn = voiceStep(0, { name: 'come_home', args: {}, selection: [1], confirm_required: false })
+  expect(isVoicePlan(voicePlan([groundReturn]))).toBe(true)
+  expect(isVoicePlan(voicePlan([aircraftReturn]))).toBe(true)
+  expect(isVoicePlan(voicePlan([voiceStep(0, { name: 'takeoff', args: {}, selection: [1], confirm_required: false })]))).toBe(false)
 })

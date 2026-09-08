@@ -2,15 +2,24 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:net'
+import { randomUUID } from 'node:crypto'
 import { chromium } from 'playwright'
 
 const consoleRoot = resolve(import.meta.dirname, '..')
 const repositoryRoot = resolve(consoleRoot, '..')
-const relayPort = 18765
-const consolePort = 14173
+const relayPort = await unusedLoopbackPort()
+const consolePort = await unusedLoopbackPort(new Set([relayPort]))
 const sessionId = 'm14-browser-smoke'
 const relayToken = 'm14-browser-console-key-32-bytes'
 const logDirectory = await mkdtemp(join(tmpdir(), 'sweep-m14-browser-'))
+const testRunId = randomUUID()
+// Child services receive only this test's configuration. In particular, a
+// developer's live relay, device, media, and world-source settings stay absent.
+const testEnvironment = {
+  PATH: process.env.PATH ?? '',
+  TMPDIR: logDirectory,
+}
 const processes = []
 let browser
 let page
@@ -21,7 +30,12 @@ try {
     spawn(resolve(repositoryRoot, '.venv/bin/python'), ['-m', 'uvicorn', 'adapters.sim.app:app', '--host', '127.0.0.1', '--port', String(relayPort)], {
       cwd: repositoryRoot,
       env: {
-        ...process.env,
+        ...testEnvironment,
+        SWEEP_ALLOW_TEST_ADAPTERS: 'true',
+        SWEEP_ADAPTER_BACKEND: 'sim',
+        SWEEP_CAPABILITY_RELEASE: 'c1',
+        SWEEP_SIM_AIRCRAFT_COUNT: '2',
+        SWEEP_CONSOLE_ORIGINS: `http://127.0.0.1:${consolePort}`,
         SWEEP_RELAY_TOKEN: relayToken,
         SWEEP_ADAPTER_KEYS_JSON: JSON.stringify({
           1: 'm14-browser-adapter-one-key-32-bytes',
@@ -37,19 +51,37 @@ try {
     }),
   )
   processes.push(
-    spawn(resolve(consoleRoot, 'node_modules/.bin/vite'), ['--host', '127.0.0.1', '--port', String(consolePort), '--strictPort'], {
+    spawn(resolve(consoleRoot, 'node_modules/.bin/vite'), ['--config', 'scripts/m14-vite-test.config.mjs'], {
       cwd: consoleRoot,
-      env: { ...process.env, SWEEP_CONSOLE_TEST_MODE: 'm14-browser' },
+      env: {
+        ...testEnvironment,
+        SWEEP_M14_BROWSER_TEST: '1',
+        SWEEP_M14_TEST_PORT: String(consolePort),
+        SWEEP_M14_TEST_DIRECTORY: logDirectory,
+        SWEEP_M14_TEST_RUN_ID: testRunId,
+      },
       stdio: 'inherit',
     }),
   )
 
   await Promise.all([
-    waitForHttp(`http://127.0.0.1:${relayPort}/docs`),
-    waitForHttp(`http://127.0.0.1:${consolePort}/`),
+    waitForHttp(`http://127.0.0.1:${relayPort}/docs`, processes[0]),
+    waitForHttp(`http://127.0.0.1:${consolePort}/__m14_test__/${testRunId}`, processes[1]),
   ])
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  const allowedOrigins = new Set([
+    `http://127.0.0.1:${consolePort}`, `http://127.0.0.1:${relayPort}`,
+  ])
+  await page.route('**/*', (route) => allowedOrigins.has(new URL(route.request().url()).origin)
+    ? route.continue() : route.abort())
+  await page.routeWebSocket('**/*', (socket) => {
+    if (allowedOrigins.has(new URL(socket.url()).origin.replace(/^ws:/, 'http:'))) {
+      socket.connectToServer()
+    } else {
+      socket.close()
+    }
+  })
   await page.route(`http://127.0.0.1:${relayPort}/api/sessions/${sessionId}/transcripts`, async (route) => {
     const request = route.request()
     const corsHeaders = {
@@ -240,6 +272,7 @@ try {
     .split('\n')
     .map((line) => JSON.parse(line))
   assertRunEvidence(records)
+  console.info('M14 isolated browser mission passed, including geofence and node-watchdog evidence.')
 } catch (error) {
   await reportFailure()
   throw error
@@ -342,9 +375,12 @@ function containsKey(value, target) {
   return false
 }
 
-async function waitForHttp(url) {
+async function waitForHttp(url, child) {
   const deadline = Date.now() + 15_000
   while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error('isolated test service exited before readiness')
+    }
     let ready
     try {
       const response = await fetch(url)
@@ -356,6 +392,18 @@ async function waitForHttp(url) {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
   }
   throw new Error(`service did not become ready: ${url}`)
+}
+
+async function unusedLoopbackPort(excluded = new Set()) {
+  const server = createServer()
+  await new Promise((resolvePromise, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolvePromise)
+  })
+  const port = server.address().port
+  await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()))
+  if (port === 5173 || port === 8010 || excluded.has(port)) return unusedLoopbackPort(excluded)
+  return port
 }
 
 async function waitForRelayEvent(predicate, timeoutMs) {

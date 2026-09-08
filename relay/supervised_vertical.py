@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import floor, isfinite
 from typing import Final
 
 from planner.models import (
@@ -99,6 +99,18 @@ class SupervisedVerticalConfig:
                 raise ValueError(f"{name} must be a non-negative integer")
         if self.max_local_height_age_ms > 500:
             raise ValueError("max_local_height_age_ms must not exceed 500")
+        if not 1 <= self.max_local_height_age_ms <= 500:
+            raise ValueError("max_local_height_age_ms must be between 1 and 500")
+
+    def takeoff_parameters(self) -> dict[str, int | float]:
+        """Signed millimetre ceiling rounds down and never exceeds declared clearance."""
+        return {
+            "z": self.takeoff_altitude_m,
+            "maximum_height_mm": floor(
+                min(self.maximum_height_m, self.operator_declared_vertical_clearance_m) * 1000
+            ),
+            "max_local_height_age_ms": self.max_local_height_age_ms,
+        }
 
     def altitude_grounding(self) -> None:
         return None
@@ -148,7 +160,7 @@ class SupervisedVerticalPlanner:
                 snapshot,
                 selected,
                 CommandOperation.TAKEOFF,
-                {"z": self.config.takeoff_altitude_m},
+                self.config.takeoff_parameters(),
             )
         elif intent.name is IntentName.HOLD:
             hold_scope = HoldScope.OPERATOR_SELECTION
@@ -557,7 +569,7 @@ class SupervisedVerticalArbiter:
                     RefusalReason.INVALID_PLAN,
                     "takeoff plan must contain one takeoff",
                 )
-            if plan.commands[0].parameters != {"z": self.config.takeoff_altitude_m}:
+            if plan.commands[0].parameters != self.config.takeoff_parameters():
                 return _plan_refusal(
                     plan,
                     snapshot,
@@ -710,7 +722,7 @@ class SupervisedVerticalArbiter:
     def _takeoff_command(
         self, plan: Plan, command: Command, snapshot: FleetSnapshot, aircraft: AircraftState
     ) -> Refusal | None:
-        if command.safety_action or command.parameters != {"z": self.config.takeoff_altitude_m}:
+        if command.safety_action or command.parameters != self.config.takeoff_parameters():
             return _command_refusal(
                 command,
                 snapshot,
@@ -747,7 +759,15 @@ class SupervisedVerticalArbiter:
         refusal = self._membership(intent_id, snapshot, aircraft, safe=True)
         if refusal is not None:
             return refusal
-        if not aircraft.control_authority or not aircraft.physical_rc_available:
+        recovery = aircraft.landing_recovery
+        recovery_current = (
+            recovery is not None
+            and not self.timestamp_exceeds_future_skew(snapshot, recovery.observed_at_ms)
+            and snapshot.now_ms - recovery.observed_at_ms <= self.config.max_link_age_ms
+        )
+        if (
+            not aircraft.control_authority and not recovery_current
+        ) or not aircraft.physical_rc_available:
             return _refusal_id(
                 intent_id,
                 snapshot,

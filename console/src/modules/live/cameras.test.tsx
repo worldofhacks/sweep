@@ -95,7 +95,7 @@ describe('configured device cameras', () => {
     expect(screen.getByText('No cameras configured for this device.')).toBeInTheDocument()
     expect(log.started).toEqual([])
     rerender(<FocusFeed focused={{ ...device, cameras: undefined }} requests={[]} now={now} media={log.media} />)
-    await waitFor(() => expect(log.started).toEqual(['drone15']))
+    await waitFor(() => expect(log.started).toEqual(['ground5']))
   })
 
   test('focused status follows the chosen camera and device loss ends playback', async () => {

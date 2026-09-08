@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -11,6 +12,7 @@ from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import urlsplit
 
+from media.streams import CameraStream, parse_camera_mapping, validate_camera_mapping
 from relay.auth import StaticCredentialResolver
 from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import NodeType
@@ -48,6 +50,9 @@ class RelaySettings:
     relay_token: bytes = field(repr=False)
     adapter_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     node_types: Mapping[int, NodeType] = field(default_factory=dict)
+    device_units: Mapping[int, int] = field(default_factory=dict)
+    media_streams: Mapping[int, str] = field(default_factory=dict)
+    media_cameras: Mapping[int, tuple[CameraStream, ...]] = field(default_factory=dict)
     allow_shared_adapter_token: bool = False
     localization_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     log_dir: Path = Path(".sweep/session-logs")
@@ -132,6 +137,34 @@ class RelaySettings:
                 "SWEEP_NODE_TYPES_JSON must map configured adapter IDs to aircraft or ground"
             )
         object.__setattr__(self, "node_types", MappingProxyType(node_types))
+        for name, mapping in (
+            ("device_units", self.device_units),
+            ("media_streams", self.media_streams),
+        ):
+            if not isinstance(mapping, Mapping) or any(
+                type(key) is not int or key not in adapter_keys for key in mapping
+            ):
+                raise SettingsError(f"{name} must map configured adapter IDs")
+        units = dict(self.device_units)
+        if any(type(unit) is not int or not 1 <= unit <= 64 for unit in units.values()):
+            raise SettingsError("device units must be integers from 1 through 64")
+        identities = [
+            (node_types.get(key, NodeType.AIRCRAFT), units.get(key, key)) for key in adapter_keys
+        ]
+        if len(identities) != len(set(identities)):
+            raise SettingsError("device units must be unique within each node type")
+        streams = dict(self.media_streams)
+        if any(
+            not isinstance(name, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name) is None
+            for name in streams.values()
+        ):
+            raise SettingsError("media streams must be unique bounded path names")
+        resolved_streams = [streams.get(key, f"drone{key}") for key in adapter_keys]
+        if len(set(resolved_streams)) != len(resolved_streams):
+            raise SettingsError("media streams must be unique across all configured adapters")
+        object.__setattr__(self, "device_units", MappingProxyType(units))
+        object.__setattr__(self, "media_streams", MappingProxyType(streams))
         if self.ground_return_id is not None and (
             not self.ground_return_id
             or len(self.ground_return_id) > 128
@@ -224,6 +257,29 @@ class RelaySettings:
         if self.media_webrtc_origin is not None and not _is_origin(self.media_webrtc_origin):
             raise SettingsError("SWEEP_MEDIA_WEBRTC_ORIGIN must be an explicit HTTP(S) origin")
 
+        try:
+            cameras = validate_camera_mapping(self.media_cameras, set(adapter_keys))
+            object.__setattr__(self, "media_cameras", MappingProxyType(cameras))
+            self.configured_cameras()
+        except ValueError as error:
+            raise SettingsError(str(error)) from error
+
+    def configured_cameras(self) -> Mapping[int, tuple[CameraStream, ...]]:
+        cameras = {
+            device_id: self.media_cameras.get(
+                device_id,
+                (
+                    CameraStream(
+                        "primary",
+                        "Primary camera",
+                        self.media_streams.get(device_id, f"drone{device_id}"),
+                    ),
+                ),
+            )
+            for device_id in self.adapter_keys
+        }
+        return MappingProxyType(validate_camera_mapping(cameras, set(self.adapter_keys)))
+
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> RelaySettings:
         values = os.environ if environ is None else environ
@@ -242,7 +298,16 @@ class RelaySettings:
                 else None
             ),
             adapter_keys=adapter_keys,
+            media_cameras=_media_cameras_config(
+                values.get("SWEEP_MEDIA_CAMERAS_JSON", "{}"), set(adapter_keys)
+            ),
             node_types=_node_types(values.get("SWEEP_NODE_TYPES_JSON", "{}")),
+            device_units=_device_mapping(
+                values.get("SWEEP_DEVICE_UNITS_JSON", "{}"), "SWEEP_DEVICE_UNITS_JSON"
+            ),
+            media_streams=_device_mapping(
+                values.get("SWEEP_MEDIA_STREAMS_JSON", "{}"), "SWEEP_MEDIA_STREAMS_JSON"
+            ),
             localization_keys=_credential_keys(
                 values.get("SWEEP_LOCALIZATION_KEYS_JSON", "{}"),
                 "SWEEP_LOCALIZATION_KEYS_JSON",
@@ -274,7 +339,7 @@ class RelaySettings:
                 ),
                 "SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS",
             ),
-            adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
+            adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "remote")),
             capability_release=_capability_release(values.get("SWEEP_CAPABILITY_RELEASE", "c1")),
             sim_aircraft_count=_optional_positive_integer(
                 values.get("SWEEP_SIM_AIRCRAFT_COUNT"), "SWEEP_SIM_AIRCRAFT_COUNT"
@@ -405,6 +470,27 @@ def _credential_keys(raw: str, name: str) -> dict[int, bytes]:
     return result
 
 
+def _device_mapping(raw: str, name: str) -> dict:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SettingsError(f"{name} must be valid JSON") from error
+    if not isinstance(value, dict):
+        raise SettingsError(f"{name} must be an object")
+    result = {}
+    for key, item in value.items():
+        if (
+            not isinstance(key, str)
+            or not key.isascii()
+            or not key.isdecimal()
+            or str(int(key)) != key
+            or int(key) <= 0
+        ):
+            raise SettingsError(f"{name} IDs must be canonical positive integers")
+        result[int(key)] = item
+    return result
+
+
 def _node_types(raw: str) -> dict[int, NodeType]:
     try:
         value = json.loads(raw)
@@ -504,3 +590,14 @@ def _is_origin(origin: str) -> bool:
 def console_origins_from_env(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
     values = os.environ if environ is None else environ
     return _origins(values.get("SWEEP_CONSOLE_ORIGINS", ",".join(DEFAULT_CONSOLE_ORIGINS)))
+
+
+def _media_cameras_config(
+    raw: str, configured_ids: set[int]
+) -> dict[int, tuple[CameraStream, ...]]:
+    try:
+        return parse_camera_mapping(json.loads(raw), configured_ids)
+    except (ValueError, TypeError) as error:
+        raise SettingsError(
+            "SWEEP_MEDIA_CAMERAS_JSON must contain bounded unique cameras for configured devices"
+        ) from error

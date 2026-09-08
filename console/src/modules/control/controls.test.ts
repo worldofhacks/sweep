@@ -1,11 +1,9 @@
 import { describe, expect, test } from 'vitest'
-import supervisedVerticalReadiness from '../../relay/python-supervised-vertical-readiness.fixture.json?raw'
 import { controlReducer, createInitialControlState, createRequestRecord, type ControlState } from '../../control/state'
 import { createIntent } from '../../control/intent'
 import {
   C1_BASIC_CONTROL_INTENTS,
   C2_FLEET_OPERATIONS_INTENTS,
-  parseRelayServerEvent,
   type RelayStateEvent,
 } from '../../relay/contract'
 import { fixtureAircraft, fixtureScenario } from '../../testing/fixture-relay-client'
@@ -14,6 +12,7 @@ import {
   MISSION_STEPS,
   NO_SELECTION_REASON,
   ROBOT_UNSUPPORTED_NOTE,
+  AIRCRAFT_SELECTION_REQUIRED_NOTE,
   STOP_ACTIVE_REASON,
   deviceClassBlockedReason,
   classFormationReason,
@@ -121,32 +120,6 @@ describe('control gating', () => {
       expect(spec.note).toBe('The console connection is disconnected. Nothing can be sent.')
     }
     expect(dpadBlockedReason(state)).toBe('The console connection is disconnected. Nothing can be sent.')
-  })
-
-  test('the relay-produced supervised vertical state stays selectable without a world home pose', () => {
-    const event = parseRelayServerEvent(JSON.parse(supervisedVerticalReadiness))
-    expect(event?.type).toBe('state')
-    if (event?.type !== 'state') throw new Error('expected the relay-produced state event')
-
-    let state = createInitialControlState(event.session, event.t)
-    state = controlReducer(state, {
-      type: 'connection_changed',
-      connection: { status: 'connected', transport: 'fixture', changedAt: event.t },
-    })
-    state = controlReducer(state, { type: 'relay_event', event })
-
-    expect(state.aircraft[1]).toMatchObject({
-      membership: 'ready',
-      selectable: true,
-      readiness_reasons: [],
-      home_pose: null,
-      node_status: null,
-    })
-    expect(aircraftChips(state)[0]).toMatchObject({ selectable: true, selected: true })
-    expect(motionControls(state).find((spec) => spec.key === 'takeoff')).toMatchObject({
-      enabled: true,
-      confirm: true,
-    })
   })
 
   test('connected with one ready aircraft selected: advertised controls send or confirm', () => {
@@ -274,8 +247,8 @@ describe('command catalogue', () => {
     expect(groups[1].rows.map((row) => [row.label, row.confirm, row.rule, row.status])).toEqual([
       ['Takeoff', 'confirm', 'selected', 'available'],
       ['Hold', '—', 'selected', 'available'],
-      ['Forward 0.5 seconds', 'confirm', 'selected', 'unsupported'],
-      ['Backward 0.5 seconds', 'confirm', 'selected', 'unsupported'],
+      ['Forward 0.5 seconds', 'confirm', 'selected', 'available'],
+      ['Backward 0.5 seconds', 'confirm', 'selected', 'available'],
       ['Come home', '—', 'selected', 'available'],
       ['Land', 'confirm', 'selected', 'available'],
       ['Land all', 'confirm', 'all', 'available'],
@@ -523,11 +496,11 @@ describe('control gating per device class', () => {
     }
     const land = commandCatalog(state)[1].rows.find((row) => row.label === 'Land')
     expect(land).toMatchObject({ status: 'unsupported', enabled: false, note: ROBOT_UNSUPPORTED_NOTE })
-    // Motion the relay accepts for ground vehicles stays available.
+    // Ground HOLD remains available; other motion uses the canonical Ground pane.
     expect(specs.hold).toMatchObject({ enabled: true, badge: '' })
     expect(specs.come_home).toMatchObject({ enabled: true })
-    expect(specs.formation_next).toMatchObject({ enabled: true })
-    expect(dpadBlockedReason(state)).toBeNull()
+    expect(specs.formation_next).toMatchObject({ enabled: false, supported: false })
+    expect(dpadBlockedReason(state)).toBe(ROBOT_UNSUPPORTED_NOTE)
     // land_all addresses the roster, which still holds aircraft.
     expect(specs.land_all).toMatchObject({ enabled: true, badge: 'confirm' })
     expect(captureGate(mixed([11]), 'room-1', true, null)).toEqual({ ready: false, text: ROBOT_UNSUPPORTED_NOTE })
@@ -537,13 +510,13 @@ describe('control gating per device class', () => {
     })
   })
 
-  test('a mixed selection keeps the aircraft-only intents enabled; the relay decides per device', () => {
+  test('a mixed selection refuses aircraft-only motion before dispatch', () => {
     const state = mixed([1, 11])
     const specs = byKey(state)
-    expect(specs.takeoff).toMatchObject({ enabled: true, supported: true, badge: 'confirm' })
-    expect(specs.sweep).toMatchObject({ enabled: true, supported: true })
-    expect(altitudeControls(state)[0]).toMatchObject({ enabled: true })
-    expect(deviceClassBlockedReason(state, 'takeoff', [1, 11])).toBeNull()
+    expect(specs.takeoff).toMatchObject({ enabled: false, supported: false, badge: 'unsupported' })
+    expect(specs.sweep).toMatchObject({ enabled: false, supported: false })
+    expect(altitudeControls(state)[0]).toMatchObject({ enabled: false })
+    expect(deviceClassBlockedReason(state, 'takeoff', [1, 11])).toBe(AIRCRAFT_SELECTION_REQUIRED_NOTE)
     expect(deviceClassBlockedReason(state, 'takeoff', [11])).toBe(ROBOT_UNSUPPORTED_NOTE)
     expect(deviceClassBlockedReason(state, 'hold', [11])).toBeNull()
     expect(deviceClassBlockedReason(state, 'takeoff', [])).toBeNull()
@@ -575,16 +548,16 @@ describe('control gating per device class', () => {
 })
 
 
-test('mixed formations apply capacity and minimums per class, while singleton classes hold', () => {
+test('mixed formations stay unavailable instead of synthesizing per-class ground slots', () => {
   const robots = fixtureScenario('mixed').fleet(t).filter((device) => device.device_class === 'ground_vehicle')
   robots.push({ ...robots[0], drone_id: 14, unit: 4 })
   const drones = [...fixtureAircraft(t, 6), ...robots].map((device) => ({ ...device, membership: 'ready' as const, telemetry: { fresh: true }, selectable: true, readiness_reasons: [] }))
   const all = drones.map((device) => device.drone_id)
   const state = connected(all, { drones, capability_profile: 'c2_fleet_operations', enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS] })
   expect(all).toHaveLength(10)
-  expect(classFormationReason(state, 'diamond')).toBeNull()
-  expect(formationControls(state).every((control) => control.enabled)).toBe(true)
-  expect(classFormationReason({ ...state, selection: [1, 11, 12] }, 'line')).toBeNull()
-  expect(classFormationReason({ ...state, selection: [1, 11, 12] }, 'diamond')).toContain('Robot group')
-  expect(classFormationReason({ ...state, selection: [1, 11] }, 'line')).toBeNull()
+  expect(classFormationReason(state, 'diamond')).toBe(AIRCRAFT_SELECTION_REQUIRED_NOTE)
+  expect(formationControls(state).every((control) => !control.enabled)).toBe(true)
+  expect(classFormationReason({ ...state, selection: [1, 11, 12] }, 'line')).toBe(AIRCRAFT_SELECTION_REQUIRED_NOTE)
+  expect(classFormationReason({ ...state, selection: [1, 11] }, 'line')).toBe(AIRCRAFT_SELECTION_REQUIRED_NOTE)
+  expect(classFormationReason({ ...state, selection: [1, 2, 3, 4] }, 'diamond')).toBeNull()
 })

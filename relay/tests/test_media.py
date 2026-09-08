@@ -126,7 +126,7 @@ def test_fresh_mediamtx_evidence_decides_status_and_the_newest_evidence_dates_th
         node_publishing_at=None,
         evidence=_evidence(online=True, last_frame_at=T0 + 50, fresh=True),
     )
-    assert disconnected_but_streaming["status"] == "live"
+    assert disconnected_but_streaming["status"] == "offline"
 
 
 def test_stale_mediamtx_evidence_degrades_to_the_node_claim_and_never_to_a_false_live() -> None:
@@ -183,7 +183,7 @@ def test_monitor_dates_frames_by_growing_inbound_bytes_and_keeps_the_age_on_a_st
     assert _run(monitor.poll_once()) is True
     assert sorted(client.calls) == ["drone1", "drone2"]
     assert monitor.evidence(1, clock()) == MediaEvidence(
-        online=True, last_frame_at=T0, observed_at=T0, fresh=True
+        online=True, last_frame_at=None, observed_at=T0, fresh=True
     )
     assert monitor.evidence(2, clock()) == MediaEvidence(
         online=False, last_frame_at=None, observed_at=T0, fresh=True
@@ -212,10 +212,10 @@ def test_monitor_dates_frames_by_growing_inbound_bytes_and_keeps_the_age_on_a_st
     clock.advance(1_000)
     client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=None)
     _run(monitor.poll_once())
-    assert monitor.evidence(1, clock()).last_frame_at == T0 + 4_000
+    assert monitor.evidence(1, clock()).last_frame_at is None
 
 
-def test_monitor_dates_a_counter_reset_as_new_path_evidence() -> None:
+def test_monitor_requires_new_progress_after_a_counter_reset() -> None:
     clock = MutableClock(T0)
     client = FakePathClient()
     monitor = MediaMonitor(client, clock=clock, drone_ids=(1,), stale_after_ms=3_000)
@@ -226,7 +226,11 @@ def test_monitor_dates_a_counter_reset_as_new_path_evidence() -> None:
     client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=100)
     _run(monitor.poll_once())
 
-    assert monitor.evidence(1, clock()).last_frame_at == T0 + 1_000
+    assert monitor.evidence(1, clock()).last_frame_at is None
+    clock.advance(1000)
+    client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=200)
+    _run(monitor.poll_once())
+    assert monitor.evidence(1, clock()).last_frame_at == T0 + 2_000
 
 
 def test_monitor_outage_keeps_the_last_evidence_until_it_ages_out() -> None:
@@ -235,6 +239,8 @@ def test_monitor_outage_keeps_the_last_evidence_until_it_ages_out() -> None:
     monitor = MediaMonitor(
         client, clock=clock, drone_ids=(1,), poll_interval_ms=1_000, stale_after_ms=3_000
     )
+    client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=5)
+    _run(monitor.poll_once())
     client.paths["drone1"] = MediaPathObservation(online=True, inbound_bytes=10)
     _run(monitor.poll_once())
     assert monitor.reachable is True
@@ -473,3 +479,68 @@ def test_session_state_carries_the_video_projection_for_the_console(
     drone = events[1]["drones"][0]
     assert drone["video"] == {"status": "live", "last_frame_at": clock()}
     assert set(drone["video"]) == {"status", "last_frame_at"}
+
+
+@pytest.mark.parametrize("initial", [0, 100, None])
+def test_online_path_needs_observed_byte_progress_before_live(initial):
+    from relay.media import project_camera_video
+
+    clock = MutableClock(T0)
+    client = FakePathClient()
+    monitor = MediaMonitor(client, clock=clock, drone_ids=(1,))
+    for _ in range(3):
+        client.paths["drone1"] = MediaPathObservation(True, initial)
+        _run(monitor.poll_once())
+        evidence = monitor.evidence(1, clock())
+        assert evidence.last_frame_at is None
+        assert (
+            project_camera_video(
+                membership=Membership.READY,
+                epoch_started_at=T0,
+                now_ms=clock(),
+                evidence=evidence,
+            )["status"]
+            == "unreported"
+        )
+        clock.advance(1000)
+    client.paths["drone1"] = MediaPathObservation(True, 200)
+    _run(monitor.poll_once())
+    if initial is None:
+        assert monitor.evidence(1, clock()).last_frame_at is None
+        clock.advance(1000)
+        client.paths["drone1"] = MediaPathObservation(True, 300)
+        _run(monitor.poll_once())
+    assert (
+        project_camera_video(
+            membership=Membership.READY,
+            epoch_started_at=T0,
+            now_ms=clock(),
+            evidence=monitor.evidence(1, clock()),
+        )["status"]
+        == "live"
+    )
+
+
+@pytest.mark.parametrize(
+    "gap", [None, MediaPathObservation(True, None), MediaPathObservation(True, 0)]
+)
+def test_progress_cannot_survive_a_path_restart_or_missing_counter(gap):
+    clock = MutableClock(T0)
+    client = FakePathClient()
+    monitor = MediaMonitor(client, clock=clock, drone_ids=(1,))
+    for count in (10, 20):
+        client.paths["drone1"] = MediaPathObservation(True, count)
+        _run(monitor.poll_once())
+        clock.advance(1000)
+    assert monitor.evidence(1, clock()).last_frame_at == T0 + 1000
+    client.paths["drone1"] = gap
+    _run(monitor.poll_once())
+    clock.advance(1000)
+    client.paths["drone1"] = MediaPathObservation(True, 0 if gap is None else 10)
+    _run(monitor.poll_once())
+    if gap is None or gap.inbound_bytes is None:
+        assert monitor.evidence(1, clock()).last_frame_at is None
+    client.paths["drone1"] = MediaPathObservation(True, 30)
+    clock.advance(1000)
+    _run(monitor.poll_once())
+    assert monitor.evidence(1, clock()).last_frame_at == clock()

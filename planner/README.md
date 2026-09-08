@@ -1,5 +1,11 @@
 # planner
 
+Current platform scope: one console for an additive fleet of aerial drones and ground robots,
+with explicit onboard camera/sensor inventory and real live data only. See the
+[modular fleet contract](../docs/modular-fleet.md) and its current implementation/qualification boundaries.
+Model-specific milestones and recorded tests below retain their original evidence scope.
+
+
 Capability area: Autonomy. Milestone: M1.
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to safety-relevant planner paths name one change owner and require cross-review.

@@ -46,6 +46,8 @@ export interface PaneProps {
   onTabChange?: (id: string) => void
   tabsLabel?: string
   tabsVariant?: 'panes' | 'reference'
+  /** Retain stateful editors while switching their internal tabs. */
+  preserveContents?: boolean
   children: ReactNode
 }
 
@@ -57,6 +59,7 @@ export function Pane({
   onTabChange,
   tabsLabel,
   tabsVariant,
+  preserveContents = false,
   children,
 }: PaneProps) {
   const hasTabs = Boolean(tabs && tabs.length > 1 && activeTab !== undefined && onTabChange)
@@ -80,7 +83,7 @@ export function Pane({
         )}
       </div>
       <div className="sh-pane-scroll" data-scroll="1">
-        <div className="sh-swap" key={activeTab ?? 'single'}>
+        <div className="sh-swap" key={preserveContents ? 'persistent' : activeTab ?? 'single'}>
           {children}
         </div>
       </div>

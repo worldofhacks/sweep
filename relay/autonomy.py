@@ -30,7 +30,8 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from dataclasses import dataclass, field, fields, is_dataclass, replace
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
+from enum import Enum
 from typing import get_origin, get_type_hints
 
 from fastapi import FastAPI
@@ -46,6 +47,7 @@ from planner.models import (
     ExecutionResult,
     FleetSnapshot,
     FlightState,
+    LandingRecoveryEvidence,
     LifecycleStatus,
     LocalHeightEvidence,
     Plan,
@@ -215,6 +217,7 @@ def relay_snapshot(
     operator_last_seen_ms: int | None,
     estop_requested: bool = False,
     capture_readiness: ReadinessSource | None = None,
+    landing_recovery: Callable[[int, int], LandingRecoveryEvidence | None] | None = None,
 ) -> FleetSnapshot:
     """Project one relay ``state`` event into the autonomy snapshot.
 
@@ -306,6 +309,11 @@ def relay_snapshot(
             position_loss_since_ms=None,
             local_height=_local_height_evidence(drone.get("node_status")),
             readiness_reasons=_readiness_reasons(drone.get("readiness_reasons")),
+            landing_recovery=(
+                None
+                if landing_recovery is None
+                else landing_recovery(drone_id, drone.get("connection_epoch"))
+            ),
         )
         drones.append(drone)
     snapshot = FleetSnapshot.from_relay_state(
@@ -643,11 +651,36 @@ class AutonomySession:
         with self._lock:
             operator_last_seen_ms = self._operator_last_seen_ms
             estop_requested = self._stop_requested
+        runtime = self._composition.runtime_if_bound()
+        session = None if runtime is None else runtime.sessions.get(self.session_id)
+        policy = self._composition.config.supervised_vertical or self._composition.config.safety
+
+        def recovery(drone_id: int, epoch: int) -> LandingRecoveryEvidence | None:
+            if session is None or policy is None:
+                return None
+            current = session.registry.current_node_status_with_receipt(drone_id)
+            if current is None:
+                return None
+            status, received_at = current
+            now_ms = state.get("t")
+            if (
+                type(now_ms) is not int
+                or not 0 <= now_ms - received_at <= policy.max_link_age_ms
+                or status.connection_epoch != epoch
+                or status.control_authority is not False
+                or status.virtual_stick_enabled is not False
+                or status.watchdog_state.value != "nominal"
+                or status.authority_change_reason != "virtual_stick_dropped"
+            ):
+                return None
+            return LandingRecoveryEvidence(received_at, "virtual_stick_dropped")
+
         return relay_snapshot(
             state,
             operator_last_seen_ms=operator_last_seen_ms,
             estop_requested=estop_requested,
             capture_readiness=capture_readiness,
+            landing_recovery=recovery,
         )
 
     def close(self, timeout_s: float) -> None:
@@ -1212,6 +1245,7 @@ class AutonomyComposition:
         capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
         *,
         node_types: Mapping[int, NodeType] | None = None,
+        ground_return_id: str | None = None,
     ) -> None:
         self.config = config
         if config.supervised_vertical is not None:
@@ -1228,6 +1262,20 @@ class AutonomyComposition:
                 )
             if config.navigation is not None:
                 profile = navigation_capability_profile(profile, config.navigation.config)
+        if (
+            config.supervised_vertical is not None
+            and node_types is not None
+            and any(node_type is NodeType.GROUND for node_type in node_types.values())
+        ):
+            # Ground pulses/approved return use their independent local guards.
+            # This grants no aircraft translation or world navigation policy.
+            profile = with_ground_capabilities(profile)
+            if ground_return_id:
+                profile = CapabilityProfile(
+                    profile.name,
+                    profile.enabled_intent_names | {IntentName.COME_HOME},
+                    requires_home_pose=profile.requires_home_pose,
+                )
         self.capability_profile = profile
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
@@ -1330,12 +1378,38 @@ def create_autonomy_app(
     if config.navigation is not None:
         config.navigation.validate_projector(config.control_localization_projector)
     composition = AutonomyComposition(
-        config, settings.capability_profile, node_types=settings.node_types
+        config,
+        settings.capability_profile,
+        node_types=settings.node_types,
+        ground_return_id=settings.ground_return_id,
     )
     control_localization_factory = (
         None
         if config.control_localization_projector is None
         else lambda _session_id: config.control_localization_projector
+    )
+    from relay.platform import PlatformServices
+
+    def configuration_value(value):
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, frozenset | set):
+            return sorted(value)
+        raise TypeError("Unsupported authoritative motion configuration value")
+
+    motion_configuration = json.loads(
+        json.dumps(
+            {
+                "planning": None if config.planning is None else asdict(config.planning),
+                "safety": None if config.safety is None else asdict(config.safety),
+                "supervised_vertical": (
+                    None
+                    if config.supervised_vertical is None
+                    else asdict(config.supervised_vertical)
+                ),
+            },
+            default=configuration_value,
+        )
     )
     app = create_app(
         settings,
@@ -1347,6 +1421,10 @@ def create_autonomy_app(
         control_localization_factory=control_localization_factory,
         transcript_service_factory=transcript_service_factory,
         navigation_events=composition.navigation_events,
+        platform_services_factory=lambda runtime: PlatformServices(
+            runtime,
+            motion_configuration=motion_configuration,
+        ),
     )
     composition.bind(app)
     return app, composition

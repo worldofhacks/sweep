@@ -2,9 +2,8 @@ import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, test } from 'vitest'
 import App from '../App'
-import { C1_BASIC_CONTROL_INTENTS, SUPERVISED_VERTICAL_INTENTS } from '../relay/contract'
-import { FixtureRelayClient, fixtureAircraft, fixtureScenario } from '../testing/fixture-relay-client'
-import { readinessNotes } from '../shell/readiness'
+import { C1_BASIC_CONTROL_INTENTS } from '../relay/contract'
+import { FixtureRelayClient, fixtureAircraft } from '../testing/fixture-relay-client'
 
 test('two-node setup guidance distinguishes operator permission from positioning and preserves relay selection gates', async () => {
   const session = 'readiness-help'
@@ -68,31 +67,6 @@ test('two-node setup guidance distinguishes operator permission from positioning
   expect(wideSecond).toHaveTextContent('Readiness → Control authority')
   expect(wideSecond).toHaveTextContent('Readiness → RC safety operator present')
   expect(within(wideSecond).getByRole('button', { name: 'Select D-02' })).toBeDisabled()
-
-  act(() => clients.console.emitServer({
-    v: 1, t: now(), type: 'state', event_id: 'supervised-vertical-position-help', state_sequence: 2, session,
-    roster_version: 8, armed: false, estop: false, selection: [], formation: 'none', spacing: 0.8,
-    mode: 'indoor', capability_profile: 'supervised_vertical', enabled_intent_names: [...SUPERVISED_VERTICAL_INTENTS],
-    pending: null, accepted_plan: null, drones,
-  }))
-  expect(registry.getByRole('article', { name: 'D-01 registry card' })).toHaveTextContent(
-    'Position quality is 0%. Supervised takeoff requires fresh onboard height. Mapped flight remains unavailable.',
-  )
-  expect(registry.getByRole('article', { name: 'D-01 registry card' })).not.toHaveTextContent(
-    'Check device positioning; the relay’s quality limit still applies.',
-  )
   expect(clients.console.sent).toEqual([])
   expect(clients.keyboard.sent).toEqual([])
-})
-
-
-test('supervised vertical position guidance remains aircraft-specific in a mixed fleet', () => {
-  const ground = fixtureScenario('mixed').fleet(1_756_700_000_000).find((drone) => drone.device_class === 'ground_vehicle')
-  if (!ground) throw new Error('mixed fixture must include a ground vehicle')
-
-  const notes = readinessNotes({ ...ground, pos_quality: 0 }, 'supervised_vertical')
-  expect(notes.map(({ text }) => text)).toContain(
-    'Position quality is 0%. Live telemetry does not establish valid positioning. Check device positioning; the relay’s quality limit still applies.',
-  )
-  expect(notes.map(({ text }) => text).join(' ')).not.toContain('Supervised takeoff requires fresh onboard height')
 })

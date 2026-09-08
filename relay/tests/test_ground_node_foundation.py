@@ -112,7 +112,7 @@ def test_host_node_type_controls_authenticated_join_and_state(tmp_path):
 def test_ground_capacity_is_separate_from_aircraft_capacity():
     registry = FleetRegistry(
         telemetry_freshness_ms=1_000,
-        node_types={device_id: NodeType.GROUND for device_id in range(9, 13)},
+        node_types={device_id: NodeType.GROUND for device_id in range(9, 42)},
     )
     for device_id in range(1, 5):
         registry.apply_join(
@@ -122,11 +122,11 @@ def test_ground_capacity_is_separate_from_aircraft_capacity():
                 )
             )
         )
-    for device_id in range(9, 12):
+    for device_id in range(9, 41):
         registry.apply_join(_ground_join(device_id, f"ground-{device_id}"))
 
     with pytest.raises(RegistryError) as error:
-        registry.apply_join(_ground_join(12, "ground-overflow"))
+        registry.apply_join(_ground_join(41, "ground-overflow"))
     assert error.value.code == "fleet_capacity"
 
 
@@ -170,12 +170,12 @@ def test_ground_readiness_requires_the_accepted_pose_identity():
     assert transition.readiness_reasons == ("pose_identity_not_accepted",)
 
 
-def test_mixed_fleet_audit_accepts_32_aircraft_and_three_ground_nodes_at_the_limit():
+def test_mixed_fleet_audit_accepts_32_aircraft_and_32_ground_nodes_at_the_limit():
     registry = FleetRegistry(
         telemetry_freshness_ms=1_000,
         capability_profile=C2_CAPABILITY_PROFILE,
         aircraft_limit=32,
-        node_types={device_id: NodeType.GROUND for device_id in range(33, 36)},
+        node_types={device_id: NodeType.GROUND for device_id in range(33, 65)},
     )
     for device_id in range(1, 33):
         registry.apply_join(
@@ -190,6 +190,11 @@ def test_mixed_fleet_audit_accepts_32_aircraft_and_three_ground_nodes_at_the_lim
 
     state = registry.state_event(session=SESSION, t=1_000, event_id="mixed-state")
     assert len(state["drones"]) == 35
+    for device_id in range(36, 65):
+        registry.apply_join(_ground_join(device_id, f"ground-{device_id}"))
+
+    state = registry.state_event(session=SESSION, t=1_000, event_id="mixed-state")
+    assert len(state["drones"]) == 64
     _material_state_projection(state)
 
     state["drones"].append(state["drones"][0])

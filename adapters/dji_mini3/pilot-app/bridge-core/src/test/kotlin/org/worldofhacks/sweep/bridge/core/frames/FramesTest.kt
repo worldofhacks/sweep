@@ -24,6 +24,22 @@ import org.worldofhacks.sweep.bridge.core.watchdog.NodeWatchdogState
 class FramesTest {
     private val frames = Fixtures.load("frames.json")
 
+    @Test
+    fun `takeoff carries an exact paired signed height policy`() {
+        val args = CommandArgs.Takeoff(1800, 2000, 200)
+        assertEquals(args, CommandArgs.parse(CommandOperation.TAKEOFF, args.toJson()))
+        for (raw in listOf(
+            Json.json("z_mm" to 1800, "maximum_height_mm" to 2000),
+            Json.json("z_mm" to 1800, "max_local_height_age_ms" to 200),
+            Json.json("z_mm" to 1800, "maximum_height_mm" to 1700, "max_local_height_age_ms" to 200),
+            Json.json("z_mm" to 1800, "maximum_height_mm" to 2591, "max_local_height_age_ms" to 200),
+            Json.json("z_mm" to 1800, "maximum_height_mm" to 2000, "max_local_height_age_ms" to 0),
+            Json.json("z_mm" to 1800, "maximum_height_mm" to 2000, "max_local_height_age_ms" to 501),
+        )) {
+            assertThrows(ContractError::class.java) { CommandArgs.parse(CommandOperation.TAKEOFF, raw) }
+        }
+    }
+
     private fun wire(name: String): JsonObject = frames.obj(name).obj("wire")
 
     private fun key(name: String): ByteArray = frames.obj(name).string("key").toByteArray(Charsets.UTF_8)

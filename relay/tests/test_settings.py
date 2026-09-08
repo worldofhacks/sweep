@@ -113,10 +113,10 @@ def test_invalid_security_or_freshness_configuration_fails(name: str, value: str
         RelaySettings.from_env(environment)
 
 
-def test_bridge_settings_default_to_sim_and_relay_distributed_thresholds() -> None:
+def test_environment_defaults_to_real_remote_backend_and_distributed_thresholds() -> None:
     settings = RelaySettings.from_env({"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode()})
 
-    assert settings.adapter_backend is AdapterBackend.SIM
+    assert settings.adapter_backend is AdapterBackend.REMOTE
     assert settings.capability_release is CapabilityRelease.C1
     assert settings.capability_profile is C1_CAPABILITY_PROFILE
     assert settings.effective_sim_aircraft_count == 2
@@ -135,7 +135,11 @@ def test_bridge_settings_default_to_sim_and_relay_distributed_thresholds() -> No
 
 def test_sim_c2_release_is_an_explicit_opt_in() -> None:
     settings = RelaySettings.from_env(
-        {"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(), "SWEEP_CAPABILITY_RELEASE": "c2"}
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_ADAPTER_BACKEND": "sim",
+            "SWEEP_CAPABILITY_RELEASE": "c2",
+        }
     )
 
     assert settings.adapter_backend is AdapterBackend.SIM
@@ -149,6 +153,7 @@ def test_sim_c2_aircraft_count_is_explicitly_bounded(count: int) -> None:
     settings = RelaySettings.from_env(
         {
             "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_ADAPTER_BACKEND": "sim",
             "SWEEP_CAPABILITY_RELEASE": "c2",
             "SWEEP_SIM_AIRCRAFT_COUNT": str(count),
         }
@@ -163,6 +168,7 @@ def test_sim_c2_rejects_aircraft_counts_outside_four_through_thirty_two(count: s
         RelaySettings.from_env(
             {
                 "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+                "SWEEP_ADAPTER_BACKEND": "sim",
                 "SWEEP_CAPABILITY_RELEASE": "c2",
                 "SWEEP_SIM_AIRCRAFT_COUNT": count,
             }
@@ -174,6 +180,7 @@ def test_sim_c1_accepts_the_configured_fleet_capacity(count: int) -> None:
     settings = RelaySettings.from_env(
         {
             "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_ADAPTER_BACKEND": "sim",
             "SWEEP_SIM_AIRCRAFT_COUNT": str(count),
         }
     )

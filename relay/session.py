@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import Lock, RLock
 
+from media.streams import MAX_CAMERAS_PER_DEVICE, CameraStream
 from planner.models import CommandOperation
 from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event, verify_event_signature
@@ -28,6 +29,7 @@ from relay.contracts import (
     LifecycleStatus,
     MediaFileFrame,
     MediaFileRecord,
+    Membership,
     MembershipAction,
     MembershipRequest,
     NodeStatusFrame,
@@ -61,7 +63,7 @@ from relay.intent_v1 import (
     RejectedIntent,
     validate_intent,
 )
-from relay.media import MediaEvidenceProvider
+from relay.media import CameraEvidenceProvider, MediaEvidenceProvider, project_camera_video
 from relay.observation_ingress import ObservationConfiguration, ObservationIngress
 from relay.observations import ObservationError, ObservationSubmission
 from relay.state import (
@@ -297,12 +299,20 @@ class RelaySession:
         relay_clock_id: str = "unix_epoch_ms",
         media_evidence: MediaEvidenceProvider | None = None,
         node_types: Mapping[int, NodeType] | None = None,
+        device_units: Mapping[int, int] | None = None,
+        media_streams: Mapping[int, str] | None = None,
+        media_cameras: Mapping[int, tuple[CameraStream, ...]] | None = None,
+        camera_evidence: CameraEvidenceProvider | None = None,
         observation_configuration: ObservationConfiguration | None = None,
         aircraft_limit: int | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
         self.session_id = session_identifier(session_id)
+        self._device_units = dict(device_units or {})
+        self._media_streams = dict(media_streams or {})
+        self._media_cameras = dict(media_cameras or {})
+        self._camera_evidence = camera_evidence
         self.audit_log = audit_log
         self.limits = limits
         self.clock = clock or _epoch_ms
@@ -917,8 +927,8 @@ class RelaySession:
         return event
 
     def process_membership(self, raw: object, principal: Principal) -> list[dict[str, object]]:
-        now = self.clock()
         with self._lock, self._audit_operation():
+            now = self.clock()
             self._ensure_mutation_usable()
             if principal.source != "adapter" or principal.drone_id is None:
                 return [
@@ -942,7 +952,7 @@ class RelaySession:
                         "invalid_signature", "membership signature was not accepted"
                     )
                 self._claim_transport_event(request.event_id, request.t, principal, now)
-                transition = self._apply_membership(request)
+                transition = self._apply_membership(request, received_at=now)
             except (ContractError, RegistryError) as error:
                 return [
                     self._protocol_refusal(
@@ -1386,8 +1396,8 @@ class RelaySession:
         acknowledgements correlate; a terminal intent cannot receive new commands.
         The audit record omits the signature; the returned frame carries it.
         """
-        now = self.clock()
         with self._lock, self._audit_operation():
+            now = self.clock()
             self._ensure_mutation_usable()
             self._prune_command_ledger(now)
             registered = self._issued_commands.get(command_id)
@@ -1410,6 +1420,10 @@ class RelaySession:
                     "command ledger is full of commands still awaiting a bounded terminal result"
                 )
             self.registry.check_current(drone_id, connection_epoch)
+            if operation in {CommandOperation.GROUND_VELOCITY, CommandOperation.GROUND_RETURN}:
+                # Revalidate at the actual signing boundary. A state sampled by
+                # the dispatcher cannot keep stale or withdrawn pose authority alive.
+                self.registry.check_ground_release(drone_id, connection_epoch, now_ms=now)
             entry = self._intents.get(intent_id)
             if entry is not None and entry.status in _TERMINAL_STATUSES:
                 raise ValueError("intent is terminal and cannot receive new commands")
@@ -2026,11 +2040,13 @@ class RelaySession:
             self._ensure_projection_usable()
             return {**self._metrics, "roster_version": self.registry.roster_version}
 
-    def _apply_membership(self, request: MembershipRequest) -> MembershipTransition:
+    def _apply_membership(
+        self, request: MembershipRequest, *, received_at: int
+    ) -> MembershipTransition:
         if request.action is MembershipAction.JOIN:
             return self.registry.apply_join(request)
         if request.action is MembershipAction.READINESS:
-            return self.registry.apply_readiness(request)
+            return self.registry.apply_readiness(request, received_at=received_at)
         if request.action is MembershipAction.GRACEFUL_LEAVE:
             assert request.connection_epoch is not None
             if self.leave_authorizer is None:
@@ -2577,11 +2593,50 @@ class RelaySession:
             raise AuditLogError("relay session is unusable after an audit failure")
 
     def _state_event(self, now: int) -> dict[str, object]:
-        return self.registry.state_event(
+        state = self.registry.state_event(
             session=self.session_id,
             t=now,
             event_id=self.event_ids(),
         )
+        for device in state["drones"]:
+            if device["drone_id"] in self._device_units:
+                device["unit"] = self._device_units[device["drone_id"]]
+                device["device_class"] = (
+                    "ground_vehicle" if device.get("node_type") == "ground" else "aircraft"
+                )
+            device_id = device["drone_id"]
+            if device_id in self._media_cameras:
+                context = self.registry.media_context(device_id)
+                epoch_started_at = now if context is None else context[0]
+                device["cameras"] = [
+                    {
+                        **camera.to_dict(),
+                        **project_camera_video(
+                            membership=Membership(device["membership"]),
+                            epoch_started_at=epoch_started_at,
+                            now_ms=now,
+                            evidence=None
+                            if self._camera_evidence is None
+                            else self._camera_evidence(device_id, camera.camera_id, now),
+                        ),
+                    }
+                    for camera in self._media_cameras[device_id]
+                ]
+                device["video"] = (
+                    {key: device["cameras"][0][key] for key in ("status", "last_frame_at")}
+                    if device["cameras"]
+                    else {"status": "unreported", "last_frame_at": None}
+                )
+            elif device_id in self._media_streams:
+                device["cameras"] = [
+                    {
+                        "camera_id": "primary",
+                        "label": "Primary camera",
+                        "stream": self._media_streams[device["drone_id"]],
+                        **device["video"],
+                    }
+                ]
+        return state
 
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
@@ -2612,6 +2667,7 @@ _MATERIAL_STATE_PASSTHROUGH_KEYS = frozenset(
         "mode",
         "capability_profile",
         "enabled_intent_names",
+        "requires_home_pose",
         "invalidated_intent_ids",
         "invalidation_reason",
         "prior_roster_version",
@@ -2820,6 +2876,21 @@ def _bounded_control_projection_snapshot(value: object, field: str) -> object:
 
 def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]:
     expected = _DRONE_STATE_KEYS
+    if "unit" in drone or "device_class" in drone:
+        expected = expected | {"unit", "device_class"}
+    if "cameras" in drone:
+        expected = expected | {"cameras"}
+        cameras = drone["cameras"]
+        if (
+            not isinstance(cameras, list)
+            or len(cameras) > MAX_CAMERAS_PER_DEVICE
+            or any(
+                not isinstance(camera, Mapping)
+                or set(camera) != {"camera_id", "label", "stream", "status", "last_frame_at"}
+                for camera in cameras
+            )
+        ):
+            raise AuditLogError("configured cameras must match the bounded media projection")
     if drone.get("node_type") == "ground":
         expected = expected | {"ground_readiness"}
     missing = expected - set(drone)

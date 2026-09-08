@@ -29,7 +29,7 @@ function device(patch: Partial<RelayAircraftState> = {}): RelayAircraftState {
 function stateEvent(drones = [device()]): RelayStateEvent {
   return { v: 1, t: now, type: 'state', event_id: 'snapshot', session, roster_version: 1,
     armed: false, estop: false, selection: [], formation: 'none', spacing: 1, mode: 'indoor',
-    capability_profile: 'c1_basic_control', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS], pending: null, accepted_plan: null, drones }
+    capability_profile: 'c1_basic_control', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'body_pulse'], pending: null, accepted_plan: null, drones }
 }
 
 describe('complete fleet telemetry integration', () => {
@@ -37,7 +37,7 @@ describe('complete fleet telemetry integration', () => {
     const projected = (event: typeof node | typeof camera) => Object.fromEntries(Object.entries(event).filter(([key]) => !['event_id', 'session', 'connection_epoch'].includes(key)))
     const wire = { ...stateEvent(), drones: [{ ...device(), node_status: { ...projected(node), device_telemetry: custom }, camera_capabilities: projected(camera) }] }
     const parsed = parseRelayServerEvent(wire)
-    expect(parsed).toMatchObject({ ...wire, drones: [{ ...wire.drones[0], node_type: 'ground' }] })
+    expect(parsed).toEqual({ ...wire, drones: wire.drones.map((drone) => ({ ...drone, node_type: 'ground' })) })
     expect(parseRelayServerEvent({ ...wire, drones: [{ ...wire.drones[0], node_status: { ...wire.drones[0].node_status, phone_battery_percent: 101 } }] })).toBeNull()
     expect(parseRelayServerEvent({ ...node, device_telemetry: custom })).toEqual({ ...node, device_telemetry: custom })
   })

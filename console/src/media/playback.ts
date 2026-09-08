@@ -3,7 +3,7 @@
  * Only the WHEP request is carried over; the HLS fallback and its hls.js
  * dependency stay on #68 and are reconciled when that branch merges.
  */
-import { MAX_FLEET_DEVICES, validMediaStreamName } from '../relay/contract'
+import { validMediaStreamName, type DeviceClass } from '../relay/contract'
 
 export interface MediaRuntimeConfiguration {
   /** MediaMTX WebRTC origin without path, query, or credentials. */
@@ -12,9 +12,10 @@ export interface MediaRuntimeConfiguration {
   readerPassword: string
 }
 
-/** A media path is keyed by the relay's global device identity. */
+/** What names a stream: the device's class and its unit within that class. */
 export interface StreamDevice {
-  drone_id: number
+  device_class: DeviceClass
+  unit: number
 }
 
 export interface PlaybackConfiguration extends MediaRuntimeConfiguration {
@@ -35,16 +36,18 @@ export interface PlaybackDescriptor {
 }
 
 /**
- * Media paths use the global relay ID, which matches the device-side publisher.
+ * The console derives stream names as the relay's media monitor does:
+ * `drone{unit}` for aircraft and `ground{unit}` for ground vehicles. No
+ * adapter-supplied media URL is ever used.
  */
 export function streamName(device: StreamDevice): string {
-  if (!Number.isInteger(device.drone_id) || device.drone_id < 1 || device.drone_id > MAX_FLEET_DEVICES) {
-    throw new Error(`drone_id must be an integer from 1 through ${MAX_FLEET_DEVICES}`)
-  }
-  return `drone${device.drone_id}`
+  return `${device.device_class === 'ground_vehicle' ? 'ground' : 'drone'}${device.unit}`
 }
 
 export function createPlaybackDescriptor(config: PlaybackConfiguration): PlaybackDescriptor {
+  if (!Number.isInteger(config.device.unit) || config.device.unit < 1) {
+    throw new Error('unit must be a positive integer')
+  }
   if (!config.readerUsername || !config.readerPassword) {
     throw new Error('Media reader credentials are required')
   }

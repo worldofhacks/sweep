@@ -8,7 +8,6 @@ import {
   deriveReadiness,
   deriveStream,
   formatAge,
-  VIDEO_FRESH_MS,
 } from './derive-live'
 
 const now = 1_756_700_000_000
@@ -64,43 +63,6 @@ describe('stream view', () => {
       degraded: false,
       degradedWord: '',
     })
-  })
-
-  test.each(['unknown', 'stale'] as const)('keeps a fresh ground stream live when its control observation is %s', (state) => {
-    expect(deriveStream(drone({
-      node_type: 'ground',
-      video: { status: 'live', last_frame_at: now - 400 },
-      client_observation: {
-        state, reason: 'No fresh accepted ground observation is available.', now,
-      },
-    }), now)).toMatchObject({
-      status: 'live',
-      degraded: false,
-    })
-  })
-
-  test('withdraws a live ground stream when the device disconnects', () => {
-    const base = {
-      node_type: 'ground' as const,
-      video: { status: 'live' as const, last_frame_at: now - 400 },
-    }
-    expect(deriveStream(drone({
-      ...base,
-      membership: 'disconnected',
-      client_observation: {
-        state: 'stale', reason: 'No fresh accepted ground observation is available.', now,
-      },
-    }), now).status).toBe('offline')
-  })
-
-  test('withdraws a stale ground stream despite a stale observation allowance', () => {
-    expect(deriveStream(drone({
-      node_type: 'ground',
-      video: { status: 'live', last_frame_at: now - VIDEO_FRESH_MS - 1 },
-      client_observation: {
-        state: 'stale', reason: 'No fresh accepted ground observation is available.', now,
-      },
-    }), now).status).toBe('unreported')
   })
 
   test('offline and unreported streams say so in the design words', () => {

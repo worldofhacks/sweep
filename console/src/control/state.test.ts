@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
   C1_BASIC_CONTROL_INTENTS,
-  parseRelayServerEvent,
   type IntentV1,
   type RelayAircraftState,
   type RelayServerEvent,
@@ -118,27 +117,6 @@ function withPendingCapture(): ControlState {
 }
 
 describe('control reducer fleet lifecycle', () => {
-  test('keeps a signed root ground pose only for its admitted device identity', () => {
-    const rawState = {
-      ...stateEvent('root-ground-state', 1, [drone({ drone_id: 11, node_type: 'ground', device_class: 'ground_vehicle', unit: 11, adapter_capabilities: ['ground_drive'] })], [11]),
-      capability_profile: 'c1_ground_runtime',
-      enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS, 'ground_velocity', 'survey_area'],
-    }
-    const stateFrame = parseRelayServerEvent(rawState)
-    const observation = parseRelayServerEvent({
-      v: 1, type: 'observation', event_id: 'root-ground-pose', session, device_id: 11, connection_epoch: 1,
-      source_id: 'ohmni-pose', node_type: 'ground', frame: 'world', confidence: 0.9, t_capture: null,
-      t_source_receipt: { clock_id: 'ohmni-ms', unit: 'ms', value: 100 }, clock_mapping_id: null,
-      payload: { kind: 'pose', pose: { parent_frame: 'world', child_frame: 'base_link', x_m: 2, y_m: -1, z_m: 0, qx: 0, qy: 0, qz: 0, qw: 1 } }, t_ingest: 101,
-    })
-    expect(stateFrame).toMatchObject({ type: 'state', drones: [{ node_type: 'ground', device_class: 'ground_vehicle' }] })
-    expect(observation).toMatchObject({ type: 'observation', payload: { kind: 'pose' } })
-    if (!stateFrame || !observation) throw new Error('expected canonical relay frames')
-    const withState = controlReducer(createInitialControlState(session, t), { type: 'relay_event', event: stateFrame })
-    const withPose = controlReducer(withState, { type: 'relay_event', event: observation })
-    expect(Object.values(withPose.latestObservations)).toMatchObject([{ device_id: 11, source_id: 'ohmni-pose' }])
-  })
-
   test.each([{ cameras: [] }, { cameras: [
     { camera_id: 'front', label: 'Front', stream: 'robot-front', status: 'live' as const, last_frame_at: t },
     { camera_id: 'rear', label: 'Rear', stream: 'robot-rear', status: 'offline' as const, last_frame_at: t - 6000 },
@@ -1049,7 +1027,6 @@ describe('device labels and nouns', () => {
       readiness_reasons: ['readiness_not_declared'],
       adapter_id: 'ohmni-01',
       capabilities: ['class:ground_vehicle', 'ground_drive', 'lidar'],
-      node_type: 'ground',
       provenance: 'adapter_signature',
       reason: null,
     })

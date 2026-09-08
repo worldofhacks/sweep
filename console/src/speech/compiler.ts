@@ -1,6 +1,9 @@
+import { groundPulseArgs } from '../control/ground'
+import type { GroundVelocityArgs } from '../relay/contract'
 /**
  * Local fallback compiler: one utterance in, one schema-constrained outcome
- * out. It names only capture_room, hold and select; every other recognised
+ * out. It supports capture/HOLD/selection and explicit bounded ground pulse or return
+ * phrases; every other recognised
  * command compiles to a refusal that says so (the Control module sends the
  * rest), and ambiguity returns options instead of a guess. No DOM, no network,
  * nothing here emits anything: the module drafts a preview from a compiled
@@ -14,9 +17,11 @@
  */
 import type { CapturePattern, DroneId } from '../relay/contract'
 
-export type VoiceEmittableName = 'capture_room' | 'hold' | 'select'
+export type VoiceEmittableName = 'capture_room' | 'hold' | 'select' | 'ground_velocity' | 'come_home'
 
 export type CompiledIntent =
+  | { intent: 'ground_velocity'; args: GroundVelocityArgs }
+  | { intent: 'come_home'; args: Record<never, never> }
   | { intent: 'capture_room'; args: { room_id: string; pattern: CapturePattern } }
   | { intent: 'hold'; args: Record<never, never> }
   | { intent: 'select'; args: { ids: DroneId[] } }
@@ -42,6 +47,8 @@ export interface CompileContext {
   pattern: CapturePattern
   /** Aircraft that are ready and selectable, ascending. */
   readyIds: DroneId[]
+  selectedGroundIds?: DroneId[]
+  selection?: DroneId[]
 }
 
 /** Design copy: the seven states in which speech emits nothing. */
@@ -106,6 +113,17 @@ export function compileUtterance(text: string, context: CompileContext): Compile
       sentence:
         'estop is never voice-emittable. Use the network stop, Shift+Escape, or the physical RC. Nothing was emitted.',
     }
+  }
+  const pulse = /^(?:ground |robot )?(?:pulse (forward|left|right)|(forward|left|right) pulse|turn (left|right) pulse)[.!]?$/.exec(t)
+  const groundHome = /^(?:return|come|go) home[.!]?$/.test(t)
+  if (pulse || (groundHome && context.selectedGroundIds?.length)) {
+    if (context.selection?.length !== 1 || context.selectedGroundIds?.length !== 1 || !context.readyIds.includes(context.selectedGroundIds[0])) {
+      return { status: 'refused', reason: 'ground_selection_required', sentence: 'Select exactly one ready ground robot for a bounded pulse or configured return.' }
+    }
+    if (groundHome) return { status: 'compiled', intent: 'come_home', args: {}, selection: 'one selected ground robot', sentence: 'Request only the relay-configured approved return route. No route is invented.' }
+    const direction = (pulse?.[1] ?? pulse?.[2] ?? pulse?.[3]) as 'forward' | 'left' | 'right'
+    const args = groundPulseArgs(direction)
+    return { status: 'compiled', intent: 'ground_velocity', args, selection: 'one selected ground robot', sentence: `Request ${direction} for ${args.duration_ms} ms; forward ${args.linear_mm_s} mm/s, yaw ${args.angular_mrad_s} mrad/s. This is not a distance guarantee.` }
   }
   if (has('capture', 'panorama', 'photograph', 'scan')) {
     if (!roomMatch && DEMONSTRATIVE.test(t)) return ambiguous('capture_room')

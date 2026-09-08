@@ -258,6 +258,20 @@ class LocalHeightEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class LandingRecoveryEvidence:
+    """Current signed node evidence for loss of Virtual Stick, never RC takeover."""
+
+    observed_at_ms: int
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not _is_nonnegative_int(self.observed_at_ms):
+            raise ValueError("landing recovery observation timestamp must be non-negative")
+        if self.reason != "virtual_stick_dropped":
+            raise ValueError("landing recovery requires virtual_stick_dropped")
+
+
+@dataclass(frozen=True, slots=True)
 class AircraftState:
     drone_id: int
     connection_epoch: int
@@ -280,6 +294,7 @@ class AircraftState:
     active_task_id: str | None = None
     position_loss_since_ms: int | None = None
     local_height: LocalHeightEvidence | None = None
+    landing_recovery: LandingRecoveryEvidence | None = None
     readiness_reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -338,6 +353,10 @@ class AircraftState:
             self.position_loss_since_ms
         ):
             raise ValueError("position_loss_since_ms must be null or non-negative")
+        if self.landing_recovery is not None and not isinstance(
+            self.landing_recovery, LandingRecoveryEvidence
+        ):
+            raise ValueError("landing_recovery must be LandingRecoveryEvidence or null")
         if self.local_height is not None and not isinstance(self.local_height, LocalHeightEvidence):
             raise ValueError("local_height must be LocalHeightEvidence or null")
         if not isinstance(self.readiness_reasons, tuple) or any(
@@ -389,6 +408,7 @@ class AircraftState:
             active_task_id=_optional_string(raw.get("active_task_id")),
             position_loss_since_ms=_optional_nonnegative_int(raw.get("position_loss_since_ms")),
             local_height=_local_height_evidence(raw.get("local_height")),
+            landing_recovery=_landing_recovery_evidence(raw.get("landing_recovery")),
             readiness_reasons=_readiness_reasons(raw.get("readiness_reasons", ())),
         )
 
@@ -421,6 +441,14 @@ class AircraftState:
                     "z_m": self.local_height.z_m,
                     "observed_at_ms": self.local_height.observed_at_ms,
                     "source": self.local_height.source,
+                }
+            ),
+            "landing_recovery": (
+                None
+                if self.landing_recovery is None
+                else {
+                    "observed_at_ms": self.landing_recovery.observed_at_ms,
+                    "reason": self.landing_recovery.reason,
                 }
             ),
             "readiness_reasons": list(self.readiness_reasons),
@@ -656,6 +684,7 @@ class FleetSnapshot:
                     active_task_id=safety.active_task_id,
                     position_loss_since_ms=safety.position_loss_since_ms,
                     local_height=safety.local_height,
+                    landing_recovery=safety.landing_recovery,
                     readiness_reasons=safety.readiness_reasons,
                 )
             )
@@ -880,6 +909,7 @@ class RelayAircraftSafetyEnrichment:
     last_link_seen_ms: int | None = None
     last_position_seen_ms: int | None = None
     local_height: LocalHeightEvidence | None = None
+    landing_recovery: LandingRecoveryEvidence | None = None
     readiness_reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -909,6 +939,10 @@ class RelayAircraftSafetyEnrichment:
         ):
             if value is not None and not _is_nonnegative_int(value):
                 raise ValueError("enrichment timestamps must be null or non-negative")
+        if self.landing_recovery is not None and not isinstance(
+            self.landing_recovery, LandingRecoveryEvidence
+        ):
+            raise ValueError("landing_recovery must be LandingRecoveryEvidence or null")
         if self.local_height is not None and not isinstance(self.local_height, LocalHeightEvidence):
             raise ValueError("local_height must be LocalHeightEvidence or null")
         if not isinstance(self.readiness_reasons, tuple) or any(
@@ -952,6 +986,17 @@ def _readiness_reasons(value: object) -> tuple[str, ...]:
     ):
         raise ValueError("readiness_reasons must be non-empty strings")
     return tuple(value)
+
+
+def _landing_recovery_evidence(value: object) -> LandingRecoveryEvidence | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("landing_recovery must be a mapping or null")
+    return LandingRecoveryEvidence(
+        observed_at_ms=_nonnegative_int(value, "observed_at_ms"),
+        reason=_string(value, "reason"),
+    )
 
 
 def _local_height_evidence(value: object) -> LocalHeightEvidence | None:

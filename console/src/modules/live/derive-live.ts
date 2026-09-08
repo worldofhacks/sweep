@@ -42,7 +42,10 @@ export function deriveStream(drone: RelayAircraftState, at: number, camera?: Med
   const reportedGroundStream = drone.node_type === 'ground' && status === 'live'
   if (disconnected) {
     status = 'offline'
-    reason = 'Current video unavailable. The device is offline or its relay observation is stale.'
+    reason = 'Current video unavailable. The relay reports this device offline.'
+  } else if (drone.client_observation?.connectionCurrent === false) {
+    status = 'unreported'
+    reason = 'The relay connection is unavailable; current video evidence is unknown.'
   } else if (!observationCurrent(drone) && !reportedGroundStream) {
     status = 'unreported'
     reason = 'Current video unavailable. The device is offline or its relay observation is stale.'

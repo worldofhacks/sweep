@@ -25,7 +25,6 @@ import {
   motionControls,
   noReadyReason,
   readyIds,
-  supervisedVerticalProfile,
   type ControlSpec,
 } from './controls'
 
@@ -46,9 +45,6 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
   const selectEnabled = isIntentEnabled(state, 'select')
   const dpadReason = dpadBlockedReason(state)
   const rosterWord = rosterNoun(sortedAircraft(state.aircraft))
-  const supervisedVertical = supervisedVerticalProfile(state)
-  const fleet = fleetControls(state).filter((spec) => !supervisedVertical || spec.supported)
-  const motion = motionControls(state).filter((spec) => !supervisedVertical || spec.supported)
   const run = (spec: ControlSpec) => {
     if (spec.name === 'select') selectAllReady()
     else issueIntent(spec.press)
@@ -117,7 +113,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
 
         <p className="ct-eyebrow">Fleet</p>
         <div className="ct-fleet-row" role="group" aria-label="Fleet controls">
-          {fleet.map((spec) => (
+          {fleetControls(state).map((spec) => (
             <ControlButton key={spec.key} spec={spec} onPress={run} />
           ))}
         </div>
@@ -126,14 +122,13 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
           <div className="ct-motion">
             <p className="ct-eyebrow">Motion — every selected {rosterWord}</p>
             <div className="ct-motion-list" role="group" aria-label="Motion controls">
-              {motion.map((spec) => (
+              {motionControls(state).map((spec) => (
                 <ControlButton key={spec.key} spec={spec} motion onPress={run} />
               ))}
             </div>
             <p className="ct-motion-foot">{MOTION_FOOTNOTE}</p>
           </div>
-          {!supervisedVertical && (
-            <div className="ct-dpad-wrap">
+          <div className="ct-dpad-wrap">
             <p className="ct-eyebrow">Translate together</p>
             <TranslatePad
               blockedReason={dpadReason}
@@ -152,21 +147,18 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
                 onChange={(event) => onSteps(clampTranslateSteps(Number(event.target.value)))}
               />
             </label>
-            <p className="ct-dpad-note">Robots: room east +x, north +y. Aircraft: relay-configured translation frame. One step is configured by the relay.</p>
+            <p className="ct-dpad-note">Aircraft only, using the relay-configured translation frame and step size. Select one robot in Ground for bounded pulses.</p>
             {dpadReason && <p className="ct-dpad-note">{dpadReason}</p>}
-            </div>
-          )}
+          </div>
         </div>
       </div>
 
       <div className="ct-column">
-        {!supervisedVertical && (
-          <FormationPanel
-            controller={controller}
-            preview={formationPreview}
-            onPreview={onFormationPreview}
-          />
-        )}
+        <FormationPanel
+          controller={controller}
+          preview={formationPreview}
+          onPreview={onFormationPreview}
+        />
         {pendingRequest && <FanoutCard pending={pendingRequest} state={state} />}
       </div>
     </div>
@@ -257,14 +249,8 @@ function FormationPanel({
   const { state, issueIntent } = controller
   const shown = preview ?? state.formation
   const selected = sortedAircraft(state.aircraft).filter((drone) => state.selection.includes(drone.drone_id))
-  const classes = [...new Set(selected.map((device) => device.device_class))]
-  const groups = classes.map((deviceClass) => {
-    const count = selected.filter((device) => device.device_class === deviceClass).length
-    return { deviceClass, count, dots: formationPlot(count, shown, state.spacing) }
-  })
-  const dots = groups.flatMap((group) => group.dots.map((dot) => ({ ...dot,
-    id: classes.length > 1 ? `${group.deviceClass === 'aircraft' ? 'Aircraft' : 'Robot'} ${dot.id}` : dot.id,
-  })))
+  const groundSelected = selected.some((device) => device.device_class === 'ground_vehicle')
+  const dots = groundSelected ? [] : formationPlot(selected.length, shown, state.spacing)
   const options = formationControls(state)
   return (
     <div className="ct-panel" aria-label="Formation">
@@ -296,17 +282,16 @@ function FormationPanel({
           )
         })}
       </div>
-      {groups.map((group) => <section key={group.deviceClass} aria-label={`${group.deviceClass === 'aircraft' ? 'Aircraft' : 'Robot'} formation preview`}>
-        {classes.length > 1 && <p className="ct-eyebrow">{group.deviceClass === 'aircraft' ? 'Aircraft' : 'Robots'} · {group.count}</p>}
-        {classes.length > 1 && group.count === 1 ? <p className="ct-dpad-note">Single device holds its current pose.</p> : <div className="ct-plot" aria-hidden="true">
-          {group.dots.map((dot) => <span key={dot.id} className="ct-plot-dot" style={{ left: dot.left, top: dot.top }}>{dot.id}</span>)}
-        </div>}
-      </section>)}
+      {!groundSelected && <section aria-label="Aircraft formation preview">
+        <div className="ct-plot" aria-hidden="true">
+          {dots.map((dot) => <span key={dot.id} className="ct-plot-dot" style={{ left: dot.left, top: dot.top }}>{dot.id}</span>)}
+        </div>
+      </section>}
       <p className="ct-formation-relay">{formationRelayNote(preview, state.formation)}</p>
       <p className="ct-formation-planner">
         Shape-only slots: device-to-slot assignments are not projected by the relay and are therefore not
-        guessed here. Robots form on the floor plane; aircraft retain their flight altitude. Mixed groups
-        form independently within each class, with spacing checked within that class. The arbiter refuses the whole plan if any assigned route breaks spacing, the ceiling or
+        guessed here. Formations require an aircraft-only selection. Use Ground controls for robots.
+        The arbiter refuses the whole plan if any assigned route breaks spacing, the ceiling or
         the geofence. The requested shape is not authoritative until relay state reports the completed update.
       </p>
       {dots.map((dot) => (

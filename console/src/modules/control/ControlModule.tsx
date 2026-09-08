@@ -1,3 +1,5 @@
+import { GroundPane } from './GroundPane'
+import { NavigationPane } from './navigation/NavigationPane'
 import { useState } from 'react'
 import { captureGuidance } from '../devices/telemetry'
 import { useSecondTick } from '../live/use-second-tick'
@@ -7,15 +9,15 @@ import type { ModuleProps } from '../types'
 import { CapturePane } from './CapturePane'
 import { CommandsPane } from './CommandsPane'
 import { FleetPane } from './FleetPane'
-import { GroundPane } from './GroundPane'
 import { RequestsPane } from './RequestsPane'
 import { SwarmPane } from './SwarmPane'
 import type { CaptureReadiness } from './controls'
 
-export type ControlPaneId = 'swarm' | 'ground' | 'capture' | 'commands' | 'requests' | 'fleet'
+export type ControlPaneId = 'swarm' | 'ground' | 'navigation' | 'capture' | 'commands' | 'requests' | 'fleet'
 
 const PANES: PaneTab[] = [
   { id: 'swarm', label: 'Swarm' },
+  { id: 'navigation', label: 'Navigate' },
   { id: 'ground', label: 'Ground' },
   { id: 'capture', label: 'Capture' },
   { id: 'commands', label: 'Commands' },
@@ -71,6 +73,10 @@ export function ControlModule({
         />
       )}
       {pane === 'ground' && <GroundPane controller={controller} />}
+      {pane === 'navigation' && <NavigationPane state={controller.state} snapshot={controller.navigation}
+        now={now()} onPreview={(zoneId) => { void controller.prepareNavigation(zoneId) }}
+        onDestinationChange={controller.invalidateNavigation} verification={controller.navigationVerification}
+        canVerify={controller.canVerifyNavigation} onVerify={() => { void controller.verifyNavigationReview() }} />}
       {pane === 'capture' && (
         <CapturePane controller={controller} roomId={roomId} onRoomId={onRoomIdChange} guidance={currentGuidance} />
       )}

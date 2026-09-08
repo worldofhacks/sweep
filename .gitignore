@@ -23,6 +23,9 @@ node_modules/
 
 # Agent worktrees and local agent state
 .claude/
+.sweep/
+.playwright-cli/
+output/playwright/
 
 # Media
 recordings/

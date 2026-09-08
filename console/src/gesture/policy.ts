@@ -1,3 +1,4 @@
+import type { GroundDirection } from '../control/ground'
 /**
  * Pure gesture-to-intent policy. No DOM, no MediaPipe, no clock of its own:
  * every step receives one observation stamped with monotonic milliseconds and
@@ -41,8 +42,8 @@ export const GESTURE_CATEGORIES: readonly GestureCategory[] = [
   'ILoveYou',
 ]
 
-export type GestureProfile = 'capture' | 'flight' | 'fleet' | 'swarm'
-export type GestureEmittableName = Extract<ConsoleIntentName, 'capture_room' | 'hold' | 'arm' | 'takeoff' | 'land' | 'body_pulse' | 'translate' | 'formation_next'>
+export type GestureProfile = 'capture' | 'flight' | 'fleet' | 'swarm' | 'ground'
+export type GestureEmittableName = Extract<ConsoleIntentName, 'ground_velocity' | 'capture_room' | 'hold' | 'arm' | 'takeoff' | 'land' | 'body_pulse' | 'translate' | 'formation_next'>
 export type FlightDraftAction =
   | { kind: 'draft'; name: 'arm' }
   | { kind: 'draft'; name: 'takeoff' }
@@ -50,6 +51,7 @@ export type FlightDraftAction =
   | { kind: 'draft'; name: 'body_pulse'; direction: 'forward' | 'backward' }
 
 export type GestureAction =
+  | { kind: 'draft'; name: 'ground_velocity'; direction: GroundDirection }
   | { kind: 'draft'; name: 'capture_room' }
   | { kind: 'draft'; name: 'hold' }
   | FlightDraftAction
@@ -69,6 +71,7 @@ export interface GesturePair {
 
 /** The only Intent v1 names a gesture may draft. */
 export const GESTURE_EMITTABLE_NAMES: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
+  'ground_velocity',
   'capture_room',
   'hold',
   'translate',
@@ -84,6 +87,7 @@ export const GESTURE_EMITTABLE_NAMES: ReadonlySet<ConsoleIntentName> = new Set<C
  * takeoff, selected landing and an adapter-timed, bounded body pulse.
  */
 export const NEVER_GESTURE_EMITTABLE: readonly string[] = Object.freeze([
+  'navigate',
   'estop',
   'disarm',
   'land_all',
@@ -235,6 +239,18 @@ export const FLIGHT_GESTURE_POLICY_CONFIG: GesturePolicyConfig = Object.freeze({
   allowDraftPoseChange: false,
 })
 
+export const GROUND_GESTURE_POLICY_CONFIG: GesturePolicyConfig = Object.freeze({
+  ...DEFAULT_GESTURE_POLICY_CONFIG,
+  allowDraftPoseChange: false,
+  pairs: [
+    { gesture: 'Open_Palm', action: { kind: 'draft', name: 'hold' }, minScore: gestureMinScore('Open_Palm'), dwellMs: DRAFT_DWELL_MS },
+    { gesture: 'Pointing_Up', action: { kind: 'draft', name: 'ground_velocity', direction: 'forward' }, minScore: gestureMinScore('Pointing_Up'), dwellMs: DRAFT_DWELL_MS },
+    { gesture: 'Victory', action: { kind: 'draft', name: 'ground_velocity', direction: 'left' }, minScore: gestureMinScore('Victory'), dwellMs: DRAFT_DWELL_MS },
+    { gesture: 'ILoveYou', action: { kind: 'draft', name: 'ground_velocity', direction: 'right' }, minScore: gestureMinScore('ILoveYou'), dwellMs: DRAFT_DWELL_MS },
+    ...DEFAULT_GESTURE_PAIRS.filter((pair) => pair.action.kind !== 'draft'),
+  ] satisfies GesturePair[],
+})
+
 /** Returns every reason a pair set is unacceptable; empty means acceptable. */
 export function validateGesturePairs(pairs: readonly GesturePair[]): string[] {
   const problems: string[] = []
@@ -253,6 +269,7 @@ export function validateGesturePairs(pairs: readonly GesturePair[]): string[] {
       } else if (!GESTURE_EMITTABLE_NAMES.has(pair.action.name)) {
         problems.push(`${name} is not on the gesture-emittable allowlist.`)
       }
+      if (pair.action.name === 'ground_velocity' && !['forward', 'left', 'right'].includes(pair.action.direction)) problems.push('ground_velocity needs an explicit bounded direction.')
       if (pair.action.name === 'body_pulse' && !['forward', 'backward'].includes(pair.action.direction)) {
         problems.push('body_pulse needs an explicit forward or backward direction.')
       }
@@ -272,7 +289,7 @@ export function isGestureEmittable(name: string): name is GestureEmittableName {
 }
 
 {
-  const problems = [...validateGesturePairs(DEFAULT_GESTURE_PAIRS), ...validateGesturePairs(FLIGHT_GESTURE_PAIRS), ...validateGesturePairs(FLEET_GESTURE_PAIRS), ...validateGesturePairs(SWARM_GESTURE_POLICY_CONFIG.pairs)]
+  const problems = [...validateGesturePairs(GROUND_GESTURE_POLICY_CONFIG.pairs), ...validateGesturePairs(DEFAULT_GESTURE_PAIRS), ...validateGesturePairs(FLIGHT_GESTURE_PAIRS), ...validateGesturePairs(FLEET_GESTURE_PAIRS), ...validateGesturePairs(SWARM_GESTURE_POLICY_CONFIG.pairs)]
   if (problems.length > 0) {
     throw new Error(`Default gesture pairs are invalid: ${problems.join(' ')}`)
   }
@@ -513,6 +530,7 @@ function abandonCandidate(state: GesturePolicyState, t: number, neutral: boolean
 }
 
 export function describeGestureAction(action: GestureAction): string {
+  if (action.kind === 'draft' && action.name === 'ground_velocity') return `draft ground ${action.direction} 250 ms`
   if (action.kind === 'draft' && action.name === 'translate') return `draft ${action.direction} one step`
   if (action.kind === 'draft' && action.name === 'body_pulse') return `draft ${action.direction} 0.5 seconds`
   if (action.kind === 'draft') return `draft ${action.name}`

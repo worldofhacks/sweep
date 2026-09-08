@@ -8,7 +8,7 @@ import { sortedAircraft } from '../../shell/derive'
 import { formatTime } from '../../shell/format'
 import type { ModuleProps } from '../types'
 import { prepareCanvas } from './canvas'
-import { canonicalMapDevices, scanningDevices, mapDevices, scanTrail } from './derive-map'
+import { scanningDevices, mapDevices, scanTrail } from './derive-map'
 import { drawFleetMap, type MapScan } from './draw'
 import { fetchOccupancyMap, resetOccupancyMap, type OccupancyMap } from './occupancy'
 import { readMapPalette, scanColorToken } from './palette'
@@ -41,12 +41,7 @@ export function FleetMap({ controller, catalog, mapEndpoint, now }: ModuleProps)
   const at = now()
   const snapshot = useSensorStore(sensors)
   const fleet = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
-  const devices = useMemo(() => {
-    const relayNow = fleet.find((device) => device.client_observation)?.client_observation?.now ?? at
-    const canonical = canonicalMapDevices(fleet, Object.values(state.latestObservations), relayNow)
-    const placed = new Set(canonical.map((device) => device.droneId))
-    return [...canonical, ...mapDevices(fleet, snapshot, at).filter((device) => !placed.has(device.droneId) && fleet.find((item) => item.drone_id === device.droneId)?.node_type !== 'ground')]
-  }, [fleet, snapshot, state.latestObservations, at])
+  const devices = useMemo(() => mapDevices(fleet, snapshot, at), [fleet, snapshot, at])
   const scanned = useMemo(
     () =>
       scanningDevices(fleet, snapshot).map(({ device, scan }) => ({

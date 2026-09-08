@@ -1,3 +1,4 @@
+import { fieldGroundPose, fieldGroundState } from '../testing/field-ground'
 import { act, render } from '@testing-library/react'
 import { useEffect } from 'react'
 import { describe, expect, test } from 'vitest'
@@ -429,13 +430,13 @@ describe('mixed fleet gestures', () => {
     ['Victory', { dx: 1, dy: 0 }],
     ['Closed_Fist', { dx: 0, dy: -1 }],
     ['ILoveYou', { dx: -1, dy: 0 }],
-  ] as const)('%s translates a mixed subset only after a thumb confirmation', async (pose, args) => {
+  ] as const)('%s translates an aircraft subset of a mixed roster only after confirmation', async (pose, args) => {
     const { clients, get, hold, enable } = await mount({ profile: 'fleet', mixed: true })
-    await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [1, 11, 12] }, targets: [1, 11, 12] }) })
+    await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [1] }, targets: [1] }) })
     await enable()
     hold(pose, 650)
     const preview = get().control.pendingRequest?.intent
-    expect(preview).toMatchObject({ name: 'translate', args, selection: [1, 11, 12], source: 'webcam', confirm: false })
+    expect(preview).toMatchObject({ name: 'translate', args, selection: [1], source: 'webcam', confirm: false })
     expect(clients.webcam?.sent).toHaveLength(0)
     hold(null, 250)
     hold('Thumb_Up', 450)
@@ -457,7 +458,7 @@ describe('mixed fleet gestures', () => {
     expect(clients.webcam?.sent).toHaveLength(0)
   })
 
-  test.each([false, true])('swarm formation follows the advertised capability profile, C2=%s', async (c2) => {
+  test.each([false, true])('swarm formation refuses a mixed selection, C2=%s', async (c2) => {
     const { clients, get, hold, enable } = await mount({ profile: 'swarm', mixed: true, c2 })
     await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [1, 11, 12] }, targets: [1, 11, 12] }) })
     await enable()
@@ -467,10 +468,58 @@ describe('mixed fleet gestures', () => {
       expect(get().producer.view.lastAction?.detail).toContain('disabled by relay capability profile')
       return
     }
-    expect(get().control.pendingRequest?.intent).toMatchObject({ name: 'formation_next', selection: [1, 11, 12], source: 'webcam' })
-    expect(clients.webcam?.sent).toHaveLength(0)
+    expect(get().control.pendingRequest).toBeNull()
+    expect(get().producer.view.lastAction?.detail).toContain('Select only aircraft')
     hold(null, 250)
     hold('Thumb_Up', 450)
-    expect(clients.webcam?.sent[0]).toMatchObject({ name: 'formation_next', selection: [1, 11, 12], confirm: true })
+    expect(clients.webcam?.sent).toHaveLength(0)
   })
+})
+
+
+describe('ground gesture confirmation through the real controller', () => {
+  test('dwell drafts a bounded ground pulse, neutral then thumb up sends only on webcam', async () => {
+    const { rig, clients, get, hold, enable } = await mount({ profile: 'ground' })
+    const t = rig.dependencies.clock.wall()
+    act(() => { clients.console.emitServer(fieldGroundState(t, session)); clients.console.emitServer(fieldGroundPose(t, session)); clients.console.emitServer(fieldGroundState(t + 1, session)) })
+    await enable()
+    hold('Pointing_Up', 650)
+    const draft = get().control.pendingRequest?.intent
+    expect(draft).toMatchObject({ name: 'ground_velocity', selection: [11], source: 'webcam', confirm: false,
+      args: { linear_mm_s: 80, angular_mrad_s: 0, duration_ms: 250 } })
+    expect(clients.webcam?.sent).toEqual([])
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toEqual([])
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.webcam?.sent[0]).toMatchObject({ ...draft, t: expect.any(Number), confirm: true })
+    expect(clients.console.sent).toEqual([])
+    expect(clients.keyboard.sent).toEqual([])
+  })
+
+  test('loss of drive authority after dwell prevents gesture confirmation', async () => {
+    const { rig, clients, get, hold, enable } = await mount({ profile: 'ground' })
+    const t = rig.dependencies.clock.wall()
+    act(() => { clients.console.emitServer(fieldGroundState(t, session)); clients.console.emitServer(fieldGroundPose(t, session)); clients.console.emitServer(fieldGroundState(t + 1, session)) })
+    await enable(); hold('Victory', 650)
+    expect(get().control.pendingRequest?.intent.name).toBe('ground_velocity')
+    const next = fieldGroundState(rig.dependencies.clock.wall(), session)
+    next.drones[0].control_authority = false
+    act(() => { clients.console.emitServer(next) })
+    hold(null, 250); hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toEqual([])
+    expect(clients.console.sent).toEqual([])
+  })
+})
+
+
+test('fleet translation gestures refuse a mixed selection without sending a preview', async () => {
+  const { clients, get, hold, enable } = await mount({ profile: 'fleet', mixed: true })
+  await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [1, 11] }, targets: [1, 11] }) })
+  await enable(); hold('Pointing_Up', 650)
+  expect(get().control.pendingRequest).toBeNull()
+  expect(get().producer.view.lastAction?.detail).toContain('Select only aircraft')
+  hold(null, 250); hold('Thumb_Up', 450)
+  expect(clients.webcam?.sent).toEqual([])
 })

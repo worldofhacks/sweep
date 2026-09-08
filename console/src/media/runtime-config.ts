@@ -21,7 +21,7 @@ export const SAME_ORIGIN_MEDIA_SOURCE: MediaConfigurationSource = { url: MEDIA_C
 /**
  * The relay serves the same JSON at `/runtime-config.json` behind its bearer token
  * (relay/README.md), so a built console can play without a host that proxies the endpoint.
- * The relay bootstrap path is preserved, so a relay behind a path proxy works too.
+ * Preserve the relay's configured base path when it sits behind a path proxy.
  */
 export function relayMediaConfigurationSource(
   baseUrl: string,
@@ -40,9 +40,7 @@ function relayRoot(baseUrl: string): string {
     const url = new URL(baseUrl)
     if (url.pathname === '/ws' || url.pathname.startsWith('/ws/')) url.pathname = '/'
     return url.toString()
-  } catch {
-    return baseUrl
-  }
+  } catch { return baseUrl }
 }
 
 /**

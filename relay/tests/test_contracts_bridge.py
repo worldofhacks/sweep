@@ -454,3 +454,30 @@ def test_node_acknowledgement_reasons_are_machine_readable_wire_values() -> None
             )
         )
         assert acknowledgement.reason == reason.value
+
+
+def test_signed_takeoff_height_policy_is_preserved_and_cannot_be_tampered() -> None:
+    args = {"z_mm": 1800, "maximum_height_mm": 2000, "max_local_height_age_ms": 200}
+    raw = command_payload(event_id="bounded-takeoff", operation="takeoff", args=args)
+    frame = parse_command(raw)
+    assert dict(frame.args) == args
+    assert verify_event_signature(frame.unsigned_event(), frame.signature, ADAPTER_KEY)
+    tampered = parse_command({**raw, "args": {**args, "maximum_height_mm": 2100}})
+    assert not verify_event_signature(tampered.unsigned_event(), tampered.signature, ADAPTER_KEY)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"z_mm": 1800, "maximum_height_mm": 2000},
+        {"z_mm": 1800, "max_local_height_age_ms": 200},
+        {"z_mm": 1800, "maximum_height_mm": 1700, "max_local_height_age_ms": 200},
+        {"z_mm": 1800, "maximum_height_mm": 2591, "max_local_height_age_ms": 200},
+        {"z_mm": 1800, "maximum_height_mm": 2000, "max_local_height_age_ms": 501},
+        {"z_mm": 1800, "maximum_height_mm": 2000, "max_local_height_age_ms": 0},
+        {"z_mm": 1800, "maximum_height_mm": True, "max_local_height_age_ms": 200},
+    ],
+)
+def test_takeoff_rejects_partial_or_unbounded_height_policy(args) -> None:
+    with pytest.raises(ContractError):
+        parse_command(command_payload(event_id="bad-policy", operation="takeoff", args=args))

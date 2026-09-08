@@ -16,7 +16,7 @@ import { Pane } from '../../shell/Pane'
 import { ConfigModule } from '../config/ConfigModule'
 import { ConnectivityModule } from '../connectivity/ConnectivityModule'
 import { authorityWords, membershipTone, sortedAircraft } from '../../shell/derive'
-import { formatAgo, formatPercent, formatTime } from '../../shell/format'
+import { formatAgo, formatDeviceLink, formatPercent, formatTime } from '../../shell/format'
 import { readinessNotes } from '../../shell/readiness'
 import { membershipReasonSentence, reasonSentence } from '../../shell/sentences'
 import { ReadinessHelp } from '../ReadinessHelp'
@@ -70,7 +70,6 @@ export function DevicesModule(props: ModuleProps) {
                 now={at}
                 scan={deviceScan(device, snapshot)}
                 refusal={lastRefusal(state, device.drone_id)}
-                capabilityProfile={state.capabilityProfile}
               />
             ))
           )}
@@ -105,14 +104,12 @@ function DeviceCard({
   now,
   scan,
   refusal,
-  capabilityProfile,
 }: {
   device: RelayAircraftState
   controller: ModuleProps['controller']
   now: number
   scan: RelaySensorEvent | null
   refusal: { t: number; reasonCode: string; detail: string } | null
-  capabilityProfile: string | null
 }) {
   const id = formatDeviceId(device)
   const noun = deviceNoun(device.device_class)
@@ -136,7 +133,7 @@ function DeviceCard({
         />
         <Row
           k="link"
-          v={`${formatPercent(device.link)} · battery ${formatPercent(device.battery)} · position ${formatPercent(device.pos_quality)}`}
+          v={`${formatDeviceLink(device)} · battery ${formatPercent(device.battery)} · position ${formatPercent(device.pos_quality)}`}
         />
         <Row k="authority" v={`${words.authority} · ${words.operator.toLowerCase()} ${device.rc_safety_operator_present ? 'present' : 'absent'}`} />
         <Row
@@ -157,8 +154,8 @@ function DeviceCard({
       {device.device_class === 'ground_vehicle' && device.adapter_capabilities.includes('lidar') && (
         <LidarPolar device={device} scan={scan} size={104} now={now} />
       )}
-      {readinessNotes(device, capabilityProfile).length > 0 ? (
-        <ReadinessHelp drone={device} className="dv-reasons" capabilityProfile={capabilityProfile} />
+      {readinessNotes(device).length > 0 ? (
+        <ReadinessHelp drone={device} className="dv-reasons" />
       ) : (
         <p className={`dv-ready tone-${motionObservationCurrent(device) ? 'ok' : 'warn'}`}>{motionObservationCurrent(device) && device.membership === 'ready' ? 'ready' : 'Current device state unknown; retained readings are last reported.'}</p>
       )}

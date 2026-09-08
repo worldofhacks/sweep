@@ -330,7 +330,7 @@ class GroundCommandDispatcher:
                 RefusalReason.INVALID_SELECTION,
                 "ground velocity requires exactly one selected ground node",
             )
-        if state.get("estop_active") is True:
+        if state.get("estop") is True:
             return self._refused(
                 intent,
                 roster_version,
@@ -359,6 +359,7 @@ class GroundCommandDispatcher:
             )
         connection_epoch = drone.get("connection_epoch")
         capabilities = drone.get("adapter_capabilities")
+        readiness = drone.get("ground_readiness")
         if (
             not isinstance(connection_epoch, int)
             or isinstance(connection_epoch, bool)
@@ -367,6 +368,9 @@ class GroundCommandDispatcher:
             or drone.get("control_authority") is not True
             or not isinstance(capabilities, list)
             or "ground_drive" not in capabilities
+            or not isinstance(readiness, Mapping)
+            or not isinstance(readiness.get("source_id"), str)
+            or not readiness["source_id"]
         ):
             return self._refused(
                 intent,

@@ -1,3 +1,8 @@
+import { groundControlBlockedReason, hasGroundTarget } from './ground'
+import { useNavigationReview } from './use-navigation-review'
+import { useNavigationVerification } from './use-navigation-verification'
+import { navigationBlockedReason, navigationTargets } from './navigation'
+import { navigationPreviewValidity, type NavigationClient, type NavigationConfirmationOutcome, type NavigationPreview } from '../navigation'
 import { motionObservationCurrent, observedControlState } from './observation'
 import { isReady } from '../shell/derive'
 import { peripheralBlockedReason } from './peripherals'
@@ -41,6 +46,7 @@ import {
   createRequestRecord,
   deviceLabeller,
   isIntentEnabled,
+  NAVIGATION_CONFIRMATION_UNAVAILABLE,
   type ControlState,
   type RequestRecord,
 } from './state'
@@ -61,6 +67,7 @@ export interface UseControlConsoleOptions {
   sessionId: string
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
+  navigation?: NavigationClient
 }
 
 /** One control press: an intent name, its args, and the aircraft it addresses. */
@@ -74,6 +81,7 @@ export interface IntentRequest<N extends ConsoleIntentName = ConsoleIntentName> 
 export function useControlConsole({
   sessionId,
   clients,
+  navigation: navigationClient,
   intentDependencies = browserIntentDependencies,
 }: UseControlConsoleOptions) {
   const [reportedState, dispatch] = useReducer(
@@ -90,6 +98,8 @@ export function useControlConsole({
   }, [])
   const state = useMemo(() => observedControlState(reportedState, Math.max(observationTime, intentDependencies.now())), [reportedState, intentDependencies, observationTime])
   const confirmedIds = useRef(new Set<string>())
+  const navigationGeneration = useRef(0)
+  const [navigationReset, resetNavigation] = useReducer((value: number) => value + 1, 0)
 
   // Only one pending preview can be confirmed. Retain its synchronous send
   // guard until React commits the lifecycle update, then release the entry.
@@ -192,6 +202,10 @@ export function useControlConsole({
   /** Marks a recorded request sent and hands it to the client its source names. */
   const sendNow = useCallback(
     (intent: IntentV1, t: number) => {
+      if (intent.name === 'navigate') {
+        dispatch({ type: 'request_send_failed', intentId: intent.intent_id, t, detail: NAVIGATION_CONFIRMATION_UNAVAILABLE })
+        return
+      }
       if (!isIntentEnabled(state, intent.name)) {
         dispatch({
           type: 'request_send_failed',
@@ -207,6 +221,11 @@ export function useControlConsole({
       if (requiresCurrentMotion(intent.name) && intent.selection.some((id) => !motionObservationCurrent(current.aircraft[id]))) {
         dispatch({ type: 'request_send_failed', intentId: intent.intent_id, t,
           detail: 'Current target motion telemetry is unavailable. Wait for a fresh report and build a new request.' })
+        return
+      }
+      const groundReason = groundControlBlockedReason(current, intent.name, intent.selection)
+      if (groundReason || ((intent.name === 'ground_velocity' || (intent.name === 'come_home' && hasGroundTarget(current, intent.selection))) && !intent.confirm)) {
+        dispatch({ type: 'request_send_failed', intentId: intent.intent_id, t, detail: groundReason ?? 'Ground commands require a fresh confirmed preview.' })
         return
       }
       dispatch({ type: 'request_sent', intentId: intent.intent_id, t })
@@ -238,8 +257,12 @@ export function useControlConsole({
       intent: IntentV1,
       expiresAt?: number,
       voiceBinding?: NonNullable<RequestRecord['plan']>['voiceBinding'],
+      navigation?: NavigationPreview,
     ): IntentV1 => {
       const t = intentDependencies.now()
+      const groundCommand = intent.name === 'ground_velocity' || (intent.name === 'come_home' && hasGroundTarget(state, intent.selection))
+      const deadline = groundCommand ? Math.min(expiresAt ?? t + 30_000, t + 30_000) : expiresAt
+      if (!navigation) { navigationGeneration.current += 1; resetNavigation() }
       confirmedIds.current.delete(intent.intent_id)
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       state.requests
@@ -252,14 +275,47 @@ export function useControlConsole({
         intentId: intent.intent_id,
         t,
         plan: {
-          ...buildPlanPreview(intent, state.rosterVersion, expiresAt, voiceBinding, deviceLabeller(state.aircraft)),
+          ...buildPlanPreview(intent, state.rosterVersion, deadline, voiceBinding, deviceLabeller(state.aircraft)),
+          ...(navigation ? { navigation, confirmationBlockedReason: NAVIGATION_CONFIRMATION_UNAVAILABLE } : {}),
+          groundUnits: Object.fromEntries(intent.selection.filter((id) => state.aircraft[id]?.node_type === 'ground').map((id) => [id, state.aircraft[id]?.unit])),
+          groundSources: Object.fromEntries(intent.selection.filter((id) => state.aircraft[id]?.node_type === 'ground').map((id) => [id, state.aircraft[id]?.ground_readiness?.source_id ?? null])),
           deviceEpochs: Object.fromEntries(intent.selection.map((id) => [id, state.aircraft[id]?.connection_epoch])),
         },
       })
       return intent
     },
-    [intentDependencies, state.aircraft, state.requests, state.rosterVersion],
+    [intentDependencies, state],
   )
+
+  const stageNavigation = useCallback((intent: IntentV1, preview: NavigationPreview) => {
+    stageForConfirmation(intent, preview.expiresAt, undefined, preview)
+  }, [stageForConfirmation])
+  const navigation = useNavigationReview({ state, client: navigationClient,
+    dependencies: intentDependencies, generationRef: navigationGeneration, reset: navigationReset, onPreview: stageNavigation })
+  const recordNavigationVerification = useCallback((outcome: NavigationConfirmationOutcome) => {
+    dispatch({ type: 'request_invalidated', intentId: outcome.intentId, t: intentDependencies.now(),
+      reasonCode: outcome.code, detail: outcome.detail })
+  }, [intentDependencies])
+  const verification = useNavigationVerification({ state, snapshot: navigation.snapshot, client: navigationClient,
+    now: intentDependencies.now, generationRef: navigationGeneration, onOutcome: recordNavigationVerification })
+
+  useEffect(() => {
+    for (const request of state.requests) {
+      if (request.status !== 'pending_confirmation' || request.intent.name !== 'navigate') continue
+      const preview = request.plan?.navigation ?? null
+      const validity = navigationPreviewValidity(navigation.snapshot.preview, navigation.snapshot.catalog, {
+        session: state.sessionId, rosterVersion: state.rosterVersion, selected: navigationTargets(state),
+        destinationZoneId: preview?.destination.zoneId ?? '', intentId: request.intent.intent_id,
+        frozenPreview: preview ?? undefined, now: intentDependencies.now(), reviewOnly: navigation.snapshot.reviewSupported === true,
+      })
+      const blocked = navigationBlockedReason(state, navigation.snapshot.reviewSupported === true)
+      if (blocked || navigation.snapshot.status !== 'ready' || !navigation.snapshot.preview ||
+        (!validity.valid && validity.code !== 'node_refused')) {
+        dispatch({ type: 'request_invalidated', intentId: request.intent.intent_id, t: intentDependencies.now(),
+          reasonCode: 'navigation_review_changed', detail: blocked ?? (!validity.valid ? validity.reason : 'The destination review changed. Request a new preview.') })
+      }
+    }
+  }, [intentDependencies, navigation.snapshot, state])
 
   /**
    * Records a freshly minted intent, then either parks it for confirmation
@@ -267,6 +323,8 @@ export function useControlConsole({
    */
   const stageIntent = useCallback(
     (intent: IntentV1, expiresAt?: number) => {
+      navigationGeneration.current += 1
+      resetNavigation()
       if (intent.name === 'select') {
         state.requests.filter((request) => request.status === 'pending_confirmation').forEach((request) => {
           dispatch({ type: 'request_invalidated', intentId: request.intent.intent_id,
@@ -274,7 +332,7 @@ export function useControlConsole({
             detail: 'A new selection was requested. Preview the command again after relay state updates.' })
         })
       }
-      if (requiresConfirmation(intent.name)) {
+      if (requiresConfirmation(intent.name) || (intent.name === 'come_home' && hasGroundTarget(state, intent.selection))) {
         stageForConfirmation(intent, expiresAt)
         return
       }
@@ -282,7 +340,7 @@ export function useControlConsole({
       dispatch({ type: 'request_created', request: createRequestRecord(intent, t) })
       sendNow(intent, t)
     },
-    [intentDependencies, sendNow, stageForConfirmation, state.requests],
+    [intentDependencies, sendNow, stageForConfirmation, state],
   )
 
   const sendExistingIntent = useCallback(
@@ -295,8 +353,10 @@ export function useControlConsole({
 
   const issueIntent = useCallback(
     <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
+      if (request.name === 'navigate') return null // Requires an authoritative destination review.
       if (!isIntentEnabled(state, request.name)) return null
       const selection = ['arm', 'land_all', 'estop'].includes(request.name) ? [] : request.targets ?? state.selection
+      if (groundControlBlockedReason(state, request.name, selection)) return null
       if (request.name === 'body_pulse' && selection.some((id) => state.aircraft[id]?.device_class !== 'aircraft')) return null
       const intent = createIntent(
         {
@@ -466,10 +526,12 @@ export function useControlConsole({
       source: DraftSource = 'console',
       expiresAt?: number,
     ): IntentV1 | null => {
+      if (request.name === 'navigate') return null // Generic drafts cannot manufacture a route preview.
       if (!isIntentEnabled(state, request.name)) return null
       const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
       const selection = fleetWide ? [] : request.targets ?? state.selection
       if (!fleetWide && selection.length === 0) return null
+      if (groundControlBlockedReason(state, request.name, selection)) return null
       if (request.name === 'body_pulse' && selection.some((id) => state.aircraft[id]?.device_class !== 'aircraft')) return null
       const draft = createIntent(
         {
@@ -489,6 +551,7 @@ export function useControlConsole({
   /** Stage the exact relay-minted language draft; no name-specific rewrite is allowed. */
   const prepareVoicePlanStep = useCallback(
     (plan: VoicePlan, step: VoicePlanStep, expiresAt: number): IntentV1 | null => {
+      if (step.name === 'navigate') return null // Navigation uses its separately pinned review workflow.
       if (
         plan.kind !== 'plan' ||
         plan.plan_digest === null ||
@@ -546,6 +609,11 @@ export function useControlConsole({
     (intentId: string): IntentV1 | null => {
       const request = state.requests.find((item) => item.intent.intent_id === intentId)
       if (!request || request.status !== 'pending_confirmation' || confirmedIds.current.has(intentId)) return null
+      if (request.intent.name === 'navigate') {
+        dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
+          reasonCode: 'navigation_confirmation_unavailable', detail: NAVIGATION_CONFIRMATION_UNAVAILABLE })
+        return null
+      }
       if (!isIntentEnabled(state, request.intent.name)) {
         dispatch({
           type: 'request_invalidated',
@@ -604,6 +672,15 @@ export function useControlConsole({
         return null
       }
       const current = observedControlState(reportedState, intentDependencies.now())
+      const groundReason = groundControlBlockedReason(current, request.intent.name, request.intent.selection)
+      const groundSourcesMatch = request.intent.selection.every((id) => current.aircraft[id]?.node_type !== 'ground' ||
+        (request.plan?.groundSources?.[id] === (current.aircraft[id]?.ground_readiness?.source_id ?? null) &&
+          request.plan?.groundUnits?.[id] === current.aircraft[id]?.unit))
+      if (groundReason || !groundSourcesMatch) {
+        dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(), reasonCode: 'ground_readiness_changed',
+          detail: groundReason ?? 'The ground identity or pose source changed after preview. Build a fresh preview.' })
+        return null
+      }
       const epochsMatch = request.intent.selection.every((id) => request.plan?.deviceEpochs?.[id] === state.aircraft[id]?.connection_epoch)
       const selectionStillValid = epochsMatch && (
         request.intent.name === 'camera_control'
@@ -654,9 +731,10 @@ export function useControlConsole({
 
   const cancelRequest = useCallback(
     (intentId: string) => {
+      navigation.invalidate()
       dispatch({ type: 'request_cancelled', intentId, t: intentDependencies.now() })
     },
-    [intentDependencies],
+    [intentDependencies, navigation],
   )
 
   const issueHold = useCallback(() => {
@@ -720,6 +798,8 @@ export function useControlConsole({
    */
   const invalidatePending = useCallback(
     (reasonCode: string, detail: string) => {
+      navigationGeneration.current += 1
+      resetNavigation()
       const t = intentDependencies.now()
       state.requests
         .filter((request) => request.status === 'pending_confirmation')
@@ -739,9 +819,10 @@ export function useControlConsole({
   const retryRequest = useCallback(
     (request: RequestRecord) => {
       if (request.status !== 'failed' && request.status !== 'refused') return
+      if (request.intent.name === 'navigate') return // A retry must request a new authoritative preview.
       if (request.intent.source === 'language') return
       const intent = retryIntent(request.intent, intentDependencies)
-      if (intent.source === 'webcam' || ['arm', 'body_pulse', 'takeoff', 'land', 'land_all', 'capture_room', 'robot_peripheral', 'camera_control'].includes(intent.name)) {
+      if (intent.source === 'webcam' || ['arm', 'body_pulse', 'ground_velocity', 'come_home', 'takeoff', 'land', 'land_all', 'capture_room', 'robot_peripheral', 'camera_control'].includes(intent.name)) {
         stageForConfirmation({ ...intent, confirm: false })
         return
       }
@@ -762,6 +843,12 @@ export function useControlConsole({
     /** Latest lidar scan per device and a short trail; read with useSensorStore. */
     sensors,
     pendingRequest,
+    navigation: navigation.snapshot,
+    prepareNavigation: navigation.prepare,
+    invalidateNavigation: navigation.invalidate,
+    navigationVerification: verification.verification,
+    canVerifyNavigation: verification.canVerify,
+    verifyNavigationReview: verification.verify,
     issueIntent,
     toggleAircraft,
     selectAircraft,
@@ -783,7 +870,7 @@ export function useControlConsole({
 }
 
 function requiresCurrentMotion(name: ConsoleIntentName): boolean {
-  return ['takeoff', 'body_pulse', 'translate', 'altitude', 'spacing', 'formation_next', 'formation_set', 'come_home', 'sweep', 'capture_room'].includes(name)
+  return ['takeoff', 'body_pulse', 'ground_velocity', 'translate', 'altitude', 'spacing', 'formation_next', 'formation_set', 'come_home', 'sweep', 'capture_room'].includes(name)
 }
 
 function canonicalVoiceIntent(intent: IntentV1): string {
@@ -816,6 +903,9 @@ function canonicalLanguageState(state: ControlState): string {
         membership: drone.membership,
         selectable: isReady(drone),
         flightState: drone.flight_state,
+        nodeType: drone.node_type,
+        groundSource: drone.ground_readiness?.source_id,
+        controlAuthority: drone.control_authority,
         cameraPatterns: [...drone.camera_patterns].sort(),
         flightAvailable: drone.adapter_capabilities.includes('flight'),
       })),

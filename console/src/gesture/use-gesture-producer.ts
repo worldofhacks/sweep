@@ -1,3 +1,4 @@
+import { groundControlBlockedReason, groundPulseArgs } from '../control/ground'
 import { isReady } from '../shell/derive'
 /**
  * Binds the webcam camera, the MediaPipe recognizer, and the pure policy to the
@@ -16,6 +17,7 @@ import type { IntentV1 } from '../relay/contract'
 import { createCameraController, type CameraController, type CameraState } from './camera'
 import {
   DEFAULT_GESTURE_POLICY_CONFIG,
+  GROUND_GESTURE_POLICY_CONFIG,
   observeHand,
   FLEET_GESTURE_POLICY_CONFIG,
   SWARM_GESTURE_POLICY_CONFIG,
@@ -177,7 +179,7 @@ const NOTABLE_KINDS = new Set<GesturePolicyOutcome['kind']>([
 export function useGestureProducer({ control, roomId, dependencies, profile = 'capture' }: UseGestureProducerOptions) {
   const [deps] = useState(() => {
     const base = dependencies ?? createBrowserGestureDependencies()
-    return profile === 'fleet' ? { ...base, policy: FLEET_GESTURE_POLICY_CONFIG } : profile === 'swarm' ? { ...base, policy: SWARM_GESTURE_POLICY_CONFIG } : profile === 'flight' ? { ...base, policy: FLIGHT_GESTURE_POLICY_CONFIG } : base
+    return profile === 'ground' ? { ...base, policy: GROUND_GESTURE_POLICY_CONFIG } : profile === 'fleet' ? { ...base, policy: FLEET_GESTURE_POLICY_CONFIG } : profile === 'swarm' ? { ...base, policy: SWARM_GESTURE_POLICY_CONFIG } : profile === 'flight' ? { ...base, policy: FLIGHT_GESTURE_POLICY_CONFIG } : base
   })
   const [recorder] = useState<SessionRecorder>(() =>
     createSessionRecorder({
@@ -281,7 +283,8 @@ export function useGestureProducer({ control, roomId, dependencies, profile = 'c
             ? bindings.prepareCapture(roomIdRef.current, 'webcam')
             : pair.action.name === 'hold'
               ? bindings.prepareHold('webcam')
-              : bindings.prepareIntent(pair.action.name === 'translate'
+              : bindings.prepareIntent(pair.action.name === 'ground_velocity'
+                ? { name: 'ground_velocity', args: groundPulseArgs(pair.action.direction) } : pair.action.name === 'translate'
                 ? { name: 'translate', args: createTranslateArgs(pair.action.direction, 1) }
                 : pair.action.name === 'formation_next' ? { name: 'formation_next', args: {} } : flightIntentRequest(pair.action, bindings.state.selection), 'webcam')
         const detail = intent
@@ -620,7 +623,11 @@ export function emissionBlockedReason(
   const capability = capabilityBlockedReason(state, action.name)
   if (capability) return capability
   if (state.estop) return 'The network stop is active.'
+  const groundReason = groundControlBlockedReason(state, action.name)
+  if (groundReason) return groundReason
+  if (action.name === 'ground_velocity') return null
   if (action.name === 'translate' || action.name === 'formation_next') {
+    if (state.selection.some((id) => state.aircraft[id]?.device_class === 'ground_vehicle')) return 'Select only aircraft for this profile. Use Ground pulses for robots.'
     if (!state.armed) return 'Arm the session with the manual controls before drafting motion.'
     const immobile = state.selection.find((id) => {
       const device = state.aircraft[id]

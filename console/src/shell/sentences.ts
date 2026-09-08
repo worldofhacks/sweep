@@ -54,7 +54,6 @@ const REASON_SENTENCES: Sentences = {
     `Battery is critical; only ${noun === 'robot' ? 'stopping' : 'landing'} is permitted.`,
   link_quality: 'Radio link quality is below the limit for commanded motion.',
   link_stale: 'No link report arrived inside the freshness window.',
-  local_height_unavailable: 'No fresh flight-controller altitude report is available for supervised vertical flight.',
   position_quality: 'Position quality is below the limit for commanded motion.',
   position_stale: 'No position report arrived inside the freshness window.',
   operator_absent: 'No operator presence was reported at the ground station.',
@@ -112,7 +111,6 @@ const READINESS_SENTENCES: Sentences = {
 }
 
 export const ZERO_POSITION_QUALITY_HELP = 'Position quality is 0%. Live telemetry does not establish valid positioning. Check device positioning; the relay’s quality limit still applies.'
-export const SUPERVISED_VERTICAL_ZERO_POSITION_QUALITY_HELP = 'Position quality is 0%. Supervised takeoff requires fresh onboard height. Mapped flight remains unavailable.'
 
 const MEMBERSHIP_REASON_SENTENCES: Sentences = {
   authenticated_join: 'The adapter authenticated and joined the roster.',

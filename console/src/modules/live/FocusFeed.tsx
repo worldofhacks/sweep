@@ -7,7 +7,7 @@ import { useCameraChoice } from '../../media/cameras'
 import type { MediaRuntime } from '../../media/runtime'
 import type { DeviceCameraState, RelayAircraftState } from '../../relay/contract'
 import { membershipTone, type Tone } from '../../shell/derive'
-import { formatPercent } from '../../shell/format'
+import { formatDeviceLink, formatPercent } from '../../shell/format'
 import { deriveCaptureProgress, deriveReadiness, deriveStream } from './derive-live'
 import { CameraChoice } from './CameraChoice'
 
@@ -140,7 +140,7 @@ function deriveRows(drone: RelayAircraftState, requests: RequestRecord[], now: n
     { key: 'stream status', value: stream.status, tone: stream.tone },
     { key: 'last frame', value: stream.lastFrame, tone: 'muted' },
     { key: 'battery', value: formatPercent(drone.battery), tone: 'ink' },
-    { key: 'link', value: formatPercent(drone.link), tone: 'ink' },
+    { key: 'link', value: formatDeviceLink(drone), tone: 'ink' },
     { key: 'position quality', value: formatPercent(drone.pos_quality), tone: 'ink' },
     { key: 'membership', value: membershipWord(drone), tone: membershipTone(drone.membership) },
     { key: 'readiness', value: readiness.text, tone: readiness.tone },

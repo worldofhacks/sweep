@@ -26,7 +26,7 @@ from relay.media import MediaEvidenceProvider, project_video
 
 DEFAULT_PHYSICAL_AIRCRAFT = 4
 MAX_PHYSICAL_AIRCRAFT = 32
-MAX_PHYSICAL_GROUND = 3
+MAX_PHYSICAL_GROUND = 32
 MAX_SIMULATED_AIRCRAFT = 32
 DEFAULT_MEMBERSHIP_HISTORY_LIMIT = 8
 MAX_MEMBERSHIP_HISTORY_LIMIT = 64
@@ -301,6 +301,7 @@ class FleetRegistry:
                 record.capabilities = request.capabilities
                 record.connection_epoch += 1
                 record.membership = Membership.REGISTERED
+                record.joined_at = request.t
                 record.updated_at = request.t
                 record.identity_verified = True
                 record.readiness_declared = False
@@ -318,6 +319,7 @@ class FleetRegistry:
                 record.disconnected_at = None
                 record.camera_capabilities = None
                 record.node_status = None
+                record.node_status_received_at = None
 
             self._roster_version += 1
             self._remember(
@@ -335,10 +337,15 @@ class FleetRegistry:
                 provenance="adapter_signature",
             )
 
-    def apply_readiness(self, request: MembershipRequest) -> MembershipTransition:
+    def apply_readiness(
+        self, request: MembershipRequest, *, received_at: int | None = None
+    ) -> MembershipTransition:
         if request.action is not MembershipAction.READINESS:
             raise ValueError("apply_readiness requires a readiness request")
         assert request.connection_epoch is not None
+        observed_at = request.t if received_at is None else received_at
+        if type(observed_at) is not int or observed_at < 0:
+            raise ValueError("readiness receipt time must be non-negative")
         with self._lock:
             record = self._require_current(request.drone_id, request.connection_epoch)
             if record.membership in {Membership.DISCONNECTED, Membership.LEAVING}:
@@ -408,9 +415,10 @@ class FleetRegistry:
                     }
                 elif not request.home_pose_confirmed and self._is_grounded(record):
                     record.home_pose = None
-            reasons = self._readiness_reasons(record, request.t)
+            # accepted_pose_at is the relay's ingest clock, not adapter wall time.
+            reasons = self._readiness_reasons(record, observed_at)
             record.membership = Membership.READY if not reasons else Membership.DEGRADED
-            record.updated_at = request.t
+            record.updated_at = observed_at
             material_state = (
                 record.readiness_declared,
                 record.membership if record.node_type is NodeType.AIRCRAFT else None,
@@ -433,7 +441,7 @@ class FleetRegistry:
             )
             return self._transition(
                 record,
-                t=request.t,
+                t=observed_at,
                 event_id=request.event_id,
                 action=MembershipAction.READINESS,
                 reason=None if not reasons else "readiness_gate_failed",
@@ -451,7 +459,7 @@ class FleetRegistry:
                 or record.pose_identity is None
                 or record.pose_identity != record.accepted_pose_identity
                 or record.accepted_pose_at is None
-                or now_ms - record.accepted_pose_at > self.telemetry_freshness_ms
+                or not 0 <= now_ms - record.accepted_pose_at <= self.telemetry_freshness_ms
             ):
                 return None
             return record.pose_identity
@@ -668,6 +676,24 @@ class FleetRegistry:
                     f"node frames are not current while {record.membership.value}",
                 )
 
+    def check_ground_release(self, drone_id: int, connection_epoch: int, *, now_ms: int) -> None:
+        """Final local-pose and drive gate at command signing; safety stops bypass it."""
+        with self._lock:
+            record = self._require_current(drone_id, connection_epoch)
+            if self._estop:
+                raise RegistryError("estop_active", "the session emergency stop remains active")
+            reasons = self._readiness_reasons(record, now_ms)
+            if (
+                record.node_type is not NodeType.GROUND
+                or record.membership is not Membership.READY
+                or reasons
+            ):
+                raise RegistryError(
+                    "ground_not_ready",
+                    "current accepted pose and local drive readiness are required: "
+                    + ", ".join(reasons or ("ground_membership_not_ready",)),
+                )
+
     def apply_capabilities(self, frame: CapabilitiesFrame) -> None:
         """Retain the node's latest camera capabilities; readiness gates are unchanged."""
         with self._lock:
@@ -696,6 +722,31 @@ class FleetRegistry:
         with self._lock:
             record = self._aircraft.get(drone_id)
             return None if record is None else record.node_status
+
+    def media_context(self, drone_id: int) -> tuple[int, NodeStatusFrame | None] | None:
+        """Coherent current-epoch start and status for media freshness checks."""
+        with self._lock:
+            record = self._aircraft.get(drone_id)
+            if record is None:
+                return None
+            status = record.node_status
+            if status is not None and status.connection_epoch != record.connection_epoch:
+                status = None
+            return record.joined_at, status
+
+    def current_node_status_with_receipt(self, drone_id: int) -> tuple[NodeStatusFrame, int] | None:
+        """Current signed status and relay receipt; never return a prior epoch's history."""
+        with self._lock:
+            record = self._aircraft.get(drone_id)
+            if (
+                record is None
+                or record.membership not in {Membership.READY, Membership.DEGRADED}
+                or record.node_status is None
+                or record.node_status_received_at is None
+                or record.node_status.connection_epoch != record.connection_epoch
+            ):
+                return None
+            return record.node_status, record.node_status_received_at
 
     def set_selection(self, drone_ids: tuple[int, ...]) -> None:
         if len(set(drone_ids)) != len(drone_ids) or any(item <= 0 for item in drone_ids):
@@ -796,7 +847,7 @@ class FleetRegistry:
                 reasons.append("pose_identity_not_accepted")
             elif (
                 record.accepted_pose_at is None
-                or now_ms - record.accepted_pose_at > self.telemetry_freshness_ms
+                or not 0 <= now_ms - record.accepted_pose_at <= self.telemetry_freshness_ms
             ):
                 reasons.append("pose_observation_stale")
             return tuple(reasons)

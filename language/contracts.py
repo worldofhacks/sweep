@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Literal
 from unicodedata import category, normalize
 
+from language.ground import ground_facts, ground_ready, is_return_phrase, pulse_arguments
 from planner.models import AltitudeGrounding, TranslationGrounding, TranslationPolicy
 from relay.capabilities import CapabilityProfile
 from relay.intent_v1 import AcceptedIntent, IntentName, Mode, validate_intent
@@ -25,6 +26,7 @@ _FLIGHT_STATES = frozenset(
 )
 _SELECTION_TARGETED = frozenset(
     {
+        IntentName.GROUND_VELOCITY,
         IntentName.TAKEOFF,
         IntentName.LAND,
         IntentName.TRANSLATE,
@@ -244,13 +246,16 @@ class GroundingFacts:
         if not isinstance(raw, Mapping) or set(raw) not in (
             legacy_fields,
             legacy_fields | profile_fields,
+            legacy_fields | profile_fields | {"requires_home_pose"},
         ):
             raise ValueError("persisted grounding facts are invalid")
         capability_profile = (
             None
             if "capability_profile" not in raw
             else _capability_profile_from_record(
-                raw["capability_profile"], raw["enabled_intent_names"]
+                raw["capability_profile"],
+                raw["enabled_intent_names"],
+                raw.get("requires_home_pose", True),
             )
         )
         altitude = None if raw.get("altitude") is None else _altitude_from_record(raw["altitude"])
@@ -259,7 +264,7 @@ class GroundingFacts:
             raise ValueError("persisted grounding drones are invalid")
         relay_drones = []
         for drone in drones:
-            if not isinstance(drone, Mapping) or set(drone) != {
+            if not isinstance(drone, Mapping) or set(drone) - {"ground"} != {
                 "drone_id",
                 "membership",
                 "selectable",
@@ -274,6 +279,14 @@ class GroundingFacts:
                 raise ValueError("persisted grounding drone is invalid")
             if not isinstance(drone["flight_available"], bool):
                 raise ValueError("persisted flight capability is invalid")
+            ground = drone.get("ground")
+            if ground is not None and (
+                not isinstance(ground, Mapping)
+                or set(ground)
+                != {"connection_epoch", "source_id", "control_authority", "drive_available", "unit"}
+                or not isinstance(ground["drive_available"], bool)
+            ):
+                raise ValueError("persisted ground facts are invalid")
             relay_drones.append(
                 {
                     "drone_id": drone["drone_id"],
@@ -281,7 +294,21 @@ class GroundingFacts:
                     "selectable": drone["selectable"],
                     "flight_state": drone["flight_state"],
                     "camera_patterns": drone["camera_patterns"],
-                    "adapter_capabilities": ["flight"] if drone["flight_available"] else [],
+                    "adapter_capabilities": (["flight"] if drone["flight_available"] else [])
+                    + (
+                        ["ground_drive"] if ground is not None and ground["drive_available"] else []
+                    ),
+                    **(
+                        {
+                            "node_type": "ground",
+                            "connection_epoch": ground["connection_epoch"],
+                            "control_authority": ground["control_authority"],
+                            "unit": ground["unit"],
+                            "ground_readiness": {"source_id": ground["source_id"]},
+                        }
+                        if ground is not None
+                        else {}
+                    ),
                     "heading_deg": drone["heading_deg"],
                     "telemetry": (
                         None
@@ -395,7 +422,9 @@ def build_grounding_facts(
         raise ValueError("relay state has an incomplete capability profile")
     advertised_profile = (
         _capability_profile_from_record(
-            relay_state["capability_profile"], relay_state["enabled_intent_names"]
+            relay_state["capability_profile"],
+            relay_state["enabled_intent_names"],
+            relay_state.get("requires_home_pose", True),
         )
         if has_profile_name
         else None
@@ -472,6 +501,7 @@ def build_grounding_facts(
         position = _coordinates(raw.get("telemetry"), "telemetry")
         position_time_ms = _telemetry_time(raw.get("telemetry"))
         home_position = _coordinates(raw.get("home_pose"), "home pose")
+        ground = ground_facts(raw)
         drones.append(
             MappingProxyType(
                 {
@@ -485,6 +515,7 @@ def build_grounding_facts(
                     "position": position,
                     "position_time_ms": position_time_ms,
                     "home_position": home_position,
+                    **({"ground": MappingProxyType(ground)} if ground is not None else {}),
                 }
             )
         )
@@ -640,6 +671,28 @@ def validate_model_outcome(
             detail=NEGATED_TRANSCRIPT_DETAIL,
             source=source,
         )
+    ground_motion = [
+        intent
+        for intent in intents
+        if intent.name is IntentName.GROUND_VELOCITY
+        or (
+            intent.name is IntentName.COME_HOME
+            and any(
+                drone.get("ground") is not None and drone["drone_id"] in intent.selection
+                for drone in facts.drones
+            )
+        )
+    ]
+    if ground_motion:
+        if len(intents) != 1:
+            return _invalid(source)
+        intent = ground_motion[0]
+        if (
+            intent.name is IntentName.GROUND_VELOCITY
+            and dict(intent.args) != pulse_arguments(transcript)
+        ) or (intent.name is IntentName.COME_HOME and not is_return_phrase(transcript)):
+            return _invalid(source)
+        return CompilerOutcome(kind=kind, intents=tuple(intents), detail=detail, source=source)
     if not _explicit_translation_matches(intents, transcript, facts):
         return _invalid(source)
     if not _explicit_altitude_matches(intents, transcript, facts):
@@ -841,6 +894,21 @@ def _validate_proposed_intent(
         sorted(result.intent.selection)
     ) != tuple(sorted(expected_selection)):
         return None
+    ground_targets = [
+        known[drone_id] for drone_id in selection if known[drone_id].get("ground") is not None
+    ]
+    if ground_targets and result.intent.name not in {
+        IntentName.SELECT,
+        IntentName.HOLD,
+        IntentName.COME_HOME,
+        IntentName.GROUND_VELOCITY,
+    }:
+        return None
+    if result.intent.name is IntentName.GROUND_VELOCITY or (
+        ground_targets and result.intent.name is IntentName.COME_HOME
+    ):
+        if len(selection) != 1 or len(ground_targets) != 1 or not ground_ready(ground_targets[0]):
+            return None
     if result.intent.name is IntentName.TRANSLATE and (
         facts.translation_frame not in {"world", "aircraft_relative"}
         or facts.translation_step_m is None
@@ -893,7 +961,14 @@ def _validate_proposed_intent(
         IntentName.TRANSLATE,
         IntentName.ALTITUDE,
         IntentName.COME_HOME,
-    } and any(not known[drone_id]["flight_available"] for drone_id in result.intent.selection):
+    } and any(
+        not known[drone_id]["flight_available"]
+        and not (
+            known[drone_id].get("ground") is not None
+            and result.intent.name in {IntentName.HOLD, IntentName.COME_HOME}
+        )
+        for drone_id in result.intent.selection
+    ):
         return None
     if expected_estop and result.intent.name not in {
         IntentName.ESTOP,
@@ -935,6 +1010,15 @@ def _fold_semantic_state(
     states = dict(flight_states)
     selected = intent.selection
     name = intent.name
+    ground_ids = {
+        int(drone["drone_id"]) for drone in facts.drones if drone.get("ground") is not None
+    }
+    if (
+        name in {IntentName.GROUND_VELOCITY, IntentName.COME_HOME, IntentName.HOLD}
+        and selected
+        and set(selected) <= ground_ids
+    ):
+        return armed, states
 
     if name in _SELECTION_TARGETED and not selected:
         return None
@@ -1030,7 +1114,9 @@ def _altitude_from_record(raw: object) -> AltitudeGrounding:
     )
 
 
-def _capability_profile_from_record(raw_name: object, raw_names: object) -> CapabilityProfile:
+def _capability_profile_from_record(
+    raw_name: object, raw_names: object, requires_home_pose: object = True
+) -> CapabilityProfile:
     if (
         not isinstance(raw_name, str)
         or not isinstance(raw_names, list)
@@ -1040,7 +1126,9 @@ def _capability_profile_from_record(raw_name: object, raw_names: object) -> Capa
     ):
         raise ValueError("persisted capability profile is invalid")
     try:
-        return CapabilityProfile(raw_name, frozenset(raw_names))
+        return CapabilityProfile(
+            raw_name, frozenset(raw_names), requires_home_pose=requires_home_pose
+        )
     except (TypeError, ValueError, OverflowError) as error:
         raise ValueError("persisted capability profile is invalid") from error
 
@@ -1331,16 +1419,19 @@ def _telemetry_time(value: object) -> int | None:
 
 def _model_drone(drone: Mapping[str, object]) -> dict[str, object]:
     return {
-        key: _thaw(drone[key])
-        for key in (
-            "drone_id",
-            "membership",
-            "selectable",
-            "flight_state",
-            "camera_patterns",
-            "flight_available",
-            "heading_deg",
-        )
+        **({"ground": _thaw(drone["ground"])} if "ground" in drone else {}),
+        **{
+            key: _thaw(drone[key])
+            for key in (
+                "drone_id",
+                "membership",
+                "selectable",
+                "flight_state",
+                "camera_patterns",
+                "flight_available",
+                "heading_deg",
+            )
+        },
     }
 
 

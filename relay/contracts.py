@@ -134,7 +134,13 @@ MAX_STORAGE_REMAINING_BYTES = (1 << 63) - 1
 # cross-language float representation, the same rule signed membership claims follow.
 COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingProxyType(
     {
-        CommandOperation.TAKEOFF: MappingProxyType({"z_mm": "integer"}),
+        CommandOperation.TAKEOFF: MappingProxyType(
+            {
+                "z_mm": "integer",
+                "maximum_height_mm": "optional_positive",
+                "max_local_height_age_ms": "optional_positive",
+            }
+        ),
         CommandOperation.GOTO: MappingProxyType(
             {
                 "x_mm": "integer",
@@ -1608,16 +1614,16 @@ def _command_arguments(
 ) -> Mapping[str, int | str]:
     spec = COMMAND_ARGUMENT_FIELDS[operation]
     value = _mapping(raw, code, "command args must be an object")
-    optional = {field for field, kind in spec.items() if kind == "optional_id"}
+    optional = {field for field, kind in spec.items() if kind.startswith("optional_")}
     if not set(value).issuperset(set(spec) - optional) or not set(value).issubset(set(spec)):
         raise ContractError(code, f"{operation.value} arguments do not match the v1 contract")
     result: dict[str, int | str] = {}
     for field, kind in spec.items():
-        if kind == "optional_id" and field not in value:
+        if kind.startswith("optional_") and field not in value:
             continue
         if kind in {"id", "optional_id"}:
             result[field] = _nonempty_string(value[field], field, code)
-        elif kind == "positive":
+        elif kind in {"positive", "optional_positive"}:
             result[field] = _positive_int(value[field], field, code)
         elif kind == "ground_linear_mm_s":
             result[field] = _nonnegative_int(value[field], field, code)
@@ -1633,6 +1639,15 @@ def _command_arguments(
                 raise ContractError(code, f"{field} exceeds the ground duration cap")
         else:
             result[field] = _integer(value[field], field, code)
+    if operation is CommandOperation.TAKEOFF:
+        policy = {"maximum_height_mm", "max_local_height_age_ms"}
+        present = policy & set(result)
+        if present and (
+            present != policy
+            or not 0 < result["z_mm"] <= result["maximum_height_mm"] <= 2590
+            or result["max_local_height_age_ms"] > 500
+        ):
+            raise ContractError(code, "takeoff requires paired bounded supervised height policy")
     if operation is CommandOperation.GROUND_VELOCITY and (
         (result["linear_mm_s"] and result["angular_mrad_s"])
         or (not result["linear_mm_s"] and not result["angular_mrad_s"])
