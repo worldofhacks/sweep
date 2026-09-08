@@ -2,6 +2,7 @@ import hashlib
 import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import cv2
@@ -44,6 +45,22 @@ def _fingerprint(main: bytes, lower: bytes):
         return len(content), hashlib.sha256(content).hexdigest()
 
     return fingerprint
+
+
+def test_camera_mode_probe_uses_root_for_protected_video_nodes(monkeypatch):
+    commands = []
+
+    def check_output(command, **_kwargs):
+        commands.append(command)
+        if shlex.split(command[-1])[:4] != ["su", "0", "sh", "-c"]:
+            raise subprocess.CalledProcessError(1, command, stderr="Permission denied")
+        return _probe("video0")
+
+    monkeypatch.setattr(capture.subprocess, "check_output", check_output)
+    monkeypatch.setattr(capture.time, "monotonic_ns", lambda: 100)
+    pipeline = capture._camera_pipeline("serial-1", (capture.CAMERAS[0],), 1_000_000_000)
+    assert pipeline["main"]["device"] == "/dev/video0"
+    assert len(commands) == 1
 
 
 def test_decode_main_converts_a_complete_uyvy_frame(tmp_path):
@@ -300,25 +317,25 @@ def test_run_rejects_a_pulled_raw_file_that_differs_from_its_device_fingerprint(
     assert not any(command[-1].startswith("rm -f ") for command in commands)
 
 
-def test_remote_fingerprint_uses_a_single_quoted_remote_shell_command(monkeypatch):
-    commands = []
-    digest = "a" * 64
+def test_device_fingerprint_works_without_android_toybox_sha256sum(tmp_path, monkeypatch):
+    raw = tmp_path / "raw frame 'quoted'.uyvy"
+    raw.write_bytes(bytes(range(256)))
 
-    def output(command, **_kwargs):
-        commands.append(command)
-        return f"sha256={digest}\nsize=42\n"
+    def check_output(command, **_kwargs):
+        arguments = shlex.split(command[-1])
+        assert arguments[:2] == ["su", "0"]
+        assert arguments[2] == "/data/local/sweep/lib/ld-musl-x86_64.so.1"
+        assert arguments[3] == "/data/local/sweep/python/bin/python3.12"
+        return subprocess.run(
+            [sys.executable, *arguments[4:]], capture_output=True, text=True, check=True, timeout=3
+        ).stdout
 
-    monkeypatch.setattr(capture.subprocess, "check_output", output)
-    monkeypatch.setattr(capture, "_remaining_timeout", lambda _deadline: 1)
-
-    assert capture._remote_raw_fingerprint("serial-1", "/data/local/tmp/raw file", 1) == (
-        42,
-        digest,
+    monkeypatch.setattr(capture.subprocess, "check_output", check_output)
+    monkeypatch.setattr(capture.time, "monotonic_ns", lambda: 0)
+    assert capture._remote_raw_fingerprint("serial-1", str(raw), 1_000_000_000) == (
+        256,
+        hashlib.sha256(raw.read_bytes()).hexdigest(),
     )
-
-    remote_command = commands[0][-1]
-    assert shlex.split(remote_command)[:4] == ["su", "0", "sh", "-c"]
-    assert "toybox sha256sum" in shlex.split(remote_command)[4]
 
 
 def test_run_keeps_a_completed_capture_when_cleanup_time_expires(tmp_path, monkeypatch):

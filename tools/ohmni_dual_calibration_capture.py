@@ -138,7 +138,7 @@ done
 printf 'name=%s\\n' "$(cat "$video/name")"
 v4l2-ctl -d /dev/{node} --get-fmt-video"""
         output = subprocess.check_output(
-            [ADB, "-P", "5037", "-s", serial, "shell", shlex.join(["sh", "-c", script])],
+            [ADB, "-P", "5037", "-s", serial, "shell", shlex.join(["su", "0", "sh", "-c", script])],
             text=True,
             timeout=_remaining_timeout(deadline_ns),
         )
@@ -156,13 +156,12 @@ v4l2-ctl -d /dev/{node} --get-fmt-video"""
 
 
 def _remote_raw_fingerprint(serial: str, raw: str, deadline_ns: int) -> tuple[int, str]:
-    script = f"""set -eu
-raw={shlex.quote(raw)}
-digest=$(toybox sha256sum "$raw")
-digest=${{digest%% *}}
-size=$(toybox wc -c < "$raw")
-set -- $size
-printf 'sha256=%s\\nsize=%s\\n' "$digest" "$1"""
+    script = (
+        "import hashlib,sys; from pathlib import Path; "
+        "payload=Path(sys.argv[1]).read_bytes(); "
+        "print('sha256='+hashlib.sha256(payload).hexdigest()); "
+        "print('size='+str(len(payload)))"
+    )
     output = subprocess.check_output(
         [
             ADB,
@@ -171,7 +170,18 @@ printf 'sha256=%s\\nsize=%s\\n' "$digest" "$1"""
             "-s",
             serial,
             "shell",
-            shlex.join(["su", "0", "sh", "-c", script]),
+            shlex.join(
+                [
+                    "su",
+                    "0",
+                    "/data/local/sweep/lib/ld-musl-x86_64.so.1",
+                    "/data/local/sweep/python/bin/python3.12",
+                    "-B",
+                    "-c",
+                    script,
+                    raw,
+                ]
+            ),
         ],
         text=True,
         timeout=_remaining_timeout(deadline_ns),
