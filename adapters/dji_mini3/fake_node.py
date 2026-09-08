@@ -112,10 +112,6 @@ class FakeNode:
         self._navigation_pose: dict[str, object] | None = None
         self._pending_goto_start: CommandFrame | None = None
         self._pending_goto_completion: CommandFrame | None = None
-        self._pending_hover_completion: CommandFrame | None = None
-        self._hover_pose_event_id: str | None = None
-        self._pending_retrieval_completion: CommandFrame | None = None
-        self._retrieval_pose_event_id: str | None = None
         self._outbound: asyncio.Queue[dict[str, object]] | None = None
         self._stop: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -293,24 +289,7 @@ class FakeNode:
             pending = self._pending_goto_completion
             if pending is not None and self._navigation_pose_matches_aircraft(frame, pending):
                 self._pending_goto_completion = None
-                self._enqueue(self._acknowledgement(pending, "executing"))
                 self._enqueue(self._acknowledgement(pending, "completed"))
-            hover = self._pending_hover_completion
-            if (
-                hover is not None
-                and frame.get("event_id") != self._hover_pose_event_id
-                and self._navigation_pose_coordinates_match_aircraft(frame)
-            ):
-                self._pending_hover_completion = None
-                self._enqueue(self._acknowledgement(hover, "completed"))
-            retrieval = self._pending_retrieval_completion
-            if (
-                retrieval is not None
-                and frame.get("event_id") != self._retrieval_pose_event_id
-                and self._navigation_pose_coordinates_match_aircraft(frame)
-            ):
-                self._pending_retrieval_completion = None
-                self._enqueue(self._acknowledgement(retrieval, "completed"))
 
     def _navigation_pose_matches_aircraft(
         self, frame: dict[str, object], command: CommandFrame
@@ -351,9 +330,6 @@ class FakeNode:
             return
         self._last_seq = frame.seq
         self._enqueue(self._acknowledgement(frame, "accepted"))
-        if frame.operation is CommandOperation.GOTO and "navigate" in self.config.capabilities:
-            self._finish_command(frame)
-            return
         self._enqueue(self._acknowledgement(frame, "executing"))
         if frame.operation.value in self.config.slow_operations and self.config.slow_ack_delay_s:
             assert self._loop is not None
@@ -369,30 +345,6 @@ class FakeNode:
                 self._start_goto(frame)
             else:
                 self._pending_goto_start = frame
-            return
-        if frame.operation is CommandOperation.HOVER and self._navigation_route is not None:
-            status, reason, detail = self._execute(frame)
-            if status != "completed":
-                self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
-                return
-            self._hover_pose_event_id = (
-                None if self._navigation_pose is None else self._navigation_pose.get("event_id")
-            )
-            self._enqueue(self._telemetry_frame())
-            self._enqueue(self._node_status_frame())
-            self._pending_hover_completion = frame
-            return
-        if frame.operation is CommandOperation.RETRIEVE_MEDIA and self._navigation_route is not None:
-            status, reason, detail = self._execute(frame)
-            if status != "completed":
-                self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
-                return
-            self._retrieval_pose_event_id = (
-                None if self._navigation_pose is None else self._navigation_pose.get("event_id")
-            )
-            self._enqueue(self._telemetry_frame())
-            self._enqueue(self._node_status_frame())
-            self._pending_retrieval_completion = frame
             return
         status, reason, detail = self._execute(frame)
         self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
