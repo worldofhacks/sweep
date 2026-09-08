@@ -7,6 +7,7 @@ import { useSensorStore } from '../../sensor/store'
 import { sortedAircraft } from '../../shell/derive'
 import { formatTime } from '../../shell/format'
 import type { ModuleProps } from '../types'
+import type { MapEndpoint } from '../../relay/map-endpoint'
 import { prepareCanvas } from './canvas'
 import { scanningDevices, mapDevices, scanTrail } from './derive-map'
 import { drawFleetMap, type MapScan } from './draw'
@@ -21,7 +22,7 @@ import {
   type Viewport,
 } from './projection'
 
-/** The relay updates the grid on every accepted scan; the console reads it at 1 Hz. */
+/** Poll the optional live occupancy endpoint at 1 Hz while this pane is mounted. */
 export const MAP_POLL_MS = 1_000
 
 /** Used until the layout measures the canvas, and in environments without a layout. */
@@ -63,6 +64,7 @@ export function FleetMap({ controller, catalog, mapEndpoint, now }: ModuleProps)
   const viewportRef = useRef(viewport)
   const [view, setView] = useState<MapView>(DEFAULT_VIEW)
   const [map, setMap] = useState<OccupancyMap | null>(null)
+  const [mapReadEndpoint, setMapReadEndpoint] = useState<MapEndpoint | null>(null)
   const [status, setStatus] = useState<MapStatus>('idle')
   const [notice, setNotice] = useState<string | null>(null)
   const [resetting, setResetting] = useState(false)
@@ -85,6 +87,7 @@ export function FleetMap({ controller, catalog, mapEndpoint, now }: ModuleProps)
       if (cancelled) return
       setStatus(result.status)
       setMap(result.status === 'map' ? result.map : null)
+      setMapReadEndpoint(result.status === 'map' ? mapEndpoint : null)
     }
     void read()
     const timer = setInterval(() => void read(), MAP_POLL_MS)
@@ -158,18 +161,19 @@ export function FleetMap({ controller, catalog, mapEndpoint, now }: ModuleProps)
     setView(box ? fitView(box, viewportRef.current) : DEFAULT_VIEW)
   }, [devices, geofence])
 
+  const canReset = Boolean(mapEndpoint?.resetUrl && mapReadEndpoint === mapEndpoint && status === 'map' && map && !resetting)
   const resetMap = useCallback(async () => {
-    if (!mapEndpoint) return
+    if (!mapEndpoint || !canReset) return
     setResetting(true)
     const cleared = await resetOccupancyMap(mapEndpoint)
     setResetting(false)
     setNotice(
       cleared
-        ? 'The relay cleared the occupancy grid. The next read shows the grid rebuilding from new scans.'
+        ? 'The relay accepted the reset request. Waiting for another occupancy map read.'
         : 'The relay did not clear the occupancy grid.',
     )
     if (cleared) setMap(null)
-  }, [mapEndpoint])
+  }, [canReset, mapEndpoint])
 
   const placed = new Set(devices.map((device) => device.droneId))
   const unplaced = fleet.filter((device) => !placed.has(device.drone_id))
@@ -192,8 +196,8 @@ export function FleetMap({ controller, catalog, mapEndpoint, now }: ModuleProps)
           <button
             type="button"
             className="mp-button is-reset"
-            disabled={!mapEndpoint || resetting}
-            title={mapEndpoint ? undefined : 'This console was given no relay bootstrap.'}
+            disabled={!canReset}
+            title={canReset ? undefined : 'Reset requires explicit relay support and a successful occupancy map read.'}
             onClick={() => void resetMap()}
           >
             {resetting ? 'Resetting…' : 'Reset map'}
@@ -286,7 +290,7 @@ function statusSentence(status: MapStatus, map: OccupancyMap | null, configured:
   if (status === 'map' && map) {
     return `Occupancy map ${map.width}×${map.height} cells at ${map.resolution_m} m, updated ${formatTime(map.updated_at)}.`
   }
-  if (status === 'absent') return 'The relay reports no occupancy map for this session yet.'
+  if (status === 'absent') return 'Live occupancy is unavailable. The relay has not provided a map for this session.'
   if (status === 'error') return 'The occupancy map could not be read from the relay.'
   return 'Reading the occupancy map from the relay.'
 }

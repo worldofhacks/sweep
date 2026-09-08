@@ -180,15 +180,20 @@ so every projection flips y exactly once (`projection.ts`). Dragging pans, the w
 the pointer, the zoom buttons about the centre, and Fit view frames the geofence, or the placed
 fleet when there is none.
 
-The raster comes from `GET /api/sessions/{id}/map` under the relay bootstrap URL read as HTTP,
+The optional raster is requested from `GET /api/sessions/{id}/map` under the relay bootstrap URL read as HTTP,
 behind the relay bearer, the same base and bearer the transcripts endpoint uses
 (`src/relay/map-endpoint.ts`, `src/relay/origin.ts`). It is read once on mount and once a second
 while the pane is mounted, and never after it unmounts. Image row 0 is the grid's maximum y and
 `X-Sweep-Map-Origin-X`/`-Y` name the bottom-left cell corner, so the raster is placed from
 `(origin_x, origin_y + height × resolution)`. Headers that do not describe a grid, a body that
-does not decode, or a refusal draw no raster and say so; 404 is the honest "the relay has no grid
-for this session yet"; without a bootstrap nothing is read at all and `Reset map` is disabled.
-`Reset map` posts to `…/map/reset` and reports what the relay answered.
+does not decode, or a refusal draw no raster and say so. HTTP 404 means live occupancy is
+unavailable; it does not establish whether a mapper is running. The current relay has no live
+occupancy or reset route: the former implementation in PR #251 was closed, and the bounded,
+registered live overlay belongs to #245. Survey candidates are separate immutable local evidence.
+Without a bootstrap nothing is read. Production bootstrap does not provide a reset endpoint,
+so `Reset map` is disabled. A future supported reset requires both an explicitly supplied
+reset URL and a successful map read from the current endpoint; a successful GET alone cannot
+enable it. Isolated test fixtures may supply that explicit reset URL.
 
 Positions come from the relay's telemetry projection (`x`, `y`, and an optional `heading_deg`, or
 `yaw_deg` from a node that names it that way), else from the pose of the device's newest scan in

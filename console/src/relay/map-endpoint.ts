@@ -8,8 +8,8 @@ import { relayHttpUrl } from './origin'
 export interface MapEndpoint {
   /** GET: an 8-bit grayscale PNG with the X-Sweep-Map-* headers. */
   url: string
-  /** POST: clears the session's occupancy grid. */
-  resetUrl: string
+  /** An explicitly supported POST reset endpoint; absent in the production bootstrap. */
+  resetUrl?: string
   authorization: string
   /** Injected fixture transport; real endpoints use the browser fetch. */
   fetcher?: typeof fetch
@@ -24,7 +24,6 @@ export function relayMapEndpoint(
   if (!sessionId || !token) return null
   const path = `/api/sessions/${encodeURIComponent(sessionId)}/map`
   const url = relayHttpUrl(baseUrl, path)
-  const resetUrl = relayHttpUrl(baseUrl, `${path}/reset`)
-  if (!url || !resetUrl) return null
-  return { url, resetUrl, authorization: `Bearer ${token}` }
+  if (!url) return null
+  return { url, authorization: `Bearer ${token}` }
 }

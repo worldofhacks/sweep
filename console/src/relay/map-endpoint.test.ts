@@ -3,10 +3,9 @@ import { relayMapEndpoint } from './map-endpoint'
 import { relayHttpOrigin, relayHttpUrl } from './origin'
 
 describe('relay map endpoint', () => {
-  test('the map lives under the relay base read as HTTP, like the transcripts endpoint', () => {
+  test('the map uses the relay HTTP base without inventing a reset endpoint', () => {
     expect(relayMapEndpoint('wss://relay.test', 'sweep-6', 'token')).toEqual({
       url: 'https://relay.test/api/sessions/sweep-6/map',
-      resetUrl: 'https://relay.test/api/sessions/sweep-6/map/reset',
       authorization: 'Bearer token',
     })
     expect(relayMapEndpoint('ws://127.0.0.1:8000', 'sweep-6', 'token')?.url).toBe(

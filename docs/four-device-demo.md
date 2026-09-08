@@ -104,6 +104,12 @@ was not a ground route executor. Phone-local directional flight probes did not
 implement a relay `body_pulse` intent. Mapped-line support did not implement column
 or formation-next, and no generic profile toggle established physical acceptance.
 
+The current relay does not implement the Fleet Map live occupancy endpoint. Its
+404 response does not prove that a mapper is running or waiting for scans. The
+completed survey candidate is a separate recorded artifact; it must not be shown
+as current shared occupancy or used as a live obstacle veto. Live occupancy and
+its expiry/registration contract remain part of #245.
+
 The flight owner must reconcile phone and relay height-policy versions, including
 the signed maximum height and local-height freshness fields, using the measured
 room clearance. Do not copy a probe's target height over an incompatible deployed

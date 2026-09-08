@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import App from '../../App'
 import type { MapEndpoint } from '../../relay/map-endpoint'
+import { relayMapEndpoint } from '../../relay/map-endpoint'
 import { callsNamed, canvasCalls } from '../../testing/canvas-context'
 import { FixtureRelayClient } from '../../testing/fixture-relay-client'
 
@@ -92,16 +93,19 @@ describe('Fleet map', () => {
     expect(reads(fetcher)).toBe(2)
   })
 
-  test('a relay with no grid yet says so and the fleet is still drawn', async () => {
+  test('a missing live endpoint is unavailable, draws no raster, and cannot be reset', async () => {
     const user = userEvent.setup()
-    const fetcher = vi.fn(async () => new Response(null, { status: 404 }))
+    const fetcher = vi.fn(async () => Response.json({ detail: 'Not Found' }, { status: 404 }))
     vi.stubGlobal('fetch', fetcher)
     renderConsole(endpoint)
     const canvas = await openMap(user)
 
     expect(
-      await screen.findByText('The relay reports no occupancy map for this session yet.'),
+      await screen.findByText('Live occupancy is unavailable. The relay has not provided a map for this session.'),
     ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reset map' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Reset map' }))
+    expect(fetcher).not.toHaveBeenCalledWith(endpoint.resetUrl, expect.anything())
     const labels = callsNamed(canvasCalls(canvas), 'fillText').map((args) => args[0])
     expect(new Set(labels)).toEqual(new Set(['D-01', 'D-02', 'G-01', 'G-02', 'G-03']))
     expect(callsNamed(canvasCalls(canvas), 'drawImage')).toHaveLength(0)
@@ -127,15 +131,30 @@ describe('Fleet map', () => {
     expect(fetcher).not.toHaveBeenCalled()
   })
 
-  test('Reset map posts to the relay and reports what it answered', async () => {
+  test('a successful map read does not enable reset on a production bootstrap endpoint', async () => {
+    const user = userEvent.setup()
+    const fetcher = vi.fn(async () => mapResponse())
+    vi.stubGlobal('fetch', fetcher)
+    vi.stubGlobal('createImageBitmap', async () => ({ width: 200, height: 160 }))
+    renderConsole(relayMapEndpoint('wss://relay.test', 'sweep-6', 'map-token') ?? undefined)
+    await openMap(user)
+    await screen.findByText(/Occupancy map 200×160 cells/)
+
+    expect(screen.getByRole('button', { name: 'Reset map' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Reset map' }))
+    expect(fetcher).not.toHaveBeenCalledWith(endpoint.resetUrl, expect.anything())
+  })
+
+  test('Reset map requires a successful read and explicit support, then reports the response', async () => {
     const user = userEvent.setup()
     const fetcher = vi.fn(async (url: string) =>
-      url === endpoint.resetUrl ? new Response(null, { status: 204 }) : new Response(null, { status: 404 }),
+      url === endpoint.resetUrl ? new Response(null, { status: 204 }) : mapResponse(),
     )
     vi.stubGlobal('fetch', fetcher)
+    vi.stubGlobal('createImageBitmap', async () => ({ width: 200, height: 160 }))
     renderConsole(endpoint)
     await openMap(user)
-    await screen.findByText('The relay reports no occupancy map for this session yet.')
+    await screen.findByText(/Occupancy map 200×160 cells/)
 
     await user.click(screen.getByRole('button', { name: 'Reset map' }))
     await waitFor(() =>
@@ -146,7 +165,27 @@ describe('Fleet map', () => {
         headers: { Authorization: 'Bearer map-token' },
       }),
     )
-    expect(await screen.findByText(/The relay cleared the occupancy grid/)).toBeInTheDocument()
+    expect(await screen.findByText(/The relay accepted the reset request/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reset map' })).toBeDisabled()
+  })
+
+  test('a later unavailable map retires a previously enabled reset', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const fetcher = vi.fn(async () => mapResponse())
+    vi.stubGlobal('fetch', fetcher)
+    vi.stubGlobal('createImageBitmap', async () => ({ width: 200, height: 160 }))
+    renderConsole(endpoint)
+    await openMap(user)
+    await screen.findByText(/Occupancy map 200×160 cells/)
+    expect(screen.getByRole('button', { name: 'Reset map' })).toBeEnabled()
+
+    fetcher.mockImplementation(async () => Response.json({ detail: 'Not Found' }, { status: 404 }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    expect(screen.getByRole('button', { name: 'Reset map' })).toBeDisabled()
+    expect(screen.getByText(/Live occupancy is unavailable/)).toBeInTheDocument()
   })
 
   test('panning moves the fleet under the pointer and zooming changes the scale', async () => {

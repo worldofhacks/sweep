@@ -50,9 +50,16 @@ describe('occupancy map endpoint', () => {
     })
   })
 
-  test('a relay with no grid for the session is absent, not an error', async () => {
+  test('HTTP 404 is absent without claiming that a mapper is running', async () => {
     const fetcher = vi.fn(async () => new Response(null, { status: 404 }))
     expect(await fetchOccupancyMap(endpoint, { fetcher, decode })).toEqual({ status: 'absent' })
+  })
+
+  test('reset requires an explicitly supplied endpoint and otherwise sends nothing', async () => {
+    const fetcher = vi.fn(async () => new Response(null, { status: 204 }))
+    const readOnly: MapEndpoint = { url: endpoint.url, authorization: endpoint.authorization }
+    expect(await resetOccupancyMap(readOnly, fetcher)).toBe(false)
+    expect(fetcher).not.toHaveBeenCalled()
   })
 
   test('a refusal, a header that does not describe a grid, or an undecodable body is an error', async () => {
