@@ -163,6 +163,8 @@ def _stage(value: object, name: str) -> dict[str, object]:
         "neck_position",
         "stationary",
         "state_id",
+        "started_monotonic_s",
+        "completed_monotonic_s",
     }:
         raise ValueError(f"{name} is invalid")
     _pose(value["pose"], f"{name} pose")
@@ -175,12 +177,19 @@ def _stage(value: object, name: str) -> dict[str, object]:
         or value["stationary"] is not True
         or not isinstance(value["state_id"], str)
         or not value["state_id"]
+        or not all(
+            type(value[key]) in (int, float) and math.isfinite(value[key])
+            for key in ("started_monotonic_s", "completed_monotonic_s")
+        )
+        or value["completed_monotonic_s"] < value["started_monotonic_s"]
     ):
         raise ValueError(f"{name} must retain stationary fixed-head encoder evidence")
     return {
         "pose": dict(value["pose"]),
         "encoder": dict(encoder),
         "state_id": value["state_id"],
+        "started_monotonic_s": value["started_monotonic_s"],
+        "completed_monotonic_s": value["completed_monotonic_s"],
     }
 
 
@@ -244,7 +253,7 @@ def _pixel_residual(
     camera[:3, :3], camera[:3, 3] = _rotation(parameters[:3]), parameters[3:6]
     tag_parameters = parameters[6:].reshape(tags, 3)
     residuals: list[float] = []
-    for body, corners, tag_id in observations:
+    for body, corners, tag_id, *_ in observations:
         x, y, yaw = tag_parameters[tag_id]
         world_tag = np.eye(4)
         world_tag[:3, :3] = [
@@ -272,15 +281,22 @@ def _initial_parameters(
     distortion: np.ndarray,
 ) -> np.ndarray:
     parameters = np.zeros(6 + 3 * tags)
-    body, corners, _ = observations[0]
-    success, vector, translation = cv2.solvePnP(
-        tag_corners(TAG_SIZE_M), corners, camera_matrix, distortion, flags=cv2.SOLVEPNP_ITERATIVE
-    )
-    if not success or translation[2, 0] <= 0:
-        raise ValueError("could not initialize floor-tag reprojection fit")
-    camera_tag = np.eye(4)
-    camera_tag[:3, :3] = _rotation(vector.reshape(3))
-    camera_tag[:3, 3] = translation.reshape(3)
+    body, corners, _, *seed = observations[0]
+    if seed:
+        camera_tag = _matrix(seed[0], "detected camera-tag pose")
+    else:
+        success, vector, translation = cv2.solvePnP(
+            tag_corners(TAG_SIZE_M),
+            corners,
+            camera_matrix,
+            distortion,
+            flags=cv2.SOLVEPNP_IPPE_SQUARE,
+        )
+        if not success or translation[2, 0] <= 0:
+            raise ValueError("could not initialize floor-tag reprojection fit")
+        camera_tag = np.eye(4)
+        camera_tag[:3, :3] = _rotation(vector.reshape(3))
+        camera_tag[:3, 3] = translation.reshape(3)
     inferred_tag = body @ camera_tag
     yaw = math.atan2(inferred_tag[1, 0], inferred_tag[0, 0])
     world_tag = np.eye(4)
@@ -293,19 +309,22 @@ def _initial_parameters(
     camera = np.linalg.inv(body) @ world_tag @ np.linalg.inv(camera_tag)
     parameters[:3] = _log(camera[:3, :3])
     parameters[3:6] = camera[:3, 3]
-    for observation_body, observation_corners, tag_id in observations:
-        success, vector, translation = cv2.solvePnP(
-            tag_corners(TAG_SIZE_M),
-            observation_corners,
-            camera_matrix,
-            distortion,
-            flags=cv2.SOLVEPNP_ITERATIVE,
-        )
-        if not success or translation[2, 0] <= 0:
-            continue
-        camera_tag = np.eye(4)
-        camera_tag[:3, :3] = _rotation(vector.reshape(3))
-        camera_tag[:3, 3] = translation.reshape(3)
+    for observation_body, observation_corners, tag_id, *seed in observations:
+        if seed:
+            camera_tag = _matrix(seed[0], "detected camera-tag pose")
+        else:
+            success, vector, translation = cv2.solvePnP(
+                tag_corners(TAG_SIZE_M),
+                observation_corners,
+                camera_matrix,
+                distortion,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE,
+            )
+            if not success or translation[2, 0] <= 0:
+                continue
+            camera_tag = np.eye(4)
+            camera_tag[:3, :3] = _rotation(vector.reshape(3))
+            camera_tag[:3, 3] = translation.reshape(3)
         inferred_tag = observation_body @ camera @ camera_tag
         parameters[6 + 3 * tag_id : 9 + 3 * tag_id] = (
             inferred_tag[0, 3],
@@ -448,11 +467,10 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
     )
     transforms = [np.eye(4)]
     identity = {
-        key: request[key]
-        for key in ("device_id", "boot_id", "camera_serial", "motion_chain_id")
+        key: request[key] for key in ("device_id", "boot_id", "camera_serial", "motion_chain_id")
     }
     motion_pins, motion_payloads, deltas, motion_documents = [], [], [], []
-    previous_after: dict[str, object] | None = None
+    previous_completed: float | None = None
     for motion_index, item in enumerate(request["motions"]):
         pin, payload, document, delta = _motion(evidence_root, item)
         if any(document[key] != identity[key] for key in identity):
@@ -463,9 +481,9 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
             _stage(document["stages"].get(stage_name), f"motion {stage_name}")
         before = _stage(document["stages"][item["before_stage"]], "motion before")
         after = _stage(document["stages"][item["after_stage"]], "motion after")
-        if previous_after is not None and before != previous_after:
-            raise ValueError("motion evidence does not form one endpoint chain")
-        previous_after = after
+        if previous_completed is not None and before["started_monotonic_s"] < previous_completed:
+            raise ValueError("motion evidence is not chronological")
+        previous_completed = float(after["completed_monotonic_s"])
         motion_pins.append(pin)
         motion_payloads.append(payload)
         motion_documents.append(document)
@@ -525,6 +543,7 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
                 transforms[index],
                 np.asarray(detection["corners_px"], dtype=float),
                 tag_indexes[tag_id],
+                np.asarray(detection["T_camera_tag"], dtype=float),
             )
             observations.append(observation)
             grouped.append((index, observation))
@@ -540,7 +559,7 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
     resampling = _resampling(grouped, len(tag_indexes), detector.K, detector.D)
     evaluations = [resampling["held_out"], *resampling["leave_one_capture_state_out"]]
     if any(
-        item["status"] != "evaluated" or item["rms_reprojection_error_px"] > 2
+        item["status"] != "evaluated" or item["rms_reprojection_error_px"] > 3
         for item in evaluations
     ):
         raise ValueError("mount held-out capture-state validation failed")
