@@ -252,3 +252,16 @@ def test_paired_encoder_stream_withdraws_after_owner_reports_a_missing_reply(
     with pytest.raises(EncoderStreamUnavailable, match="missing_encoder_reply"):
         stream.read_pair(1)
     thread.join(timeout=1)
+
+
+def test_forward_and_left_turn_preserve_encoder_direction_through_wrap() -> None:
+    odometry = Odometry(object(), (0.0, 0.0, 0.0))
+    forward = ((6572, 3836), (4572, 5836), (2572, 7836), (572, 9836), (14992, 11800))
+    counterclockwise = ((14992, 11800), (15792, 12600), (208, 13400), (2180, 15360))
+
+    for index, pair in enumerate(forward + counterclockwise[1:]):
+        odometry.update(pair, index / 10)
+
+    pose = odometry.snapshot(0.8)
+    assert 0.08 < pose.x < 0.10
+    assert 10 < pose.yaw_deg < 15
