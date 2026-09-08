@@ -11,7 +11,7 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from relay.observations import Observation
+from relay.observations import Observation, decode_observation
 from tools.ohmni_live_tag_mapper import (
     MAX_ARCHIVE_BYTES,
     MAX_ARCHIVE_DURATION_S,
@@ -21,10 +21,13 @@ from tools.ohmni_local_map_candidate import (
     MAX_MANIFEST_BYTES,
     _archive,
     _digest,
+    _lidar_config,
     _object,
     _pin,
     _read_regular,
 )
+from tools.ohmni_occupancy_grid import build_grid
+from tools.ohmni_scan_record import MANIFEST_RESERVE_BYTES, record_events
 from tools.ohmni_tag_candidate_fusion import (
     MAX_MULTI_ARCHIVE_OBSERVATIONS,
     _calibration,
@@ -39,6 +42,14 @@ from tools.ohmni_tag_candidate_fusion import (
 MAX_ARCHIVES = 64
 MAX_AGGREGATE_BYTES = 64 * 1024 * 1024
 MAX_CONTINUITY_GAP_NS = 100_000_000
+
+
+def _write_snapshot(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def _capture(event: Observation) -> tuple[str, int]:
@@ -302,17 +313,150 @@ def build(
             shutil.rmtree(temporary, ignore_errors=True)
 
 
+def build_map(
+    archives: Sequence[Path],
+    lidar_config_path: Path,
+    lidar_mount_id: str,
+    request_path: Path,
+    evidence_root: Path,
+    output: Path,
+    maximum_continuity_gap_ns: int,
+) -> dict[str, object]:
+    output = output.absolute()
+    if output.exists() or output.is_symlink():
+        raise FileExistsError(f"candidate output already exists: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
+    published = False
+    try:
+        tag_output = temporary / "tag-candidate"
+        tags = build(
+            archives,
+            request_path,
+            evidence_root,
+            tag_output,
+            maximum_continuity_gap_ns,
+        )
+        inputs = tag_output / "inputs"
+        combined = _read_regular(inputs / "combined-observations.jsonl", MAX_AGGREGATE_BYTES)
+        events = [decode_observation(line) for line in combined.splitlines()]
+        lidar_events = [
+            event for event in events if event.submission.payload["kind"] == "range_scan"
+        ]
+        if not lidar_events:
+            raise ValueError("archives have no accepted lidar observations")
+        archive_manifest_payload = _read_regular(
+            inputs / "archive-000-manifest.json", MAX_MANIFEST_BYTES
+        )
+        archive_manifest = _object(archive_manifest_payload, "archive manifest snapshot")
+        recording_config, grid_config, lidar_config_payload, lidar_pin = _lidar_config(
+            lidar_config_path, lidar_mount_id, archive_manifest
+        )
+        lidar_bytes = sum(len(event.encode()) + 1 for event in lidar_events)
+        if len(lidar_events) > recording_config.max_records:
+            raise ValueError("reviewed lidar recording record budget cannot contain combined scans")
+        if lidar_bytes > recording_config.max_bytes - MANIFEST_RESERVE_BYTES:
+            raise ValueError("reviewed lidar recording byte budget cannot contain combined scans")
+
+        os.rename(inputs, temporary / "inputs")
+        _write_snapshot(temporary / "inputs" / "lidar-config.json", lidar_config_payload)
+        recording = record_events(
+            (event.encode() for event in events), temporary / "recording", recording_config
+        )
+        if recording["observations"]["stop_reason"] != "input_exhausted":
+            raise ValueError("reviewed lidar recording budget did not retain every combined scan")
+        grid = build_grid(temporary / "recording", temporary / "occupancy", grid_config)
+        if grid["grid"]["frame"] != tags["candidate_frame"]:
+            raise ValueError("generated map artifacts do not match archive odometry frame")
+        if not tags["candidates"]:
+            raise ValueError("archives cannot produce qualified local tag candidates")
+        _write_snapshot(
+            temporary / "tag_candidates.json",
+            json.dumps(tags, allow_nan=False, indent=2, sort_keys=True).encode() + b"\n",
+        )
+        shutil.rmtree(tag_output)
+
+        calibration_pin = tags["calibration"]
+        mount_pin = tags["mount"]
+        files: dict[str, dict[str, int | str]] = {}
+        paths = [
+            "recording/recording.json",
+            "recording/observations.jsonl",
+            "occupancy/manifest.json",
+            "occupancy/occupancy.png",
+            "tag_candidates.json",
+            "inputs/combined-observations.jsonl",
+            "inputs/request.json",
+            "inputs/lidar-config.json",
+            *(archive["path"] for archive in tags["archives"]),
+            calibration_pin["path"],
+            mount_pin["path"],
+        ]
+        for relative in paths:
+            payload = _read_regular(temporary / relative, MAX_AGGREGATE_BYTES)
+            files[relative] = {"bytes": len(payload), "sha256": _digest(payload)}
+        manifest = {
+            "schema_version": 1,
+            "kind": "ohmni_multi_archive_local_map_candidate",
+            "approval_status": "unapproved",
+            "candidate_mode": "local_odom",
+            "candidate_frame": tags["candidate_frame"],
+            "claim_scope": (
+                "Offline local occupancy and tag estimates. This candidate does not approve "
+                "control, flight, or autonomous movement."
+            ),
+            "archive_count": tags["archive_count"],
+            "archives": tags["archives"],
+            "continuity": tags["continuity"],
+            "inputs": {
+                "lidar_config": lidar_pin,
+                "fusion_request": {
+                    "path": "inputs/request.json",
+                    "sha256": tags["request_sha256"],
+                },
+                "aggregate_observations": tags["aggregate_observations"],
+                "calibration": calibration_pin,
+                "mount": mount_pin,
+            },
+            "artifacts": {
+                "recording": "recording/recording.json",
+                "occupancy": "occupancy/manifest.json",
+                "tags": "tag_candidates.json",
+            },
+            "files": files,
+            "occupancy": {
+                "frame": grid["grid"]["frame"],
+                "artifact_sha256": grid["artifact_sha256"],
+            },
+            "tag_count": len(tags["candidates"]),
+        }
+        _write_snapshot(
+            temporary / "manifest.json",
+            json.dumps(manifest, allow_nan=False, indent=2, sort_keys=True).encode() + b"\n",
+        )
+        os.rename(temporary, output)
+        published = True
+        return manifest
+    finally:
+        if not published:
+            shutil.rmtree(temporary, ignore_errors=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fusion-request", required=True, type=Path)
     parser.add_argument("--evidence-root", required=True, type=Path)
+    parser.add_argument("--lidar-config", required=True, type=Path)
+    parser.add_argument("--lidar-mount-id", required=True)
     parser.add_argument("--maximum-continuity-gap-ns", required=True, type=int)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("archives", nargs="+", type=Path)
     args = parser.parse_args(argv)
     try:
-        result = build(
+        result = build_map(
             args.archives,
+            args.lidar_config,
+            args.lidar_mount_id,
             args.fusion_request,
             args.evidence_root,
             args.output,

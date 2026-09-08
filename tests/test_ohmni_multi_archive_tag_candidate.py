@@ -11,7 +11,11 @@ import pytest
 
 from relay.observations import Observation, decode_observation
 from tools import ohmni_multi_archive_tag_candidate
-from tools.ohmni_multi_archive_tag_candidate import MAX_MULTI_ARCHIVE_OBSERVATIONS, build
+from tools.ohmni_multi_archive_tag_candidate import (
+    MAX_MULTI_ARCHIVE_OBSERVATIONS,
+    build,
+    build_map,
+)
 
 sys.path.insert(0, str(Path(__file__).parent))
 local_fixture = importlib.import_module("test_ohmni_local_map_candidate")
@@ -76,6 +80,44 @@ def test_single_and_continuous_split_archives_produce_equivalent_candidates(tmp_
 
     assert split["candidates"] == one["candidates"]
     assert split["continuity"]["checked_boundaries"] == 1
+
+
+def test_build_map_records_every_combined_scan_and_pins_its_inputs(tmp_path: Path) -> None:
+    archive, config, request, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
+    events = _events(archive)
+    first = _copy_archive(archive, tmp_path / "first", events[:3])
+    second = _copy_archive(archive, tmp_path / "second", events[3:])
+    output = tmp_path / "map"
+
+    result = build_map([first, second], config, "lidar-measured", request, evidence, output, 100)
+
+    assert result["approval_status"] == "unapproved"
+    assert result["candidate_frame"] == "odom"
+    assert result["archive_count"] == 2
+    assert (output / "occupancy" / "occupancy.png").is_file()
+    assert (output / "inputs" / "lidar-config.json").read_bytes() == config.read_bytes()
+    assert json.loads((output / "tag_candidates.json").read_text())["candidates"]
+    recorded = (output / "recording" / "observations.jsonl").read_bytes()
+    assert recorded.count(b'"kind":"range_scan"') == 1
+    assert (
+        result["files"]["inputs/combined-observations.jsonl"]["sha256"]
+        == hashlib.sha256(b"".join(event.encode() + b"\n" for event in events)).hexdigest()
+    )
+
+
+def test_build_map_refuses_a_lidar_budget_that_clips_combined_scans(tmp_path: Path) -> None:
+    archive, config, request, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
+    document = json.loads(config.read_text())
+    document["recording"]["max_records"] = 1
+    config.write_text(json.dumps(document))
+    events = _events(archive)
+    scan = next(event for event in events if event.submission.payload["kind"] == "range_scan")
+    events.append(Observation(replace(scan.submission, event_id="scan-two"), scan.t_ingest))
+    _rewrite_archive(archive, events)
+    _bind_request_observations(request, events)
+
+    with pytest.raises(ValueError, match="record budget"):
+        build_map([archive], config, "lidar-measured", request, evidence, tmp_path / "map", 100)
 
 
 def test_fuses_more_than_the_single_archive_limit_from_validated_chunks(tmp_path: Path) -> None:
