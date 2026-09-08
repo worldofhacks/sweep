@@ -356,6 +356,8 @@ class FlightExecution:
     def __init__(self):
         self.preview_calls = []
         self.confirm_calls = []
+        self.reserve_calls = []
+        self.dispatch_reserved_calls = []
 
     def preview(self, session, preview):
         self.preview_calls.append((session, copy.deepcopy(preview)))
@@ -410,6 +412,22 @@ class FlightExecution:
             "detail": "The qualified route was accepted.",
         }
 
+    def reserve(self, session, preview):
+        self.reserve_calls.append((session, copy.deepcopy(preview)))
+        return {
+            "status": "accepted",
+            "code": "navigation_reserved",
+            "detail": "The qualified route was reserved.",
+        }
+
+    def dispatch_reserved(self, session, preview_id):
+        self.dispatch_reserved_calls.append((session, preview_id))
+        return {
+            "status": "accepted",
+            "code": "navigation_dispatched",
+            "detail": "The reserved route was accepted.",
+        }
+
 
 def test_qualified_flight_preview_dispatches_the_exact_retained_route(tmp_path):
     flight = FlightExecution()
@@ -435,6 +453,33 @@ def test_qualified_flight_preview_dispatches_the_exact_retained_route(tmp_path):
         assert flight.confirm_calls == [("test-session", preview)]
         repeat = case.service.confirm("test-session", case.confirmation(envelope))
         assert repeat["code"] == "confirmation_consumed"
+    finally:
+        case.service.close()
+
+
+def test_qualified_flight_review_can_be_reserved_then_dispatched(tmp_path):
+    flight = FlightExecution()
+    case = Case(tmp_path, flight_execution=flight)
+    try:
+        case.state = live_state(("aircraft",))
+        envelope = case.preview("reserved-review")
+        confirmation = case.confirmation(envelope)
+
+        reserved = case.service.reserve("test-session", confirmation)
+
+        assert reserved["status"] == "accepted"
+        assert flight.reserve_calls == [("test-session", envelope["preview"])]
+        dispatched = case.service.dispatch_reserved(
+            "test-session", envelope["preview"]["previewId"]
+        )
+        assert dispatched == {
+            "status": "accepted",
+            "code": "navigation_dispatched",
+            "detail": "The reserved route was accepted.",
+        }
+        assert flight.dispatch_reserved_calls == [
+            ("test-session", envelope["preview"]["previewId"])
+        ]
     finally:
         case.service.close()
 
