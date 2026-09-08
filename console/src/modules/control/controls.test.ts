@@ -9,7 +9,6 @@ import {
 import { fixtureAircraft, fixtureScenario } from '../../testing/fixture-relay-client'
 import {
   DPAD_CELLS,
-  MISSION_STEPS,
   NO_SELECTION_REASON,
   ROBOT_UNSUPPORTED_NOTE,
   AIRCRAFT_SELECTION_REQUIRED_NOTE,
@@ -252,7 +251,7 @@ describe('command catalogue', () => {
       ['Come home', '—', 'selected', 'available'],
       ['Land', 'confirm', 'selected', 'available'],
       ['Land all', 'confirm', 'all', 'available'],
-      ['Formation next', '—', 'selected', 'available'],
+      ['Formation next', 'confirm', 'selected', 'available'],
       ['Spacing tighter', '—', 'selected', 'available'],
       ['Spacing wider', '—', 'selected', 'available'],
       ['Sweep', 'confirm', 'selected', 'available'],
@@ -455,24 +454,6 @@ describe('requests', () => {
   })
 })
 
-describe('mission steps', () => {
-  test('ten Appendix E steps show the integrated capability status', () => {
-    expect(MISSION_STEPS).toHaveLength(10)
-    expect(MISSION_STEPS.map((step) => [step.intent, step.status])).toEqual([
-      ['arm', 'available'],
-      ['select', 'available'],
-      ['takeoff', 'available'],
-      ['confirm', 'available'],
-      ['formation_set', 'available'],
-      ['translate', 'available'],
-      ['altitude', 'available'],
-      ['sweep', 'available'],
-      ['come_home', 'available'],
-      ['land_all', 'available'],
-    ])
-  })
-})
-
 describe('control gating per device class', () => {
   const mixed = (selection: number[]) =>
     connected(selection, { drones: fixtureScenario('mixed').fleet(t), roster_version: 14, capability_profile: 'c2_fleet_operations', enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS] })
@@ -560,4 +541,27 @@ test('mixed formations stay unavailable instead of synthesizing per-class ground
   expect(classFormationReason({ ...state, selection: [1, 11, 12] }, 'line')).toBe(AIRCRAFT_SELECTION_REQUIRED_NOTE)
   expect(classFormationReason({ ...state, selection: [1, 11] }, 'line')).toBe(AIRCRAFT_SELECTION_REQUIRED_NOTE)
   expect(classFormationReason({ ...state, selection: [1, 2, 3, 4] }, 'diamond')).toBeNull()
+})
+
+
+test.each(['c1_basic_control_mapped_line', 'c1_basic_control.ground_mapped_line', 'c1_basic_control.no_altitude.ground_mapped_line', 'c1_basic_control_mapped_line.ground'])(
+  'mapped line profile %s never enables other shapes or next even if its intent names are broad', (profile) => {
+    const state = connected([1, 2, 3, 4], {
+      capability_profile: profile, enabled_intent_names: ['select', 'formation_set', 'formation_next'],
+      drones: fixtureAircraft(t, 4).map((device) => ({ ...device, membership: 'ready', selectable: true, readiness_reasons: [], flight_state: 'hovering', control_authority: true, rc_safety_operator_present: true, last_seen_at: t, telemetry: { fresh: true } })),
+    })
+    const controls = formationControls(state)
+    expect(controls.find((control) => control.label === 'line')?.enabled).toBe(true)
+    for (const control of controls.filter((control) => control.label !== 'line')) {
+      expect(control.enabled).toBe(false)
+      expect(control.note).toContain('supports the mapped line only')
+    }
+    expect(motionControls(state).find((control) => control.name === 'formation_next')).toMatchObject({ enabled: false })
+  },
+)
+
+test('an unknown profile does not infer supported formation shapes from formation_set', () => {
+  const state = connected([1, 2], { capability_profile: 'future_profile', enabled_intent_names: ['formation_set', 'formation_next'] })
+  expect(formationControls(state).every((control) => !control.enabled && control.note.includes('Formation shapes are unreported'))).toBe(true)
+  expect(motionControls(state).find((control) => control.name === 'formation_next')?.enabled).toBe(false)
 })

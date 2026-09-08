@@ -814,6 +814,7 @@ def test_source_allowlist_covers_every_registered_source() -> None:
         IntentName.LAND,
         IntentName.TRANSLATE,
         IntentName.FORMATION_NEXT,
+        IntentName.FORMATION_SET,
     }
 
 
@@ -889,3 +890,40 @@ def test_webcam_existing_motion_profiles_require_operator_confirmation(name):
     payload = {**_c1_payload("webcam", name), "confirm": True}
     assert isinstance(validate_intent(payload), AcceptedIntent)
     assert isinstance(validate_intent({**payload, "confirm": False}), RejectedIntent)
+
+
+def test_webcam_explicit_line_requires_enabled_profile_confirmation_and_two_targets():
+    payload = {
+        **_c1_payload("webcam", IntentName.FORMATION_SET),
+        "selection": [1, 2],
+        "confirm": True,
+    }
+    assert isinstance(
+        validate_intent(payload, capability_profile=C2_CAPABILITY_PROFILE), AcceptedIntent
+    )
+    disabled = validate_intent(payload)
+    assert isinstance(disabled, RejectedIntent)
+    assert disabled.reason is RejectionReason.UNSUPPORTED
+    for change in ({"confirm": False}, {"selection": [1]}, {"selection": [1, 1]}):
+        assert isinstance(
+            validate_intent({**payload, **change}, capability_profile=C2_CAPABILITY_PROFILE),
+            RejectedIntent,
+        )
+
+
+@pytest.mark.parametrize("shape", ["column", "wedge", "diamond"])
+def test_webcam_explicit_formation_cannot_expand_the_line_gesture(shape):
+    payload = {
+        **_c1_payload("webcam", IntentName.FORMATION_SET),
+        "args": {"name": shape},
+        "selection": [1, 2, 3, 4],
+        "confirm": True,
+    }
+    rejected = validate_intent(payload, capability_profile=C2_CAPABILITY_PROFILE)
+    assert isinstance(rejected, RejectedIntent)
+    assert rejected.reason is RejectionReason.SOURCE_NOT_ALLOWED
+    # The source-specific restriction leaves the existing console profile intact.
+    assert isinstance(
+        validate_intent({**payload, "source": "console"}, capability_profile=C2_CAPABILITY_PROFILE),
+        AcceptedIntent,
+    )

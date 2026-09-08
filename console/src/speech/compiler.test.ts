@@ -8,7 +8,7 @@ import {
   type CompileContext,
 } from './compiler'
 
-const context: CompileContext = { roomId: 'room-01', pattern: 'pano_360', readyIds: [1, 2, 4] }
+const context: CompileContext = { roomId: 'room-01', pattern: 'pano_360', readyIds: [1, 2, 4], readyAircraftIds: [1, 2, 4] }
 
 describe('compileUtterance', () => {
   test('an empty transcript is refused as empty audio', () => {
@@ -44,9 +44,27 @@ describe('compileUtterance', () => {
       intent: 'select',
       args: { ids: [1, 2, 4] },
     })
-    expect(compileUtterance('select all aircraft', { ...context, readyIds: [] })).toMatchObject({
+    expect(compileUtterance('select all aircraft', { ...context, readyIds: [], readyAircraftIds: [] })).toMatchObject({
       status: 'refused',
       reason: 'no_ready_aircraft',
+    })
+  })
+
+  test('aircraft selection never includes ready ground robots or infers an aircraft class', () => {
+    const mixed = { ...context, readyIds: [1, 2, 11, 12], readyAircraftIds: [1, 2], selection: [11], selectedGroundIds: [11] }
+    expect(compileUtterance('select all ready aircraft', mixed)).toMatchObject({ args: { ids: [1, 2] } })
+    expect(compileUtterance('select all ready aircraft', { ...mixed, readyAircraftIds: undefined })).toMatchObject({ status: 'refused', reason: 'no_ready_aircraft' })
+    const ambiguous = compileUtterance('freeze that one', mixed)
+    if (ambiguous.status !== 'ambiguous') throw new Error('expected ambiguity')
+    expect(resolveAmbiguity(ambiguous, 'every ready aircraft', mixed)).toMatchObject({ args: { ids: [1, 2] } })
+  })
+
+  test('ground HOLD describes a stop command, never hovering or a physical success', () => {
+    expect(compileUtterance('hold position', { ...context, selection: [11], selectedGroundIds: [11] })).toMatchObject({
+      intent: 'hold', sentence: 'Request zero drive velocity from each selected ground robot.',
+    })
+    expect(compileUtterance('hold position', { ...context, selection: [1, 11], selectedGroundIds: [11] })).toMatchObject({
+      intent: 'hold', sentence: 'Request zero drive velocity from selected ground robots and HOLD from selected aircraft.',
     })
   })
 

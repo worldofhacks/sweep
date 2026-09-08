@@ -1,6 +1,7 @@
 import type { ConsoleIntentName, DroneId, GroundVelocityArgs } from '../relay/contract'
 import { isReady } from '../shell/derive'
 import { capabilityBlockedReason, type ControlState } from './state'
+import { surveyStartBlockedReason } from './survey'
 
 export type GroundDirection = 'forward' | 'left' | 'right'
 /** Requested pulse parameters, not measured speed or distance guarantees. */
@@ -15,9 +16,10 @@ export function hasGroundTarget(state: ControlState, ids: readonly DroneId[]): b
 
 /** A local pose remains local. Only the explicit ground dispatcher may move it. */
 export function groundControlBlockedReason(state: ControlState, name: ConsoleIntentName, ids = state.selection): string | null {
+  if (name === 'survey_area') return surveyStartBlockedReason(state, 'recording', ids)
   if (name !== 'ground_velocity' && !hasGroundTarget(state, ids)) return null
   if (['hold', 'estop', 'select'].includes(name)) return null
-  if (name !== 'ground_velocity' && name !== 'come_home') return 'This ground runtime supports bounded pulses and its configured return only. Use Ground controls.'
+  if (name !== 'ground_velocity' && name !== 'come_home') return 'This ground runtime supports bounded pulses, configured return and survey recording. Use Ground controls.'
   if (ids.length !== 1 || state.aircraft[ids[0]]?.node_type !== 'ground') return 'Select exactly one ground robot.'
   if (!['connected', 'degraded'].includes(state.connection.status)) return 'The console connection is unavailable.'
   const capability = capabilityBlockedReason(state, name)

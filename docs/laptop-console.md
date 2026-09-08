@@ -1,9 +1,9 @@
 # Laptop console
 
-The single operator URL is **http://127.0.0.1:5173/**. The integrated source is currently
-in `.claude/worktrees/g01-local-console` on branch `codex/unified-fleet-control`.
-Use the source directory reported by `/console-version.json`; a branch switch does not
-change the immutable build already being served.
+The single operator URL is **http://127.0.0.1:5173/**. Use the source directory and
+revision reported by `/console-version.json`; a branch switch does not change the
+immutable build already being served. Build and restart from that owned checkout
+when publishing a reviewed update.
 
 ```sh
 python3 tools/console.py status

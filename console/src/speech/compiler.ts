@@ -45,8 +45,10 @@ export interface CompileContext {
   roomId: string
   /** Capture pattern from the console state; used when the utterance names none. */
   pattern: CapturePattern
-  /** Aircraft that are ready and selectable, ascending. */
+  /** Devices that are ready and selectable, ascending. */
   readyIds: DroneId[]
+  /** Aircraft-only selection, distinct from ready ground devices. */
+  readyAircraftIds?: DroneId[]
   selectedGroundIds?: DroneId[]
   selection?: DroneId[]
 }
@@ -154,13 +156,13 @@ export function compileUtterance(text: string, context: CompileContext): Compile
       intent: 'hold',
       args: {},
       selection: 'the selection',
-      sentence: 'Each selected aircraft hovers at its current pose.',
+      sentence: holdSentence(context),
     }
   }
   if (word('arm')) return unsupported('arm')
   if (word('disarm')) return unsupported('disarm')
   if (has('select all', 'select everyone', 'all drones', 'all aircraft', 'every ready', 'everyone')) {
-    return selectReady(context.readyIds)
+    return selectReady(context.readyAircraftIds ?? [])
   }
   if (has('spread out', 'wider', 'tighter', 'closer')) return unsupported('spacing')
   if (has('line', 'column', 'wedge', 'diamond', 'formation')) return unsupported('formation_set')
@@ -181,7 +183,7 @@ export function resolveAmbiguity(
   context: CompileContext,
 ): CompileOutcome | null {
   if (option === 'cancel') return null
-  if (option === 'every ready aircraft') return selectReady(context.readyIds)
+  if (option === 'every ready aircraft') return selectReady(context.readyAircraftIds ?? [])
   if (outcome.base === 'capture_room') {
     return {
       status: 'compiled',
@@ -196,7 +198,7 @@ export function resolveAmbiguity(
     intent: 'hold',
     args: {},
     selection: 'the selection',
-    sentence: 'Resolved from your pick: each selected aircraft hovers at its current pose.',
+    sentence: `Resolved from your pick: ${holdSentence(context)}`,
   }
 }
 
@@ -228,12 +230,20 @@ function selectReady(readyIds: DroneId[]): CompileOutcome {
   }
 }
 
+function holdSentence(context: CompileContext): string {
+  if (!context.selectedGroundIds?.length) return 'Each selected aircraft hovers at its current pose.'
+  if (context.selection?.length === context.selectedGroundIds.length) {
+    return 'Request zero drive velocity from each selected ground robot.'
+  }
+  return 'Request zero drive velocity from selected ground robots and HOLD from selected aircraft.'
+}
+
 function unsupported(name: string): CompileOutcome {
   return {
     status: 'refused',
     reason: 'unsupported',
     intent: name,
-    sentence: `The speech compiler does not emit ${name}; it names only capture_room, hold and select. Nothing was emitted.`,
+    sentence: `The local typed compiler does not emit ${name}; it supports capture, HOLD, selection, and explicit bounded ground pulse or configured return phrases. Nothing was emitted.`,
   }
 }
 

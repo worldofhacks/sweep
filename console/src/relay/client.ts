@@ -1,5 +1,6 @@
 import type { IntentSource, IntentV1, RelayAuthFrame, RelayServerEvent } from './contract'
 import { parseRelayServerEvent } from './contract'
+import { isSurveyLifecycleRequest, type SurveyLifecycleRequest } from './survey'
 import type { RelayConnection } from '../control/state'
 import { NAVIGATION_CONFIRMATION_UNAVAILABLE } from '../control/state'
 
@@ -15,6 +16,8 @@ export interface RelayClient {
   stop(): void
   subscribe(listener: RelayClientListener): () => void
   sendIntent(intent: IntentV1): Promise<void>
+  /** Optional on old providers; absence never falls back to sendIntent. */
+  sendSurveyLifecycle?(request: SurveyLifecycleRequest): Promise<void>
 }
 
 export interface WebSocketRelayConfig {
@@ -159,6 +162,15 @@ export class WebSocketRelayClient implements RelayClient {
       throw new Error('Relay is not authenticated; the intent was not sent.')
     }
     this.socket.send(JSON.stringify(intent))
+  }
+
+  async sendSurveyLifecycle(request: SurveyLifecycleRequest): Promise<void> {
+    if (this.config.source !== 'console' || request.session !== this.config.sessionId ||
+      !isSurveyLifecycleRequest(request)) throw new Error('Survey lifecycle is not bound to this console session.')
+    if (!this.socket || this.socket.readyState !== 1 || !this.authenticated) {
+      throw new Error('Relay is not authenticated; the survey lifecycle request was not sent.')
+    }
+    this.socket.send(JSON.stringify(request))
   }
 
   private emitConnection(status: RelayConnection['status'], reason?: string): void {

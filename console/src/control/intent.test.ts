@@ -26,6 +26,7 @@ const deps = { now: () => t, nextId: () => 'intent-1' }
 
 /** The exact args each control sends, per the relay's _parse_args. */
 const ENVELOPES: Record<ConsoleIntentName, { args: IntentArgs; selection: number[] }> = {
+  survey_area: { args: { area_id: 'floor-1' }, selection: [11] },
   ground_velocity: { args: { linear_mm_s: 80, angular_mrad_s: 0, duration_ms: 250 }, selection: [11] },
   robot_peripheral: { args: { kind: 'screen', text: 'Ready for inspection' }, selection: [11] },
   camera_control: { args: { kind: 'photo' }, selection: [1] },
@@ -74,7 +75,7 @@ describe('intent envelopes', () => {
     expect(isConsoleIntentV1(wire)).toBe(true)
   })
 
-  test.each(['takeoff', 'land', 'land_all', 'sweep', 'capture_room', 'navigate'] as const)(
+  test.each(['takeoff', 'land', 'land_all', 'sweep', 'capture_room', 'navigate', 'survey_area', 'formation_set', 'formation_next'] as const)(
     '%s requires confirmation and is refused locally without it',
     (name) => {
       expect(requiresConfirmation(name)).toBe(true)
@@ -93,8 +94,6 @@ describe('intent envelopes', () => {
     'hold',
     'translate',
     'altitude',
-    'formation_next',
-    'formation_set',
     'spacing',
     'come_home',
   ] as const)('%s sends without confirmation', (name) => {
@@ -112,7 +111,7 @@ describe('intent envelopes', () => {
       { name: 'formation_next', args: {}, selection: [1, 2], source: 'console', session },
       deps,
     )
-    expect(isConsoleIntentV1(base)).toBe(true)
+    expect(isConsoleIntentV1(confirmIntent(base, t))).toBe(true)
     expect(
       isConsoleIntentV1({ ...base, args: { name: 'line' } as unknown as IntentArgs }),
     ).toBe(false)
@@ -182,14 +181,14 @@ describe('intent envelopes', () => {
         },
         deps,
       )
-      expect(isConsoleIntentV1(intent)).toBe(true)
+      expect(isConsoleIntentV1(confirmIntent(intent, t))).toBe(true)
       expect(isConsoleIntentV1({ ...intent, selection: intent.selection.slice(1) })).toBe(false)
     }
     const next = createIntent(
       { name: 'formation_next', args: {}, selection: [1, 2], source: 'console', session },
       deps,
     )
-    expect(isConsoleIntentV1(next)).toBe(true)
+    expect(isConsoleIntentV1(confirmIntent(next, t))).toBe(true)
     expect(isConsoleIntentV1({ ...next, selection: [1] })).toBe(false)
   })
 })

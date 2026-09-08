@@ -560,3 +560,41 @@
 .ct-selection-groups { display: flex; gap: 8px; margin: 8px 0; }
 .ct-chip-group { display: inline-flex; align-items: stretch; }
 .ct-select-only { background: transparent; border: 1px solid var(--color-border-secondary); padding: 4px 8px; font-size: 11px; }
+
+.ct-mission { margin-bottom: 24px; padding: 16px; border: 1px solid var(--color-rule); }
+.ct-evidence-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 16px 0; }
+.ct-evidence-counts div { padding: 8px; border: 1px solid var(--color-rule); }
+.ct-evidence-counts dt { font-size: var(--text-12); color: var(--color-ink-2); }
+.ct-evidence-counts dd { margin: 4px 0 0; font: var(--text-18) var(--font-mono); }
+.ct-evidence-observations { padding-top: 12px; border-top: 1px solid var(--color-rule); }
+.ct-evidence-observations summary { cursor: pointer; font-size: var(--text-14); }
+.ct-evidence-form { display: grid; gap: 12px; margin-top: 12px; }
+.ct-evidence-form label { display: grid; gap: 4px; font-size: var(--text-12); }
+.ct-evidence-form input, .ct-evidence-form textarea, .ct-evidence-form select { width: 100%; padding: 8px; border: 1px solid var(--color-rule); border-radius: 0; background: var(--color-surface); color: var(--color-ink); font: inherit; }
+.ct-evidence-form textarea { min-height: 80px; resize: vertical; }
+.ct-evidence-form button { justify-self: start; margin: 0; }
+.ct-evidence-notes { padding: 0; list-style: none; }
+.ct-evidence-notes li { border-top: 1px solid var(--color-rule); margin-top: 12px; padding-top: 8px; font-size: var(--text-13); overflow-wrap: anywhere; }
+.ct-evidence-notes p { margin: 4px 0; }
+
+/* Ground driving and recording share the established control sizing and type. */
+.ct-ground { display: grid; gap: 12px; }
+.ct-ground h3, .ct-ground h4 { margin: 0; font-size: var(--text-18); font-weight: var(--weight-600); }
+.ct-ground p { margin: 0; max-width: 80ch; font-size: var(--text-13); line-height: var(--leading-1-45); color: var(--color-ink-2); }
+.ct-ground .ct-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.ct-ground button, .ct-ground a[download] {
+  justify-self: start;
+  min-height: var(--min-h-44);
+  padding: 10px 14px;
+  border: 1px solid var(--color-border-input);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: var(--weight-600) var(--text-13) var(--font-sans);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.ct-ground button:hover:not(:disabled), .ct-ground a[download]:hover { border-color: var(--color-ink); background: var(--color-panel); }
+.ct-ground button:disabled { background: var(--color-disabled-bg); color: var(--color-ink-2); cursor: not-allowed; opacity: .7; }
+.ct-ground label { font-size: var(--text-13); color: var(--color-ink-2); }
+.ct-ground [aria-label="Survey run status"], .ct-ground [aria-label="Survey candidate handoff"] { display: grid; gap: 8px; padding: 16px; border: 1px solid var(--color-rule); }

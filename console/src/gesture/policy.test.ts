@@ -3,6 +3,7 @@ import {
   DEFAULT_GESTURE_PAIRS,
   DEFAULT_GESTURE_POLICY_CONFIG,
   FLIGHT_GESTURE_PAIRS,
+  SWARM_GESTURE_POLICY_CONFIG,
   NEVER_GESTURE_EMITTABLE,
   createGesturePolicyState,
   isGestureEmittable,
@@ -276,4 +277,18 @@ describe('gesture policy state machine', () => {
     )
     expect(kinds(outcomes)).toEqual(['candidate', 'accepted', 'released'])
   })
+})
+
+
+test('Swarm maps only the explicit line formation and retains neutral before confirmation', () => {
+  const line = SWARM_GESTURE_POLICY_CONFIG.pairs.find((pair) => pair.gesture === 'Pointing_Up') as GesturePair
+  expect(line.action).toEqual({ kind: 'draft', name: 'formation_set', formation: 'line' })
+  expect(validateGesturePairs([line])).toEqual([])
+  for (const formation of ['column', 'wedge', 'diamond', undefined]) {
+    expect(validateGesturePairs([{ ...line, action: { kind: 'draft', name: 'formation_set', formation } } as GesturePair])).toEqual(['formation_set gestures require the explicit line shape.'])
+  }
+  const withoutRelease = run([...held('Pointing_Up', 0, 650), ...held('Thumb_Up', 700, 1200)], SWARM_GESTURE_POLICY_CONFIG)
+  expect(withoutRelease.outcomes.filter((outcome) => outcome.kind === 'accepted')).toHaveLength(1)
+  const withRelease = run([...held('Pointing_Up', 0, 650), ...held(null, 700, 950), ...held('Thumb_Up', 1000, 1450)], SWARM_GESTURE_POLICY_CONFIG)
+  expect(withRelease.outcomes.filter((outcome) => outcome.kind === 'accepted')).toHaveLength(2)
 })

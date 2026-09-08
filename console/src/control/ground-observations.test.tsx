@@ -63,8 +63,8 @@ describe('read-only field ground compatibility', () => {
     expect(state.aircraft[11].node_type).toBe('ground')
     expect(state.enabledIntentNames).toContain('ground_velocity')
     for (const name of ['survey_area']) {
-      expect(isSupportedIntent(name as ConsoleIntentName)).toBe(false)
-      expect(isIntentEnabled(state, name as ConsoleIntentName)).toBe(false)
+      expect(isSupportedIntent(name as ConsoleIntentName)).toBe(true)
+      expect(isIntentEnabled(state, name as ConsoleIntentName)).toBe(true)
       expect(isConsoleIntentV1({ v: 1, type: 'intent', t, intent_id: 'unsupported', retry_of: null, source: 'console', session, name,
         args: { linear_mm_s: 1, angular_mrad_s: 0, duration_ms: 100 }, selection: [11], mode: 'indoor', confirm: true })).toBe(false)
     }

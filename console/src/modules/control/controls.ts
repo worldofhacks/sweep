@@ -1,3 +1,4 @@
+import { formationShapeBlockedReason } from '../../control/formation'
 import { groundControlBlockedReason, hasGroundTarget } from '../../control/ground'
 import { membershipWord, motionObservationCurrent, observationCurrent } from '../../control/observation'
 /**
@@ -301,6 +302,8 @@ export function formationControls(state: ControlState): ControlSpec[] {
 /** Formation planning in this backend accepts aircraft-only selections. */
 export function classFormationReason(state: ControlState, name?: FormationName): string | null {
   if (state.selection.some((id) => state.aircraft[id]?.device_class === 'ground_vehicle')) return AIRCRAFT_SELECTION_REQUIRED_NOTE
+  const shape = formationShapeBlockedReason(state, name)
+  if (shape) return shape
   const count = state.selection.filter((id) => state.aircraft[id] !== undefined).length
   return name ? formationSelectionReason(name, count) : formationCountReason(count)
 }
@@ -853,44 +856,6 @@ export const PATTERN_CARDS: readonly PatternCard[] = [
     note: 'Eight overlapping frames. Ceiling and floor stay thin.',
   },
 ]
-
-/* Mission tracker */
-
-export interface MissionStep {
-  n: string
-  gesture: string
-  intent: string
-  note: string
-  status: 'available' | 'unsupported'
-}
-
-/** Appendix E, the scripted mission: gesture, canonical intent, and what the relay does with it. */
-export const MISSION_STEPS: readonly MissionStep[] = (
-  [
-    ['Both palms up', 'arm', 'Arm the fleet. No motion yet.'],
-    ['Open palm', 'select', 'Select every ready aircraft.'],
-    ['Open palm up', 'takeoff', 'Takeoff — risky, so the relay returns a pending object.'],
-    ['Thumb up', 'confirm', 'Confirm the pending takeoff. Dwell 400 ms.'],
-    ['Diamond', 'formation_set', 'Formation to diamond.'],
-    ['Index swipe right, twice', 'translate', 'Translate two steps east.'],
-    ['Pinch and raise', 'altitude', 'Altitude up one step.'],
-    ['Two fingers held', 'sweep', 'Sweep, then thumb up to confirm, then wait for the lanes.'],
-    ['Rock sign', 'come_home', 'Come home to staggered pads.'],
-    ['Rock sign, then both palms up', 'land_all', 'Land all, then disarm.'],
-  ] as const
-).map(([gesture, intent, note], i) => ({
-  n: String(i + 1).padStart(2, '0'),
-  gesture,
-  intent,
-  note,
-  status:
-    intent === 'confirm' || isSupportedIntent(intent as ConsoleIntentName) ? 'available' : 'unsupported',
-}))
-
-export const MISSION_PASS_TEXT =
-  'Pass — ten steps, zero unsafe commands dispatched, no manual intervention.'
-export const MISSION_PASS_RULE =
-  'Pass requires all ten steps inside three minutes with zero unsafe commands dispatched.'
 
 /* Requests */
 

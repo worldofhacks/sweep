@@ -101,6 +101,7 @@ SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
                 IntentName.LAND,
                 IntentName.TRANSLATE,
                 IntentName.FORMATION_NEXT,
+                IntentName.FORMATION_SET,
             }
         ),
         # This is only the schema ceiling. RelaySession additionally requires a
@@ -173,6 +174,14 @@ def validate_intent(
     if name not in SOURCE_ALLOWED_NAMES[source]:
         return RejectedIntent(
             RejectionReason.SOURCE_NOT_ALLOWED, f"{name} is not allowed from source {source}"
+        )
+
+    # The explicit mapped-line gesture shares the existing formation executor.
+    # This source permission does not activate a profile or authorize other shapes.
+    if source == "webcam" and name is IntentName.FORMATION_SET and args["name"] != "line":
+        return RejectedIntent(
+            RejectionReason.SOURCE_NOT_ALLOWED,
+            "webcam formation_set supports only an explicitly confirmed line",
         )
 
     return AcceptedIntent(
@@ -256,6 +265,7 @@ def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
             IntentName.LAND,
             IntentName.TRANSLATE,
             IntentName.FORMATION_NEXT,
+            IntentName.FORMATION_SET,
         }
         and not raw["confirm"]
     ):

@@ -16,6 +16,7 @@ routes, world positions or successful approvals as substitutes for missing data.
 | Navigation review (#143) | Resolve names/aliases, clarify ambiguity, capture selection/class/epoch, freeze map/configuration/routes/outcomes, and revalidate a one-shot confirmation | Current approved map, authoritative relay state and the loaded planner/safety configuration |
 | Position overlays | Display fresh current-epoch world poses with source/confidence/map associations | Authenticated, host-qualified producer and measured registration |
 | Drive-over recording | Record one selected ground robot's current associated position with a durable tag/actor/source audit | Fresh qualified world pose and an explicit operator association; tape verification remains separate |
+| Pilot-assisted ground survey | Confirmed start, exact run/epoch completion or cancel, verified occupancy preview/download | Ready selected ground robot, accepted canonical pose/scans and immutable completed candidate |
 
 The relay mounts these operations under `/api/sessions/{session_id}`. Console
 operations use the existing console bearer credential. Observation ingestion
@@ -38,12 +39,26 @@ edits/approvals/selections, expired evidence, changed configuration and process
 restarts retire old reviews. A → B → A cannot revive a captured confirmation or
 old live map position. Stale or unavailable telemetry never becomes a live pose.
 
+Immutable map storage survives a process restart, but a persisted relay session
+cannot become live again. A new live session requires an explicit draft import,
+validation and approval; it does not inherit the previous session's map authority.
+
 Position and drive-over requests require the exact saved
 `reference: {bundleId, revision, contentHash}` as well as `mapVersion` and `floorId`.
 The server requires that reference to be the active approved revision and the
 producer's host-qualified registration to bind the same revision. Position
 responses, each observation and each capture receipt retain that reference;
 matching map labels alone cannot associate evidence with another draft.
+
+Survey completion acknowledgments carry `candidate_id`, `run_id` and
+`connection_epoch`. The authenticated
+`GET /api/sessions/{session_id}/survey-candidates/{candidate_id}` returns the
+recorded occupancy PNG and manifest only after inventory hashes and independent
+recording/source/frame/pose provenance agree. Responses use `Cache-Control:
+no-store`, metadata is bounded to 64 KiB, image bytes to 16 MiB, and the complete
+encoded response to 24 MiB. There is no caller-supplied artifact path. Candidates
+stay in their source-scoped local odometry frame with `navigation_authority:
+false`; they are inputs to measured map authoring, not flight approvals.
 
 ## Explicit downstream boundaries
 

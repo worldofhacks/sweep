@@ -28,8 +28,8 @@ def make_app(path):
     )
 
 
-def connect(client):
-    socket = client.websocket_connect(f"/ws/{SESSION}")
+def connect(client, session=SESSION):
+    socket = client.websocket_connect(f"/ws/{session}")
     socket.__enter__()
     try:
         socket.send_json({"v": 1, "type": "auth", "source": "console", "token": TOKEN.decode()})
@@ -41,8 +41,8 @@ def connect(client):
     return socket
 
 
-def post(client, operation, payload):
-    result = client.post(f"{BASE}/maps/{operation}", json=payload, headers=HEADERS)
+def post(client, operation, payload, *, session=SESSION):
+    result = client.post(f"/api/sessions/{session}/maps/{operation}", json=payload, headers=HEADERS)
     assert result.status_code == 200, result.text
     assert result.headers["cache-control"] == "no-store"
     return result.json()
@@ -91,7 +91,7 @@ def test_real_http_authoring_approval_reload_compare_and_restart(tmp_path):
             assert comparison["changes"]
             assert client.get(f"{BASE}/navigation/catalog", headers=HEADERS).status_code == 409
             next_receipt = post(client, "validate", {"reference": next_ref})
-            post(
+            next_approval = post(
                 client,
                 "approve",
                 {
@@ -99,6 +99,13 @@ def test_real_http_authoring_approval_reload_compare_and_restart(tmp_path):
                     "validationId": next_receipt["validationId"],
                 },
             )
+            original_bundle = app.state.platform_services.maps.approved_bundle(SESSION, next_ref)
+            assert original_bundle["approval"] == next_approval
+            # Exercise the real periodic projection synchronously. Depending on
+            # background fanout to persist the audit made restart timing-dependent.
+            live_session = app.state.relay_runtime.sessions[SESSION]
+            live_session.periodic_events()
+            assert live_session.audit_log.last_sequence > 0
             assert (
                 client.get("/metrics", headers=HEADERS).json()["sessions"][SESSION][
                     "commands_issued"
@@ -108,21 +115,62 @@ def test_real_http_authoring_approval_reload_compare_and_restart(tmp_path):
         finally:
             socket.__exit__(None, None, None)
 
-    with TestClient(make_app(tmp_path)) as client:
-        socket = connect(client)
+    original_audit = live_session.audit_log.path.read_bytes()
+    restarted = make_app(tmp_path)
+    fresh_session = f"{SESSION}-after-restart"
+    fresh_base = f"/api/sessions/{fresh_session}"
+    with TestClient(restarted) as client:
+        # Immutable map persistence is independent of live-session restoration.
+        maps = restarted.state.platform_services.maps
+        assert maps.load(SESSION, next_ref) == {"reference": next_ref, "draft": changed}
+        assert maps.approved_bundle(SESSION, next_ref) == original_bundle
+        assert SESSION not in restarted.state.relay_runtime.sessions
+        with client.websocket_connect(f"/ws/{SESSION}") as closed_socket:
+            closed_socket.send_json(
+                {"v": 1, "type": "auth", "source": "console", "token": TOKEN.decode()}
+            )
+            refusal = closed_socket.receive_json()
+        assert refusal["type"] == "auth.refused"
+        assert refusal["reason"] == "session_closed"
+        assert SESSION not in restarted.state.relay_runtime.sessions
+        assert live_session.audit_log.path.read_bytes() == original_audit
+
+        socket = connect(client, fresh_session)
         try:
-            assert post(client, "load", {"reference": next_ref})["draft"] == changed
-            receipt = post(client, "validate", {"reference": next_ref})
+            # A fresh session inherits neither a map revision nor its approval.
+            assert client.get(f"{fresh_base}/maps/revisions", headers=HEADERS).json() == []
+            inherited = client.post(
+                f"{fresh_base}/maps/load", json={"reference": next_ref}, headers=HEADERS
+            )
+            assert inherited.status_code == 404
+            assert inherited.json()["code"] == "revision_not_found"
+            assert (
+                client.get(f"{fresh_base}/navigation/catalog", headers=HEADERS).status_code == 409
+            )
+
+            imported = post(
+                client, "save", {"draft": changed, "expectedRevision": None}, session=fresh_session
+            )
+            assert imported["bundleId"] != next_ref["bundleId"]
+            receipt = post(client, "validate", {"reference": imported}, session=fresh_session)
             approval = post(
                 client,
                 "approve",
-                {
-                    "reference": next_ref,
-                    "validationId": receipt["validationId"],
-                },
+                {"reference": imported, "validationId": receipt["validationId"]},
+                session=fresh_session,
             )
-            assert approval["reference"] == next_ref
-            assert client.get(f"{BASE}/navigation/catalog", headers=HEADERS).status_code == 200
+            assert approval["reference"] == imported
+            assert approval["auditId"] != next_approval["auditId"]
+            catalog = client.get(f"{fresh_base}/navigation/catalog", headers=HEADERS)
+            assert catalog.status_code == 200, catalog.text
+            assert catalog.json()["catalog"]["map"]["approvalId"] == approval["auditId"]
+            assert maps.approved_bundle(SESSION, next_ref) == original_bundle
+            assert (
+                client.get("/metrics", headers=HEADERS).json()["sessions"][fresh_session][
+                    "commands_issued"
+                ]
+                == 0
+            )
         finally:
             socket.__exit__(None, None, None)
 

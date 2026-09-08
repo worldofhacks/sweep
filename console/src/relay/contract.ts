@@ -9,6 +9,7 @@
  */
 
 import { parseObservation, type Observation } from './observation'
+import { isSurveyRunIdentity, isSurveyCandidateIdentity, type SurveyRunIdentity, type SurveyCandidateIdentity } from './survey'
 
 export type DroneId = number
 export type NodeType = 'aircraft' | 'ground'
@@ -34,7 +35,7 @@ export const MAX_INTENT_DRONE_ID = 2_147_483_647
 
 /**
  * Every intent name this console can build. Mirrors relay/intent_v1.py
- * IntentName minus survey_area and map_area, which the brief marks as later.
+ * map_area remains unavailable; survey_area records ground mapping evidence.
  */
 export type ConsoleIntentName =
   | 'arm'
@@ -47,6 +48,7 @@ export type ConsoleIntentName =
   | 'hold'
   | 'translate'
   | 'ground_velocity'
+  | 'survey_area'
   | 'body_pulse'
   | 'robot_peripheral'
   | 'camera_control'
@@ -72,6 +74,7 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'translate',
   'body_pulse',
   'ground_velocity',
+  'survey_area',
   'robot_peripheral',
   'camera_control',
   'altitude',
@@ -121,7 +124,7 @@ export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
 
 /** Every intent implemented by this console, independently of deployment release. */
 export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>(
-  [...C2_FLEET_OPERATIONS_INTENTS, 'body_pulse', 'robot_peripheral', 'camera_control', 'navigate', 'ground_velocity'],
+  [...C2_FLEET_OPERATIONS_INTENTS, 'body_pulse', 'robot_peripheral', 'camera_control', 'navigate', 'ground_velocity', 'survey_area'],
 )
 
 /** Known relay advertisements do not grant this console a command implementation. */
@@ -140,6 +143,9 @@ export function isSupportedIntent(name: ConsoleIntentName): boolean {
 export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'navigate',
   'ground_velocity',
+  'survey_area',
+  'formation_set',
+  'formation_next',
   'robot_peripheral',
   'camera_control',
   'body_pulse',
@@ -168,6 +174,7 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   hold: 'selected',
   translate: 'selected',
   ground_velocity: 'exactly one',
+  survey_area: 'exactly one',
   body_pulse: 'selected',
   robot_peripheral: 'connected device',
   camera_control: 'connected device',
@@ -279,6 +286,7 @@ export interface IntentArgsByName {
   hold: EmptyArgs
   translate: TranslateArgs
   ground_velocity: GroundVelocityArgs
+  survey_area: { area_id: string }
   body_pulse: BodyPulseArgs
   robot_peripheral: RobotPeripheralArgs
   camera_control: CameraControlArgs
@@ -476,6 +484,8 @@ export interface RelayAcknowledgementEvent {
   roster_version: number
   drone_id: DroneId | null
   connection_epoch: number | null
+  /** Authoritative recording identity, present only on the survey start acknowledgement. */
+  result?: SurveyRunIdentity | SurveyCandidateIdentity
 }
 
 export interface RelayRefusalEvent {
@@ -1532,7 +1542,12 @@ export function parseRelayServerEvent(value: unknown): RelayServerEvent | null {
       !isNullableString(value.detail) ||
       !isNonNegativeInteger(value.roster_version) ||
       !isNullableDroneId(value.drone_id) ||
-      !isNullableNonNegativeInteger(value.connection_epoch)
+      !isNullableNonNegativeInteger(value.connection_epoch) ||
+      (value.result !== undefined && (!((value.status === 'executing' && isSurveyRunIdentity(value.result)) ||
+          (value.status === 'completed' && isSurveyCandidateIdentity(value.result))) ||
+        value.source !== 'survey_area' ||
+        value.connection_epoch !== (value.result as SurveyRunIdentity).connection_epoch || value.drone_id === null ||
+        value.command_id !== null))
     ) {
       return null
     }
@@ -1609,6 +1624,8 @@ export function isConsoleIntentV1(value: unknown): value is IntentV1 {
   const name = value.name as ConsoleIntentName
   const selection = value.selection as DroneId[]
   if (!hasValidArgs(name, value.args)) return false
+  if (name === 'survey_area' && value.source !== 'console') return false
+  if (name === 'formation_set' && value.source === 'webcam' && value.args.name !== 'line') return false
   if (requiresConfirmation(name) && !value.confirm) return false
   if (value.source === 'webcam' && ['arm', 'translate', 'formation_next'].includes(name) && !value.confirm) return false
   return hasValidSelection(name, selection, value.args)
@@ -1629,6 +1646,8 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
         Number.isSafeInteger(args.angular_mrad_s) && Math.abs(Number(args.angular_mrad_s)) <= 785 &&
         Number.isSafeInteger(args.duration_ms) && Number(args.duration_ms) >= 1 && Number(args.duration_ms) <= 500 &&
         ((Number(args.linear_mm_s) > 0 && args.angular_mrad_s === 0) || (args.linear_mm_s === 0 && args.angular_mrad_s !== 0))
+    case 'survey_area':
+      return keys.length === 1 && isCanonicalIntentText(args.area_id, MAX_INTENT_IDENTIFIER_CODE_POINTS)
     case 'body_pulse':
       return keys.length === 2 && Number.isSafeInteger(args.forward_mm_s) &&
         Number(args.forward_mm_s) !== 0 && Math.abs(Number(args.forward_mm_s)) <= 250 &&

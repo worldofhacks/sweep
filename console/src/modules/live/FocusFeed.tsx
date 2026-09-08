@@ -3,7 +3,7 @@ import { DeviceTelemetryPanel } from '../devices/DeviceTelemetryPanel'
 import type { RequestRecord } from '../../control/state'
 import { deviceNoun, formatDeviceId } from '../../control/state'
 import { LivePlayer } from '../../media/LivePlayer'
-import { useCameraChoice } from '../../media/cameras'
+import { cameraTarget, useCameraChoice, useCameraInspection, type CameraTarget } from '../../media/cameras'
 import type { MediaRuntime } from '../../media/runtime'
 import type { DeviceCameraState, RelayAircraftState } from '../../relay/contract'
 import { membershipTone, type Tone } from '../../shell/derive'
@@ -16,6 +16,10 @@ export interface FocusFeedProps {
   requests: RequestRecord[]
   now: number
   media?: MediaRuntime
+  /** Camera-wall inspection keeps its exact connection and stream identity. */
+  target?: CameraTarget | null
+  onTargetChange?: (target: CameraTarget) => void
+  unavailableStreams?: ReadonlySet<string>
 }
 
 interface Row {
@@ -25,16 +29,26 @@ interface Row {
 }
 
 /** The focused device at size, its stream label bar, and the nine state rows. */
-export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
-  const { cameras, camera, choose } = useCameraChoice(focused)
+export function FocusFeed({ focused, requests, now, media, target, onTargetChange, unavailableStreams }: FocusFeedProps) {
+  const { cameras, camera: deviceCamera, choose } = useCameraChoice(focused, unavailableStreams)
+  const inspectedCamera = useCameraInspection(focused, target, unavailableStreams)
+  const camera = target ? inspectedCamera : deviceCamera
+  const chooseCamera = (cameraId: string) => {
+    if (!target) { choose(cameraId); return }
+    const selected = focused?.cameras?.find((entry) => entry.camera_id === cameraId)
+    if (focused && selected) onTargetChange?.(cameraTarget(focused, selected))
+  }
   const id = focused ? formatDeviceId(focused) : 'none'
   const noun = focused ? deviceNoun(focused.device_class) : 'device'
   return (
     <section data-two="1" aria-label={`Focused ${noun} ${id}`}>
       <div className="lv-column">
-        {focused && <CameraChoice device={focused} cameras={cameras} camera={camera} now={now} onChoose={choose} />}
+        {focused && !camera && cameras.length > 0 && <p className="lv-camera-warning" role="status">
+          The inspected camera connection is no longer available. Choose a current camera or return to the wall.
+        </p>}
+        {focused && <CameraChoice device={focused} cameras={cameras} camera={camera} now={now} onChoose={chooseCamera} unavailableStreams={unavailableStreams} />}
         {focused ? (
-          <Feed drone={focused} now={now} media={media} camera={camera} />
+          <Feed drone={focused} now={now} media={media} camera={camera} showPlaybackStatus={Boolean(target)} />
         ) : (
           <div className="lv-feed is-unreported">
             <div className="lv-feed-reticle" aria-hidden="true" />
@@ -98,18 +112,20 @@ function Feed({
   now,
   media,
   camera,
+  showPlaybackStatus,
 }: {
   drone: RelayAircraftState
   now: number
   media?: MediaRuntime
   camera: DeviceCameraState | null
+  showPlaybackStatus?: boolean
 }) {
   const stream = deriveStream(drone, now, camera)
   const plays = stream.status === 'live' && media !== undefined
   return (
     <div className={`lv-feed is-${stream.status}`}>
       {plays && camera ? (
-        <LivePlayer key={`${drone.drone_id}:${drone.connection_epoch}:${camera.camera_id}:${camera.stream}`} device={drone} media={media} camera={drone.cameras === undefined ? undefined : camera} />
+        <LivePlayer key={`${drone.drone_id}:${drone.connection_epoch}:${camera.camera_id}:${camera.stream}`} device={drone} media={media} camera={drone.cameras === undefined ? undefined : camera} showPlaybackStatus={showPlaybackStatus} />
       ) : (
         <div className="lv-feed-reticle" aria-hidden="true" />
       )}

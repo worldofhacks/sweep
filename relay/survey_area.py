@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
@@ -18,12 +20,15 @@ from relay.contracts import LifecycleStatus
 from relay.intent_v1 import MAX_INTENT_IDENTIFIER_CHARS, MAX_INTENT_TIMESTAMP, IntentV1
 from relay.observations import Observation
 from relay.session import IntentSinkResult, RelaySession
+from tools.ohmni_occupancy_grid import FORMAT as OCCUPANCY_FORMAT
 from tools.ohmni_occupancy_grid import GridConfig, build_grid
 from tools.ohmni_scan_record import RecordingConfig, record_events
 
 MAX_SURVEY_SCANS = 4_096
 MAX_SURVEY_CANDIDATE_BYTES = 16 * 1024 * 1024
 MAX_SURVEY_DURATION_MS = 30 * 60 * 1_000
+MAX_SURVEY_PREVIEW_METADATA_BYTES = 64 * 1024
+MAX_SURVEY_PREVIEW_BYTES = 24 * 1024 * 1024
 
 
 class SurveyLifecycleError(ValueError):
@@ -306,6 +311,146 @@ class SurveyCandidateRegistry:
             raise SurveyLifecycleError("invalid_candidate_id", "candidate identity is invalid")
         return self.root / candidate_id
 
+    def preview(self, session: str, candidate_id: str) -> dict[str, object]:
+        """Read verified recording evidence without granting world or motion authority."""
+        candidate = self.load(candidate_id)
+        if candidate.get("session") != session:
+            raise SurveyLifecycleError(
+                "survey_candidate_missing", "survey candidate does not exist in this session"
+            )
+        intent_id, run_id = candidate.get("intent_id"), candidate.get("run_id")
+        source, pose = candidate.get("source"), candidate.get("pose_identity")
+        if (
+            type(candidate.get("v")) is not int
+            or candidate["v"] != 1
+            or not _preview_text(session, 512)
+            or not _preview_text(intent_id)
+            or not _preview_text(run_id)
+            or _candidate_id(session, intent_id, run_id) != candidate_id
+            or type(candidate.get("device_id")) is not int
+            or not 1 <= candidate["device_id"] <= 2_147_483_647
+            or type(candidate.get("connection_epoch")) is not int
+            or not 1 <= candidate["connection_epoch"] <= 2_147_483_647
+            or not _preview_text(candidate.get("area_id"))
+            or not isinstance(source, dict)
+            or set(source) != {"source_id", "odom_frame", "lidar_frame", "mount_id"}
+            or not all(_preview_text(value) for value in source.values())
+            or source["odom_frame"] == source["lidar_frame"]
+            or "world" in {source["odom_frame"], source["lidar_frame"]}
+            or not isinstance(pose, dict)
+            or set(pose) != {"event_id", "source_id", "session", "connection_epoch", "frame"}
+            or not _preview_text(pose["event_id"])
+            or not _preview_text(pose["source_id"])
+            or pose["session"] != session
+            or type(pose["connection_epoch"]) is not int
+            or pose["connection_epoch"] != candidate["connection_epoch"]
+            or pose["frame"] != source["odom_frame"]
+        ):
+            raise SurveyLifecycleError(
+                "invalid_candidate", "stored candidate provenance is invalid"
+            )
+        directory = self._candidate_path(candidate_id)
+        files = candidate["files"]
+        # Revalidate the exact bytes returned, including replacement between load
+        # and preview. The API never accepts a caller-supplied artifact path.
+
+        def artifact(relative: str, limit: int) -> bytes:
+            encoded = _read_regular(directory, relative, limit)
+            if files[relative] != {  # type: ignore[index]
+                "bytes": len(encoded),
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+            }:
+                raise SurveyLifecycleError("invalid_candidate", "stored candidate artifact changed")
+            return encoded
+
+        image = artifact("occupancy/occupancy.png", MAX_SURVEY_CANDIDATE_BYTES)
+        occupancy = _candidate_json(
+            artifact("occupancy/manifest.json", MAX_SURVEY_PREVIEW_METADATA_BYTES)
+        )
+        recording = _candidate_json(
+            artifact("recording/recording.json", MAX_SURVEY_PREVIEW_METADATA_BYTES)
+        )
+        pose_path = _candidate_json(artifact("pose_path.json", MAX_SURVEY_CANDIDATE_BYTES))
+        recorded_source = {
+            "transport": "file_jsonl",
+            "session": session,
+            "device_id": candidate["device_id"],
+            "connection_epoch": candidate["connection_epoch"],
+            "source_id": source["source_id"],
+            "node_type": "ground",
+        }
+        recorded_frames = {
+            "odometry": source["odom_frame"],
+            "lidar": source["lidar_frame"],
+            "sensor_pose": {
+                "parent_frame": source["odom_frame"],
+                "child_frame": source["lidar_frame"],
+            },
+        }
+        if (
+            recording != candidate.get("recording")
+            or _canonical(recording.get("source")) != _canonical(recorded_source)
+            or recording.get("frames") != recorded_frames
+            or recording.get("run_id") != run_id
+            or recording.get("mount_id") != source["mount_id"]
+            or occupancy.get("format") != OCCUPANCY_FORMAT
+            or occupancy != candidate.get("occupancy")
+            or _canonical(occupancy.get("input"))
+            != _canonical(
+                {
+                    "run_id": run_id,
+                    "source": recorded_source,
+                    "observations_sha256": files["recording/observations.jsonl"]["sha256"],
+                }
+            )
+            or occupancy.get("mount_id") != source["mount_id"]
+            or occupancy.get("files") != {"occupancy.png": files["occupancy/occupancy.png"]}
+            or not isinstance(occupancy.get("grid"), dict)
+            or occupancy["grid"].get("frame") != source.get("odom_frame")
+            or occupancy["grid"].get("frame_kind") != "source_scoped_local_odometry"
+            or occupancy["grid"].get("registered_to_world") is not False
+            or _canonical(pose_path.get("initial_pose_identity")) != _canonical(pose)
+            or not image.startswith(b"\x89PNG\r\n\x1a\n")
+        ):
+            raise SurveyLifecycleError("invalid_candidate", "occupancy evidence is invalid")
+        metadata = {
+            "v": 1,
+            "type": "survey_candidate_preview",
+            **{
+                key: candidate[key]
+                for key in (
+                    "candidate_id",
+                    "session",
+                    "intent_id",
+                    "run_id",
+                    "device_id",
+                    "connection_epoch",
+                    "area_id",
+                    "source",
+                    "pose_identity",
+                    "files",
+                )
+            },
+            "occupancy": occupancy,
+            "navigation_authority": False,
+        }
+        if len(_canonical(metadata)) > MAX_SURVEY_PREVIEW_METADATA_BYTES:
+            raise SurveyLifecycleError(
+                "survey_candidate_too_large", "preview metadata exceeds 64 KiB"
+            )
+        result = {
+            **metadata,
+            "image": {
+                "mime_type": "image/png",
+                "bytes": len(image),
+                "sha256": hashlib.sha256(image).hexdigest(),
+                "data_base64": base64.b64encode(image).decode("ascii"),
+            },
+        }
+        if len(_canonical(result)) > MAX_SURVEY_PREVIEW_BYTES:
+            raise SurveyLifecycleError("survey_candidate_too_large", "preview exceeds 24 MiB")
+        return result
+
 
 def _candidate_identifier(value: object) -> bool:
     return (
@@ -313,6 +458,15 @@ def _candidate_identifier(value: object) -> bool:
         and len(value) == 42
         and value.startswith("candidate-")
         and all(char in "0123456789abcdef" for char in value[10:])
+    )
+
+
+def _preview_text(value: object, maximum: int = MAX_INTENT_IDENTIFIER_CHARS) -> bool:
+    return (
+        type(value) is str
+        and 0 < len(value) <= maximum
+        and value == value.strip()
+        and value.isprintable()
     )
 
 
@@ -374,7 +528,10 @@ def _read_regular(root: Path, relative: str, limit: int) -> bytes:
 
 
 def _read_json_regular(path: Path, limit: int) -> dict[str, object]:
-    raw = _read_regular(path.parent, path.name, limit)
+    return _candidate_json(_read_regular(path.parent, path.name, limit))
+
+
+def _candidate_json(raw: bytes) -> dict[str, object]:
 
     def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
         output: dict[str, object] = {}
@@ -387,7 +544,12 @@ def _read_json_regular(path: Path, limit: int) -> dict[str, object]:
         return output
 
     try:
-        value = json.loads(raw, object_pairs_hook=unique, parse_constant=_reject_constant)
+        value = json.loads(
+            raw,
+            object_pairs_hook=unique,
+            parse_constant=_reject_constant,
+            parse_float=_finite_json_float,
+        )
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as error:
         if isinstance(error, SurveyLifecycleError):
             raise
@@ -401,6 +563,13 @@ def _read_json_regular(path: Path, limit: int) -> dict[str, object]:
 
 def _reject_constant(value: str) -> None:
     raise SurveyLifecycleError("invalid_candidate", f"invalid JSON constant {value}")
+
+
+def _finite_json_float(value: str) -> float:
+    result = float(value)
+    if not math.isfinite(result):
+        raise SurveyLifecycleError("invalid_candidate", "stored candidate numbers must be finite")
+    return result
 
 
 @dataclass(slots=True)
@@ -563,6 +732,11 @@ class SurveyAreaLifecycle:
                     drone_id=run.device_id,
                     connection_epoch=run.connection_epoch,
                     detail=f"saved immutable candidate {candidate.candidate_id}",
+                    result={
+                        "candidate_id": candidate.candidate_id,
+                        "run_id": run.run_id,
+                        "connection_epoch": run.connection_epoch,
+                    },
                 )
             ]
 

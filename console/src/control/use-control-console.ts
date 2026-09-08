@@ -1,4 +1,7 @@
+import { formationShapeBlockedReason } from './formation'
 import { groundControlBlockedReason, hasGroundTarget } from './ground'
+import { surveyInProgress, surveyStartBlockedReason } from './survey'
+import { useSurveyLifecycle } from './use-survey-lifecycle'
 import { useNavigationReview } from './use-navigation-review'
 import { useNavigationVerification } from './use-navigation-verification'
 import { navigationBlockedReason, navigationTargets } from './navigation'
@@ -97,6 +100,8 @@ export function useControlConsole({
     return () => clearInterval(timer)
   }, [])
   const state = useMemo(() => observedControlState(reportedState, Math.max(observationTime, intentDependencies.now())), [reportedState, intentDependencies, observationTime])
+  const surveyLifecycleAvailable = typeof clients.console.sendSurveyLifecycle === 'function'
+  const sendSurveyLifecycle = useSurveyLifecycle(state, clients.console, intentDependencies, dispatch)
   const confirmedIds = useRef(new Set<string>())
   const navigationGeneration = useRef(0)
   const [navigationReset, resetNavigation] = useReducer((value: number) => value + 1, 0)
@@ -260,7 +265,7 @@ export function useControlConsole({
       navigation?: NavigationPreview,
     ): IntentV1 => {
       const t = intentDependencies.now()
-      const groundCommand = intent.name === 'ground_velocity' || (intent.name === 'come_home' && hasGroundTarget(state, intent.selection))
+      const groundCommand = intent.name === 'ground_velocity' || intent.name === 'survey_area' || (intent.name === 'come_home' && hasGroundTarget(state, intent.selection))
       const deadline = groundCommand ? Math.min(expiresAt ?? t + 30_000, t + 30_000) : expiresAt
       if (!navigation) { navigationGeneration.current += 1; resetNavigation() }
       confirmedIds.current.delete(intent.intent_id)
@@ -354,6 +359,8 @@ export function useControlConsole({
   const issueIntent = useCallback(
     <N extends ConsoleIntentName>(request: IntentRequest<N>, expiresAt?: number): IntentV1 | null => {
       if (request.name === 'navigate') return null // Requires an authoritative destination review.
+      if (request.name === 'survey_area' && (!surveyLifecycleAvailable || state.requests.some(surveyInProgress) ||
+        !('area_id' in request.args) || surveyStartBlockedReason(state, String(request.args.area_id), request.targets ?? state.selection))) return null
       if (!isIntentEnabled(state, request.name)) return null
       const selection = ['arm', 'land_all', 'estop'].includes(request.name) ? [] : request.targets ?? state.selection
       if (groundControlBlockedReason(state, request.name, selection)) return null
@@ -371,7 +378,7 @@ export function useControlConsole({
       stageIntent(intent, expiresAt)
       return intent
     },
-    [intentDependencies, stageIntent, state],
+    [intentDependencies, stageIntent, state, surveyLifecycleAvailable],
   )
 
   /**
@@ -527,6 +534,8 @@ export function useControlConsole({
       expiresAt?: number,
     ): IntentV1 | null => {
       if (request.name === 'navigate') return null // Generic drafts cannot manufacture a route preview.
+      if (request.name === 'survey_area' && (!surveyLifecycleAvailable || source !== 'console' || state.requests.some(surveyInProgress) ||
+        !('area_id' in request.args) || surveyStartBlockedReason(state, String(request.args.area_id), request.targets ?? state.selection))) return null
       if (!isIntentEnabled(state, request.name)) return null
       const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
       const selection = fleetWide ? [] : request.targets ?? state.selection
@@ -545,7 +554,7 @@ export function useControlConsole({
       )
       return stageForConfirmation(draft, expiresAt)
     },
-    [intentDependencies, stageForConfirmation, state],
+    [intentDependencies, stageForConfirmation, state, surveyLifecycleAvailable],
   )
 
   /** Stage the exact relay-minted language draft; no name-specific rewrite is allowed. */
@@ -609,6 +618,11 @@ export function useControlConsole({
     (intentId: string): IntentV1 | null => {
       const request = state.requests.find((item) => item.intent.intent_id === intentId)
       if (!request || request.status !== 'pending_confirmation' || confirmedIds.current.has(intentId)) return null
+      if (request.intent.name === 'survey_area' && (request.surveyUnavailable || !surveyLifecycleAvailable)) {
+        dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
+          reasonCode: 'survey_context_changed', detail: request.surveyUnavailable ?? 'The console provider has no survey lifecycle transport.' })
+        return null
+      }
       if (request.intent.name === 'navigate') {
         dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
           reasonCode: 'navigation_confirmation_unavailable', detail: NAVIGATION_CONFIRMATION_UNAVAILABLE })
@@ -672,6 +686,16 @@ export function useControlConsole({
         return null
       }
       const current = observedControlState(reportedState, intentDependencies.now())
+      if ((request.intent.name === 'formation_set' || request.intent.name === 'formation_next') &&
+        (formationShapeBlockedReason(current, 'name' in request.intent.args ? request.intent.args.name : undefined) ||
+          !current.armed || current.estop || request.intent.selection.some((id) => {
+          const device = current.aircraft[id]
+          return device?.device_class !== 'aircraft' || !isReady(device) || !['airborne', 'hovering'].includes(device.flight_state ?? '')
+        }))) {
+        dispatch({ type: 'request_invalidated', intentId, t: intentDependencies.now(),
+          reasonCode: 'formation_readiness_changed', detail: 'Formation requires the current armed, airborne aircraft selection. Build a fresh preview.' })
+        return null
+      }
       const groundReason = groundControlBlockedReason(current, request.intent.name, request.intent.selection)
       const groundSourcesMatch = request.intent.selection.every((id) => current.aircraft[id]?.node_type !== 'ground' ||
         (request.plan?.groundSources?.[id] === (current.aircraft[id]?.ground_readiness?.source_id ?? null) &&
@@ -726,7 +750,7 @@ export function useControlConsole({
       sendExistingIntent(confirmed, confirmedAt)
       return confirmed
     },
-    [intentDependencies, reportedState, sendExistingIntent, state],
+    [intentDependencies, reportedState, sendExistingIntent, state, surveyLifecycleAvailable],
   )
 
   const cancelRequest = useCallback(
@@ -822,7 +846,7 @@ export function useControlConsole({
       if (request.intent.name === 'navigate') return // A retry must request a new authoritative preview.
       if (request.intent.source === 'language') return
       const intent = retryIntent(request.intent, intentDependencies)
-      if (intent.source === 'webcam' || ['arm', 'body_pulse', 'ground_velocity', 'come_home', 'takeoff', 'land', 'land_all', 'capture_room', 'robot_peripheral', 'camera_control'].includes(intent.name)) {
+      if (intent.source === 'webcam' || requiresConfirmation(intent.name) || ['arm', 'come_home'].includes(intent.name)) {
         stageForConfirmation({ ...intent, confirm: false })
         return
       }
@@ -850,6 +874,8 @@ export function useControlConsole({
     canVerifyNavigation: verification.canVerify,
     verifyNavigationReview: verification.verify,
     issueIntent,
+    sendSurveyLifecycle,
+    surveyLifecycleAvailable,
     toggleAircraft,
     selectAircraft,
     selectAllReady,

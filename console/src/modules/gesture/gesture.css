@@ -270,3 +270,7 @@
 .gs-pair-readiness { flex: 1 1 100%; font-size: var(--text-11-5); color: var(--color-ink-2); }
 .gs-pair-readiness.gs-pair-blocked { color: var(--color-warn); }
 .gs-consensus { margin: 0; font-size: var(--text-12); color: var(--color-ink-2); }
+
+.gs-action-readiness { margin: 16px 0; border: 1px solid var(--color-rule); padding: 12px; }
+.gs-action-readiness-row { display: grid; gap: 4px; margin: 0; padding: 8px 0; border-top: 1px solid var(--color-rule); font-size: var(--text-12); }
+.gs-action-readiness-row span { color: var(--color-ink-2); }
