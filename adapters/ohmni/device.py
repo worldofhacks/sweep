@@ -20,7 +20,7 @@ from enum import StrEnum
 from .botshell import DEFAULT_PATH, BotShell
 from .camera import Camera
 from .camera import from_environment as camera_from_environment
-from .lidar import Lidar, discover
+from .lidar import Lidar, SelfReturnBinding, SelfReturnProfile, discover
 from .models import EncoderPoseSample, GroundStatus, RangeScan
 from .odometry import BASE_MM, Odometry
 from .paired_encoder import PairedEncoderStream, default_socket_path
@@ -99,6 +99,9 @@ class Config:
     launch: tuple[float, float, float] = (0.0, 0.0, 0.0)
     lidar_offset_deg: float | None = None
     lidar_angle_sign: int | None = None
+    lidar_device_id: int | None = None
+    lidar_source_boot_id: str | None = None
+    self_return_profile: SelfReturnProfile | None = None
     # Retained only to reject old configurations that requested a bypass.
     allow_spotted_without_lidar: bool = False
     footprint_radius_m: float | None = None
@@ -166,6 +169,21 @@ class Config:
             raise ValueError("lidar offset must be finite")
         if isinstance(self.lidar_angle_sign, bool) or self.lidar_angle_sign not in (None, -1, 1):
             raise ValueError("lidar angle sign must be -1 or 1")
+        if self.lidar_device_id is not None and (
+            type(self.lidar_device_id) is not int or self.lidar_device_id <= 0
+        ):
+            raise ValueError("lidar device ID must be positive")
+        if self.lidar_source_boot_id is not None and (
+            not isinstance(self.lidar_source_boot_id, str)
+            or not self.lidar_source_boot_id
+            or self.lidar_source_boot_id != self.lidar_source_boot_id.strip()
+            or not self.lidar_source_boot_id.isprintable()
+        ):
+            raise ValueError("lidar source boot ID must be bounded non-empty text")
+        if self.self_return_profile is not None and not isinstance(
+            self.self_return_profile, SelfReturnProfile
+        ):
+            raise ValueError("self-return profile must be a profile")
         if not math.isfinite(self.wheel_diameter_mm) or self.wheel_diameter_mm <= 0:
             raise ValueError("wheel diameter must be finite and positive")
 
@@ -208,6 +226,7 @@ class OhmniDevice:
         )
         self.camera = camera
         port = lidar_discover()
+        self_return_binding = self._self_return_binding()
         self.lidar = (
             Lidar(
                 shell_factory(config.socket_path),
@@ -215,6 +234,8 @@ class OhmniDevice:
                 self.odometry.snapshot,
                 offset_deg=config.lidar_offset_deg,
                 angle_sign=config.lidar_angle_sign,
+                self_return_profile=config.self_return_profile,
+                self_return_binding=self_return_binding,
             )
             if port
             else None
@@ -256,6 +277,28 @@ class OhmniDevice:
                 self.lidar.start()
             if self.camera:
                 self.camera.start()
+
+    def _self_return_binding(self) -> SelfReturnBinding | None:
+        config = self.config
+        if (
+            config.lidar_device_id is None
+            or config.lidar_source_boot_id is None
+            or config.lidar_offset_deg is None
+            or config.lidar_angle_sign is None
+            or config.lidar_mount_x_m is None
+            or config.lidar_mount_y_m is None
+            or config.lidar_mount_z_m is None
+        ):
+            return None
+        return SelfReturnBinding(
+            config.lidar_device_id,
+            config.lidar_source_boot_id,
+            config.lidar_offset_deg,
+            config.lidar_angle_sign,
+            config.lidar_mount_x_m,
+            config.lidar_mount_y_m,
+            config.lidar_mount_z_m,
+        )
 
     def status(self) -> GroundStatus:
         pose = self.odometry.snapshot()
@@ -953,6 +996,12 @@ def from_environment(*, key: str = "") -> OhmniDevice:
         ),
         lidar_offset_deg=float(offset) if offset else None,
         lidar_angle_sign=int(sign) if sign else None,
+        lidar_device_id=(
+            int(os.environ["SWEEP_DEVICE_UNIT"])
+            if os.environ.get("SWEEP_DEVICE_UNIT")
+            else None
+        ),
+        lidar_source_boot_id=os.environ.get("SWEEP_LIDAR_SOURCE_BOOT_ID"),
         footprint_radius_m=measurement("SWEEP_GROUND_FOOTPRINT_RADIUS_M"),
         stopping_distance_m=measurement("SWEEP_GROUND_STOPPING_DISTANCE_M"),
         clearance_margin_m=measurement("SWEEP_GROUND_CLEARANCE_MARGIN_M"),

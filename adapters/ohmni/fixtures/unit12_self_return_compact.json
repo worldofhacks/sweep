@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source": "Unit 12 direct lidar baseline captures 4, 5, and 6; compacted raw-angle and range evidence",
+  "rear_180mm": [
+    {"capture": 4, "angle_deg": 178.921875, "distance_mm": 181.375},
+    {"capture": 5, "angle_deg": 178.890625, "distance_mm": 181.125},
+    {"capture": 6, "angle_deg": 179.078125, "distance_mm": 180.0}
+  ],
+  "room_fixed_receding": [
+    {"capture": 4, "angle_deg": 308.875, "distance_mm": 734.5},
+    {"capture": 5, "angle_deg": 308.8125, "distance_mm": 1304.0}
+  ],
+  "new_obstacle": {"angle_deg": 178.9, "distance_mm": 600.0}
+}
