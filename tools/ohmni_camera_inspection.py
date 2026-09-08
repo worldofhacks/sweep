@@ -90,11 +90,23 @@ class CaptureChallenge:
     source_boot_id: str
     positioning_source_sha256: str
     capture_tool_sha256: str
+    issued_at_device_monotonic_ns: int
     expires_at_device_monotonic_ns: int
-    issued_state: dict[str, object]
+    issued_state: LiveState
 
     def to_mapping(self) -> dict[str, object]:
-        return {"v": 1, **self.__dict__}
+        return {
+            "v": 1,
+            "challenge_id": self.challenge_id,
+            "nonce": self.nonce,
+            "device_id": self.device_id,
+            "source_boot_id": self.source_boot_id,
+            "positioning_source_sha256": self.positioning_source_sha256,
+            "capture_tool_sha256": self.capture_tool_sha256,
+            "issued_at_device_monotonic_ns": self.issued_at_device_monotonic_ns,
+            "expires_at_device_monotonic_ns": self.expires_at_device_monotonic_ns,
+            "issued_state": self.issued_state.__dict__.copy(),
+        }
 
 
 def parse_challenge(value: object) -> CaptureChallenge:
@@ -109,6 +121,7 @@ def parse_challenge(value: object) -> CaptureChallenge:
             "source_boot_id",
             "positioning_source_sha256",
             "capture_tool_sha256",
+            "issued_at_device_monotonic_ns",
             "expires_at_device_monotonic_ns",
             "issued_state",
         }
@@ -121,15 +134,33 @@ def parse_challenge(value: object) -> CaptureChallenge:
         or len(value["nonce"]) < 32
         or type(value["device_id"]) is not int
         or not isinstance(value["source_boot_id"], str)
+        or type(value["issued_at_device_monotonic_ns"]) is not int
         or type(value["expires_at_device_monotonic_ns"]) is not int
+        or value["issued_at_device_monotonic_ns"] < 0
+        or value["expires_at_device_monotonic_ns"] < value["issued_at_device_monotonic_ns"]
     ):
         raise InspectionError("camera inspection challenge is invalid")
     _hex(value["positioning_source_sha256"], "positioning source")
     _hex(value["capture_tool_sha256"], "capture tool")
     if not isinstance(value["issued_state"], Mapping):
         raise InspectionError("camera inspection issued state is invalid")
-    LiveState(**dict(value["issued_state"]))
-    return CaptureChallenge(**{key: value[key] for key in CaptureChallenge.__dataclass_fields__})
+    issued_state = LiveState(**dict(value["issued_state"]))
+    if (
+        value["device_id"] != issued_state.device_id
+        or value["source_boot_id"] != issued_state.boot_id
+        or value["positioning_source_sha256"] != issued_state.positioning_source_sha256
+    ):
+        raise InspectionError("camera inspection challenge identity is invalid")
+    return CaptureChallenge(
+        **{
+            **{
+                key: value[key]
+                for key in CaptureChallenge.__dataclass_fields__
+                if key != "issued_state"
+            },
+            "issued_state": issued_state,
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -206,7 +237,7 @@ class InspectionAuthority:
         self._challenges: dict[str, CaptureChallenge] = {}
         self._used_challenges: set[str] = set()
         self._approvals: dict[
-            str, tuple[ForwardPulse, LiveState, int, bool, dict[str, object]]
+            str, tuple[ForwardPulse, LiveState, int, int, bool, dict[str, object]]
         ] = {}
 
     def issue_challenge(
@@ -217,7 +248,12 @@ class InspectionAuthority:
         *,
         ttl_ns: int = MAX_CHALLENGE_TTL_NS,
     ) -> CaptureChallenge:
-        if type(now_ns) is not int or not 0 < ttl_ns <= MAX_CHALLENGE_TTL_NS:
+        if (
+            type(now_ns) is not int
+            or now_ns < 0
+            or type(ttl_ns) is not int
+            or not 0 < ttl_ns <= MAX_CHALLENGE_TTL_NS
+        ):
             raise InspectionError("camera inspection challenge deadline is invalid")
         challenge = CaptureChallenge(
             secrets.token_hex(16),
@@ -226,8 +262,9 @@ class InspectionAuthority:
             state.boot_id,
             state.positioning_source_sha256,
             _hex(capture_tool_sha256, "capture tool"),
+            now_ns,
             now_ns + ttl_ns,
-            state.__dict__.copy(),
+            state,
         )
         self._challenges[challenge.challenge_id] = challenge
         return challenge
@@ -247,15 +284,18 @@ class InspectionAuthority:
         if (
             challenge != frame.challenge
             or challenge.challenge_id in self._used_challenges
-            or now_ns > challenge.expires_at_device_monotonic_ns
+            or type(now_ns) is not int
+            or not challenge.issued_at_device_monotonic_ns
+            <= now_ns
+            <= challenge.expires_at_device_monotonic_ns
         ):
             raise InspectionError("camera inspection challenge expired or unknown")
         if (
             not operator_id
-            or not accepted
-            or not review_notes
-            or now_ns <= 0
-            or state != LiveState(**challenge.issued_state)
+            or accepted is not True
+            or not isinstance(review_notes, str)
+            or not review_notes.strip()
+            or state != challenge.issued_state
         ):
             raise InspectionError("camera inspection live identity differs")
         approval_id = secrets.token_hex(16)
@@ -270,11 +310,11 @@ class InspectionAuthority:
             "source_sha256": frame.source_sha256,
             "capture_pipeline_sha256": frame.capture_pipeline_sha256,
             "pulse": pulse.__dict__,
-            "state": state.__dict__,
+            "state": state.__dict__.copy(),
             "issued_at_device_monotonic_ns": now_ns,
             "expires_at_device_monotonic_ns": expires_at,
         }
-        self._approvals[approval_id] = (pulse, state, expires_at, False, record)
+        self._approvals[approval_id] = (pulse, state, now_ns, expires_at, False, record)
         self._used_challenges.add(challenge.challenge_id)
         return approval_id
 
@@ -282,7 +322,7 @@ class InspectionAuthority:
         record = self._approvals.get(approval_id)
         if record is None:
             raise InspectionError("camera inspection approval is unknown")
-        return {**record[4], "consumed": record[3]}
+        return {**record[5], "consumed": record[4]}
 
     def consume(
         self, approval_id: str, pulse: ForwardPulse, state: LiveState, now_ns: int
@@ -290,14 +330,23 @@ class InspectionAuthority:
         record = self._approvals.get(approval_id)
         if record is None:
             return "camera_inspection_approval_unknown"
-        expected, approved_state, expires_at, spent, decision = record
+        expected, approved_state, issued_at, expires_at, spent, decision = record
         if spent:
             return "camera_inspection_approval_spent"
+        if type(now_ns) is not int or now_ns < issued_at:
+            return "camera_inspection_approval_time_invalid"
         if now_ns > expires_at:
             return "camera_inspection_approval_expired"
         if pulse != expected:
             return "camera_inspection_pulse_changed"
         if state != approved_state:
             return "camera_inspection_live_state_changed"
-        self._approvals[approval_id] = (expected, approved_state, expires_at, True, decision)
+        self._approvals[approval_id] = (
+            expected,
+            approved_state,
+            issued_at,
+            expires_at,
+            True,
+            decision,
+        )
         return None

@@ -192,3 +192,115 @@ def test_incomplete_manifest_refuses_capture_evidence(tmp_path, monkeypatch):
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(inspection.InspectionError, match="manifest challenge differs"):
         inspection.FrameEvidence.load(output / "main" / "frame-000000.json", manifest_path)
+
+
+def test_issued_challenge_keeps_an_immutable_live_state(tmp_path, monkeypatch):
+    state = _state()
+    authority = inspection.InspectionAuthority()
+    challenge = authority.issue_challenge(state, 1_000, capture._capture_tool_sha256())
+    exported = challenge.to_mapping()
+    exported["issued_state"]["x_m"] = 99.0
+    output = _producer(tmp_path, monkeypatch, challenge)
+    evidence = inspection.FrameEvidence.load(
+        output / "main" / "frame-000000.json", output / "manifest.json"
+    )
+
+    authority.approve(
+        evidence,
+        inspection.ForwardPulse(0.04, 0, 0.5),
+        state,
+        1_100,
+        operator_id="spotter-a",
+        accepted=True,
+        review_notes="clear",
+    )
+    assert authority._challenges[challenge.challenge_id].issued_state == state
+
+
+@pytest.mark.parametrize("accepted", [False, "true", 1])
+def test_operator_decision_must_be_the_boolean_true(tmp_path, monkeypatch, accepted):
+    state = _state()
+    authority = inspection.InspectionAuthority()
+    challenge = authority.issue_challenge(state, 1_000, capture._capture_tool_sha256())
+    output = _producer(tmp_path, monkeypatch, challenge)
+    evidence = inspection.FrameEvidence.load(
+        output / "main" / "frame-000000.json", output / "manifest.json"
+    )
+
+    with pytest.raises(inspection.InspectionError, match="live identity differs"):
+        authority.approve(
+            evidence,
+            inspection.ForwardPulse(0.04, 0, 0.5),
+            state,
+            1_100,
+            operator_id="spotter-a",
+            accepted=accepted,
+            review_notes="clear",
+        )
+
+
+@pytest.mark.parametrize(
+    ("target", "change", "message"),
+    [
+        ("manifest", lambda value: value.update(status="failed"), "manifest challenge differs"),
+        (
+            "manifest",
+            lambda value: value["capture_pipeline"].update(camera="other"),
+            "pipeline differs",
+        ),
+        ("frame", lambda value: value.update(source_device_sha256="0" * 64), "frame bytes differ"),
+    ],
+)
+def test_evidence_rejects_incomplete_or_tampered_capture_records(
+    tmp_path, monkeypatch, target, change, message
+):
+    state = _state()
+    authority = inspection.InspectionAuthority()
+    challenge = authority.issue_challenge(state, 1_000, capture._capture_tool_sha256())
+    output = _producer(tmp_path, monkeypatch, challenge)
+    paths = {
+        "frame": output / "main" / "frame-000000.json",
+        "manifest": output / "manifest.json",
+    }
+    record = json.loads(paths[target].read_text())
+    change(record)
+    paths[target].write_text(json.dumps(record))
+
+    with pytest.raises(inspection.InspectionError, match=message):
+        inspection.FrameEvidence.load(paths["frame"], paths["manifest"])
+
+
+def test_challenge_and_approval_reject_time_before_they_exist(tmp_path, monkeypatch):
+    state = _state()
+    authority = inspection.InspectionAuthority()
+    challenge = authority.issue_challenge(state, 1_000, capture._capture_tool_sha256())
+    assert challenge.expires_at_device_monotonic_ns == 1_000 + inspection.MAX_CHALLENGE_TTL_NS
+    output = _producer(tmp_path, monkeypatch, challenge)
+    evidence = inspection.FrameEvidence.load(
+        output / "main" / "frame-000000.json", output / "manifest.json"
+    )
+    pulse = inspection.ForwardPulse(0.04, 0, 0.5)
+
+    with pytest.raises(inspection.InspectionError, match="challenge expired or unknown"):
+        authority.approve(
+            evidence,
+            pulse,
+            state,
+            999,
+            operator_id="spotter-a",
+            accepted=True,
+            review_notes="clear",
+        )
+    approval = authority.approve(
+        evidence,
+        pulse,
+        state,
+        1_100,
+        operator_id="spotter-a",
+        accepted=True,
+        review_notes="clear",
+    )
+    assert (
+        authority.consume(approval, pulse, state, 1_099)
+        == "camera_inspection_approval_time_invalid"
+    )
