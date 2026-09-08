@@ -484,7 +484,7 @@ class RelaySession:
                     raise SurveyLifecycleError(
                         "survey_not_configured", "survey lifecycle is unavailable"
                     )
-                self._append_audit({**request.to_event(), "source": principal.source})
+                self._append_audit({**request.to_event(), "source": principal.source}, t_ingest=now)
                 return handler(request)
             except (SurveyLifecycleError, ContractError) as error:
                 return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
@@ -1110,12 +1110,12 @@ class RelaySession:
             projection = _material_state_projection(state)
             state_changed = transition is not None or self._state_projection_changed(projection)
             telemetry_event = telemetry.to_event()
-            self._append_audit(telemetry_event)
+            self._append_audit(telemetry_event, t_ingest=now)
             self._metrics["telemetry_events"] += 1
             events: list[dict[str, object]] = [telemetry_event]
             if transition is not None:
                 transition_event = transition.to_event(self.session_id)
-                self._append_audit(transition_event)
+                self._append_audit(transition_event, t_ingest=now)
                 self._metrics["membership_events"] += 1
                 events.append(transition_event)
             if state_changed or self._state_keepalive_due(now):
@@ -1158,7 +1158,7 @@ class RelaySession:
 
             event = acknowledgement.to_event()
             self._record_adapter_ack_fact(acknowledgement)
-            self._append_audit(event)
+            self._append_audit(event, t_ingest=now)
             self._metrics["acknowledgements"] += 1
             waiter = self._command_waiters.get(acknowledgement.command_id)
             if waiter is not None:
@@ -1341,7 +1341,8 @@ class RelaySession:
                     **frame.unsigned_event(),
                     "signature_verified": True,
                     "projected_event_id": pose.event_id,
-                }
+                },
+                t_ingest=now,
             )
             self._append_audit({**pose.unsigned_event(), "signature_emitted": True})
             return [signed_pose]
@@ -1412,7 +1413,7 @@ class RelaySession:
                 ]
 
             event = frame.to_event()
-            self._append_audit(event)
+            self._append_audit(event, t_ingest=now)
             self._metrics["node_events"] += 1
             if isinstance(frame, MediaFileFrame | CaptureBundleFrame):
                 return []
@@ -2254,7 +2255,7 @@ class RelaySession:
                 prior_roster_version=transition.prior_roster_version,
                 cleared_control_fields=list(transition.cleared_control_fields),
             )
-        self._append_audit(event)
+        self._append_audit(event, t_ingest=now)
         self._record_state_audit(state, _material_state_projection(state), now)
         self._metrics["membership_events"] += 1
         return [event, state, *self._reconcile_membership()]
@@ -2696,11 +2697,15 @@ class RelaySession:
         assert self._audit_undo is not None
         self._audit_undo.append(undo_sequence)
 
-    def _append_audit(self, event: Mapping[str, object]) -> dict[str, object]:
+    def _append_audit(
+        self, event: Mapping[str, object], *, t_ingest: int | None = None
+    ) -> dict[str, object]:
         self._ensure_mutation_usable()
         if self._audit_batch is None:
             raise RuntimeError("audit append requires an active relay operation")
         buffered = dict(event)
+        if t_ingest is not None:
+            buffered["t_ingest"] = t_ingest
         self._audit_batch.append(buffered)
         if self._audit_operation_id is None:
             self._audit_operation_id = self.audit_log.begin_operation()
@@ -2737,7 +2742,7 @@ class RelaySession:
     def _record_state_audit(self, state: dict[str, object], projection: str, now: int) -> None:
         """Audit a snapshot unconditionally; decisions always log the state they saw."""
         self._remember_audit_sampling()
-        self._append_audit(state)
+        self._append_audit(state, t_ingest=now)
         self._audit_sampling.state_projection = projection
         self._audit_sampling.state_audited_at = now
 

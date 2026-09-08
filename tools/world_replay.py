@@ -36,6 +36,7 @@ MAX_RECORDS = 100_000
 MAX_FILE_BYTES = 256 << 20
 BATCH_RECORDS = 16
 PROFILE = "sweep.audit.v1"
+TIMESTAMP_METADATA = {"clock": "unix_ns", "timestamp_policy": "t_ingest_else_t"}
 TOPICS = (
     "roster",
     "plans",
@@ -372,7 +373,7 @@ def timestamp_ns(record: dict) -> int:
     event = record["event"]
     value = event.get("t_ingest", event.get("t"))
     if type(value) is not int or not 0 <= value <= ((1 << 64) - 1) // 1_000_000:
-        raise ReplayError("audit ingest timestamp cannot be represented by MCAP")
+        raise ReplayError("audit timeline timestamp cannot be represented by MCAP")
     return value * 1_000_000
 
 
@@ -474,14 +475,14 @@ class Recording:
                 f"/sweep/{name}",
                 "json",
                 schema,
-                metadata={"session": session, "clock": "relay_ingest_unix_ns"},
+                metadata={"session": session, **TIMESTAMP_METADATA},
             )
         schema = self.writer.register_schema("foxglove.SceneUpdate", "jsonschema", SCENE_SCHEMA)
         self.channels["scene"] = self.writer.register_channel(
             "/sweep/scene",
             "json",
             schema,
-            metadata={"session": session, "clock": "relay_ingest_unix_ns"},
+            metadata={"session": session, **TIMESTAMP_METADATA},
         )
 
     def append(self, record: dict) -> None:
@@ -502,7 +503,6 @@ class Recording:
             if scene is None
             else json.dumps(scene, allow_nan=False, separators=(",", ":")).encode()
         )
-        # Native capture clocks stay in the envelope; only relay ingest belongs on this timeline.
         self.writer.add_message(
             self.channels[channel_name(record)], stamp, encoded, stamp, self.count
         )
@@ -614,7 +614,7 @@ def read_replay(path: Path, session: str):
                         or item.message_encoding != "json"
                         or not 1 <= item.id <= len(TOPICS) + 1
                         or channels.get(item.id, name) != name
-                        or item.metadata != {"session": session, "clock": "relay_ingest_unix_ns"}
+                        or item.metadata != {"session": session, **TIMESTAMP_METADATA}
                     ):
                         raise ReplayError("MCAP channel identity mismatch")
                     channels[item.id] = name

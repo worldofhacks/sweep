@@ -7,7 +7,7 @@ from mcap.reader import make_reader
 
 from relay.audit import SessionAuditLog
 from relay.auth import Principal
-from relay.contracts import NodeType
+from relay.contracts import CommandOperation, NodeType
 from relay.observation_ingress import ObservationConfiguration
 from relay.observations import (
     ClockMapping,
@@ -19,7 +19,14 @@ from relay.observations import (
     ingest,
 )
 from relay.session import RelayLimits, RelaySession
-from relay.tests.conftest import ADAPTER_KEY, SESSION, MutableClock, membership_payload
+from relay.tests.conftest import (
+    ADAPTER_KEY,
+    SESSION,
+    MutableClock,
+    acknowledgement_payload,
+    membership_payload,
+    telemetry_payload,
+)
 from tools.world_replay import (
     CommittedTail,
     ReplayError,
@@ -155,6 +162,91 @@ def test_real_membership_and_refusal_survive_mcap_round_trip(tmp_path):
     refusal = next(message for _, channel, message in messages if channel.topic == "/sweep/safety")
     assert json.loads(refusal.data)["event"]["reason"] == "observation_expired"
     assert refusal.log_time == 1_756_700_000_000_000_000
+
+
+def test_delayed_device_events_replay_at_relay_arrival_without_changing_wire_time(tmp_path):
+    clock = MutableClock()
+    source_time = clock.value
+    audit = SessionAuditLog(tmp_path / "audit", SESSION)
+    session = RelaySession(
+        session_id=SESSION,
+        audit_log=audit,
+        limits=RelayLimits(5_000, 5_000, 1_000, 1_000),
+        clock=clock,
+    )
+    principal = Principal("adapter", 1, ADAPTER_KEY)
+    clock.advance(200)
+    membership = session.process_membership(
+        membership_payload(action="join", event_id="delayed-join", timestamp=source_time),
+        principal,
+    )[0]
+    clock.advance(300)
+    telemetry = session.process_telemetry(
+        telemetry_payload(event_id="delayed-telemetry", timestamp=source_time), principal
+    )[0]
+    session.issue_command(
+        command_id="command-1",
+        intent_id="intent-1",
+        roster_version=session.registry.roster_version,
+        drone_id=1,
+        connection_epoch=1,
+        operation=CommandOperation.HOVER,
+        args={},
+        signing_key=ADAPTER_KEY,
+    )
+    clock.advance(200)
+    acknowledgement = session.process_acknowledgement(
+        acknowledgement_payload(event_id="delayed-ack", timestamp=source_time), principal
+    )[0]
+    for wire, kind in (
+        (membership, "membership"),
+        (telemetry, "telemetry"),
+        (acknowledgement, "acknowledgement"),
+    ):
+        assert wire["type"] == kind
+        assert wire["t"] == source_time
+        assert "t_ingest" not in wire
+    expected = {
+        "delayed-join": source_time + 200,
+        "delayed-telemetry": source_time + 500,
+        "delayed-ack": source_time + 700,
+    }
+    output = tmp_path / "delayed.mcap"
+    export_audit(audit.path, SESSION, output)
+    assert list(read_replay(output, SESSION)) == audit.replay()
+    seen = set()
+    with output.open("rb") as stream:
+        for _, channel, message in make_reader(stream, validate_crcs=True).iter_messages():
+            event = json.loads(message.data)["event"]
+            if event["event_id"] in expected:
+                seen.add(event["event_id"])
+                assert event["t"] == source_time
+                assert event["t_ingest"] == expected[event["event_id"]]
+                assert message.log_time == message.publish_time == event["t_ingest"] * 1_000_000
+                assert channel.metadata == {
+                    "session": SESSION,
+                    "clock": "unix_ns",
+                    "timestamp_policy": "t_ingest_else_t",
+                }
+    assert seen == set(expected)
+
+
+def test_historical_source_time_fallback_does_not_claim_known_arrival(tmp_path):
+    audit = SessionAuditLog(tmp_path / "audit", SESSION)
+    event = telemetry_payload(event_id="historical-telemetry")
+    audit.append(event)
+    output = tmp_path / "historical.mcap"
+    export_audit(audit.path, SESSION, output)
+    assert list(read_replay(output, SESSION)) == audit.replay()
+    with output.open("rb") as stream:
+        ((_, channel, message),) = make_reader(stream, validate_crcs=True).iter_messages()
+    assert json.loads(message.data)["event"] == event
+    assert message.log_time == message.publish_time == event["t"] * 1_000_000
+    assert channel.metadata == {
+        "session": SESSION,
+        "clock": "unix_ns",
+        "timestamp_policy": "t_ingest_else_t",
+    }
 
 
 def test_real_world_observations_keep_native_capture_clock_and_rejected_epochs(tmp_path):

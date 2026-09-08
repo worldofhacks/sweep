@@ -74,9 +74,16 @@ dispatch path.
 | `/sweep/events` | Other original audit events |
 | `/sweep/scene` | Derived `foxglove.SceneUpdate` display geometry |
 
-MCAP log and publish time both use relay ingest time in Unix nanoseconds. Native
-capture time, source receipt time, clock identifiers, and mapping identifiers stay
-unchanged inside each observation. A missing capture time stays null. Native
+MCAP log and publish time use the event’s `t_ingest` when present, otherwise its
+`t`, converted from Unix milliseconds to nanoseconds. Channel metadata declares
+`clock=unix_ns` and `timestamp_policy=t_ingest_else_t`. The relay retains arrival
+time separately for incoming membership, telemetry, acknowledgements, node frames,
+and localization frames. Wire events keep their original source time. Historical
+audit events without `t_ingest` retain their original `t`; their arrival time is
+unknown. Regenerate older MCAP exports from their audit JSONL to use this metadata.
+
+Native capture time, source receipt time, clock identifiers, and mapping identifiers
+stay unchanged inside each observation. A missing capture time stays null. Native
 monotonic time is never presented as a Unix timestamp.
 
 World observations share the `world` frame. Local observations use a frame scoped
