@@ -1070,6 +1070,11 @@ class AutonomySession:
             "detail": "The frozen qualified aircraft route is reserved for its multiview slot.",
         }
 
+    def discard_reserved_platform_navigation(self, preview_id: str) -> dict[str, object]:
+        with self._lock:
+            self._platform_navigation_reservations.pop(preview_id, None)
+        return {"status": "discarded"}
+
     def dispatch_reserved_platform_navigation(self, preview_id: str) -> dict[str, object]:
         runtime = self._composition.runtime
         with self._lock:

@@ -66,6 +66,12 @@ class _FlightExecutionAdapter:
             raise ValueError("qualified aircraft navigation reservation is unavailable")
         return handler(session, preview)
 
+    def discard_reserved(self, session: str, preview_id: str) -> Mapping[str, object]:
+        handler = getattr(self.source, "discard_reserved_platform_navigation", None)
+        if not callable(handler):
+            return {"status": "discarded"}
+        return handler(session, preview_id)
+
     def dispatch_reserved(self, session: str, preview_id: str) -> Mapping[str, object]:
         handler = getattr(self.source, "dispatch_reserved_platform_navigation", None)
         if not callable(handler):

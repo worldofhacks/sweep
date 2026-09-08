@@ -265,6 +265,8 @@ class FlightNavigationExecution(Protocol):
 
     def dispatch_reserved(self, session: str, preview_id: str) -> Mapping[str, object]: ...
 
+    def discard_reserved(self, session: str, preview_id: str) -> Mapping[str, object]: ...
+
 
 class NavigationService:
     @_storage_errors
@@ -1044,6 +1046,16 @@ class NavigationService:
 
     def reserve(self, session: str, raw: object) -> dict[str, object]:
         return self._consume(session, raw, reserve=True)
+
+    @_storage_errors
+    def discard_reserved(self, session: str, preview_id: str) -> None:
+        _identity(preview_id)
+        if self.flight_execution is None:
+            return
+        try:
+            self.flight_execution.discard_reserved(session, preview_id)
+        except (ValueError, KeyError, TypeError):
+            return
 
     @_storage_errors
     def dispatch_reserved(self, session: str, preview_id: str) -> dict[str, object]:

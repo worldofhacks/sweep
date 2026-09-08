@@ -60,6 +60,9 @@ class _Navigation:
         self.reserved = getattr(self, "reserved", []) + [deepcopy(request)]
         return {"status": "accepted", "code": "navigation_accepted", "detail": "accepted"}
 
+    def discard_reserved(self, session, preview_id):
+        self.discarded = getattr(self, "discarded", []) + [preview_id]
+
     def dispatch_reserved(self, session, preview_id):
         self.confirmed = {
             "previewId": preview_id,
@@ -212,3 +215,30 @@ def test_multiview_confirmation_refuses_an_expired_parent_review() -> None:
             "s", {key: preview[key] for key in ("previewId", "intentId", "previewHash")}
         )
     assert error.value.code == "preview_expired"
+
+
+def test_multiview_releases_reserved_children_when_a_later_reservation_fails() -> None:
+    navigation = _Navigation()
+    service = MultiviewService(navigation)
+    preview = service.preview(
+        "s",
+        {
+            "intentId": "multiview-reservation-failure",
+            "selected": [{"id": 1, "deviceClass": "aircraft", "epoch": 2}],
+            "viewpoints": [
+                {"viewpointId": "north", "zoneId": "north-zone", "captureId": "capture-north"},
+                {"viewpointId": "south", "zoneId": "south-zone", "captureId": "capture-south"},
+            ],
+        },
+    )
+    original_reserve = navigation.reserve
+
+    def reserve(session, request):
+        if request["previewId"] == "preview-south-zone":
+            return {"status": "refused"}
+        return original_reserve(session, request)
+
+    navigation.reserve = reserve
+    with pytest.raises(NavigationError, match="reservation"):
+        service.confirm("s", {key: preview[key] for key in ("previewId", "intentId", "previewHash")})
+    assert navigation.discarded == ["preview-north-zone"]

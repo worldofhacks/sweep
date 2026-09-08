@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from relay.navigation_service import NavigationError, NavigationService
 
 _MAX_VIEWS = 8
+_MAX_WORKFLOWS = 256
 
 
 def _digest(value: object) -> str:
@@ -35,6 +36,7 @@ class _View:
     review_hash: str
     state: str = "planned"
     detail: str = "Route review is frozen and awaiting confirmation."
+    reserved: bool = False
 
 
 @dataclass(slots=True)
@@ -69,6 +71,10 @@ class MultiviewService:
                 "invalid_request", "Request fields do not match the contract.", 400
             )
         intent_id = _identity(raw["intentId"], "intentId")
+        with self._lock:
+            self._prune_workflows()
+            if len(self._workflows) >= _MAX_WORKFLOWS:
+                raise NavigationError("review_capacity", "Too many multiview reviews are retained.")
         viewpoints = raw["viewpoints"]
         if not isinstance(viewpoints, list) or not 1 <= len(viewpoints) <= _MAX_VIEWS:
             raise NavigationError("invalid_request", "Provide one to eight viewpoints.", 400)
@@ -181,10 +187,12 @@ class MultiviewService:
                 )
                 if response.get("status") != "accepted":
                     raise ValueError("qualified navigation reservation was refused")
+                reserved.reserved = True
         except (KeyError, TypeError, ValueError) as error:
             with self._lock:
                 workflow.state = "failed"
                 view.state, view.detail = "failed", str(error) or "Route reservation failed."
+            self._discard_unconsumed(session, workflow)
             raise NavigationError("multiview_reservation_failed", view.detail) from None
         self._dispatch_navigation(session, preview_id, 0, view)
         return {"status": "accepted", "code": "multiview_accepted", "workflowId": preview_id}
@@ -209,6 +217,7 @@ class MultiviewService:
             if status != "completed":
                 workflow.state = "failed"
                 view.state, view.detail = "failed", f"{kind} ended {status}."
+                self._discard_unconsumed(session, workflow)
                 return
             if kind == "navigation":
                 view.state, view.detail = (
@@ -218,6 +227,7 @@ class MultiviewService:
                 if self.execution is None:
                     workflow.state = "failed"
                     view.state, view.detail = "failed", "Platform capture execution is unavailable."
+                    self._discard_unconsumed(session, workflow)
                     return
                 capture_intent = f"platform-capture:{intent_id}"
                 self._children[capture_intent] = (workflow_id, index, "capture")
@@ -292,9 +302,33 @@ class MultiviewService:
                 workflow = self._workflows[workflow_id]
                 workflow.state = "failed"
                 view.state, view.detail = "failed", str(response["detail"])
+            self._discard_unconsumed(session, workflow)
             return
         with self._lock:
+            view.reserved = False
             view.state, view.detail = "navigating", "The qualified route was dispatched."
+
+    def _discard_unconsumed(self, session: str, workflow: _Workflow) -> None:
+        for view in workflow.views:
+            if view.reserved:
+                self.navigation.discard_reserved(session, str(view.review["previewId"]))
+                view.reserved = False
+
+    def _prune_workflows(self) -> None:
+        terminal = [
+            workflow_id
+            for workflow_id, workflow in self._workflows.items()
+            if workflow.state in {"failed", "completed"}
+        ]
+        for workflow_id in terminal:
+            self._workflows.pop(workflow_id)
+        if terminal:
+            retired = set(terminal)
+            self._children = {
+                intent_id: child
+                for intent_id, child in self._children.items()
+                if child[0] not in retired
+            }
 
     @staticmethod
     def _preview_response(
