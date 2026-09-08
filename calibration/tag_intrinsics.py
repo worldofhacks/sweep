@@ -11,7 +11,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from calibration.fisheye import rectification_maps
+from calibration.fisheye import raw_sensor_radial_invertibility, raw_sensor_rays
 from calibration.intrinsics import (
     _FISHEYE_CALIBRATION_FLAGS,
     _FISHEYE_CRITERIA,
@@ -752,13 +752,15 @@ def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
         stability = _fisheye_stability(
             camera_matrix, distortion, train_matrix, train_distortion, image_size
         )
-        fov = _fisheye_fov(camera_matrix, distortion, image_size)
+        try:
+            fov = _fisheye_fov(camera_matrix, distortion, image_size)
+        except ValueError:
+            fov = None
         report.update(
             rms_reprojection_error_px=float(rms),
             camera_matrix=camera_matrix.tolist(),
             distortion_coefficients=distortion.reshape(-1).tolist(),
             validated_module_view_count=len(module_views),
-            fisheye_fov_deg=fov,
             quality={
                 "fit_rms_reprojection_error_px": float(rms),
                 "training_rms_reprojection_error_px": float(train_rms),
@@ -767,6 +769,8 @@ def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
                 "parameter_stability": stability,
             },
         )
+        if fov is not None:
+            report["fisheye_fov_deg"] = fov
         if not isfinite(float(rms)) or rms >= _MAXIMUM_RMS_REPROJECTION_ERROR_PX:
             reasons.append("RMS reprojection error is at least 0.5 pixels")
         if not isfinite(heldout_rms) or heldout_rms >= _MAXIMUM_FISHEYE_HELDOUT_RMS_PX:
@@ -789,7 +793,7 @@ def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
             report["quality"]["unknown_fov_qualification"] = qualification
             if not qualification["passes"]:
                 reasons.append("unknown-FOV fisheye qualification failed")
-        elif not _fov_within_bounds(fov, bounds):
+        elif fov is None or not _fov_within_bounds(fov, bounds):
             reasons.append("estimated fisheye FOV lacks valid independent bounds")
         if not reasons:
             report["status"] = "candidate"
@@ -1036,26 +1040,25 @@ def _unknown_fov_qualification(
     coverage = _fisheye_observation_coverage(pixels, camera_matrix, image_size)
     qualification: dict[str, object] = {
         "kind": "unknown_fov_fisheye_qualification",
-        "full_sensor_radial_invertibility": {
-            "domain": "full_sensor_ray_domain",
+        "raw_sensor_radial_invertibility": {
+            "domain": "raw_sensor_pixel_domain",
             "passes": False,
         },
         "observation_coverage": coverage,
         "passes": False,
     }
     try:
-        rectification_maps(camera_matrix, distortion, image_size)
+        invertibility = raw_sensor_radial_invertibility(camera_matrix, distortion, image_size)
     except ValueError as error:
-        qualification["full_sensor_radial_invertibility"] = {
-            "domain": "full_sensor_ray_domain",
+        qualification["raw_sensor_radial_invertibility"] = {
+            "domain": "raw_sensor_pixel_domain",
             "passes": False,
             "error": str(error),
         }
         return qualification
-    qualification["full_sensor_radial_invertibility"] = {
-        "domain": "full_sensor_ray_domain",
-        "passes": True,
-    }
+    qualification["raw_sensor_radial_invertibility"] = invertibility
+    if not invertibility["passes"]:
+        return qualification
     try:
         ratio = _fisheye_undistorted_pose_ratio(pixels, camera_matrix, distortion, tag_size_m)
     except cv2.error as error:
@@ -1389,20 +1392,19 @@ def _fisheye_fov(
     camera_matrix: np.ndarray, distortion: np.ndarray, image_size: tuple[int, int]
 ) -> dict[str, float]:
     width, height = image_size
-
-    def ray(point: tuple[float, float]) -> np.ndarray:
-        normalized = cv2.fisheye.undistortPoints(
-            np.asarray(point, dtype=np.float64).reshape(1, 1, 2), camera_matrix, distortion
-        ).reshape(2)
-        return np.array([normalized[0], normalized[1], 1.0])
+    rays = raw_sensor_rays(
+        camera_matrix,
+        distortion,
+        ((0, height / 2), (width, height / 2), (width / 2, 0), (width / 2, height)),
+    )
 
     def angle(first: np.ndarray, second: np.ndarray) -> float:
         cosine = np.dot(first, second) / (np.linalg.norm(first) * np.linalg.norm(second))
         return degrees(acos(float(np.clip(cosine, -1, 1))))
 
     return {
-        "horizontal": angle(ray((0, height / 2)), ray((width, height / 2))),
-        "vertical": angle(ray((width / 2, 0)), ray((width / 2, height))),
+        "horizontal": angle(rays[0], rays[1]),
+        "vertical": angle(rays[2], rays[3]),
     }
 
 

@@ -892,6 +892,8 @@ def test_unknown_fov_fisheye_candidate_accepts_verified_diverse_rasters(
     assert result["camera_matrix"][1][1] == pytest.approx(camera[1, 1], rel=0.01)
     qualification = result["quality"]["unknown_fov_qualification"]
     assert qualification["passes"] is True
+    assert qualification["raw_sensor_radial_invertibility"]["passes"] is True
+    assert "fisheye_fov_deg" in result
     assert (
         qualification["empirical_leave_declared_physical_position_out_stability"]["fold_count"] == 8
     )
