@@ -903,3 +903,22 @@ def test_inspected_forward_consumes_one_verified_review_for_one_pulse(
     assert document["inspection_approval"]["consumed"] is True
     assert simulation.device.motion is None
     assert not simulation.device.enabled
+
+
+def test_inspected_forward_without_an_approval_never_starts_the_motor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner, simulation = _simulated_capture_runner(monkeypatch, tmp_path)
+    runner.mode = "inspected-forward"
+    runner.boot_id = "boot"
+    runner.executed_bundle_source_sha256 = capture.camera_positioning_source_sha256()
+    runner._started = simulation.clock()
+    assert simulation.device.enable()
+    runner._initialize()
+    runner._deadline = simulation.clock() + 0.02
+
+    with pytest.raises(CalibrationError, match="camera_inspection_challenge_expired"):
+        runner._run_inspected_forward({})
+
+    assert simulation.started_moving is None
+    assert simulation.device.motion is None
