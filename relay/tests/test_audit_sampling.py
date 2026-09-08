@@ -509,7 +509,9 @@ def test_control_decisions_always_audit_the_state_they_produced(
 
     assert _audited_types(session) == ["membership", "state", "state", "state", "state"]
     audited_states = [event for event in _audited(session) if event["type"] == "state"]
-    assert audited_states[-3:] == decided
+    assert audited_states[-3:] == [{**state, "t_ingest": clock.value} for state in decided]
+    for audited, wire in zip(audited_states[-3:], decided, strict=True):
+        assert _material_state_projection(audited) == _material_state_projection(wire)
 
 
 def test_material_state_projection_fails_closed_for_unbounded_or_non_json_extensions() -> None:

@@ -2816,7 +2816,7 @@ class RelaySession:
         return state
 
 
-_VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
+_VOLATILE_STATE_KEYS = frozenset({"t", "t_ingest", "event_id", "state_sequence"})
 _GROUND_SAFE_INTENTS = frozenset(
     {
         IntentName.SELECT,

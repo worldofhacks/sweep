@@ -19,20 +19,23 @@ and a fake ground device; no physical motion or deployment was performed.
 | Isolated browser mission | Passed, including geofence and node-watchdog evidence |
 | Changed Python files | Ruff lint and formatting passed |
 
-The broad Python run recorded 2,845 passes and 20 failures while fixes were still
-being assembled. Fifteen failures were an enum-classification fixture that omitted
-the new ground command; the complete arbiter suite passes after adding its explicit
-unsafe-while-stopped classification. The other failures covered ground completion,
-sequential aircraft publication, aircraft readiness, restart authentication, and
-duplicate environment declarations. Targeted reruns pass after the integration
-fixes. Restart authentication also failed on the unchanged production base.
+The final broad Python run completed 3,663 tests in 15 minutes 45 seconds:
+3,655 passed and eight failed. Five failures came from the local test directory
+exceeding Unix socket path limits. One compiler-schema expectation still included
+the internal-only `navigate` intent. Two audit-state checks needed to recognize
+arrival time as volatile metadata. After those corrections, all eight failures
+and their adjacent tests passed in a 112-test run using a shorter temporary path.
+Repository-wide Ruff lint and formatting pass.
 
-A separate spatial/perception/language/evaluation run recorded 771 passes and one
-failure. The language transport test expects internal-only `navigate` in the generic
-compiler schema; the same failure reproduces on `54db59ec`. Repository-wide Ruff
-also reports ten pre-existing line-length errors in mapping files. These remain
-separate from the changed-file checks; this report does not claim an all-green
-repository run.
+The ground-confidence and map checks passed 76 tests, including refusal of a new
+route at zero confidence and confirmed STOP when confidence disappears during
+motion. Replay and session checks passed 71 tests, including delayed membership,
+telemetry, and acknowledgements exported through the real audit and MCAP writer.
+
+CI completed the console, browser, camera-recording, Android, and JVM jobs on
+`e7bda14d`. The Python job reached its ten-minute limit during pytest after lint
+and formatting passed. Its limit is now twenty minutes to accommodate the measured
+full-suite duration. Exact-head CI results are recorded in the pull request.
 
 ## Standards and correctness review
 
@@ -47,6 +50,13 @@ navigation/world-store lock inversion, and telemetry ticks invalidating frozen
 reviews. Regression tests exercise matching authenticated readiness, concurrent
 preview/confirmation callbacks, and real registry state rather than fixture-only
 state shapes. No additional standards-only findings remained in the ground review.
+
+The final review also found that zero-confidence ground poses could admit or
+sustain motion. Admission and every execution revalidation now refuse those poses.
+An independent STOP ends motion after confidence loss. Delayed source events now
+retain a separate relay arrival time in the audit. MCAP metadata declares the
+historical source-time fallback explicitly, and source wire timestamps remain
+unchanged. Independent review of the timestamp correction found no further issues.
 
 ## Spec review
 
