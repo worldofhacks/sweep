@@ -244,7 +244,7 @@ def test_multiview_releases_reserved_children_when_a_later_reservation_fails() -
     assert navigation.discarded == ["preview-north-zone"]
 
 
-def test_hold_cancels_pending_multiview_navigation_before_the_next_route() -> None:
+def test_hold_blocks_a_queued_next_route_dispatch() -> None:
     navigation = _Navigation()
     service = MultiviewService(navigation)
     preview = service.preview(
@@ -259,7 +259,9 @@ def test_hold_cancels_pending_multiview_navigation_before_the_next_route() -> No
         },
     )
     service.confirm("s", {key: preview[key] for key in ("previewId", "intentId", "previewHash")})
-    service.observe_execution("s", "platform-capture:mv-hold", "capture", "completed")
-    service.observe_execution("s", "hold-1", "hold", "completed")
-    assert service.status("s", preview["previewId"])["status"] == "failed"
+    first_intent = navigation.confirmed["intentId"]
+    service.observe_execution("s", "hold-1", "hold", "executing")
+    workflow = service._workflows[preview["previewId"]]
+    service._dispatch_navigation("s", preview["previewId"], 1, workflow.views[1])
+    assert navigation.confirmed["intentId"] == first_intent
     assert navigation.discarded == ["preview-south-zone"]

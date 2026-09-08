@@ -201,7 +201,7 @@ class MultiviewService:
         self, session: str, intent_id: str, intent_name: str, status: str
     ) -> None:
         """Advance only after the child result was committed to the relay ledger."""
-        if intent_name == "hold" and status == "completed":
+        if intent_name == "hold" and status in {"accepted", "executing", "completed"}:
             with self._lock:
                 cancelled = [
                     workflow
@@ -308,17 +308,22 @@ class MultiviewService:
     def _dispatch_navigation(self, session: str, workflow_id: str, index: int, view: _View) -> None:
         child_intent = str(view.review["intentId"])
         with self._lock:
+            workflow = self._workflows.get(workflow_id)
+            if (
+                workflow is None
+                or workflow.session != session
+                or workflow.state != "navigating"
+                or workflow.current != index
+            ):
+                return
             self._children[child_intent] = (workflow_id, index, "navigation")
-        response = self.navigation.dispatch_reserved(session, str(view.review["previewId"]))
-        if response["status"] != "accepted":
-            with self._lock:
+            response = self.navigation.dispatch_reserved(session, str(view.review["previewId"]))
+            if response["status"] != "accepted":
                 self._children.pop(child_intent, None)
-                workflow = self._workflows[workflow_id]
                 workflow.state = "failed"
                 view.state, view.detail = "failed", str(response["detail"])
-            self._discard_unconsumed(session, workflow)
-            return
-        with self._lock:
+                self._discard_unconsumed(session, workflow)
+                return
             view.reserved = False
             view.state, view.detail = "navigating", "The qualified route was dispatched."
 
