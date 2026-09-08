@@ -289,6 +289,8 @@ class FakeNode:
             pending = self._pending_goto_completion
             if pending is not None and self._navigation_pose_matches_aircraft(frame, pending):
                 self._pending_goto_completion = None
+                self._enqueue(self._telemetry_frame())
+                self._enqueue(self._node_status_frame())
                 self._enqueue(self._acknowledgement(pending, "completed"))
 
     def _navigation_pose_matches_aircraft(
@@ -361,8 +363,6 @@ class FakeNode:
         if status != "completed":
             self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
             return
-        self._enqueue(self._telemetry_frame())
-        self._enqueue(self._node_status_frame())
         self._pending_goto_completion = frame
 
     def _admission_refusal(
