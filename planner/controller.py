@@ -1357,9 +1357,10 @@ class AutonomyController:
                     detail="altitude configuration changed; prepare and preview again",
                 ),
             )
+        current = current_snapshot() if current_snapshot else prepared.snapshot
         return self.dispatcher.dispatch(
             prepared.plan,
-            prepared.snapshot,
+            current,
             current_snapshot=current_snapshot,
         )
 
