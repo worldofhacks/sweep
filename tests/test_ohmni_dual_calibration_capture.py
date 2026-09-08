@@ -63,6 +63,39 @@ def test_run_writes_decoded_camera_records_and_receipt_intervals(tmp_path, monke
     assert commands[-1][-1].startswith("rm -f /data/local/tmp/ohmni-cal-")
 
 
+def test_run_records_only_the_selected_camera_in_its_manifest(tmp_path, monkeypatch):
+    main_bytes = np.zeros(capture.MAIN_SHAPE, dtype=np.uint8).tobytes()
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if "pull" in command:
+            Path(command[-1]).write_bytes(main_bytes)
+
+    monkeypatch.setattr(capture.subprocess, "run", fake_run)
+    monkeypatch.setattr(capture.subprocess, "check_output", lambda *_args, **_kwargs: "boot-1\n")
+    monkeypatch.setattr(capture.time, "monotonic_ns", lambda: 100)
+
+    output = tmp_path / "main-only"
+    capture.run(
+        "serial-1",
+        output,
+        expected_boot_id="boot-1",
+        count=1,
+        duration_s=1,
+        camera="main",
+        warmup_frames=7,
+    )
+
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert set(manifest["cameras"]) == {"main"}
+    assert (output / "main" / "frame-000000.png").exists()
+    assert not (output / "lower").exists()
+    capture_command = next(command[-1] for command in commands if "v4l2-ctl" in command[-1])
+    assert "/dev/video0" in capture_command
+    assert "--stream-skip=7" in capture_command
+
+
 @pytest.mark.parametrize("count,duration", [(0, 1), (61, 1), (1, 0), (1, 31)])
 def test_run_refuses_capture_bounds_without_starting_adb(tmp_path, monkeypatch, count, duration):
     monkeypatch.setattr(capture.subprocess, "check_output", pytest.fail)

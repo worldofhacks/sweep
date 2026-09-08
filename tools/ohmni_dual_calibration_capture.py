@@ -48,7 +48,9 @@ def _aggregate(camera_dir: Path) -> None:
     (camera_dir / "result.json").write_text(json.dumps({"frames": frames}, sort_keys=True) + "\n")
 
 
-def _write_manifest(output: Path, serial: str, boot: str, started_ns: int, ended_ns: int) -> None:
+def _write_manifest(
+    output: Path, serial: str, boot: str, started_ns: int, ended_ns: int, cameras: tuple
+) -> None:
     payload = {
         "schema_version": "ohmni-dual-calibration-capture/v1",
         "status": "complete",
@@ -65,6 +67,7 @@ def _write_manifest(output: Path, serial: str, boot: str, started_ns: int, ended
             "lower": {"device": "/dev/video1", "pixel_format": "MJPEG"},
         },
     }
+    payload["cameras"] = {name: payload["cameras"][name] for _, name, _ in cameras}
     (output / "manifest.json").write_text(json.dumps(payload, sort_keys=True) + "\n")
 
 
@@ -75,9 +78,19 @@ def run(
     expected_boot_id: str,
     count: int = 20,
     duration_s: float = 30,
+    camera: str = "both",
+    interval_s: float = 0,
+    warmup_frames: int = 3,
 ) -> None:
     if not 1 <= count <= 60 or not 0 < duration_s <= 30:
         raise ValueError("count must be 1..60 and duration at most 30s")
+    if (
+        camera not in {"both", "main", "lower"}
+        or not 0 <= interval_s <= 5
+        or not 3 <= warmup_frames <= 60
+    ):
+        raise ValueError("invalid camera, interval, or warmup count")
+    cameras = tuple(item for item in CAMERAS if camera == "both" or item[1] == camera)
     if not expected_boot_id:
         raise ValueError("an expected boot ID is required")
     output.mkdir(parents=True, exist_ok=False)
@@ -108,7 +121,9 @@ def run(
             raise ValueError("device boot ID differs from the expected boot ID")
         for index in range(count):
             _remaining_timeout(deadline_ns)
-            for node, camera, suffix in CAMERAS:
+            if index and interval_s:
+                time.sleep(min(interval_s, _remaining_timeout(deadline_ns)))
+            for node, camera, suffix in cameras:
                 camera_dir = output / camera
                 camera_dir.mkdir(exist_ok=True)
                 remote = f"{remote_prefix}-{index}-{camera}.{suffix}"
@@ -117,7 +132,7 @@ def run(
                 capture_timeout_s = max(1, int(_remaining_timeout(deadline_ns)))
                 capture = (
                     f"timeout {capture_timeout_s} v4l2-ctl -d /dev/{node} --stream-mmap=1 "
-                    f"--stream-skip=3 --stream-count=1 --stream-to={remote}"
+                    f"--stream-skip={warmup_frames} --stream-count=1 --stream-to={remote}"
                 )
                 adb("shell", f'su 0 sh -c "{capture}"')
                 adb("pull", remote, str(raw))
@@ -137,9 +152,9 @@ def run(
                 )
         if boot_id() != boot:
             raise ValueError("device rebooted during capture")
-        for _, camera, _ in CAMERAS:
+        for _, camera, _ in cameras:
             _aggregate(output / camera)
-        _write_manifest(output, serial, boot, started_ns, time.monotonic_ns())
+        _write_manifest(output, serial, boot, started_ns, time.monotonic_ns(), cameras)
         (output / "INCOMPLETE").unlink()
     finally:
         try:
@@ -161,6 +176,9 @@ def main() -> None:
     parser.add_argument("--expected-boot-id", required=True)
     parser.add_argument("--count", type=int, default=20)
     parser.add_argument("--duration-s", type=float, default=30)
+    parser.add_argument("--camera", choices=("both", "main", "lower"), default="both")
+    parser.add_argument("--interval-s", type=float, default=0)
+    parser.add_argument("--warmup-frames", type=int, default=3)
     args = parser.parse_args()
     run(
         args.serial,
@@ -168,6 +186,9 @@ def main() -> None:
         expected_boot_id=args.expected_boot_id,
         count=args.count,
         duration_s=args.duration_s,
+        camera=args.camera,
+        interval_s=args.interval_s,
+        warmup_frames=args.warmup_frames,
     )
 
 
