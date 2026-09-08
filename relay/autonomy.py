@@ -1945,7 +1945,10 @@ class AutonomySession:
             if owner.job.cancelled_by is None:
                 raise
             return None
-        self._composition.report_multiview_execution(self.session_id, owner.job.intent, result)
+        if result.status is not LifecycleStatus.EXECUTING:
+            self._defer_tracking_callback(
+                self._report_navigation_tracking_failure, owner.job.intent, result
+            )
         return RelayExecution(result, tuple(events))
 
     def resume_after_acknowledgement(
