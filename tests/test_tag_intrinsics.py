@@ -7,7 +7,12 @@ import cv2
 import numpy as np
 import pytest
 
-from calibration.tag_intrinsics import TagCandidateRequest, calibrate_tag_candidate
+from calibration.tag_intrinsics import (
+    TagCandidateRequest,
+    calibrate_tag_candidate,
+    export_tag_calibration,
+)
+from perception.camera_tags import CameraTagDetector
 from perception.tag_localization import tag_corners
 
 
@@ -136,3 +141,38 @@ def test_fisheye_heldout_reprojection_calls_opencv_and_rejects_perturbed_corners
 
     assert accurate < 1e-4
     assert corrupted > 0.5
+
+
+def test_exported_apriltag_pinhole_calibration_loads_and_detects(tmp_path: Path) -> None:
+    evidence = tmp_path / "corners.json"
+    rotations = [
+        np.array([0.35 * np.sin(index), 0.35 * np.cos(index), 0.1 * index])
+        for index in range(25)
+    ]
+    _evidence(evidence, rotations)
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    for index in range(25):
+        source = np.full((720, 1280, 3), 255, np.uint8)
+        source[0, 0, 0] = index
+        assert cv2.imwrite(str(frames / f"frame-{index * 10:06}.png"), source)
+    artifact = export_tag_calibration(
+        TagCandidateRequest(
+            evidence=evidence, tag_size_m=0.199898, pipeline=_pipeline(), frames_dir=frames
+        ),
+        camera_serial="fixture-camera",
+        evidence_kind="synthetic",
+        allow_synthetic=True,
+    )
+    detector = CameraTagDetector(
+        artifact, camera_serial="fixture-camera", tag_sizes_m={7: 0.199898}, allow_synthetic=True
+    )
+    marker = cv2.aruco.generateImageMarker(
+        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11), 7, 300
+    )
+    image = np.full((720, 1280), 255, np.uint8)
+    image[210:510, 490:790] = marker
+
+    observations = detector.detect(image)
+
+    assert observations[0]["tag_id"] == 7

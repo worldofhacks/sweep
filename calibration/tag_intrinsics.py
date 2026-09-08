@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from math import acos, atan, degrees, isfinite
@@ -40,6 +41,88 @@ class TagCandidateRequest:
     maximum_views: int = 30
     model: str = "pinhole"
     frames_dir: Path | None = None
+
+
+def export_tag_calibration(
+    request: TagCandidateRequest,
+    *,
+    camera_serial: str,
+    evidence_kind: str,
+    allow_synthetic: bool = False,
+) -> dict[str, object]:
+    if not camera_serial.strip():
+        raise ValueError("camera serial must not be empty")
+    if evidence_kind not in {"recorded_live", "synthetic"} or (
+        evidence_kind == "synthetic" and not allow_synthetic
+    ):
+        raise ValueError("recorded live evidence is required; synthetic export must be explicit")
+    candidate = calibrate_tag_candidate(request)
+    if candidate["status"] != "candidate":
+        raise ValueError("AprilTag candidate did not meet calibration quality requirements")
+    selected = candidate["selection"]
+    if not isinstance(selected, dict) or not isinstance(selected.get("frames"), list):
+        raise ValueError("candidate selection is invalid")
+    frames = selected["frames"]
+    if len(frames) != candidate["selected_observation_count"] or len(set(frames)) != len(frames):
+        raise ValueError("candidate observations do not map to distinct source images")
+    if request.frames_dir is None:
+        raise ValueError("AprilTag export requires the decoded source images")
+    hashes = {}
+    for index in frames:
+        if type(index) is not int:
+            raise ValueError("candidate frame index is invalid")
+        image = request.frames_dir / f"frame-{index:06}.png"
+        decoded = cv2.imread(str(image))
+        if decoded is None or [decoded.shape[1], decoded.shape[0]] != candidate["image_size_px"]:
+            raise ValueError(f"missing or mismatched source image: {image}")
+        hashes[image.name] = hashlib.sha256(image.read_bytes()).hexdigest()
+    count = len(hashes)
+    if count < _MINIMUM_VIEWS:
+        raise ValueError("fewer than 20 distinct source images")
+    if len(set(hashes.values())) != count:
+        raise ValueError("source images are not distinct")
+    model = candidate["model"]
+    artifact = {
+        "schema_version": 2 if model == "fisheye" else 1,
+        "model": model,
+        "status": "offline",
+        "evidence_kind": evidence_kind,
+        "camera_serial": camera_serial,
+        "pipeline": candidate["pipeline"],
+        "target": {
+            "family": "tag36h11",
+            "black_square_edge_m": request.tag_size_m,
+            "validated_feature_kind": (
+                "outer_corners_plus_module_intersections"
+                if model == "fisheye"
+                else "outer_corners"
+            ),
+        },
+        "image_size_px": candidate["image_size_px"],
+        "camera_matrix": candidate["camera_matrix"],
+        "distortion_coefficients": candidate["distortion_coefficients"],
+        "rms_reprojection_error_px": candidate["rms_reprojection_error_px"],
+        "accepted_image_count": count,
+        "image_sha256": hashes,
+        "tag_candidate_quality": candidate.get("quality"),
+    }
+    if model == "fisheye":
+        quality = candidate.get("quality")
+        if not isinstance(quality, dict):
+            raise ValueError("fisheye candidate quality is missing")
+        artifact["quality"] = {
+            "accepted_image_count": count,
+            "minimum_accepted_image_count": _MINIMUM_VIEWS,
+            "rms_reprojection_error_px": candidate["rms_reprojection_error_px"],
+            "maximum_rms_reprojection_error_px": _MAXIMUM_RMS_REPROJECTION_ERROR_PX,
+            "minimum_pose_constraint_ratio": _MINIMUM_POSE_CONSTRAINT_RATIO,
+            "pose_constraint_ratio": candidate["pose_constraint_ratio"],
+            "opencv_check_cond": True,
+            "heldout_rms_reprojection_error_px": quality["heldout_rms_reprojection_error_px"],
+            "parameter_stability": quality["parameter_stability"],
+            "fisheye_fov_deg": candidate["fisheye_fov_deg"],
+        }
+    return artifact
 
 
 def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
