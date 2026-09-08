@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.test_ohmni_camera_inspection import _producer as _produce_inspection_capture
+
 REPO = Path(__file__).parent.parent
 PACKAGE = Path(__file__).parent
 sys.path.insert(0, str(REPO))
@@ -814,48 +816,12 @@ def test_live_resume_request_rejects_a_fabricated_pause_artifact(tmp_path: Path)
         )
 
 
-def _write_inspection_capture(challenge_path: Path) -> tuple[Path, Path]:
+def _write_inspection_capture(
+    challenge_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
     challenge = capture.inspection.parse_challenge(json.loads(challenge_path.read_text()))
-    parent = challenge_path.parent / "review"
-    parent.mkdir()
-    image, raw = parent / "frame.png", parent / "frame.raw"
-    image.write_bytes(b"image")
-    raw.write_bytes(b"raw")
-    pipeline = {"camera": "main"}
-    pipeline_sha = hashlib.sha256(
-        json.dumps(pipeline, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    frame = {
-        "inspection_challenge": challenge.to_mapping(),
-        "boot_id": challenge.source_boot_id,
-        "image_file": image.name,
-        "image_sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
-        "source_file": raw.name,
-        "source_sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
-        "source_device_sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
-        "source_device_size_bytes": len(raw.read_bytes()),
-        "capture_pipeline_sha256": pipeline_sha,
-        "raw_capture_collection": "review",
-        "camera": "main",
-        "frame_index": 0,
-    }
-    frame_path = parent / "frame-000000.json"
-    frame_path.write_text(json.dumps(frame))
-    manifest_path = parent / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "status": "complete",
-                "inspection_challenge": challenge.to_mapping(),
-                "boot_id": challenge.source_boot_id,
-                "device_id": challenge.device_id,
-                "raw_capture_collection": "review",
-                "capture_pipeline": pipeline,
-                "capture_pipeline_sha256": pipeline_sha,
-            }
-        )
-    )
-    return frame_path, manifest_path
+    output = _produce_inspection_capture(challenge_path.parent, monkeypatch, challenge)
+    return output / "main" / "frame-000000.json", output / "manifest.json"
 
 
 def test_inspected_forward_consumes_one_verified_review_for_one_pulse(
@@ -863,7 +829,7 @@ def test_inspected_forward_consumes_one_verified_review_for_one_pulse(
 ) -> None:
     runner, simulation = _simulated_capture_runner(monkeypatch, tmp_path)
     runner.mode = "inspected-forward"
-    runner.boot_id = "boot"
+    runner.boot_id = "boot-1"
     runner.executed_bundle_source_sha256 = capture.camera_positioning_source_sha256()
     runner._capture_stage = lambda: {"revolutions": []}
     raw_sleep = runner.sleep
@@ -874,7 +840,7 @@ def test_inspected_forward_consumes_one_verified_review_for_one_pulse(
         raw_sleep(delay)
         challenge_path = tmp_path / "capture.json.inspection-challenge.json"
         if challenge_path.exists() and not submitted:
-            frame, manifest = _write_inspection_capture(challenge_path)
+            frame, manifest = _write_inspection_capture(challenge_path, monkeypatch)
             assert (
                 capture.inspection.main(
                     [
