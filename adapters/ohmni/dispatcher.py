@@ -78,6 +78,18 @@ class GroundCommandDispatcher:
             ),
         )
 
+    def dispatch_navigation(
+        self, intent: IntentV1, state: Mapping[str, object], *, route_id: str, navigation_route: str
+    ) -> ExecutionResult:
+        return self._dispatch(
+            intent,
+            state,
+            expected_name=IntentName.NAVIGATE,
+            operation=CommandOperation.GROUND_NAVIGATE,
+            parameters={"route_id": route_id, "navigation_route": navigation_route},
+            timeout_detail="ground node did not confirm fresh arrival and STOP before its deadline",
+        )
+
     def _dispatch(
         self,
         intent: IntentV1,
@@ -131,6 +143,7 @@ class GroundCommandDispatcher:
         )
         try:
             self._link.send(request)
+            acknowledgements = self._collect(request)
         except AdapterError as error:
             return self._failed(
                 intent,
@@ -141,7 +154,6 @@ class GroundCommandDispatcher:
                 RefusalReason.ADAPTER_FAILURE,
                 str(error),
             )
-        acknowledgements = self._collect(request)
         terminal = acknowledgements[-1] if acknowledgements else None
         if terminal is not None and terminal.status is LifecycleStatus.COMPLETED:
             return ExecutionResult(

@@ -93,6 +93,11 @@ class ApprovedReturnRoute:
     footprint_radius_m: float
     arrival_tolerance_m: float
     geometry_sha256: str
+    speed_m_s: float = _FORWARD_M_S
+    yaw_rate_deg_s: float = 35.0
+    pulse_s: float = _PULSE_S
+    stopping_distance_m: float = _STOPPING_DISTANCE_M
+    pose_max_age_ms: int = _MAX_STATUS_AGE_MS
 
     def __post_init__(self) -> None:
         if not all(
@@ -124,10 +129,24 @@ class ApprovedReturnRoute:
             raise ValueError("return safety distances must be bounded and positive")
         if not _sha256(self.geometry_sha256):
             raise ValueError("return geometry requires its SHA-256")
+        for value, maximum in (
+            (self.speed_m_s, 0.18),
+            (self.yaw_rate_deg_s, 45.0),
+            (self.pulse_s, 0.2),
+            (self.stopping_distance_m, 1.0),
+        ):
+            if (
+                type(value) not in (int, float)
+                or not math.isfinite(value)
+                or not 0 < value <= maximum
+            ):
+                raise ValueError("return motion configuration exceeds local bounds")
+        if type(self.pose_max_age_ms) is not int or not 0 < self.pose_max_age_ms <= 500:
+            raise ValueError("return pose freshness exceeds its local bound")
 
     @property
     def required_clearance_m(self) -> float:
-        return self.footprint_radius_m + _STOPPING_DISTANCE_M + _FORWARD_M_S * _PULSE_S
+        return self.footprint_radius_m + self.stopping_distance_m + self.speed_m_s * self.pulse_s
 
     @classmethod
     def load(cls, path: Path, approval_key: bytes) -> ApprovedReturnRoute:
@@ -227,6 +246,8 @@ class ReturnController:
         odom_frame: str,
         monotonic: Callable[[], float],
         sleep: Callable[[float], object] = asyncio.sleep,
+        require_fresh_arrival: bool = False,
+        allow_resume: bool = True,
     ) -> None:
         self.route = route
         self._status, self._scan = status, scan
@@ -235,8 +256,11 @@ class ReturnController:
         self._session, self._device_id, self._odom_origin_id = session, device_id, odom_origin_id
         self._pose_source_id, self._odom_frame = pose_source_id, odom_frame
         self._monotonic, self._sleep = monotonic, sleep
+        self._require_fresh_arrival, self._allow_resume = require_fresh_arrival, allow_resume
+        self._arrival_after_ms = -1
 
     async def run(self) -> ReturnOutcome:
+        self._arrival_after_ms = int(self._monotonic() * 1_000)
         bound_epoch = self._epoch()
         if bound_epoch is None:
             return ReturnOutcome(False, "return_pose_unavailable", "no current ground epoch")
@@ -254,7 +278,19 @@ class ReturnController:
         initial = self._qualified_status(bound_epoch)
         if isinstance(initial, ReturnOutcome):
             return initial
-        start_index = self._resume_index(initial)
+        start_index = (
+            self._resume_index(initial)
+            if self._allow_resume
+            else (
+                0
+                if _within(
+                    initial,
+                    self.route.world_to_odom.point(self.route.start),
+                    self.route.arrival_tolerance_m,
+                )
+                else None
+            )
+        )
         if start_index is None:
             return ReturnOutcome(
                 False, "return_resume_outside_corridor", "current pose is outside the pinned route"
@@ -295,6 +331,10 @@ class ReturnController:
         self, bound_epoch: int, target: ReturnPoint, footprint: tuple[ReturnPoint, ...]
     ) -> ReturnOutcome:
         while True:
+            if self._require_fresh_arrival and not self._grant_active():
+                return ReturnOutcome(
+                    False, "navigation_authority_lost", "navigation authority was revoked"
+                )
             current = self._qualified_status(bound_epoch)
             if isinstance(current, ReturnOutcome):
                 return current
@@ -310,15 +350,24 @@ class ReturnController:
                     "pose or remaining segment lacks approved clearance",
                 )
             if _within(current, target, self.route.arrival_tolerance_m):
+                if self._require_fresh_arrival and current.t_ms <= self._arrival_after_ms:
+                    await self._sleep(0.02)
+                    continue
                 return ReturnOutcome(True)
             heading = math.degrees(math.atan2(target.y_m - current.y, target.x_m - current.x)) % 360
             angle = _shortest_angle(heading, current.yaw_deg)
             if abs(angle) > 6:
                 result = await self._pulse(
-                    bound_epoch, target, footprint, 0.0, 35.0 if angle > 0 else -35.0
+                    bound_epoch,
+                    target,
+                    footprint,
+                    0.0,
+                    self.route.yaw_rate_deg_s if angle > 0 else -self.route.yaw_rate_deg_s,
                 )
             else:
-                result = await self._pulse(bound_epoch, target, footprint, _FORWARD_M_S, 0.0)
+                result = await self._pulse(
+                    bound_epoch, target, footprint, self.route.speed_m_s, 0.0
+                )
             if result is not None:
                 return result
 
@@ -334,7 +383,7 @@ class ReturnController:
         if failure is not None:
             return failure
         try:
-            motion = self._drive_velocity(linear_m_s, yaw_deg_s, _PULSE_S)
+            motion = self._drive_velocity(linear_m_s, yaw_deg_s, self.route.pulse_s)
         except (OSError, RuntimeError, ValueError) as error:
             return ReturnOutcome(False, "return_motion_refused", str(error))
         while True:
@@ -397,7 +446,10 @@ class ReturnController:
             return ReturnOutcome(False, "return_epoch_changed", "ground connection epoch changed")
         status = self._status()
         now_ms = int(self._monotonic() * 1_000)
-        if type(status.t_ms) is not int or not 0 <= now_ms - status.t_ms <= _MAX_STATUS_AGE_MS:
+        if (
+            type(status.t_ms) is not int
+            or not 0 <= now_ms - status.t_ms <= self.route.pose_max_age_ms
+        ):
             return ReturnOutcome(False, "return_pose_stale", "current odometry pose is not current")
         if status.pos_quality <= 0 or not all(
             math.isfinite(value) for value in (status.x, status.y, status.yaw_deg)
