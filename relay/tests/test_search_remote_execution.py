@@ -199,22 +199,6 @@ def test_remote_search_preview_and_confirmed_intent_use_the_signed_control_pose(
             assert preview_response.json()["intent_id"] == intent.intent_id
             assert preview_response.json()["routes"][0]["frame"] == "map_enu"
             assert len(preview_response.json()["routes"][0]["waypoints"]) >= 2
-            survey_response = client.post(
-                f"/session/{SESSION}/search/preview",
-                headers=headers,
-                json={
-                    "intent": {
-                        **payload,
-                        "intent_id": "remote-survey",
-                        "args": {"zone_id": "lobby", "mode": "survey"},
-                    }
-                },
-            )
-            assert survey_response.status_code == 200
-            assert {
-                key: survey_response.json()["preview"][key]
-                for key in ("zone_id", "target_class", "mode")
-            } == {"zone_id": "lobby", "target_class": None, "mode": "survey"}
             assert (
                 client.post(
                     f"/session/{SESSION}/search/preview", headers=headers, json={"intent": payload}

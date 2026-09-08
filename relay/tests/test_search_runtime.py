@@ -572,7 +572,15 @@ def test_search_preview_lease_binds_the_full_intent_and_expires() -> None:
     assert not runtime.accepts_intent(intent, expires + 1)
 
 
-def test_survey_uses_camera_coverage_worker_without_loading_an_object_detector(tmp_path) -> None:
+def test_survey_uses_fresh_decoded_camera_frames_without_loading_an_object_detector(
+    tmp_path,
+) -> None:
+    from collections import deque
+    from time import monotonic
+
+    import numpy as np
+
+    from relay.control_localization import ControlPose
     from relay.search_detection import (
         CameraCalibrationConfig,
         DetectionSourceConfig,
@@ -581,19 +589,56 @@ def test_survey_uses_camera_coverage_worker_without_loading_an_object_detector(t
     )
 
     class Stream:
+        def __init__(self) -> None:
+            self.frames = deque()
+
         def start(self):
             return None
 
         def close(self):
-            return None
+            self.frames.clear()
 
         def read(self, _timeout: float):
-            return None
+            return self.frames.popleft() if self.frames else None
 
     runtime = _search_runtime()
     preview = runtime.prepare(_intent("survey-camera", survey=True), _snapshot())
     assert isinstance(preview, SearchMissionPreview)
     runtime.start("survey-camera")
+    task = preview.search.assignments[0].task
+    artifact = runtime.navigation.artifact()
+    cell = task.cells[0].pose
+    pose = ControlPose(
+        1_000,
+        "survey-control-pose",
+        "survey-session",
+        1,
+        task.connection_epoch,
+        artifact.map_pin.version,
+        artifact.geometry_pin.version,
+        "camera-calibration-v1",
+        "body-extrinsics",
+        1_000,
+        1_000,
+        round(cell.x_m * 1_000),
+        round(cell.y_m * 1_000),
+        round(cell.z_m * 1_000),
+        "map_enu",
+        10,
+        "ready",
+    )
+
+    class Session:
+        @staticmethod
+        def control_pose(drone_id: int):
+            assert drone_id == 1
+            return pose
+
+        @staticmethod
+        def clock() -> int:
+            return 1_000
+
+    stream = Stream()
     source = DetectionSourceConfig(
         1,
         "camera-1",
@@ -608,12 +653,34 @@ def test_survey_uses_camera_coverage_worker_without_loading_an_object_detector(t
     factory = SearchDetectionFactory(
         SearchDetectionConfig({1: source}),
         runtime,
-        stream_factory=lambda _url: Stream(),
+        stream_factory=lambda _url: stream,
         detector_factory=lambda _source: pytest.fail("survey must not load an object detector"),
     )
 
     factory.start()
-    assert factory.start_mission("survey-camera", object())
+    assert factory.start_mission("survey-camera", Session())
+    worker = factory._workers[("survey-camera", 1)][1]
+    stream.frames.append((np.zeros((8, 8, 3), dtype=np.uint8), monotonic()))
+    worker.poll()
+    assert runtime.status_payload("survey-camera")["tasks"][0]["covered_cells"] == 0
+
+    runtime._activate_arrived_tasks(
+        runtime._mission("survey-camera"),
+        replace(
+            _snapshot(),
+            aircraft={
+                1: replace(
+                    _snapshot().aircraft[1],
+                    pose=Position(cell.x_m, cell.y_m, cell.z_m),
+                    position_last_seen_ms=_snapshot().now_ms,
+                )
+            },
+        ),
+    )
+    stream.frames.append((np.zeros((8, 8, 3), dtype=np.uint8), monotonic()))
+    worker.poll()
+
+    assert runtime.status_payload("survey-camera")["tasks"][0]["covered_cells"] > 0
     assert factory.status("survey-camera") == [
         {"drone_id": 1, "state": "running", "failure_reason": None}
     ]
