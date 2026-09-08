@@ -241,12 +241,6 @@ def _rehearsal_deployment(
     encoded_tuning = json.dumps(tuning, sort_keys=True, separators=(",", ":")).encode()
     tuning_path.write_bytes(encoded_tuning)
     tuning_digest = sha256(encoded_tuning).hexdigest()
-    profile_document = document["wire_profiles"]["1"]
-    profile_document.update(
-        max_authorization_lifetime_ms=12_000,
-        tracking_timeout_ms=12_000,
-        navigation_config_sha256=tuning_digest,
-    )
     frame = base.config.frames[0]
     original_pins = frame.control_pins
     if original_pins is None:
@@ -431,32 +425,32 @@ class MovingControlPosePublisher:
                         continue
                     x_m, y_m, z_m = position
                     wire = ControlLocalizationWire(
-                    drone_id=1,
-                    connection_epoch=1,
-                    map_id=self.pins.map_id,
-                    geometry_id=self.pins.geometry_id,
-                    camera_calibration_id=self.pins.camera_calibration_id,
-                    body_extrinsics_id=self.pins.body_extrinsics_id,
-                    capture_clock_id=self.pins.clock_mapping.capture_clock_id,
-                    evaluated_at_s=current_s,
-                    position_map_enu_m=(x_m, y_m, z_m),
-                    covariance_map_enu_m2=(
-                        (0.00000001, 0.0, 0.0),
-                        (0.0, 0.00000001, 0.0),
-                        (0.0, 0.0, 0.00000001),
-                    ),
-                    fix_age_s=0.0,
-                    velocity_age_s=0.0,
-                    height_age_s=0.0,
-                    confidence="green",
-                    loss_age_s=None,
-                    status="ready",
-                    control_eligible=True,
-                    flight_approved=False,
-                    reason="loopback_rehearsal",
-                    source_ids=self.pins.source_ids,
-                    clock_mapping=self.pins.clock_mapping,
-                )
+                        drone_id=1,
+                        connection_epoch=1,
+                        map_id=self.pins.map_id,
+                        geometry_id=self.pins.geometry_id,
+                        camera_calibration_id=self.pins.camera_calibration_id,
+                        body_extrinsics_id=self.pins.body_extrinsics_id,
+                        capture_clock_id=self.pins.clock_mapping.capture_clock_id,
+                        evaluated_at_s=current_s,
+                        position_map_enu_m=(x_m, y_m, z_m),
+                        covariance_map_enu_m2=(
+                            (0.00000001, 0.0, 0.0),
+                            (0.0, 0.00000001, 0.0),
+                            (0.0, 0.0, 0.00000001),
+                        ),
+                        fix_age_s=0.0,
+                        velocity_age_s=0.0,
+                        height_age_s=0.0,
+                        confidence="green",
+                        loss_age_s=None,
+                        status="ready",
+                        control_eligible=True,
+                        flight_approved=False,
+                        reason="loopback_rehearsal",
+                        source_ids=self.pins.source_ids,
+                        clock_mapping=self.pins.clock_mapping,
+                    )
                     frame = sign_localization_frame(
                         wire,
                         timestamp_ms=epoch_ms(),

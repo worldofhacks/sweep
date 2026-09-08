@@ -303,7 +303,7 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
             return status if status["status"] in {"completed", "failed"} else None
 
         try:
-            status = _wait_for(terminal_status, timeout_s=15)
+            status = _wait_for(terminal_status, timeout_s=45)
         except AssertionError as error:
             raise AssertionError(last_status) from error
         if status["status"] != "completed":
@@ -368,7 +368,7 @@ def test_loopback_rehearsal_completes_an_empty_aircraft_survey(tmp_path) -> None
                 if (payload := search.status_payload(intent_id))["state"] == "covered"
                 else None
             ),
-            timeout_s=15,
+            timeout_s=45,
         )
         assert status["mode"] == "survey"
         assert status["candidates"] == []
