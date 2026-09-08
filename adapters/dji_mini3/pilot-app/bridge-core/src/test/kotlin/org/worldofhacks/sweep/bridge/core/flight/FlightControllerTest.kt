@@ -990,6 +990,27 @@ class FlightControllerTest {
     }
 
     @Test
+    fun `signed takeoff limits tighten the supervised height and freshness guards`() {
+        val heightLimited = Harness(supervisedVertical = SupervisedVerticalConfig())
+        heightLimited.localHeight(0.0)
+        heightLimited.join()
+        val tooHigh = heightLimited.run(CommandArgs.Takeoff(zMm = 1_800, maximumHeightMm = 1_700))
+        assertEquals("vertical_ceiling_exceeded", tooHigh.terminal?.second, tooHigh.events.toString())
+        assertFalse(heightLimited.model.motorsOn)
+
+        val ageLimited = Harness(supervisedVertical = SupervisedVerticalConfig())
+        ageLimited.localHeight(0.0)
+        ageLimited.join()
+        val takeoff = ageLimited.run(CommandArgs.Takeoff(zMm = 1_800, maxLocalHeightAgeMs = 200))
+        ageLimited.hovering()
+        ageLimited.clock.advance(201)
+        ageLimited.controlHeartbeat()
+        ageLimited.controller.tick(ageLimited.clock.nowMs())
+        assertEquals("local_height_unavailable", takeoff.terminal?.second, takeoff.events.toString())
+        assertEquals("landing", ageLimited.controller.status.phase)
+    }
+
+    @Test
     fun `supervised vertical refuses targets above the 7 foot soft ceiling`() {
         val h = Harness(supervisedVertical = SupervisedVerticalConfig())
         h.localHeight(0.0)
