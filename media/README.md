@@ -83,7 +83,8 @@ docker compose --env-file .env -f docker-compose.yml -f .sweep/media/compose.cam
 
 Each Ohmni `camera_runner` process owns one V4L source. Two cameras require two
 independently configured publishers, each with its verified device node, format,
-dimensions and `SWEEP_CAMERA_STREAM`, using the matching node key. Server
+dimensions and `SWEEP_DEVICE_UNIT`, using the matching node key. The publisher
+uses the canonical `drone{unit}` path. Server
 permissions do not start these processes, duplicate a feed or establish physical
 camera availability. Verify per-camera byte progress and decoded playback after
 provisioning. For bounded recording, pass the same generated override through

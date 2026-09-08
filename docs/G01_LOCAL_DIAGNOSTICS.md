@@ -56,9 +56,9 @@ before starting this checkout; the launcher never falls back to another port.
 The device connection uses explicit ADB reverse mappings for 8010 and 8554.
 Do not restart a vendor process or replace an active device runtime implicitly.
 
-The independently owned camera supports `SWEEP_CAMERA_STREAM=ground1` and a
-bounded `camera.sh probe`. A successful probe proves advancing producer output;
-also verify increasing MediaMTX inbound bytes and decoded browser frames.
+The independently owned camera publishes on the canonical
+`drone${SWEEP_DEVICE_UNIT}` path. Verify increasing MediaMTX inbound bytes and
+decoded browser frames from that path.
 
 ## Current physical limits
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import subprocess
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -103,3 +105,43 @@ def test_camera_environment_enables_the_sidecar_only_when_explicitly_configured(
     camera = from_environment("media.example", "node-key")
 
     assert "tee" in camera._command
+
+
+def test_camera_cleanup_timeout_fails_without_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    launched = threading.Event()
+    cleanup_attempted = threading.Event()
+    processes: list[SimpleNamespace] = []
+
+    def popen(*_: object, **__: object) -> SimpleNamespace:
+        process = SimpleNamespace(
+            stderr=io.BytesIO(),
+            wait_timeouts=[],
+            poll=lambda: None,
+            terminate=lambda: None,
+            kill=lambda: None,
+        )
+
+        def wait(*, timeout: int) -> None:
+            process.wait_timeouts.append(timeout)
+            if len(process.wait_timeouts) == 2:
+                cleanup_attempted.set()
+            raise subprocess.TimeoutExpired("ffmpeg", timeout)
+
+        process.wait = wait
+        processes.append(process)
+        launched.set()
+        return process
+
+    monkeypatch.setattr("adapters.ohmni.camera.subprocess.Popen", popen)
+    camera = Camera("media.example", 11, "node-key", "ffmpeg", SOURCE_11)
+    camera.start()
+    assert launched.wait(timeout=1)
+
+    camera.request_stop()
+    assert cleanup_attempted.wait(timeout=1)
+    camera.close()
+
+    assert len(processes) == 1
+    assert processes[0].wait_timeouts == [2, 2]
+    assert camera.state == "failed"
+    assert not camera._thread.is_alive()

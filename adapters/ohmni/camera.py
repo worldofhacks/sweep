@@ -193,6 +193,8 @@ class Camera:
     def state(self) -> str:
         with self._lock:
             process = self._process
+            if self._state == "failed":
+                return "failed"
             if self._stop.is_set():
                 return "stopped"
             if process is None or process.poll() is not None:
