@@ -86,6 +86,12 @@ def test_loopback_rehearsal_publishes_a_fresh_signed_pose_and_private_bootstrap(
 
         runtime = rehearsal._composition.runtime
         autonomy = rehearsal._composition.session(rehearsal.session_id)
+        assert rehearsal._app is not None
+        approved = rehearsal._app.state.platform_services.maps.approved_bundle(rehearsal.session_id)
+        authoring_map_pin = rehearsal._composition.config.navigation.config.authoring_map_pin
+        assert authoring_map_pin is not None
+        assert authoring_map_pin.version == approved["bundle"]["manifest"]["mapVersion"]
+        assert authoring_map_pin.content_sha256 == approved["reference"]["contentHash"]
         assert autonomy.search_runtime is not None
         assert autonomy.search_runtime.config.source_by_drone == {1: SYNTHETIC_SOURCE_ID}
         assert autonomy.search_detection is not None

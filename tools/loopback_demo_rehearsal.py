@@ -30,7 +30,13 @@ from websockets.asyncio.client import connect
 
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
 from planner.models import Geofence
-from planner.navigation import ArrivalSlot, NavigationArtifact, NavigationPermission, Pose
+from planner.navigation import (
+    ArrivalSlot,
+    ArtifactPin,
+    NavigationArtifact,
+    NavigationPermission,
+    Pose,
+)
 from planner.navigation_deployment import NavigationDeployment, load_navigation_deployment
 from planner.navigation_runtime import navigation_configuration_digest
 from planner.test_navigation_runtime import KEY as APPROVAL_KEY
@@ -42,6 +48,7 @@ from relay.control_localization import (
     ControlLocalizationProjector,
     ControlLocalizationWire,
 )
+from relay.map_authoring import MapAuthoringStore
 from relay.navigation_wire import wire_config_digest_candidates
 from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.test_platform_navigation_execution import _deployment
@@ -289,14 +296,42 @@ def _rehearsal_deployment(
     return deployment, projector, pins
 
 
-def _publish_catalog(app: Any, session_id: str, deployment: NavigationDeployment) -> None:
-    platform = app.state.platform_services
+def _seed_catalog(
+    maps: MapAuthoringStore, session_id: str, deployment: NavigationDeployment
+) -> tuple[dict[str, str], ArtifactPin]:
     draft = _catalog_draft(deployment)
-    reference = platform.maps.save(session_id, draft, None, "loopback-rehearsal")
-    validation = platform.maps.validate(session_id, reference, "loopback-rehearsal")
+    reference = maps.save(session_id, draft, None, "loopback-rehearsal")
+    validation = maps.validate(session_id, reference, "loopback-rehearsal")
     if not validation["valid"]:
         raise RehearsalError("the synthetic rehearsal map did not validate")
-    platform.maps.approve(session_id, reference, validation["validationId"], "loopback-rehearsal")
+    maps.approve(session_id, reference, validation["validationId"], "loopback-rehearsal")
+    version = draft["metadata"]["mapVersion"]
+    if not isinstance(version, str):
+        raise RehearsalError("the synthetic rehearsal map has no map version")
+    return reference, ArtifactPin(version, reference["contentHash"])
+
+
+def _bind_authoring_map(
+    deployment: NavigationDeployment, authoring_map_pin: ArtifactPin
+) -> NavigationDeployment:
+    artifact = deployment.artifact()
+    config = replace(deployment.config, authoring_map_pin=authoring_map_pin)
+    document = json.loads(deployment.path.read_text())
+    document["execution"] = asdict(config)
+    _write_json(deployment.path, document)
+    approval_path = deployment.path.parent / document["approval_file"]
+    approval = json.loads(approval_path.read_text())
+    approval["configuration_sha256"] = navigation_configuration_digest(
+        artifact, config, deployment.permission, deployment.home_zone_id
+    )
+    unsigned = {key: value for key, value in approval.items() if key != "signature"}
+    approval["signature"] = sign_event(unsigned, APPROVAL_KEY)
+    _write_json(approval_path, approval)
+    return load_navigation_deployment(deployment.path)
+
+
+def _select_catalog(app: Any, session_id: str, reference: dict[str, str]) -> None:
+    platform = app.state.platform_services
     platform.navigation.select_map(session_id, {"reference": reference}, "loopback-rehearsal")
 
 
@@ -420,10 +455,10 @@ class LoopbackDemoRehearsal:
         excluded = {port for port in (relay_port, console_port) if port is not None}
         self.relay_port = relay_port or unused_loopback_port(excluded=excluded)
         self.console_port = console_port or unused_loopback_port(excluded={self.relay_port})
-        if (
-            {self.relay_port, self.console_port} & {5173, 8010}
-            or self.relay_port == self.console_port
-        ):
+        if {self.relay_port, self.console_port} & {
+            5173,
+            8010,
+        } or self.relay_port == self.console_port:
             raise ValueError("the rehearsal ports must be distinct and cannot be 5173 or 8010")
         if start_console:
             raise ValueError("start the console with its isolated browser-test Vite configuration")
@@ -437,6 +472,7 @@ class LoopbackDemoRehearsal:
         self.bootstrap_path = bootstrap_path or self.directory / "console-bootstrap.json"
         self._server: uvicorn.Server | None = None
         self._server_thread: threading.Thread | None = None
+        self._app: Any | None = None
         self._node: FakeNode | None = None
         self._pose_publisher: MovingControlPosePublisher | None = None
         self._composition: Any = None
@@ -456,13 +492,6 @@ class LoopbackDemoRehearsal:
         relay_token = secrets.token_urlsafe(48).encode()
         adapter_token = secrets.token_urlsafe(48).encode()
         localization_token = secrets.token_urlsafe(48).encode()
-        deployment, projector, pins = _rehearsal_deployment(
-            self.directory / "navigation",
-            session_id=self.session_id,
-            now_ms=now,
-            lifetime_ms=self.lifetime_ms,
-        )
-        self._write_bootstrap(relay_token, adapter_token, localization_token)
         settings = RelaySettings(
             relay_token=relay_token,
             adapter_keys={1: adapter_token},
@@ -471,6 +500,16 @@ class LoopbackDemoRehearsal:
             adapter_backend=AdapterBackend.REMOTE,
             console_origins=(self.console_url.removesuffix("/"),),
         )
+        deployment, projector, pins = _rehearsal_deployment(
+            self.directory / "navigation",
+            session_id=self.session_id,
+            now_ms=now,
+            lifetime_ms=self.lifetime_ms,
+        )
+        maps = MapAuthoringStore(settings.log_dir / "platform" / "maps.sqlite3", clock_ms=epoch_ms)
+        reference, authoring_map_pin = _seed_catalog(maps, self.session_id, deployment)
+        deployment = _bind_authoring_map(deployment, authoring_map_pin)
+        self._write_bootstrap(relay_token, adapter_token, localization_token)
         search, search_detection = synthetic_lobby_search_configuration(deployment)
         config = AutonomyConfig(
             planning=replace(planning_config(), flight_speed_m_s=0.2),
@@ -491,9 +530,10 @@ class LoopbackDemoRehearsal:
             detection_stream_factory=SyntheticFrameStream,
             detection_detector_factory=synthetic_detector,
         )
+        self._app = app
         self._start_relay(app)
         self._composition.session(self.session_id)
-        _publish_catalog(app, self.session_id, deployment)
+        _select_catalog(app, self.session_id, reference)
         self._node = FakeNode(
             FakeNodeConfig(
                 relay_url=self.relay_url,
@@ -546,6 +586,7 @@ class LoopbackDemoRehearsal:
             self._server_thread.join(STARTUP_TIMEOUT_S)
             self._server_thread = None
         self._server = None
+        self._app = None
         if self._composition is not None:
             self._composition.close()
             self._composition = None
