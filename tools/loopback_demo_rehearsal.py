@@ -573,7 +573,6 @@ class LoopbackDemoRehearsal:
                 token=adapter_token.decode(),
                 adapter_id="loopback-fake-node-1",
                 home=(-20.0, 9.8, -29.0),
-                telemetry_hz=50,
                 capabilities=(
                     "flight",
                     "navigate",

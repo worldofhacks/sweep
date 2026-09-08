@@ -125,6 +125,7 @@ def _navigation_diagnostics(rehearsal: LoopbackDemoRehearsal) -> dict[str, objec
     return {
         "drone": session.current_state()["drones"][0],
         "control_pose": asdict(session.control_pose(1)) if session.control_pose(1) else None,
+        "node_failure": repr(rehearsal._node._failure) if rehearsal._node else None,
         "navigation_events": [
             event
             for event in _audit_events(rehearsal)
