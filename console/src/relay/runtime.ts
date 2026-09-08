@@ -6,6 +6,7 @@ import {
 import { HttpTranscriptClient, type TranscriptClient } from '../voice/client'
 import { relayMapEndpoint, type MapEndpoint } from './map-endpoint'
 import { PlatformRuntime } from '../platform/runtime'
+import { HttpSearchClient, type SearchClient } from '../search/client'
 
 export interface SweepRelayRuntimeConfig {
   baseUrl: string
@@ -35,6 +36,7 @@ export interface ConsoleRuntime {
   /** The relay base URL a node would connect to; null without a bootstrap. */
   baseUrl: string | null
   platform: PlatformRuntime | null
+  searchClient: SearchClient | null
 }
 
 declare global {
@@ -64,6 +66,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       mapEndpoint: null,
       baseUrl: null,
       platform: null,
+      searchClient: null,
     }
   }
 
@@ -71,6 +74,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
     sessionId: config.sessionId,
     baseUrl: config.baseUrl,
     platform: new PlatformRuntime(config),
+    searchClient: new HttpSearchClient(config),
     client: new WebSocketRelayClient({
       baseUrl: config.baseUrl,
       sessionId: config.sessionId,

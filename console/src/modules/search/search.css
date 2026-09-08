@@ -1,0 +1,17 @@
+.se-module, .se-status { display: grid; gap: 14px; }
+.se-status { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.se-panel { padding: 16px; border: 1px solid var(--color-border-secondary); background: var(--color-surface); }
+.se-panel h2 { margin: 0; font-size: var(--text-18); }
+.se-panel p { color: var(--color-ink-2); }
+.se-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.se-controls label { display: grid; gap: 4px; font-size: var(--text-12); }
+.se-controls select, .se-button, .se-findings button { min-height: var(--min-h-38); padding: 7px 10px; border: 1px solid var(--color-border-input); background: var(--color-surface); color: var(--color-ink); }
+.se-button, .se-findings button { cursor: pointer; }
+.se-button:disabled, .se-findings button:disabled { cursor: not-allowed; color: var(--color-ink-3); }
+.se-state strong { color: var(--color-ink); }
+.se-plot { position: relative; min-height: 180px; margin: 12px 0; border: 1px solid var(--color-border-secondary); background-image: repeating-linear-gradient(0deg, transparent 0 23px, var(--color-ground) 23px 24px), repeating-linear-gradient(90deg, transparent 0 23px, var(--color-ground) 23px 24px); }
+.se-plot span { position: absolute; width: 12px; height: 12px; transform: translate(-50%, -50%); border-radius: var(--radius-dot); background: var(--color-warn); }
+.se-plot span.is-covered { background: var(--color-ok); }
+.se-findings { display: grid; gap: 8px; padding: 0; list-style: none; }
+.se-findings li { display: grid; gap: 5px; padding: 10px 0; border-bottom: 1px solid var(--color-ground); }
+.se-findings button { width: fit-content; }

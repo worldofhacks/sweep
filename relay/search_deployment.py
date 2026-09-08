@@ -53,8 +53,15 @@ def load_search_config(
         sources = _sources(raw["source_by_drone"])
         permission = NavigationPermission(frozenset(raw["permission_zone_ids"]))
         allowed = {zone.zone_id for zone in artifact.zones if zone.owner_approved}
-        if not areas or set(areas) - allowed or not permission.permitted_zone_ids <= allowed:
-            raise ValueError("search areas and permission must be owner-approved map zones")
+        if (
+            not areas
+            or set(areas) - permission.permitted_zone_ids
+            or not permission.permitted_zone_ids <= navigation.permission.permitted_zone_ids
+            or not permission.permitted_zone_ids <= allowed
+        ):
+            raise ValueError(
+                "search areas and permission must stay within signed navigation permission"
+            )
         config = SearchRuntimeConfig(
             areas,
             artifact.map_pin,

@@ -6,6 +6,7 @@ import { GestureModule } from './gesture/GestureModule'
 import { LiveModule } from './live/LiveModule'
 import { MapModule } from './map/MapModule'
 import { SpeechModule } from './speech/SpeechModule'
+import { SearchModule } from './search/SearchModule'
 import { WorldsModule } from './worlds/WorldsModule'
 import type { ModuleDefinition, ModuleId } from './types'
 
@@ -41,6 +42,14 @@ export const MODULES: readonly ModuleDefinition[] = [
     title: 'Speech to intents',
     note: 'An utterance compiles to intents, the arbiter validates, you confirm. Never a command straight to a device.',
     component: SpeechModule,
+    context: FleetContext,
+  },
+  {
+    id: 'search',
+    label: 'Search',
+    title: 'Visual search',
+    note: 'Preview the configured route, confirm the exact mission, then review coverage and findings.',
+    component: SearchModule,
     context: FleetContext,
   },
   {

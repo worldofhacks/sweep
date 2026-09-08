@@ -39,7 +39,13 @@ export default function App({
   relayBaseUrl,
   mapEndpoint,
 }: AppProps) {
-  const controller = useControlConsole({ sessionId, clients, intentDependencies, navigation: services?.navigation })
+  const controller = useControlConsole({
+    sessionId,
+    clients,
+    intentDependencies,
+    navigation: services?.navigation,
+    search: services?.search,
+  })
   const [fallbackCatalog] = useState(() => new UnreportedCatalogClient())
   const catalogController = useCatalog(catalog ?? fallbackCatalog)
   return (

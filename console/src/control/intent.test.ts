@@ -45,6 +45,7 @@ const ENVELOPES: Record<ConsoleIntentName, { args: IntentArgs; selection: number
   spacing: { args: { delta: -1 }, selection: [1] },
   come_home: { args: {}, selection: [1] },
   navigate: { args: { zone_id: 'zone-kitchen' }, selection: [1, 11] },
+  search: { args: { zone_id: 'zone-kitchen', target_class: 'backpack' }, selection: [1] },
   sweep: { args: {}, selection: [1] },
   capture_room: {
     args: { room_id: 'kitchen-01', capture_id: 'capture-intent-1', pattern: 'pano_360' },
@@ -74,7 +75,7 @@ describe('intent envelopes', () => {
     expect(isConsoleIntentV1(wire)).toBe(true)
   })
 
-  test.each(['takeoff', 'land', 'land_all', 'sweep', 'capture_room', 'navigate'] as const)(
+  test.each(['takeoff', 'land', 'land_all', 'sweep', 'capture_room', 'navigate', 'search'] as const)(
     '%s requires confirmation and is refused locally without it',
     (name) => {
       expect(requiresConfirmation(name)).toBe(true)

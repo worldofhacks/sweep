@@ -1,4 +1,5 @@
 import type { NavigationClient } from '../navigation'
+import type { SearchClient } from '../search/client'
 import type { MapAuthoringClient } from './map/authoring/client'
 import type { ComponentType } from 'react'
 import type { CatalogController } from '../catalog/use-catalog'
@@ -17,6 +18,7 @@ export type ModuleId =
   | 'live'
   | 'gesture'
   | 'speech'
+  | 'search'
   | 'captures'
   | 'worlds'
   | 'devices'
@@ -35,6 +37,7 @@ export type VoiceDependencies = Pick<
 export interface ModuleServices {
   /** Accepted-map review port; absent until a real provider is connected. */
   navigation?: NavigationClient
+  search?: SearchClient
   /** Explicit saved-map integration; absent backend actions remain unavailable. */
   mapAuthoring?: MapAuthoringClient
   transcript?: TranscriptClient

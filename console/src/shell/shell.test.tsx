@@ -93,12 +93,13 @@ describe('persistent shell', () => {
       'Live',
       'Gesture',
       'Speech',
+      'Search',
       'Captures',
       'Worlds',
       'Devices',
       'Map',
     ])
-    expect(within(screen.getByRole('navigation', { name: 'Primary' })).getAllByRole('button')).toHaveLength(8)
+    expect(within(screen.getByRole('navigation', { name: 'Primary' })).getAllByRole('button')).toHaveLength(9)
   })
 
   test('pending confirmation: the dock shows the plan with its Intent v1 JSON expanded by default', async () => {

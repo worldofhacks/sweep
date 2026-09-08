@@ -3,6 +3,7 @@ import { useNavigationReview } from './use-navigation-review'
 import { useNavigationVerification } from './use-navigation-verification'
 import { navigationBlockedReason, navigationTargets } from './navigation'
 import { navigationPreviewValidity, type NavigationClient, type NavigationConfirmationOutcome, type NavigationPreview } from '../navigation'
+import type { SearchClient, SearchPreview } from '../search/client'
 import { motionObservationCurrent, observedControlState } from './observation'
 import { isReady } from '../shell/derive'
 import { peripheralBlockedReason } from './peripherals'
@@ -68,6 +69,7 @@ export interface UseControlConsoleOptions {
   clients: ControlClients
   intentDependencies?: IntentFactoryDependencies
   navigation?: NavigationClient
+  search?: SearchClient
 }
 
 /** One control press: an intent name, its args, and the aircraft it addresses. */
@@ -82,6 +84,7 @@ export function useControlConsole({
   sessionId,
   clients,
   navigation: navigationClient,
+  search,
   intentDependencies = browserIntentDependencies,
 }: UseControlConsoleOptions) {
   const [reportedState, dispatch] = useReducer(
@@ -97,6 +100,9 @@ export function useControlConsole({
     return () => clearInterval(timer)
   }, [])
   const state = useMemo(() => observedControlState(reportedState, Math.max(observationTime, intentDependencies.now())), [reportedState, intentDependencies, observationTime])
+  const latestState = useRef(state)
+  const previewSequence = useRef(0)
+  useEffect(() => { latestState.current = state }, [state])
   const confirmedIds = useRef(new Set<string>())
   const navigationGeneration = useRef(0)
   const [navigationReset, resetNavigation] = useReducer((value: number) => value + 1, 0)
@@ -486,6 +492,50 @@ export function useControlConsole({
     ],
   )
 
+  const prepareSearch = useCallback(
+    async (zoneId: string, targetClass: string): Promise<{ intent: IntentV1; preview: SearchPreview }> => {
+      const current = latestState.current
+      if (
+        !search ||
+        !isIntentEnabled(current, 'search') ||
+        current.connection.status !== 'connected' ||
+        current.selection.length === 0 ||
+        !selectionReady(current, current.selection)
+      ) {
+        throw new Error('Select ready aircraft and connect to a relay with search configured.')
+      }
+      const sequence = ++previewSequence.current
+      const draft = createIntent(
+        {
+          name: 'search',
+          args: { zone_id: zoneId, target_class: targetClass },
+          selection: current.selection,
+          source: 'console',
+          session: current.sessionId,
+        },
+        intentDependencies,
+      )
+      const startedAt = intentDependencies.now()
+      const preview = await search.preview(draft)
+      const latest = latestState.current
+      const expiresAt = startedAt + preview.expiresAt - preview.t
+      if (
+        sequence !== previewSequence.current ||
+        latest.sessionId !== current.sessionId ||
+        latest.rosterVersion !== current.rosterVersion ||
+        latest.connection !== current.connection ||
+        JSON.stringify(latest.selection) !== JSON.stringify(current.selection) ||
+        !isIntentEnabled(latest, 'search') ||
+        !selectionReady(latest, current.selection) ||
+        intentDependencies.now() >= expiresAt
+      ) {
+        throw new Error('The fleet changed while preparing the search. Preview it again.')
+      }
+      return { intent: stageForConfirmation(draft, expiresAt), preview }
+    },
+    [intentDependencies, search, stageForConfirmation],
+  )
+
   /**
    * Drafts a select that must be previewed and confirmed before it is sent; the
    * speech compiler and the target strip use it so nothing leaves on a compile.
@@ -526,7 +576,7 @@ export function useControlConsole({
       source: DraftSource = 'console',
       expiresAt?: number,
     ): IntentV1 | null => {
-      if (request.name === 'navigate') return null // Generic drafts cannot manufacture a route preview.
+      if (request.name === 'navigate' || request.name === 'search') return null // These require authoritative previews.
       if (!isIntentEnabled(state, request.name)) return null
       const fleetWide = ['arm', 'land_all', 'estop'].includes(request.name)
       const selection = fleetWide ? [] : request.targets ?? state.selection
@@ -845,6 +895,7 @@ export function useControlConsole({
     pendingRequest,
     navigation: navigation.snapshot,
     prepareNavigation: navigation.prepare,
+    prepareSearch,
     invalidateNavigation: navigation.invalidate,
     navigationVerification: verification.verification,
     canVerifyNavigation: verification.canVerify,
@@ -950,4 +1001,8 @@ function sendToRelay(
       detail: error instanceof Error ? error.message : 'Relay send failed for an unknown reason.',
     })
   })
+}
+
+function selectionReady(state: ControlState, ids: readonly DroneId[]): boolean {
+  return ids.every((id) => state.aircraft[id]?.membership === 'ready' && state.aircraft[id]?.selectable)
 }

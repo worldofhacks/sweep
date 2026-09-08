@@ -57,6 +57,7 @@ export type ConsoleIntentName =
   | 'come_home'
   /** Preview-only until the relay publishes its frozen navigation confirmation contract. */
   | 'navigate'
+  | 'search'
   | 'sweep'
   | 'capture_room'
 
@@ -80,6 +81,7 @@ export const CONSOLE_INTENT_NAMES: readonly ConsoleIntentName[] = [
   'spacing',
   'come_home',
   'navigate',
+  'search',
   'sweep',
   'capture_room',
 ]
@@ -121,7 +123,7 @@ export const C2_FLEET_OPERATIONS_INTENTS: readonly ConsoleIntentName[] = [
 
 /** Every intent implemented by this console, independently of deployment release. */
 export const SUPPORTED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>(
-  [...C2_FLEET_OPERATIONS_INTENTS, 'body_pulse', 'robot_peripheral', 'camera_control', 'navigate', 'ground_velocity'],
+  [...C2_FLEET_OPERATIONS_INTENTS, 'body_pulse', 'robot_peripheral', 'camera_control', 'navigate', 'search', 'ground_velocity'],
 )
 
 /** Known relay advertisements do not grant this console a command implementation. */
@@ -139,6 +141,7 @@ export function isSupportedIntent(name: ConsoleIntentName): boolean {
  */
 export const CONFIRM_REQUIRED_INTENTS: ReadonlySet<ConsoleIntentName> = new Set<ConsoleIntentName>([
   'navigate',
+  'search',
   'ground_velocity',
   'robot_peripheral',
   'camera_control',
@@ -177,6 +180,7 @@ export const SELECTION_RULES: Readonly<Record<ConsoleIntentName, SelectionRule>>
   spacing: 'selected',
   come_home: 'selected',
   navigate: 'selected',
+  search: 'selected',
   sweep: 'selected',
   capture_room: 'exactly one',
 }
@@ -261,6 +265,11 @@ export interface SweepBox {
   max_y: number
 }
 export type SweepArgs = EmptyArgs | { box: SweepBox }
+export interface SearchArgs {
+  zone_id: string
+  target_class: string
+}
+
 export interface CaptureRoomArgs {
   room_id: string
   capture_id: string
@@ -289,6 +298,7 @@ export interface IntentArgsByName {
   come_home: EmptyArgs
   /** Console review shape from #143; unavailable for transmission in this build. */
   navigate: { zone_id: string }
+  search: SearchArgs
   sweep: SweepArgs
   capture_room: CaptureRoomArgs
 }
@@ -1762,6 +1772,9 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
       )
     case 'navigate':
       return keys.length === 1 && isCanonicalIntentText(args.zone_id, MAX_INTENT_IDENTIFIER_CODE_POINTS)
+    case 'search':
+      return keys.length === 2 && isCanonicalIntentText(args.zone_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+        isCanonicalIntentText(args.target_class, MAX_INTENT_IDENTIFIER_CODE_POINTS)
     case 'arm':
     case 'disarm':
     case 'estop':
