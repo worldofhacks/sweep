@@ -322,9 +322,9 @@ class FlightController(
     }
 
     private fun hover(command: FlightCommand, sink: ReportSink, now: Long) {
-        if (phase is Phase.NavigationArrivalHold) {
-            sink.executing("signed route arrival hold remains active")
-            sink.completed("signed route arrival hold preserved")
+        if (phase is Phase.NavigationArrivalHold || phase is Phase.NavigationHolding) {
+            sink.executing("signed navigation hold remains active")
+            sink.completed("signed navigation hold preserved")
             return
         }
         holdNow(command, sink, now, "hover")
