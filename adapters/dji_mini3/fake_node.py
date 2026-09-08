@@ -331,6 +331,9 @@ class FakeNode:
             )
             return
         self._last_seq = frame.seq
+        if frame.operation in {CommandOperation.HOVER, CommandOperation.LAND, CommandOperation.ESTOP}:
+            self._pending_goto_start = None
+            self._pending_goto_completion = None
         self._enqueue(self._acknowledgement(frame, "accepted"))
         self._enqueue(self._acknowledgement(frame, "executing"))
         if frame.operation.value in self.config.slow_operations and self.config.slow_ack_delay_s:
@@ -340,6 +343,8 @@ class FakeNode:
         self._finish_command(frame)
 
     def _finish_command(self, frame: CommandFrame) -> None:
+        if frame.seq != self._last_seq:
+            return
         if frame.operation is CommandOperation.GOTO and "navigate" in self.config.capabilities:
             if self._navigation_pose is not None and self._navigation_pose_matches_aircraft(
                 self._navigation_pose, frame
