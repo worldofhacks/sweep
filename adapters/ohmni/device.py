@@ -558,11 +558,7 @@ class OhmniDevice:
                     None,
                 )
             )
-        if (
-            scan.angle_min_deg != 0.0
-            or scan.angle_increment_deg != 1.0
-            or len(values) != 360
-        ):
+        if scan.angle_min_deg != 0.0 or scan.angle_increment_deg != 1.0 or len(values) != 360:
             return self._record_lidar_guard(
                 LidarGuardEvidence(
                     LidarCoverage.INVALID,
@@ -582,9 +578,7 @@ class OhmniDevice:
             index for index, value in enumerate(values) if type(value) is int and value == 0
         )
         invalid = tuple(
-            index
-            for index, value in enumerate(values)
-            if type(value) is not int or value < 0
+            index for index, value in enumerate(values) if type(value) is not int or value < 0
         )
         valid = len(values) - len(missing) - len(invalid)
         if invalid:
@@ -634,9 +628,11 @@ class OhmniDevice:
             + self.config.max_speed_m_s
             * (self.config.scan_max_age_s + self.config.owner_timeout_s + 0.1)
         )
-        reason = "obstacle_within_clearance" if any(
-            value <= math.ceil(clearance * 100) for value in values
-        ) else None
+        reason = (
+            "obstacle_within_clearance"
+            if any(value <= math.ceil(clearance * 100) for value in values)
+            else None
+        )
         return self._record_lidar_guard(
             LidarGuardEvidence(
                 LidarCoverage.OBSTACLE if reason else LidarCoverage.CLEAR,
@@ -997,9 +993,7 @@ def from_environment(*, key: str = "") -> OhmniDevice:
         lidar_offset_deg=float(offset) if offset else None,
         lidar_angle_sign=int(sign) if sign else None,
         lidar_device_id=(
-            int(os.environ["SWEEP_DEVICE_UNIT"])
-            if os.environ.get("SWEEP_DEVICE_UNIT")
-            else None
+            int(os.environ["SWEEP_DEVICE_UNIT"]) if os.environ.get("SWEEP_DEVICE_UNIT") else None
         ),
         lidar_source_boot_id=os.environ.get("SWEEP_LIDAR_SOURCE_BOOT_ID"),
         footprint_radius_m=measurement("SWEEP_GROUND_FOOTPRINT_RADIUS_M"),

@@ -105,9 +105,7 @@ def test_observational_candidate_is_inactive_and_preserves_raw_returns() -> None
     lidar = publish(UNIT12_SELF_RETURN_CANDIDATE, *rear)
 
     assert all(
-        not UNIT12_SELF_RETURN_CANDIDATE.matches(
-            sample, UNIT12_SELF_RETURN_CANDIDATE.binding, NOW
-        )
+        not UNIT12_SELF_RETURN_CANDIDATE.matches(sample, UNIT12_SELF_RETURN_CANDIDATE.binding, NOW)
         for sample in rear
     )
     assert lidar.raw_revolution(NOW) is not None
@@ -125,7 +123,7 @@ def test_qualified_profile_filters_its_measured_ray_and_safety_refuses_unknown()
 
     assert profile.matches(candidate, profile.binding, NOW)
     assert lidar.raw_revolution(NOW).points[-1].distance_mm == 181.5
-    assert guarded_device(lidar).guard_reason(now=NOW) == "lidar_full_circle_coverage_missing"
+    assert guarded_device(lidar).guard_reason(now=NOW) == "lidar_scan_coverage_sparse"
 
 
 def test_filtered_self_ray_stays_unknown_when_no_other_return_reaches_that_ray() -> None:
@@ -134,7 +132,7 @@ def test_filtered_self_ray_stays_unknown_when_no_other_return_reaches_that_ray()
     lidar = publish(profile, candidate, reference_at_candidate_angle=False)
 
     assert 0 in lidar.scan.ranges_cm
-    assert guarded_device(lidar).guard_reason(now=NOW) == "lidar_full_circle_coverage_missing"
+    assert guarded_device(lidar).guard_reason(now=NOW) == "lidar_scan_coverage_sparse"
 
 
 @pytest.mark.parametrize(
@@ -157,7 +155,7 @@ def test_matched_ray_keeps_its_rounded_body_bin_unknown_regardless_of_packet_ord
 
     assert lidar.scan.ranges_cm[bucket] == 0
     assert lidar.raw_revolution(NOW).points[-2:]
-    assert guarded_device(lidar).guard_reason(now=NOW) == "lidar_full_circle_coverage_missing"
+    assert guarded_device(lidar).guard_reason(now=NOW) == "lidar_scan_coverage_sparse"
 
 
 def test_external_obstacles_in_or_next_to_candidate_angle_remain_blocking() -> None:
@@ -193,15 +191,18 @@ def test_room_fixed_points_and_wrong_or_stale_bindings_are_never_filtered() -> N
         "obstacle_within_clearance"
     )
     assert guarded_device(publish(profile, candidate)).guard_reason(now=NOW) == (
-        "lidar_full_circle_coverage_missing"
+        "lidar_scan_coverage_sparse"
     )
     assert (
         guarded_device(publish(profile, candidate, binding=wrong_device)).guard_reason(now=NOW)
         == "obstacle_within_clearance"
     )
-    assert guarded_device(
-        publish(replace(profile, qualification_valid_until_s=NOW - 1), candidate)
-    ).guard_reason(now=NOW) == "obstacle_within_clearance"
+    assert (
+        guarded_device(
+            publish(replace(profile, qualification_valid_until_s=NOW - 1), candidate)
+        ).guard_reason(now=NOW)
+        == "obstacle_within_clearance"
+    )
 
 
 def test_device_wires_an_explicitly_qualified_profile_to_its_lidar() -> None:
@@ -230,7 +231,7 @@ def test_device_wires_an_explicitly_qualified_profile_to_its_lidar() -> None:
 
     assert device.lidar.self_return_profile == qualified_profile()
     assert device.lidar.self_return_binding == binding
-    assert device.guard_reason(now=NOW) == "lidar_full_circle_coverage_missing"
+    assert device.guard_reason(now=NOW) == "lidar_scan_coverage_sparse"
 
 
 def test_boolean_angle_sign_is_not_a_calibration() -> None:

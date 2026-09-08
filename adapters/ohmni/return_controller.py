@@ -441,9 +441,7 @@ class ReturnController:
             )
         missing = [index for index, value in enumerate(values) if type(value) is int and value == 0]
         invalid = [
-            index
-            for index, value in enumerate(values)
-            if type(value) is not int or value < 0
+            index for index, value in enumerate(values) if type(value) is not int or value < 0
         ]
         if invalid:
             return ReturnOutcome(
@@ -457,9 +455,7 @@ class ReturnController:
                 if len(missing) == len(values)
                 else "return_lidar_coverage_sparse"
             )
-            return ReturnOutcome(
-                False, reason, _scan_bin_detail("missing", missing)
-            )
+            return ReturnOutcome(False, reason, _scan_bin_detail("missing", missing))
         required_cm = math.ceil(self.route.required_clearance_m * 100)
         if any(value <= required_cm for value in values):
             return ReturnOutcome(

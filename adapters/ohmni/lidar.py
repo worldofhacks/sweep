@@ -166,11 +166,7 @@ def robot_bins(
     Calibration describes the mounting AND angle handedness. It is never guessed from
     model documentation. Multiple points in a bin retain the closest valid return.
     """
-    if (
-        not math.isfinite(offset_deg)
-        or type(angle_sign) is not int
-        or angle_sign not in (-1, 1)
-    ):
+    if not math.isfinite(offset_deg) or type(angle_sign) is not int or angle_sign not in (-1, 1):
         raise ValueError("lidar needs a finite mounting offset and angle sign -1 or 1")
     bins = [0] * 360
     masked_bins: set[int] = set()
