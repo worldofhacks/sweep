@@ -23,6 +23,7 @@ from relay.session import (
     MAX_MATERIAL_CONTROL_PROJECTION_BYTES,
     RelayLimits,
     RelaySession,
+    _material_captures_projection,
     _material_state_projection,
 )
 from relay.state import MAX_MEMBERSHIP_HISTORY_LIMIT, FleetRegistry
@@ -518,11 +519,11 @@ def test_material_state_projection_fails_closed_for_unbounded_or_non_json_extens
     registry = FleetRegistry(telemetry_freshness_ms=1_000)
     state = registry.state_event(session=SESSION, t=1_000, event_id="state-1")
 
-    state["captures"] = []
-    with pytest.raises(AuditLogError, match="bounded audit projectors: captures"):
+    state["future_collection"] = []
+    with pytest.raises(AuditLogError, match="bounded audit projectors: future_collection"):
         _material_state_projection(state)
 
-    state.pop("captures")
+    state.pop("future_collection")
     registry.apply_join(_join_request("join-projection", 1_000))
     state = registry.state_event(session=SESSION, t=1_000, event_id="state-2")
     state["drones"][0]["unbounded_future_history"] = [{"value": index} for index in range(10_000)]
@@ -658,3 +659,14 @@ def test_truncated_frames_keep_every_transition_in_the_audited_membership_record
         for event in audited
         if event["type"] == "state"
     ] == [0, 1, 2]
+
+
+def test_capture_collection_cannot_exceed_audit_budget_with_small_entries() -> None:
+    from relay.captures import CaptureEntry
+
+    entries = [
+        CaptureEntry(str(index), 1, 1, 0, detail="x" * 3000).to_projection() for index in range(64)
+    ]
+    assert _material_captures_projection(entries[:1])
+    with pytest.raises(AuditLogError, match="collection exceeds"):
+        _material_captures_projection(entries)

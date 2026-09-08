@@ -317,7 +317,7 @@ def media_record(
             "horizontal_fov_deg": 360.0,
             "projection": "equirectangular",
         },
-        "checksum_sha256": "0" * 64,
+        "checksum_sha256": "a" * 64,
         "storage_ref": f"node://media/{drone_id}/{file_id}",
         "retrieval_status": "completed",
     }

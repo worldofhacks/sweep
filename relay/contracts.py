@@ -183,6 +183,8 @@ MAX_GROUND_VELOCITY_DURATION_MS = 500
 _CAPTURE_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
 _CAPTURE_COVERAGES = frozenset({"full_equirectangular", "incomplete_vertical_coverage"})
 _CAMERA_RESULT_STATUSES = frozenset({"completed", "unsupported", "failed"})
+_MEDIA_RETRIEVAL_STATUSES = _CAMERA_RESULT_STATUSES | {"pending"}
+MEDIA_PENDING_CHECKSUM = "0" * 64
 _ENVELOPE_FIELDS = frozenset({"v", "t", "type", "event_id", "session"})
 
 
@@ -1710,6 +1712,13 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
         or any(character not in "0123456789abcdef" for character in checksum)
     ):
         raise ContractError(code, "checksum_sha256 must be 64 lowercase hex characters")
+    retrieval_status = _choice(
+        value["retrieval_status"], "retrieval_status", _MEDIA_RETRIEVAL_STATUSES, code
+    )
+    if retrieval_status == "pending" and checksum != MEDIA_PENDING_CHECKSUM:
+        raise ContractError(code, "pending media requires the all-zero checksum sentinel")
+    if retrieval_status == "completed" and checksum == MEDIA_PENDING_CHECKSUM:
+        raise ContractError(code, "completed media requires a content checksum")
     return MediaFileRecord(
         _nonempty_string(value["capture_id"], "capture_id", code),
         _nonempty_string(value["file_id"], "file_id", code),
@@ -1731,7 +1740,7 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
         ),
         checksum,
         _nonempty_string(value["storage_ref"], "storage_ref", code),
-        _choice(value["retrieval_status"], "retrieval_status", _CAMERA_RESULT_STATUSES, code),
+        retrieval_status,
     )
 
 

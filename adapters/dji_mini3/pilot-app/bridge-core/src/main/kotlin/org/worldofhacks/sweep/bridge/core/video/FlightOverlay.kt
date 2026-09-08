@@ -105,8 +105,8 @@ data class OverlayState(
 
     companion object {
         const val RC_PRIMARY_NOTE = "Physical RC remains primary"
-        const val CLEARANCE_LABEL = "clearance: pilot approved"
-        const val POSE_SOURCE = "operator_approved"
+        const val CLEARANCE_LABEL = "clearance: unverified"
+        const val POSE_SOURCE = "aircraft_telemetry"
     }
 }
 

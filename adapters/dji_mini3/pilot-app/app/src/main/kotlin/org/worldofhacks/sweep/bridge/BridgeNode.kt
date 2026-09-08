@@ -194,7 +194,9 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     videoPublish = { videoPublish.current() },
                     captureAlignmentSamples = (session as? CaptureAlignmentSession)?.captureAlignmentSamples,
                     navigationAdmission = navigationAdmission,
+                    captureReadiness = session.camera,
                 )
+                session.camera?.frames = link.frames
                 relayLink = link
                 mirror = scope.launch {
                     link.state.collect { state ->
@@ -251,6 +253,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
             _running.value = false
             sensorRecording?.updateSensorRelayContext(null)
         }
+        session.camera?.frames = null
         link?.close()
         _link.update { LinkState(readiness = readiness) }
     }

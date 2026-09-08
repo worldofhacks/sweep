@@ -28,12 +28,10 @@ import kotlin.math.hypot
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
-import org.worldofhacks.sweep.bridge.core.frames.CommandFrame
+import org.worldofhacks.sweep.bridge.core.frames.CameraProbe
 import org.worldofhacks.sweep.bridge.core.frames.HardwareProfile
 import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
 import org.worldofhacks.sweep.bridge.node.AircraftSource
-import org.worldofhacks.sweep.bridge.node.CommandExecutor
 import org.worldofhacks.sweep.bridge.node.CommandReport
 import org.worldofhacks.sweep.bridge.node.AttitudeSample
 import org.worldofhacks.sweep.bridge.node.CaptureAlignmentCollector
@@ -73,20 +71,21 @@ import org.worldofhacks.sweep.bridge.session.GimbalPitchState
  * - `state` follows motors and flying flags plus the flight mode name (`taking_off`,
  *   `landing`, `hovering` below 0.2 m/s, else `airborne`).
  *
- * Flight commands are routed to the Phase E `FlightExecutor` before they reach this class;
- * the camera and media commands fail with `unsupported` until Phase G, so the node never
- * claims it executed something it cannot drive.
+ * Flight commands run in the Phase E `FlightExecutor` and the camera and media commands in
+ * the Phase G `CameraExecutor`; this class only assembles the snapshot both report from,
+ * including the camera facts the executor probes ([setCamera]).
  */
 internal class ProbeAircraft(
     phoneModel: String,
     androidVersion: String,
+    measuredHfovDeg: Double? = null,
     private val sdkVersion: () -> String,
     private val log: (name: String, detail: String) -> Unit,
     /** Bench log hook: one call per key and listener event (`attached`, `product_connected`, `first_value`). */
     private val record: (key: String, event: String, status: TelemetryKeyStatus) -> Unit = { _, _, _ -> },
     private val rawRecorder: SensorRawRecorder = SensorRawRecorder.NONE,
     private val captureAlignment: CaptureAlignmentCollector? = null,
-) : AircraftSource, CommandExecutor {
+) : AircraftSource {
     private val lock = Any()
     private val connectionTransitions = AircraftConnectionTransitions()
 
@@ -102,6 +101,11 @@ internal class ProbeAircraft(
     private var altitude: Double? = null
     private var altitudeReceivedAtMonotonicMs: Long? = null
     private var ultrasonicHeightDm: Int? = null
+    private var locationMeasuredAtMs: Long? = null
+    private var velocityMeasuredAtMs: Long? = null
+    private var attitudeMeasuredAtMs: Long? = null
+    private var altitudeMeasuredAtMs: Long? = null
+    private var ultrasonicMeasuredAtMs: Long? = null
     private var flightMode: FlightMode? = null
     private var motorsOn: Boolean? = null
     private var flying: Boolean? = null
@@ -140,6 +144,7 @@ internal class ProbeAircraft(
         onSample = ::receivedHardwareAltitude,
         guard = lock,
     )
+    private var camera = CameraProbe()
     private var hardware = HardwareProfile(
         aircraftModel = HardwareProfile.UNREPORTED,
         aircraftFirmware = HardwareProfile.UNREPORTED,
@@ -147,7 +152,7 @@ internal class ProbeAircraft(
         phoneModel = phoneModel.ifBlank { HardwareProfile.UNREPORTED },
         androidVersion = androidVersion.ifBlank { HardwareProfile.UNREPORTED },
         sdkVersion = HardwareProfile.UNREPORTED,
-        measuredHfovDeg = null,
+        measuredHfovDeg = measuredHfovDeg,
     )
 
     /** The listened keys; each DJI key object is created on first use, once the SDK is initialized. */
@@ -155,11 +160,7 @@ internal class ProbeAircraft(
         Binding("KeyConnection", FlightControllerKey.KeyConnection) { connected ->
             aircraftConnected = connected
             altitudePoller.connectionChanged(connected)
-            if (!connected) {
-                origin = null
-                altitude = null
-                altitudeReceivedAtMonotonicMs = null
-            }
+            if (!connected) clearAircraftMeasurements()
         },
         Binding("KeyRcConnection", RemoteControllerKey.KeyConnection, ComponentIndexType.LEFT_OR_MAIN) { rcConnected = it },
         Binding("KeyAircraftLocation3D", FlightControllerKey.KeyAircraftLocation3D) { location = it },
@@ -254,9 +255,7 @@ internal class ProbeAircraft(
             if (!connected) {
                 rcConnected = false
                 connectionTransitions.reset()
-                origin = null
-                altitude = null
-                altitudeReceivedAtMonotonicMs = null
+                clearAircraftMeasurements()
             }
             val names = if (connected) ledger.productConnected { answers.getValue(it) } else emptyList()
             Pair(names.map(byName::getValue), ledger.snapshot())
@@ -292,17 +291,9 @@ internal class ProbeAircraft(
         publish()
     }
 
-    override fun execute(command: CommandFrame, report: CommandReport) {
-        when (val args = command.args) {
-            CommandArgs.CameraCapabilities -> {
-                report.executing("capabilities frame sent by the link")
-                report.completed("probed camera capabilities reported")
-            }
-            is CommandArgs.SetGimbalPitch -> requestGimbalPitch(args.pitchMdeg / 1_000.0, report)
-            is CommandArgs.Takeoff, is CommandArgs.Goto, is CommandArgs.RotateTo, CommandArgs.Hover, CommandArgs.Land, CommandArgs.Estop ->
-                report.failed("control_loop_unavailable", "flight commands are routed to the Virtual Stick loop; this executor never drives motion")
-            else -> report.failed("unsupported", "the camera and media path lands with Phase G")
-        }
+    fun setCamera(camera: CameraProbe) {
+        synchronized(lock) { this.camera = camera }
+        publish()
     }
 
     fun requestLocalGimbalPitch(targetDegrees: Double) = requestGimbalPitch(targetDegrees, null)
@@ -486,6 +477,13 @@ internal class ProbeAircraft(
             rates.tick(binding.name, now)
             val status = if (ledger.value(binding.name, now)) ledger.status(binding.name) else null
             binding.accept(value)
+            when (binding.name) {
+                "KeyAircraftLocation3D" -> locationMeasuredAtMs = now
+                "KeyAircraftVelocity" -> velocityMeasuredAtMs = now
+                "KeyAircraftAttitude" -> attitudeMeasuredAtMs = now
+                "KeyAltitude" -> altitudeMeasuredAtMs = now
+                "KeyUltrasonicHeight" -> ultrasonicMeasuredAtMs = now
+            }
             if (binding.name == "KeyAltitude") {
                 altitudeReceivedAtMonotonicMs = (value as? Double)
                     ?.takeIf { height -> height.isFinite() }
@@ -548,7 +546,17 @@ internal class ProbeAircraft(
         if (fix != null && origin == null) origin = fix
         val base = origin
         val (x, y) = if (fix != null && base != null) eastNorthMetres(base, fix) else 0.0 to 0.0
-        val z = altitude ?: ultrasonicHeightDm?.let { it / 10.0 } ?: 0.0
+        val measuredAltitude = altitude ?: ultrasonicHeightDm?.let { it / 10.0 }
+        val altitudeTimestamp = if (altitude != null) altitudeMeasuredAtMs else ultrasonicMeasuredAtMs
+        val positionTimestamp = if (
+            fix != null && base != null && measuredAltitude != null &&
+            locationMeasuredAtMs != null && altitudeTimestamp != null
+        ) {
+            minOf(locationMeasuredAtMs!!, altitudeTimestamp)
+        } else {
+            null
+        }
+        val z = measuredAltitude ?: 0.0
         val v = velocity
         // KeyAircraftVelocity is N-E-D: SDK y (east) is planner x, SDK x (north) is planner y.
         val vx = v?.y ?: 0.0
@@ -570,24 +578,51 @@ internal class ProbeAircraft(
             x = x,
             y = y,
             z = z,
+            positionAvailable = positionTimestamp != null,
+            positionMeasuredAtMs = positionTimestamp,
             vx = vx,
             vy = vy,
             vz = vz,
+            velocityAvailable = v != null && velocityMeasuredAtMs != null,
+            velocityMeasuredAtMs = velocityMeasuredAtMs,
             battery = ((batteryPercent ?: 0) / 100.0).coerceIn(0.0, 1.0),
             state = state,
             link = ((signalQuality ?: 0) / 100.0).coerceIn(0.0, 1.0),
             // Provisional until the indoor positioning mapping is measured (issue #43, Phase C2).
             posQuality = if (fix != null) PROVISIONAL_FIX_QUALITY else 0.0,
             hardware = hardware,
+            camera = camera,
             keyRatesHz = rates.snapshot(now),
             telemetryKeys = ledger.snapshot(),
             yawDeg = yaw,
+            attitudeAvailable = attitude != null && attitudeMeasuredAtMs != null,
+            attitudeMeasuredAtMs = attitudeMeasuredAtMs,
             virtualStickEnabled = virtualStickEnabled,
             authorityLostReason = authorityLostReason,
             localHeight = altitude?.let { height ->
                 altitudeReceivedAtMonotonicMs?.let { receivedAtMs -> LocalHeightMeasurement(height, receivedAtMs) }
             },
         )
+    }
+
+    private fun clearAircraftMeasurements() {
+        location = null
+        origin = null
+        velocity = null
+        attitude = null
+        altitude = null
+        altitudeReceivedAtMonotonicMs = null
+        ultrasonicHeightDm = null
+        locationMeasuredAtMs = null
+        velocityMeasuredAtMs = null
+        attitudeMeasuredAtMs = null
+        altitudeMeasuredAtMs = null
+        ultrasonicMeasuredAtMs = null
+        flightMode = null
+        motorsOn = null
+        flying = null
+        batteryPercent = null
+        signalQuality = null
     }
 
     private fun validFix(fix: LocationCoordinate3D): Boolean {

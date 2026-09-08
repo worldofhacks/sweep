@@ -14,8 +14,12 @@ import org.worldofhacks.sweep.bridge.session.AircraftSession
  * from techmexdev/drone-maps app/src/probe/.../BuildVariantDependencies.kt.
  */
 object AircraftVariant {
-    /** Camera patterns are claimed only once the Phase G probe proves them on this hardware. */
-    val capabilities: List<String> = listOf("flight")
+    /**
+     * `reconstruct_8` is the pattern the Phase G camera path drives (photo per heading, media
+     * retrieval); `pano_360` stays unclaimed because a native panorama yaws the aircraft
+     * outside the Virtual Stick loop and `capture_panorama` answers `camera_unsupported`.
+     */
+    val capabilities: List<String> = listOf("flight", "reconstruct_8")
 
     fun installSdk(application: Application) {
         Helper.install(application)

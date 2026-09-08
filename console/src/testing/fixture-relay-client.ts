@@ -272,6 +272,7 @@ export class FixtureRelayClient implements RelayClient {
       pending: this.scenario.pending,
       accepted_plan: null,
       drones: this.scenario.fleet(this.now()),
+      captures: [],
     })
   }
 

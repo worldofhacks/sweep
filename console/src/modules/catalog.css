@@ -109,6 +109,7 @@
 }
 .cap-checksum { margin: 10px 0 0; font-family: var(--font-mono); font-size: var(--text-11); color: var(--color-ink-2); overflow: auto; }
 .cap-pose { margin: 2px 0 0; font-family: var(--font-mono); font-size: var(--text-11); color: var(--color-ink-2); }
+.cap-open { margin: 0 0 6px; font-size: var(--text-13); color: var(--color-ink-2); }
 .cap-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 20px; }
 
 /* Worlds */

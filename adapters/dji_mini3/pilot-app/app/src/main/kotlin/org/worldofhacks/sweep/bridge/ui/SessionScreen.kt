@@ -48,6 +48,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.worldofhacks.sweep.bridge.BridgeNode
 import org.worldofhacks.sweep.bridge.SetupSummary
+import org.worldofhacks.sweep.bridge.camera.CaptureCard
 import org.worldofhacks.sweep.bridge.core.localization.LocalizationPinsJson
 import org.worldofhacks.sweep.bridge.flight.FlightCards
 import org.worldofhacks.sweep.bridge.flight.GimbalPitchCard
@@ -132,6 +133,7 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
             item { NodeStatusCard(link, aircraft, now) }
             item { FlightCards(session) } // Phase E: flight loop and #85 probe cards
             (session as? GimbalPitchControls)?.let { controls -> item { GimbalPitchCard(controls) } }
+            item { CaptureCard(session, now) }
             item { CommandsCard(link.commands, now) }
             item { StatusCard(sdk) }
             item { IdentityCard(sdk) }

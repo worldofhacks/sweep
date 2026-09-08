@@ -32,6 +32,7 @@ class DjiFpv(
     phone: PhoneStatusSource?,
     private val log: (name: String, detail: String) -> Unit,
     captureAlignment: CaptureAlignmentCollector? = null,
+    override val captureProgress: CaptureProgressSource = IdleCaptureProgress,
 ) : FpvSession {
     private val tracker = StreamEvidenceTracker(
         filesDir,
@@ -44,7 +45,6 @@ class DjiFpv(
 
     private val _attitude = MutableStateFlow(AircraftAttitude())
     override val attitude: StateFlow<AircraftAttitude> = _attitude.asStateFlow()
-    override val captureProgress: CaptureProgressSource = IdleCaptureProgress
 
     private val camera = DjiCameraStream(tracker, log, captureAlignment)
     override val cameraStream: CameraStream

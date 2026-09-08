@@ -466,6 +466,13 @@ def test_relay_snapshot_derives_safety_facts_and_excludes_silent_aircraft(
     assert aircraft.armed is False
     assert aircraft.physical_rc_available is True
     assert aircraft.camera_ready is True
+    stale_state = {**relay_session.current_state(), "t": clock.value + 5_002}
+    stale = relay_snapshot(
+        stale_state,
+        operator_last_seen_ms=clock.value,
+        capture_readiness=relay_session.capture_readiness,
+    )
+    assert stale.aircraft[1].camera_ready is False
     assert aircraft.storage_remaining_bytes == 50_000_000
     assert aircraft.active_task_id is None
     assert aircraft.position_loss_since_ms is None

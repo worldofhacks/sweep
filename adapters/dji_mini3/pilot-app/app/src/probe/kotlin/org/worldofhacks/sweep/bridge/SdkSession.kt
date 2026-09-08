@@ -15,7 +15,10 @@ import dji.v5.common.register.DJISDKInitEvent
 import dji.v5.manager.KeyManager
 import dji.v5.manager.SDKManager
 import dji.v5.manager.interfaces.SDKManagerCallback
+import java.io.File
 import kotlinx.coroutines.flow.StateFlow
+import org.worldofhacks.sweep.bridge.camera.CameraExecutor
+import org.worldofhacks.sweep.bridge.camera.DjiCameraPort
 import org.worldofhacks.sweep.bridge.flight.DjiFlightPort
 import org.worldofhacks.sweep.bridge.flight.FlightExecutor
 import org.worldofhacks.sweep.bridge.flight.FlightNode
@@ -41,6 +44,7 @@ import org.worldofhacks.sweep.bridge.session.SensorRelayContext
 import org.worldofhacks.sweep.bridge.session.SessionModel
 import org.worldofhacks.sweep.bridge.session.SessionState
 import org.worldofhacks.sweep.bridge.video.DjiFpv
+import org.worldofhacks.sweep.bridge.video.FlowCaptureProgress
 import org.worldofhacks.sweep.bridge.video.FpvSessionHost
 
 /**
@@ -112,6 +116,7 @@ internal class SdkSession(private val application: Application) :
     private val probe = ProbeAircraft(
         phoneModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
         androidVersion = Build.VERSION.RELEASE ?: "",
+        measuredHfovDeg = BuildConfig.CAMERA_MEASURED_HFOV_DEG.takeIf { it > 0.0 },
         sdkVersion = { runCatching { SDKManager.getInstance().sdkVersion }.getOrNull().orEmpty() },
         log = { name, detail -> model.event(name, detail) },
         record = { key, event, status -> recordKey(key, event, status) },
@@ -212,8 +217,27 @@ internal class SdkSession(private val application: Application) :
         synchronized(sink) { sink.recorder.telemetryKey(key, event, null, null, null, value) }
     }
 
+    private val cameraPort = DjiCameraPort(
+        calibratedPhotoWidthPx = BuildConfig.CAMERA_PHOTO_WIDTH_PX,
+        calibratedPhotoHeightPx = BuildConfig.CAMERA_PHOTO_HEIGHT_PX,
+        calibratedHfovDeg = BuildConfig.CAMERA_MEASURED_HFOV_DEG.takeIf { it > 0.0 },
+    ) { name, detail -> model.event(name, detail) }
+    override val camera: CameraExecutor = CameraExecutor(
+        cameraPort,
+        probe,
+        File(application.filesDir, "captures"),
+        log = { line -> model.event("Camera", line) },
+        onFacts = probe::setCamera,
+    )
+
     // Phase D hook: local FPV, yaw, and codec evidence (org.worldofhacks.sweep.bridge.video).
-    override val fpv: DjiFpv = DjiFpv(application.filesDir, AndroidPhoneStatus(application), { name, detail -> model.event(name, detail) }, captureCollector)
+    override val fpv: DjiFpv = DjiFpv(
+        application.filesDir,
+        AndroidPhoneStatus(application),
+        { name, detail -> model.event(name, detail) },
+        captureAlignment = captureCollector,
+        captureProgress = FlowCaptureProgress(camera.progress),
+    )
 
     override val captureAlignmentSamples = captureCollector
 
@@ -242,7 +266,7 @@ internal class SdkSession(private val application: Application) :
     private val flightExecutor = FlightExecutor(
         port,
         probe,
-        fallback = probe,
+        fallback = camera,
         config = FlightConfig(
             supervisedVertical = if (BuildConfig.SUPERVISED_VERTICAL) SupervisedVerticalConfig() else null,
         ),
@@ -258,7 +282,10 @@ internal class SdkSession(private val application: Application) :
     )
 
     init {
-        probe.onAttached = { port.attach(flightExecutor) }
+        probe.onAttached = {
+            port.attach(flightExecutor)
+            cameraPort.attach()
+        }
         probe.onAircraftConnectionChanged = ::aircraftConnectionChanged
     }
 
@@ -278,6 +305,7 @@ internal class SdkSession(private val application: Application) :
             aircraftConnectionChanged(false)
             model.productDisconnected(productId)
             probe.productConnected(false)
+            cameraPort.productConnected(false)
             fpv.productConnected(false)
             probe.updateIdentity(model.current.identity)
         }
@@ -324,6 +352,7 @@ internal class SdkSession(private val application: Application) :
             }
         }
         if (!changed) return
+        cameraPort.productConnected(connected)
         model.event("Flight controller connection", "KeyConnection=$connected; identity generation ${identityQueries.current()}")
         if (!connected) {
             port.onProductDisconnected()

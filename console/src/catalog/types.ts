@@ -16,7 +16,8 @@ export interface CapturePose {
   z: number
   yaw_deg: number
   gimbal_pitch_deg: number
-  focal_mm: number
+  /** Null when the source reports no focal length (the relay's media records do not). */
+  focal_mm: number | null
 }
 
 export interface CaptureRecord {

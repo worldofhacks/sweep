@@ -125,6 +125,7 @@ _TERMINAL = frozenset(
 )
 _LOGGER = logging.getLogger(__name__)
 _FLIGHT_STATES = frozenset(state.value for state in FlightState)
+MAX_CAPTURE_READINESS_AGE_MS = 5_000
 _PHYSICALLY_DISARMED_STATES = frozenset({FlightState.DISARMED.value, FlightState.LANDED.value})
 _PUBLISH_TIMEOUT_S = 30.0
 
@@ -331,6 +332,8 @@ def relay_snapshot(
             camera_ready=(
                 readiness is not None
                 and readiness.connection_epoch == drone.get("connection_epoch")
+                and isinstance(state.get("t"), int)
+                and -1_000 <= state["t"] - readiness.t <= MAX_CAPTURE_READINESS_AGE_MS
                 and readiness.camera_ok
                 and readiness.storage_ok
             ),
@@ -462,6 +465,12 @@ def apply_result(
     becomes ``invalidated`` with ``stale_roster``. The network stop latch is never
     dropped.
     """
+    if result.intent_id != intent.intent_id:
+        raise ValueError("execution result does not match its intent")
+    if result.plan is not None and (
+        result.plan.intent_id != intent.intent_id or result.plan.intent_name is not intent.name
+    ):
+        raise ValueError("execution plan does not match its intent")
     projection = control_projection(intent.name, result)
     plan = result.plan
     roster_version = session.registry.roster_version
@@ -486,6 +495,10 @@ def apply_result(
             ),
         )
     events: list[dict[str, object]] = []
+    if result.status is not LifecycleStatus.EXECUTING and (
+        intent.name is IntentName.CAPTURE_ROOM or result.capture_bundle is not None
+    ):
+        events.extend(session.record_capture_bundle(result))
     if projection:
         events.append(session.update_control_projection(**projection))  # type: ignore[arg-type]
     events.append(record_result(session, result))

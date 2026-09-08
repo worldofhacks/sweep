@@ -9,6 +9,7 @@ import type {
   IntentSource,
   MembershipAction,
   RelayAircraftState,
+  RelayCaptureRecord,
   RelayServerEvent,
 } from '../relay/contract'
 import { DEVICE_CLASSES, followsSelection, isSupportedIntent } from '../relay/contract'
@@ -110,6 +111,8 @@ export interface ControlState {
   rosterVersion: number
   aircraft: Record<DroneId, RelayAircraftState>
   latestObservations: Readonly<Record<string, Observation>>
+  /** The relay's retained captures, as `state.captures` lists them; empty until a state frame carries them. */
+  captures: RelayCaptureRecord[]
   selection: DroneId[]
   /** Formation and spacing the relay reports in its state frame; null until the first frame. */
   formation: string | null
@@ -176,6 +179,7 @@ export function createInitialControlState(sessionId: string, now = Date.now()): 
     rosterVersion: 0,
     aircraft: {},
     latestObservations: {},
+    captures: [],
     selection: [],
     formation: null,
     spacing: null,
@@ -586,6 +590,7 @@ function reduceStateEvent(
     rosterVersion: event.roster_version,
     aircraft,
     latestObservations: retainedObservations(state.latestObservations, aircraft, event.t),
+    captures: event.captures ?? state.captures,
     selection,
     formation: event.formation,
     spacing: event.spacing,
