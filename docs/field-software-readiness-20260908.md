@@ -34,3 +34,17 @@ The [flight evidence guide](FLIGHT_ACCEPTANCE_EVIDENCE.md) defines the measured
 inputs for the evaluator. Software tests supply no physical acceptance evidence.
 Teammate work on #248 and #143, and shared live occupancy work on #245, remain
 outside this integration.
+
+## Mini 3 camera calibration
+
+Use the known Mini 3 lens as an initial estimate for a server-side camera fit.
+DJI lists an 82.1-degree field of view, 4K recording, and 720p/30 controller live
+view ([camera specifications](https://www.dji.com/mini-3/specs)). The Android
+publisher currently selects the 1280x720/30 preset and also has a 1080p preset.
+Confirm the decoded stream dimensions and any crop or scaling during capture.
+
+Collect calibration views through that exact feed, fit and validate the camera
+model on the host, and retain timing and gimbal attitude with the frames. A fixed
+downward gimbal setting simplifies the planned floor-tag workflow. Camera
+calibration, camera-to-aircraft geometry, feed delay, and control-axis checks each
+need their own measured evidence before camera-derived autonomous flight.

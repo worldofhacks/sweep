@@ -18,6 +18,23 @@ The map and wall overlay have adjacent PNG previews. The wall overlay contains 4
 
 Validation checked all 95 referenced source hashes, finite numeric values, and the expected tag set. The historical 11-position capture index is preserved as an immutable snapshot. The live index includes the later Position 12 capture. Rebuilding the snapshot references changed artifact hashes while preserving tag geometry, wall-tag choices, camera transforms, and wall segments.
 
+## Agreement with recorded dimensions
+
+Comparing tag-center distances in the final map against the recorded survey inputs gives these differences. The camera fit has no independent metric qualification, so these differences do not establish measurement error.
+
+| Dimension | Recorded input | Fitted value | Difference |
+| --- | --- | --- | --- |
+| Tags 19–37 | 629 in | 671.27 in | +42.27 in |
+| Tags 31–0 | 122 in | 226.44 in | +104.44 in |
+| Tag 15 center height | 56 in | 58.39 in, unconstrained fit | +2.39 in |
+| Tag 18 center height | 59 in | 63.31 in, unconstrained fit | +4.31 in |
+
+The hallway list contains 19 tags, including tag 53, which creates 18 gaps. Eighteen nominal 37-inch gaps total 666 inches, 5.27 inches below the fitted length. The recorded 629-inch length equals 17 such gaps. An omitted gap is a possible explanation to check against the physical endpoints.
+
+The corridor-to-carpet cross-tie disagrees by 2.65 m and remains unresolved. Recheck its endpoint IDs and the cross-zone camera fit before approving the map. The 16–17 baseline sets the fit's scale; its exact agreement is imposed. The selected tag-18 candidate also uses the measured height as a constraint. Neither supplies independent validation.
+
+The recorded inputs are in `office-tag-layout-provisional-20260908/provisional-office-tag-layout.json`; the wall alternatives are in `unit12-live-camera-map-fit-20260908/wall-height-constrained-alternatives.json`, under the same capture-host root as the artifacts above.
+
 ## Physical acceptance still required
 
 Approve the camera intrinsics and fixed-head mount from qualified physical evidence. Validate world ties and independent reference measurements, then approve the map, static flight grid, routes, and geofence through the existing bundle tooling. Exercise the repaired LiDAR guard and stop controls on hardware before relying on them for a new capture run. Camera-derived localization and autonomous flight remain gated by those approvals.
