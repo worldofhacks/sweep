@@ -20,7 +20,7 @@ This record maps each acceptance gate to the production call path and a test or 
 | --- | --- | --- | --- |
 | #43, #85 | `FlightExecutor`, `DjiFlightPort`, watchdog/limits, and `AxisProbe` connect the bridge to virtual-stick control | `cd adapters/dji_mini3/pilot-app && ./gradlew :bridge-core:test :bridge-node:test` | Flight pin/session, hover, 15-minute control, axis/deadman, and RC-takeover evidence |
 | #51 | DJI encoded frames flow through `WhipClient`, codec gate, and publication state machine to WHEP playback | `cd adapters/dji_mini3/pilot-app && ./gradlew :bridge-publish:test :bench:test` | End-to-end live-feed latency below 300 ms |
-| #83 | `calibration/tag_intrinsics.py` and the checkerboard calibration API produce the intrinsics and latency evidence consumed by the bridge/localization path | `uv run pytest tests/test_calibration.py tests/test_calibration_quality.py tests/test_latency_evidence.py` | DJI checkerboard calibration and a 60-second latency record |
+| #83 | `calibration/tag_intrinsics.py` and the checkerboard calibration API produce the intrinsics and latency evidence consumed by the bridge/localization path | `uv run pytest tests/test_calibration.py tests/test_tag_intrinsics.py tests/test_calibration_quality.py tests/test_latency_evidence.py` | DJI checkerboard calibration and a 60-second latency record |
 | #144 | `planner/navigation.py` produces clearance-checked, pinned routes and arrival slots | `uv run pytest planner/test_navigation.py` | Accepted measured geometry and later physical route trials |
 | #145 | `planner/navigation_runtime.py` revalidates every segment; `planner/relay_bridge.py` connects confirmed execution to relay lifecycle evidence | `uv run pytest planner/test_navigation_runtime.py planner/test_relay_bridge.py` | Bench and hand-carried runbook evidence, then physical route acceptance under #86 |
 | #19, #86 | Confirmed route execution is measured by `evals/flight_acceptance.py`, which binds five raw recording digests to a reviewed manifest | `uv run pytest tests/test_flight_acceptance.py`; `uv run python -m evals.flight_acceptance rehearsals.json --evaluation-manifest evaluation-manifest.json --output localization-software-report.json` | One-drone qualification and five approved named-route rehearsals |
@@ -33,6 +33,6 @@ This record maps each acceptance gate to the production call path and a test or 
 
 A localization world pose is kept separate from the adapter odometry identity used for ground readiness. `RelaySession.process_observation` changes that readiness identity only for an adapter principal. `ObservationIngress` also requires the configured producer role for each source binding. The independent test run above covers the map projection guards, the real positive HTTP world-pose route, ground execution confidence refusal, canonical and historical replay decoding, and the retained map/registration checks.
 
-The independent review passed on `f8555fec`. Main-branch CI has not run for the merge commit.
+The independent review passed on `f8555fec`. Merge requires successful CI on the reviewed head.
 
 Map authoring in #248 and navigation review in #143 are outside this record. They remain separate product work.
