@@ -201,6 +201,20 @@ class MultiviewService:
         self, session: str, intent_id: str, intent_name: str, status: str
     ) -> None:
         """Advance only after the child result was committed to the relay ledger."""
+        if intent_name == "hold" and status == "completed":
+            with self._lock:
+                cancelled = [
+                    workflow
+                    for workflow in self._workflows.values()
+                    if workflow.session == session and workflow.state == "navigating"
+                ]
+                for workflow in cancelled:
+                    workflow.state = "failed"
+                    current = workflow.views[workflow.current]
+                    current.state, current.detail = "failed", "Hold cancelled the multiview workflow."
+            for workflow in cancelled:
+                self._discard_unconsumed(session, workflow)
+            return
         with self._lock:
             child = self._children.pop(intent_id, None)
             if child is None:

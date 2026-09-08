@@ -242,3 +242,24 @@ def test_multiview_releases_reserved_children_when_a_later_reservation_fails() -
     with pytest.raises(NavigationError, match="reservation"):
         service.confirm("s", {key: preview[key] for key in ("previewId", "intentId", "previewHash")})
     assert navigation.discarded == ["preview-north-zone"]
+
+
+def test_hold_cancels_pending_multiview_navigation_before_the_next_route() -> None:
+    navigation = _Navigation()
+    service = MultiviewService(navigation)
+    preview = service.preview(
+        "s",
+        {
+            "intentId": "multiview-hold",
+            "selected": [{"id": 1, "deviceClass": "aircraft", "epoch": 2}],
+            "viewpoints": [
+                {"viewpointId": "north", "zoneId": "north-zone", "captureId": "capture-north"},
+                {"viewpointId": "south", "zoneId": "south-zone", "captureId": "capture-south"},
+            ],
+        },
+    )
+    service.confirm("s", {key: preview[key] for key in ("previewId", "intentId", "previewHash")})
+    service.observe_execution("s", "platform-capture:mv-hold", "capture", "completed")
+    service.observe_execution("s", "hold-1", "hold", "completed")
+    assert service.status("s", preview["previewId"])["status"] == "failed"
+    assert navigation.discarded == ["preview-south-zone"]
