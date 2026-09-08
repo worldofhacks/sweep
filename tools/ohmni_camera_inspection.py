@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-MAX_CHALLENGE_TTL_NS = 5_000_000_000
+MAX_CHALLENGE_TTL_NS = 30_000_000_000
 MAX_APPROVAL_TTL_NS = 1_000_000_000
 PULSE_SPEED_M_S = 0.04
 PULSE_DURATION_S = 0.5
@@ -91,6 +91,7 @@ class CaptureChallenge:
     positioning_source_sha256: str
     capture_tool_sha256: str
     expires_at_device_monotonic_ns: int
+    issued_state: dict[str, object]
 
     def to_mapping(self) -> dict[str, object]:
         return {"v": 1, **self.__dict__}
@@ -109,6 +110,7 @@ def parse_challenge(value: object) -> CaptureChallenge:
             "positioning_source_sha256",
             "capture_tool_sha256",
             "expires_at_device_monotonic_ns",
+            "issued_state",
         }
         or value["v"] != 1
     ):
@@ -124,6 +126,9 @@ def parse_challenge(value: object) -> CaptureChallenge:
         raise InspectionError("camera inspection challenge is invalid")
     _hex(value["positioning_source_sha256"], "positioning source")
     _hex(value["capture_tool_sha256"], "capture tool")
+    if not isinstance(value["issued_state"], Mapping):
+        raise InspectionError("camera inspection issued state is invalid")
+    LiveState(**dict(value["issued_state"]))
     return CaptureChallenge(**{key: value[key] for key in CaptureChallenge.__dataclass_fields__})
 
 
@@ -145,7 +150,10 @@ class FrameEvidence:
         if not isinstance(frame, Mapping) or not isinstance(manifest, Mapping):
             raise InspectionError("camera inspection evidence is invalid")
         challenge = parse_challenge(frame.get("inspection_challenge"))
-        if manifest.get("inspection_challenge") != challenge.to_mapping():
+        if (
+            manifest.get("status") != "complete"
+            or manifest.get("inspection_challenge") != challenge.to_mapping()
+        ):
             raise InspectionError("camera inspection manifest challenge differs")
         for key in ("image_sha256", "source_sha256", "capture_pipeline_sha256"):
             _hex(frame.get(key), key)
@@ -155,12 +163,20 @@ class FrameEvidence:
         if not isinstance(camera, str) or not isinstance(collection, str) or type(index) is not int:
             raise InspectionError("camera inspection frame identity is invalid")
         if (
-            manifest.get("boot_id") != challenge.source_boot_id
+            frame.get("boot_id") != challenge.source_boot_id
+            or manifest.get("boot_id") != challenge.source_boot_id
             or manifest.get("device_id") != challenge.device_id
             or manifest.get("raw_capture_collection") != collection
         ):
             raise InspectionError("camera inspection capture identity differs")
-        if manifest.get("capture_pipeline_sha256") != frame["capture_pipeline_sha256"]:
+        pipeline = manifest.get("capture_pipeline")
+        pipeline_sha = hashlib.sha256(
+            json.dumps(pipeline, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if (
+            pipeline_sha != manifest.get("capture_pipeline_sha256")
+            or pipeline_sha != frame["capture_pipeline_sha256"]
+        ):
             raise InspectionError("camera inspection pipeline differs")
         image = frame_path.with_name(str(frame.get("image_file", "")))
         raw = frame_path.with_name(str(frame.get("source_file", "")))
@@ -169,6 +185,8 @@ class FrameEvidence:
             or not raw.is_file()
             or _digest(image) != frame["image_sha256"]
             or _digest(raw) != frame["source_sha256"]
+            or frame.get("source_device_sha256") != frame["source_sha256"]
+            or frame.get("source_device_size_bytes") != raw.stat().st_size
         ):
             raise InspectionError("camera inspection frame bytes differ")
         return cls(
@@ -186,6 +204,7 @@ class FrameEvidence:
 class InspectionAuthority:
     def __init__(self) -> None:
         self._challenges: dict[str, CaptureChallenge] = {}
+        self._used_challenges: set[str] = set()
         self._approvals: dict[
             str, tuple[ForwardPulse, LiveState, int, bool, dict[str, object]]
         ] = {}
@@ -208,6 +227,7 @@ class InspectionAuthority:
             state.positioning_source_sha256,
             _hex(capture_tool_sha256, "capture tool"),
             now_ns + ttl_ns,
+            state.__dict__.copy(),
         )
         self._challenges[challenge.challenge_id] = challenge
         return challenge
@@ -220,17 +240,22 @@ class InspectionAuthority:
         now_ns: int,
         *,
         operator_id: str,
-        review_decision: str,
+        accepted: bool,
+        review_notes: str,
     ) -> str:
         challenge = self._challenges.get(frame.challenge.challenge_id)
-        if challenge != frame.challenge or now_ns > challenge.expires_at_device_monotonic_ns:
+        if (
+            challenge != frame.challenge
+            or challenge.challenge_id in self._used_challenges
+            or now_ns > challenge.expires_at_device_monotonic_ns
+        ):
             raise InspectionError("camera inspection challenge expired or unknown")
         if (
             not operator_id
-            or not review_decision
-            or state.device_id != challenge.device_id
-            or state.boot_id != challenge.source_boot_id
-            or state.positioning_source_sha256 != challenge.positioning_source_sha256
+            or not accepted
+            or not review_notes
+            or now_ns <= 0
+            or state != LiveState(**challenge.issued_state)
         ):
             raise InspectionError("camera inspection live identity differs")
         approval_id = secrets.token_hex(16)
@@ -238,7 +263,8 @@ class InspectionAuthority:
         record = {
             "approval_id": approval_id,
             "operator_id": operator_id,
-            "review_decision": review_decision,
+            "accepted": True,
+            "review_notes": review_notes,
             "frame_record_sha256": frame.frame_record_sha256,
             "image_sha256": frame.image_sha256,
             "source_sha256": frame.source_sha256,
@@ -249,6 +275,7 @@ class InspectionAuthority:
             "expires_at_device_monotonic_ns": expires_at,
         }
         self._approvals[approval_id] = (pulse, state, expires_at, False, record)
+        self._used_challenges.add(challenge.challenge_id)
         return approval_id
 
     def approval_record(self, approval_id: str) -> dict[str, object]:

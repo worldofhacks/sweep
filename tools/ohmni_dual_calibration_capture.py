@@ -56,7 +56,16 @@ def _hash(path: Path) -> str:
 
 
 def _capture_tool_sha256() -> str:
-    return _hash(Path(__file__))
+    root = Path(__file__).parent
+    payload = b"".join(
+        (name + "\0").encode() + (root / name).read_bytes()
+        for name in (
+            "ohmni_dual_calibration_capture.py",
+            "ohmni_calibration_frame_record.py",
+            "ohmni_camera_inspection.py",
+        )
+    )
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _pipeline_sha256(pipeline: dict[str, object]) -> str:

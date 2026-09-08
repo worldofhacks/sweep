@@ -80,7 +80,8 @@ def _approval(tmp_path, monkeypatch):
         state,
         1_100,
         operator_id="spotter-a",
-        review_decision="path clear in inspected capsule",
+        accepted=True,
+        review_notes="path clear in inspected capsule",
     )
     return authority, approval, pulse, state, output
 
@@ -91,9 +92,7 @@ def test_actual_capture_producer_retains_challenge_and_authorizes_one_pulse(tmp_
     manifest = json.loads((output / "manifest.json").read_text())
     assert frame["inspection_challenge"] == manifest["inspection_challenge"]
     assert authority.consume(approval, pulse, state, 1_200) is None
-    assert (
-        authority.approval_record(approval)["review_decision"] == "path clear in inspected capsule"
-    )
+    assert authority.approval_record(approval)["review_notes"] == "path clear in inspected capsule"
     assert authority.consume(approval, pulse, state, 1_200) == "camera_inspection_approval_spent"
 
 
@@ -143,7 +142,8 @@ def test_stale_challenge_and_oversized_or_reversed_pulses_refuse(tmp_path, monke
             state,
             1_002,
             operator_id="spotter-a",
-            review_decision="clear",
+            accepted=True,
+            review_notes="clear",
         )
     for values in ((0.05, 0, 0.5), (0.04, 0, 0.51), (-0.04, 0, 0.5), (0.04, 1, 0.5)):
         with pytest.raises(inspection.InspectionError, match="pulse exceeds"):
