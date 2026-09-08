@@ -192,7 +192,7 @@ try {
   await page.getByRole('button', { name: /Listening — release to transcribe/ }).waitFor()
   await talk.dispatchEvent('pointerup', { buttons: 0 })
   const compilerResult = page.getByRole('region', { name: 'Compiler result' })
-  await compilerResult.getByText('hold', { exact: true }).waitFor()
+  await compilerResult.getByText('compiler unavailable', { exact: true }).waitFor()
   if (
     voiceUpload?.authorization !== `Bearer ${relayToken}` ||
     voiceUpload.contentType !== 'audio/webm' ||
@@ -202,17 +202,19 @@ try {
   ) {
     throw new Error(`browser voice upload did not preserve its authenticated bounded contract: ${JSON.stringify(voiceUpload)}`)
   }
-  const relayedDraft = compilerResult.getByRole('button', { name: 'Draft for confirmation', exact: true })
-  if (await relayedDraft.isEnabled()) {
-    throw new Error('an unbound relayed transcript was allowed to masquerade as a console draft')
+  if (await page.getByRole('button', { name: 'Confirm and send', exact: true }).count()) {
+    throw new Error('an unavailable compiler staged the relayed transcript for execution')
   }
   const utterance = page.getByRole('textbox', { name: 'Utterance' })
   await utterance.fill('')
   await utterance.fill('hold position')
   await page.getByRole('button', { name: 'Compile to intents', exact: true }).click()
-  await compilerResult.getByRole('button', { name: 'Draft for confirmation', exact: true }).click()
-  await page.getByRole('button', { name: 'Confirm and send', exact: true }).click()
+  await compilerResult.getByText('compiler unavailable', { exact: true }).waitFor()
+  if (await page.getByRole('button', { name: 'Confirm and send', exact: true }).count()) {
+    throw new Error('an unavailable compiler staged typed text for execution')
+  }
   await page.getByRole('navigation', { name: 'Modules' }).getByRole('button', { name: 'Control', exact: true }).click()
+  await pressSwarm(page, 'Hold')
   await waitForRequest(page, 'Hold', 'completed')
   await pressSwarm(page, 'Come home')
   await waitForRequest(page, 'Come home', 'completed')
