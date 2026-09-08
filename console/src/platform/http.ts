@@ -6,7 +6,7 @@ export type PlatformFetch = (input: RequestInfo | URL, init?: RequestInit) => Pr
 export class PlatformHttp {
   readonly connection: PlatformConnection
   private readonly fetcher: PlatformFetch
-  constructor(connection: PlatformConnection, fetcher: PlatformFetch = fetch) {
+  constructor(connection: PlatformConnection, fetcher: PlatformFetch = (input, init) => globalThis.fetch(input, init)) {
     this.connection = Object.freeze({ ...connection })
     this.fetcher = fetcher
   }

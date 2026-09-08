@@ -27,17 +27,17 @@ void resolveRuntime().then((runtime) => {
     webcam: runtime.webcamClient,
     language: runtime.languageClient,
   }
-  let services = { ...runtime.platform?.getSnapshot(), transcript: runtime.transcriptClient ?? undefined }
+  let services = { ...runtime.platform?.getSnapshot(), atlas: runtime.atlas ?? undefined, transcript: runtime.transcriptClient ?? undefined }
   let media: ReturnType<typeof createMediaRuntime> | undefined
   const render = () => root.render(
     <StrictMode>
-      <App sessionId={runtime.sessionId} clients={clients} catalog={runtime.catalogClient}
+      <App initialModule="spaces" sessionId={runtime.sessionId} clients={clients} catalog={runtime.catalogClient}
         services={services} media={media} relayBaseUrl={runtime.baseUrl ?? undefined}
         mapEndpoint={runtime.mapEndpoint ?? undefined} />
     </StrictMode>,
   )
   runtime.platform?.subscribe((platform) => {
-    services = { ...platform, transcript: runtime.transcriptClient ?? undefined }
+    services = { ...platform, atlas: runtime.atlas ?? undefined, transcript: runtime.transcriptClient ?? undefined }
     render()
   })
 

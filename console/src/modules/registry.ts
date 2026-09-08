@@ -1,4 +1,5 @@
 import { FleetContext } from './FleetContext'
+import { SpacesModule } from '../atlas/SpacesModule'
 import { CapturesModule } from './captures/CapturesModule'
 import { ControlModule } from './control/ControlModule'
 import { DevicesModule } from './devices/DevicesModule'
@@ -11,6 +12,11 @@ import type { ModuleDefinition, ModuleId } from './types'
 
 /** Navigation order: Control, Live, Gesture, Speech, Captures, Worlds, Devices, Map. */
 export const MODULES: readonly ModuleDefinition[] = [
+  {
+    id: 'spaces', label: 'Spaces', title: 'Collaborative atlas',
+    note: 'Local stories, real perspectives, one evolving atlas.',
+    component: SpacesModule, context: FleetContext,
+  },
   {
     id: 'control',
     label: 'Control',

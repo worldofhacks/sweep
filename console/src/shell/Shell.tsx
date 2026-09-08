@@ -14,6 +14,8 @@ import { Header } from './Header'
 import { NoticeLine } from './NoticeLine'
 import { Rail } from './Rail'
 import { TabBar } from './TabBar'
+import { Icon } from '../atlas/Icon'
+import './refinement.css'
 import {
   STOP_CLEARED_NOTICE_MS,
   deriveInvalidation,
@@ -83,7 +85,8 @@ export function Shell({
 
   return (
     <Frame
-      header={
+      header={activeId === 'spaces' && Object.keys(state.aircraft).length === 0 ?
+        <header className="sh-atlas-header"><span className="sh-brand"><Icon name="spaces" size={23} /><strong>sweep</strong><span>ATLAS</span></span><span>See more. Understand together.</span><button className="sh-atlas-fleet" onClick={() => setActiveId('control')}>Fleet workspace <Icon name="arrow" size={14} /></button></header> :
         <Header
           state={state}
           stopTimes={stopTimes}
@@ -105,7 +108,7 @@ export function Shell({
       }
       rail={<Rail modules={MODULES} active={activeId} onSelect={setActiveId} />}
       pane={<ModuleComponent {...moduleProps} />}
-      context={
+      context={activeId === 'spaces' ? null :
         <ContextColumn rosterVersion={state.rosterVersion}>
           <ModuleContext {...moduleProps} />
         </ContextColumn>

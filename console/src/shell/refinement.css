@@ -1,0 +1,222 @@
+/* Shared shell refinement: one quiet border system and the same field-atlas palette. */
+:root {
+  --color-ground: #f2f5ef;
+  --color-panel: #f8faf5;
+  --color-surface: #fcfdf9;
+  --color-ink: #1d3028;
+  --color-ink-2: #66766a;
+  --color-hairline: #e0e7dc;
+  --color-rule: #dce4d7;
+  --color-pill-bg: #edf2e7;
+  --size-rail: 200px;
+  --font-sans: 'Public Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --shadow-rest: none;
+  --shadow-hover: none;
+}
+[data-body][data-wide] {
+  grid-template-columns: var(--size-rail) minmax(0, 1fr);
+}
+.sh-rail {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: #f8faf4;
+  padding: 0 16px;
+  border-right: 1px solid #dfe7d7;
+  overflow-y: auto;
+}
+.sh-rail-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 10px 32px;
+  color: #2e6549;
+}
+.sh-rail-brand > span {
+  font-size: 25px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.045em;
+  color: #233d2a;
+}
+.sh-rail-brand > span > span {
+  display: block;
+  font-size: 7px;
+  letter-spacing: 0.16em;
+  margin-top: 9px;
+  font-weight: 500;
+  color: #8b9c7a;
+}
+.sh-rail-section {
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  color: #95a483;
+  margin: 0 12px 16px;
+}
+.sh-rail .sh-rail-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0 0 5px;
+  font-size: 12px;
+  font-weight: 450;
+  color: #7b8f6a;
+  text-align: left;
+  min-height: 44px;
+}
+.sh-rail .sh-rail-item:hover {
+  background: #eff4e7;
+  color: #38623b;
+}
+.sh-rail .sh-rail-item.is-current {
+  background: #e7efdd;
+  border-color: #dce7d0;
+  color: #2d6037;
+  font-weight: 600;
+}
+.sh-rail .sh-rail-item svg {
+  flex-shrink: 0;
+}
+.sh-rail .sh-rail-note {
+  margin: 28px 12px;
+  color: #98a68b;
+  font-size: 9px;
+  line-height: 1.7;
+}
+.sh-rail-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 4px;
+  margin-top: auto;
+  border-top: 1px solid #e1e9d8;
+}
+.sh-rail-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid #d8e4c8;
+  background: #eaf1df;
+  color: #829965;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+}
+.sh-rail-footer > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sh-rail-footer strong {
+  font-size: 10px;
+  font-weight: 550;
+  color: #657f51;
+}
+.sh-rail-footer div span {
+  font-size: 9px;
+  color: #95a581;
+}
+.sh-atlas-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  gap: 16px;
+  border-bottom: 1px solid #dfe7d7;
+  background: #fcfdf9;
+  color: #8c9c7e;
+  font-size: 10px;
+}
+.sh-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: #2d6144;
+}
+.sh-brand strong {
+  font-size: 21px;
+  letter-spacing: -0.05em;
+  font-weight: 600;
+  color: #26422d;
+}
+.sh-brand > span {
+  padding-left: 12px;
+  margin-left: 4px;
+  border-left: 1px solid #dce5d1;
+  letter-spacing: 0.16em;
+  font-size: 9px;
+  color: #899b78;
+}
+.sh-atlas-fleet {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: none;
+  color: #6f875b;
+  font-size: 10px;
+  padding: 5px 0;
+}
+.sh-stop {
+  border-radius: 8px;
+}
+.sh-header {
+  border-bottom-color: #e0e7da;
+}
+.sh-header-row {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+.sh-tabbar-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 9px 10px;
+  color: #8b9c77;
+  font-size: 9px;
+  min-width: 65px;
+  border-radius: 8px;
+}
+.sh-tabbar-item.is-current {
+  background: #eaf1e0;
+  color: #35683c;
+}
+[data-tabbar] {
+  padding: 6px 8px max(8px, env(safe-area-inset-bottom));
+  background: #fcfdf9;
+}
+@media (max-width: 1099px) {
+  .sh-rail {
+    display: none;
+  }
+  [data-body][data-wide] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 600px) {
+  .sh-atlas-header {
+    padding: 10px 20px;
+  }
+  .sh-atlas-header > span:nth-child(2) {
+    display: none;
+  }
+  .sh-brand strong {
+    font-size: 18px;
+  }
+  .sh-brand > span {
+    font-size: 8px;
+  }
+  .sh-atlas-fleet {
+    font-size: 9px;
+  }
+  .sh-atlas-header button {
+    min-height: 32px !important;
+  }
+}

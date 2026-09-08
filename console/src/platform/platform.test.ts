@@ -77,6 +77,14 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('platform HTTP transport', () => {
+  it('invokes native fetch on its global receiver, not on the HTTP client', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(function (this: unknown) {
+      if (this !== globalThis) throw new TypeError('Illegal invocation')
+      return Promise.resolve(json({ ready: true }))
+    })
+    await expect(new PlatformHttp(connection).request('/platform')).resolves.toEqual({ ready: true })
+  })
+
   it('pins the connection and sends scoped bearer requests without cookies, caching, or redirects', async () => {
     const mutable = { ...connection, sessionId: 'room a' }
     const fetcher = vi.fn<PlatformFetch>().mockResolvedValue(json({ ready: true }))

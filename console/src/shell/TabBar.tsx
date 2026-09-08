@@ -1,4 +1,5 @@
 import type { ModuleNavProps } from './Rail'
+import { Icon, type IconName } from '../atlas/Icon'
 
 export function TabBar({ modules, active, onSelect }: ModuleNavProps) {
   return (
@@ -15,7 +16,8 @@ export function TabBar({ modules, active, onSelect }: ModuleNavProps) {
             aria-current={current ? 'page' : undefined}
             onClick={() => onSelect(module.id)}
           >
-            {module.label}
+            <Icon name={(({ captures: 'camera', worlds: 'cube', map: 'pin' } as Record<string, string>)[module.id] ?? module.id) as IconName} size={19} />
+            <span>{module.label}</span>
           </button>
         )
       })}

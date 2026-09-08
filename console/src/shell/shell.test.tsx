@@ -89,6 +89,7 @@ describe('persistent shell', () => {
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     expect(modulesRail().getByRole('button', { name: 'Control' })).toHaveAttribute('aria-current', 'page')
     expect(modulesRail().getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'Spaces',
       'Control',
       'Live',
       'Gesture',
@@ -98,7 +99,7 @@ describe('persistent shell', () => {
       'Devices',
       'Map',
     ])
-    expect(within(screen.getByRole('navigation', { name: 'Primary' })).getAllByRole('button')).toHaveLength(8)
+    expect(within(screen.getByRole('navigation', { name: 'Primary' })).getAllByRole('button')).toHaveLength(9)
   })
 
   test('pending confirmation: the dock shows the plan with its Intent v1 JSON expanded by default', async () => {

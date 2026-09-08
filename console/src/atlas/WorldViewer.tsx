@@ -1,0 +1,181 @@
+import { useEffect, useRef, useState } from 'react'
+import * as THREE from 'three'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import type { AtlasClient } from './client'
+import { Icon } from './Icon'
+
+interface Props {
+  client: AtlasClient
+  spaceId: string
+  jobId: string
+  checksum: string
+}
+
+export default function WorldViewer({ client, spaceId, jobId, checksum }: Props) {
+  const container = useRef<HTMLDivElement>(null)
+  const reset = useRef<() => void>(() => {})
+  const [error, setError] = useState('')
+  const [loaded, setLoaded] = useState(false)
+  useEffect(() => {
+    const element = container.current
+    if (!element) return
+    const abort = new AbortController()
+    let renderer: THREE.WebGLRenderer
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
+    } catch {
+      queueMicrotask(() =>
+        setError('3D viewing needs WebGL. The source captures remain available.'),
+      )
+      return
+    }
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
+    renderer.setClearColor('#172b26')
+    renderer.domElement.setAttribute(
+      'aria-label',
+      'Image-reconstructed 3D point cloud. Drag to orbit, pinch or scroll to zoom.',
+    )
+    renderer.domElement.tabIndex = 0
+    element.appendChild(renderer.domElement)
+    const scene = new THREE.Scene()
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 10000)
+    const controls = new OrbitControls(camera, renderer.domElement)
+    controls.listenToKeyEvents(renderer.domElement)
+    const render = () => renderer.render(scene, camera)
+    controls.addEventListener('change', render)
+    const resize = new ResizeObserver(() => {
+      renderer.setSize(element.clientWidth, element.clientHeight)
+      camera.aspect = element.clientWidth / Math.max(1, element.clientHeight)
+      camera.updateProjectionMatrix()
+      render()
+    })
+    resize.observe(element)
+    const disposeModel = (root: THREE.Object3D) =>
+      root.traverse((object) => {
+        if (object instanceof THREE.Points || object instanceof THREE.Mesh) {
+          object.geometry.dispose()
+          const materials = Array.isArray(object.material) ? object.material : [object.material]
+          materials.forEach((material) => material.dispose())
+        }
+      })
+    void (async () => {
+      try {
+        const data = await client.world(spaceId, jobId, abort.signal)
+        const digest = await crypto.subtle.digest('SHA-256', data)
+        const actual = Array.from(new Uint8Array(digest), (byte) =>
+          byte.toString(16).padStart(2, '0'),
+        ).join('')
+        if (actual !== checksum) throw new Error('The 3D artifact failed its checksum check.')
+        const header = new DataView(data)
+        if (
+          data.byteLength < 20 ||
+          header.getUint32(0, true) !== 0x46546c67 ||
+          header.getUint32(8, true) !== data.byteLength
+        )
+          throw new Error('The 3D artifact is not a complete GLB file.')
+        const jsonLength = header.getUint32(12, true)
+        const document = JSON.parse(new TextDecoder().decode(data.slice(20, 20 + jsonLength)))
+        if (
+          document.buffers?.some((buffer: { uri?: string }) => buffer.uri) ||
+          document.images?.length ||
+          document.extensionsRequired?.length
+        )
+          throw new Error('Only self-contained reconstructed geometry can be displayed.')
+        const gltf = await new GLTFLoader().parseAsync(data, '')
+        if (abort.signal.aborted) {
+          disposeModel(gltf.scene)
+          return
+        }
+        gltf.scene.rotation.x = Math.PI
+        gltf.scene.traverse((object) => {
+          if (object instanceof THREE.Points) {
+            const old = object.material
+            object.material = new THREE.PointsMaterial({
+              size: 2.5,
+              sizeAttenuation: false,
+              vertexColors: true,
+            })
+            ;(Array.isArray(old) ? old : [old]).forEach((material) => material.dispose())
+          }
+        })
+        scene.add(gltf.scene)
+        const box = new THREE.Box3().setFromObject(gltf.scene)
+        // Frame the main observed area initially. Distant context remains reachable
+        // with pan/zoom; no reconstructed points are removed to improve the view.
+        const axes: number[][] = [[], [], []]
+        const point = new THREE.Vector3()
+        gltf.scene.traverse(object => {
+          if (!(object instanceof THREE.Points)) return
+          const positions = object.geometry.getAttribute('position')
+          for (let index = 0; index < positions.count; index++) {
+            point.fromBufferAttribute(positions, index).applyMatrix4(object.matrixWorld)
+            axes[0].push(point.x); axes[1].push(point.y); axes[2].push(point.z)
+          }
+        })
+        axes.forEach(values => values.sort((a, b) => a - b))
+        const focus = axes.every(values => values.length) ? new THREE.Box3(
+          new THREE.Vector3(...axes.map(values => values[Math.floor(values.length * .1)])),
+          new THREE.Vector3(...axes.map(values => values[Math.floor(values.length * .9)])),
+        ) : box
+        const center = focus.getCenter(new THREE.Vector3())
+        const radius = focus.getSize(new THREE.Vector3()).length() / 2
+        const wholeRadius = box.getSize(new THREE.Vector3()).length() / 2
+        if (!Number.isFinite(radius) || radius <= 0)
+          throw new Error('The reconstructed bounds are invalid.')
+        camera.near = Math.max(0.0001, radius / 1000)
+        camera.far = wholeRadius * 100
+        controls.minDistance = radius / 100
+        controls.maxDistance = wholeRadius * 20
+        reset.current = () => {
+          controls.target.copy(center)
+          camera.position
+            .copy(center)
+            .add(new THREE.Vector3(radius * 0.6, radius * 0.35, radius * 2.6))
+          camera.updateProjectionMatrix()
+          controls.update()
+          render()
+        }
+        reset.current()
+        setLoaded(true)
+      } catch (value) {
+        if (!abort.signal.aborted)
+          setError(value instanceof Error ? value.message : 'The 3D model could not be displayed.')
+      }
+    })()
+    return () => {
+      abort.abort()
+      resize.disconnect()
+      controls.dispose()
+      disposeModel(scene)
+      renderer.dispose()
+      renderer.forceContextLoss()
+      renderer.domElement.remove()
+    }
+  }, [client, spaceId, jobId, checksum])
+
+  return (
+    <div className="atlas-world-viewer">
+      <div ref={container} className="atlas-world-canvas" />
+      <div className="atlas-world-controls">
+        <span>
+          <Icon name="cube" />
+          Reconstructed perspectives
+        </span>
+        <button
+          className="atlas-icon-button"
+          aria-label="Reset 3D view"
+          onClick={() => reset.current()}
+        >
+          <Icon name="target" />
+        </button>
+      </div>
+      <p className="atlas-world-help">
+        {error ||
+          (!loaded
+            ? 'Loading verified geometry…'
+            : 'Drag to orbit · pinch to zoom · sparse points, relative scale')}
+      </p>
+    </div>
+  )
+}

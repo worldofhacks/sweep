@@ -16,7 +16,7 @@ export function Frame({ header, rail, pane, context, dock, tabBar }: FrameProps)
     <div data-frame="1">
       <SkipLink />
       {header}
-      <div data-body="1">
+      <div data-body="1" data-wide={context === null ? '1' : undefined}>
         {rail}
         {pane}
         {context}

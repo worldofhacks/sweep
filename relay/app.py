@@ -1008,6 +1008,10 @@ def create_app(
         )
         application.state.relay_runtime = runtime
         platform = None
+        from relay.atlas import AtlasStore
+
+        atlas = AtlasStore(active_settings.log_dir / "atlas")
+        application.state.atlas_store = atlas
         try:
             platform = (platform_services_factory or PlatformServices)(runtime)
             runtime.platform_services = platform
@@ -1029,6 +1033,7 @@ def create_app(
                 finally:
                     if shutdown_callback is not None:
                         shutdown_callback()
+                    atlas.close()
 
     application = FastAPI(title="Sweep relay", version="1", lifespan=lifespan)
     application.add_middleware(
@@ -1042,6 +1047,7 @@ def create_app(
             "Content-Type",
             "X-Sweep-Correlation-Id",
             "X-Sweep-Audio-Duration-Ms",
+            "X-Sweep-Capture",
         ],
     )
 
@@ -1176,6 +1182,9 @@ def create_app(
         return runtime
 
     install_platform_routes(application, authorized_runtime)
+    from relay.atlas_routes import install_atlas_routes
+
+    install_atlas_routes(application, authorized_runtime)
 
     @application.get("/metrics")
     def metrics(authorization: str | None = Header(default=None)) -> dict[str, object]:
