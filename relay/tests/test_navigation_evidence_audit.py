@@ -4,7 +4,7 @@ import pytest
 
 from relay.app import RelayRuntime
 from relay.auth import Principal, sign_event
-from relay.contracts import parse_membership_request
+from relay.contracts import parse_media_file, parse_membership_request
 from relay.settings import RelaySettings
 from relay.tests.conftest import media_file_payload, membership_payload
 from relay.tests.test_navigation_wire import NODE_KEY, _publisher, _request
@@ -36,6 +36,23 @@ def navigation_audit(tmp_path):
     with publisher.command_scope(plan, lambda: snapshots[0]):
         frames = publisher.prepare_request(_request(plan))
     return session, frames
+
+
+def test_legacy_media_frame_keeps_position_and_yaw_frame_unknown(navigation_audit):
+    session, (route, _) = navigation_audit
+    raw = media_file_payload(
+        event_id="legacy-media",
+        session=route["session"],
+        timestamp=route["t"],
+        retrieval_status="pending",
+        checksum_sha256="0" * 64,
+    )
+    for field in ("position_frame", "yaw_frame", "map_pose_provenance"):
+        raw.pop(field)
+    file = parse_media_file(raw).file
+    assert file.position_frame is None
+    assert file.yaw_frame is None
+    assert file.map_pose_provenance is None
 
 
 def test_navigation_audit_retains_exact_route_and_pose_evidence_without_signatures(

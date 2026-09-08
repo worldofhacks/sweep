@@ -190,14 +190,14 @@ data class MediaFileRecord(
     val droneId: Int,
     val connectionEpoch: Int,
     val pose: WirePose,
-    val positionFrame: MediaPositionFrame = MediaPositionFrame.DJI_LOCAL_ENU,
     val actualYawDeg: Double,
-    val yawFrame: MediaYawFrame = MediaYawFrame.DJI_COMPASS_DEG,
     val gimbalPitchDeg: Double,
     val intrinsics: WireIntrinsics,
     val checksumSha256: String,
     val storageRef: String,
     val retrievalStatus: RetrievalStatus,
+    val positionFrame: MediaPositionFrame? = null,
+    val yawFrame: MediaYawFrame? = null,
     val mapPoseProvenance: MapPoseProvenance? = null,
 ) {
     init {
@@ -208,41 +208,43 @@ data class MediaFileRecord(
         require(retrievalStatus != RetrievalStatus.COMPLETED || checksumSha256 != PENDING_CHECKSUM) {
             "completed media requires a content checksum"
         }
+        require((positionFrame == null) == (yawFrame == null)) { "media frame metadata is all-or-none" }
+        require(positionFrame != null || mapPoseProvenance == null) { "legacy media cannot claim map pose provenance" }
         require((positionFrame == MediaPositionFrame.MAP_ENU) == (mapPoseProvenance != null)) {
             "map-frame media requires map pose provenance"
         }
     }
 
-    fun toJson(): JsonObject = Json.json(
-        "capture_id" to captureId,
-        "file_id" to fileId,
-        "timestamp_ms" to timestampMs,
-        "drone_id" to droneId,
-        "connection_epoch" to connectionEpoch,
-        "pose" to pose.toJson(),
-        "position_frame" to positionFrame.wire,
-        "actual_yaw_deg" to actualYawDeg,
-        "yaw_frame" to yawFrame.wire,
-        "gimbal_pitch_deg" to gimbalPitchDeg,
-        "intrinsics" to intrinsics.toJson(),
-        "checksum_sha256" to checksumSha256,
-        "storage_ref" to storageRef,
-        "retrieval_status" to retrievalStatus.wire,
-        "map_pose_provenance" to (mapPoseProvenance?.toJson() ?: JsonNull),
-    )
+    fun toJson(): JsonObject {
+        val fields = linkedMapOf<String, Any?>(
+            "capture_id" to captureId, "file_id" to fileId, "timestamp_ms" to timestampMs,
+            "drone_id" to droneId, "connection_epoch" to connectionEpoch, "pose" to pose.toJson(),
+            "actual_yaw_deg" to actualYawDeg, "gimbal_pitch_deg" to gimbalPitchDeg,
+            "intrinsics" to intrinsics.toJson(), "checksum_sha256" to checksumSha256,
+            "storage_ref" to storageRef, "retrieval_status" to retrievalStatus.wire,
+        )
+        if (positionFrame != null) {
+            fields["position_frame"] = positionFrame.wire
+            fields["yaw_frame"] = checkNotNull(yawFrame).wire
+            fields["map_pose_provenance"] = mapPoseProvenance?.toJson() ?: JsonNull
+        }
+        return Json.json(*fields.map { it.toPair() }.toTypedArray())
+    }
 
     companion object {
         /** The checksum of a `pending` record: no bytes have been hashed yet. */
         const val PENDING_CHECKSUM = "0000000000000000000000000000000000000000000000000000000000000000"
-        val FIELDS = setOf(
-            "capture_id", "file_id", "timestamp_ms", "drone_id", "connection_epoch", "pose", "position_frame", "actual_yaw_deg",
-            "yaw_frame", "gimbal_pitch_deg", "intrinsics", "checksum_sha256", "storage_ref", "retrieval_status", "map_pose_provenance",
+        val LEGACY_FIELDS = setOf(
+            "capture_id", "file_id", "timestamp_ms", "drone_id", "connection_epoch", "pose", "actual_yaw_deg",
+            "gimbal_pitch_deg", "intrinsics", "checksum_sha256", "storage_ref", "retrieval_status",
         )
+        private val METADATA_FIELDS = setOf("position_frame", "yaw_frame", "map_pose_provenance")
+        val FIELDS = LEGACY_FIELDS + METADATA_FIELDS
 
         fun isChecksum(value: String): Boolean = value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }
 
         fun parse(json: JsonObject, code: String): MediaFileRecord {
-            Fields.exact(json, FIELDS, code)
+            if (json.keys != LEGACY_FIELDS && json.keys != FIELDS) throw ContractError(code, "media frame metadata is all-or-none")
             val checksum = (json["checksum_sha256"] as? JsonString)?.value
             if (checksum == null || !isChecksum(checksum)) throw ContractError(code, "checksum_sha256 must be 64 lowercase hex characters")
             val status = (json["retrieval_status"] as? JsonString)?.let { RetrievalStatus.fromWire(it.value) }
@@ -254,14 +256,13 @@ data class MediaFileRecord(
                 throw ContractError(code, "completed media requires a content checksum")
             }
             val positionFrame = (json["position_frame"] as? JsonString)?.let { MediaPositionFrame.fromWire(it.value) }
-                ?: throw ContractError(code, "position_frame must be dji_local_enu or map_enu")
             val yawFrame = (json["yaw_frame"] as? JsonString)?.let { MediaYawFrame.fromWire(it.value) }
-                ?: throw ContractError(code, "yaw_frame must be dji_compass_deg")
             val provenance = when (val raw = json["map_pose_provenance"]) {
-                JsonNull -> null
+                null, JsonNull -> null
                 is JsonObject -> MapPoseProvenance.parse(raw, code)
                 else -> throw ContractError(code, "map_pose_provenance must be an object or null")
             }
+            if (json.keys == FIELDS && (positionFrame == null || yawFrame == null)) throw ContractError(code, "media frame metadata is invalid")
             return MediaFileRecord(
                 captureId = Fields.nonEmptyString(json["capture_id"], "capture_id", code),
                 fileId = Fields.nonEmptyString(json["file_id"], "file_id", code),
@@ -269,14 +270,14 @@ data class MediaFileRecord(
                 droneId = Fields.positiveInt32(json["drone_id"], "drone_id", code),
                 connectionEpoch = Fields.positiveInt32(json["connection_epoch"], "connection_epoch", code),
                 pose = WirePose.parse(Fields.obj(json["pose"], "pose", code), code),
-                positionFrame = positionFrame,
                 actualYawDeg = Fields.finiteNumber(json["actual_yaw_deg"], "actual_yaw_deg", code),
-                yawFrame = yawFrame,
                 gimbalPitchDeg = Fields.finiteNumber(json["gimbal_pitch_deg"], "gimbal_pitch_deg", code),
                 intrinsics = WireIntrinsics.parse(Fields.obj(json["intrinsics"], "intrinsics", code), code),
                 checksumSha256 = checksum,
                 storageRef = Fields.nonEmptyString(json["storage_ref"], "storage_ref", code),
                 retrievalStatus = status,
+                positionFrame = positionFrame,
+                yawFrame = yawFrame,
                 mapPoseProvenance = provenance,
             )
         }
@@ -306,7 +307,9 @@ data class MediaFileFrame(
         private val ENVELOPE = setOf("v", "t", "type", "event_id", "session")
 
         fun parse(json: JsonObject): MediaFileFrame {
-            Fields.exact(json, ENVELOPE + MediaFileRecord.FIELDS, CODE)
+            if (json.keys != ENVELOPE + MediaFileRecord.FIELDS && json.keys != ENVELOPE + MediaFileRecord.LEGACY_FIELDS) {
+                throw ContractError(CODE, "media frame metadata is all-or-none")
+            }
             Fields.envelope(json, TYPE, CODE)
             return MediaFileFrame(
                 t = Fields.nonNegativeInt(json["t"], "t", CODE),

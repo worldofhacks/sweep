@@ -306,8 +306,8 @@ class MediaFile:
     checksum_sha256: str
     storage_ref: str
     retrieval_status: CameraResultStatus
-    position_frame: str = "dji_local_enu"
-    yaw_frame: str = "dji_compass_deg"
+    position_frame: str | None = None
+    yaw_frame: str | None = None
     map_pose_provenance: Mapping[str, JsonValue] | None = None
 
     def to_dict(self) -> dict[str, JsonValue]:
@@ -318,17 +318,23 @@ class MediaFile:
             "drone_id": self.drone_id,
             "connection_epoch": self.connection_epoch,
             "pose": self.pose.to_dict(),
-            "position_frame": self.position_frame,
             "actual_yaw_deg": self.actual_yaw_deg,
-            "yaw_frame": self.yaw_frame,
             "gimbal_pitch_deg": self.gimbal_pitch_deg,
             "intrinsics": self.intrinsics.to_dict(),
             "checksum_sha256": self.checksum_sha256,
             "storage_ref": self.storage_ref,
             "retrieval_status": self.retrieval_status.value,
-            "map_pose_provenance": None
-            if self.map_pose_provenance is None
-            else dict(self.map_pose_provenance),
+            **(
+                {}
+                if self.position_frame is None
+                else {
+                    "position_frame": self.position_frame,
+                    "yaw_frame": self.yaw_frame,
+                    "map_pose_provenance": None
+                    if self.map_pose_provenance is None
+                    else dict(self.map_pose_provenance),
+                }
+            ),
         }
 
 

@@ -416,16 +416,16 @@ export interface RelayCaptureFile {
   drone_id: DroneId
   connection_epoch: number
   pose: { x: number; y: number; z: number }
-  position_frame: MediaPositionFrame
+  position_frame?: MediaPositionFrame
   actual_yaw_deg: number
-  yaw_frame: MediaYawFrame
+  yaw_frame?: MediaYawFrame
   gimbal_pitch_deg: number
   intrinsics: { width_px: number; height_px: number; horizontal_fov_deg: number; projection: string }
   /** Sixty-four lowercase hex characters; all zeros while `retrieval_status` is `pending`. */
   checksum_sha256: string
   storage_ref: string
   retrieval_status: MediaRetrievalStatus
-  map_pose_provenance: MapPoseProvenance | null
+  map_pose_provenance?: MapPoseProvenance | null
 }
 
 /**
@@ -1377,9 +1377,8 @@ export function isRelayCaptureFile(value: unknown): value is RelayCaptureFile {
     isNonNegativeInteger(value.connection_epoch) &&
     isRecord(pose) &&
     ['x', 'y', 'z'].every((axis) => isFiniteNumber(pose[axis])) &&
-    (value.position_frame === 'dji_local_enu' || value.position_frame === 'map_enu') &&
+    isMediaPositionMetadata(value) &&
     isFiniteNumber(value.actual_yaw_deg) &&
-    value.yaw_frame === 'dji_compass_deg' &&
     isFiniteNumber(value.gimbal_pitch_deg) &&
     isRecord(intrinsics) &&
     isDroneId(intrinsics.width_px) &&
@@ -1393,7 +1392,21 @@ export function isRelayCaptureFile(value: unknown): value is RelayCaptureFile {
     typeof value.retrieval_status === 'string' &&
     MEDIA_RETRIEVAL_STATUSES.has(value.retrieval_status) &&
     (value.retrieval_status !== 'pending' || checksumIsPending) &&
-    (value.retrieval_status !== 'completed' || !checksumIsPending) &&
+    (value.retrieval_status !== 'completed' || !checksumIsPending)
+  )
+}
+
+function isMediaPositionMetadata(value: Record<string, unknown>): boolean {
+  const hasPosition = 'position_frame' in value
+  const hasYaw = 'yaw_frame' in value
+  const hasProvenance = 'map_pose_provenance' in value
+  if (!hasPosition && !hasYaw && !hasProvenance) return true
+  return (
+    hasPosition &&
+    hasYaw &&
+    hasProvenance &&
+    (value.position_frame === 'dji_local_enu' || value.position_frame === 'map_enu') &&
+    value.yaw_frame === 'dji_compass_deg' &&
     isMapPoseProvenance(value.map_pose_provenance) &&
     ((value.position_frame === 'map_enu') === (value.map_pose_provenance !== null))
   )

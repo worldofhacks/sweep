@@ -559,15 +559,15 @@ class MediaFileRecord:
     drone_id: int
     connection_epoch: int
     pose: WirePose
-    position_frame: str
     actual_yaw_deg: float
-    yaw_frame: str
     gimbal_pitch_deg: float
     intrinsics: WireIntrinsics
     checksum_sha256: str
     storage_ref: str
     retrieval_status: str
-    map_pose_provenance: MapPoseProvenance | None
+    position_frame: str | None = None
+    yaw_frame: str | None = None
+    map_pose_provenance: MapPoseProvenance | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -577,17 +577,23 @@ class MediaFileRecord:
             "drone_id": self.drone_id,
             "connection_epoch": self.connection_epoch,
             "pose": self.pose.to_dict(),
-            "position_frame": self.position_frame,
             "actual_yaw_deg": self.actual_yaw_deg,
-            "yaw_frame": self.yaw_frame,
             "gimbal_pitch_deg": self.gimbal_pitch_deg,
             "intrinsics": self.intrinsics.to_dict(),
             "checksum_sha256": self.checksum_sha256,
             "storage_ref": self.storage_ref,
             "retrieval_status": self.retrieval_status,
-            "map_pose_provenance": None
-            if self.map_pose_provenance is None
-            else self.map_pose_provenance.to_dict(),
+            **(
+                {}
+                if self.position_frame is None
+                else {
+                    "position_frame": self.position_frame,
+                    "yaw_frame": self.yaw_frame,
+                    "map_pose_provenance": None
+                    if self.map_pose_provenance is None
+                    else self.map_pose_provenance.to_dict(),
+                }
+            ),
         }
 
 
@@ -1170,7 +1176,11 @@ def parse_capabilities(raw: object) -> CapabilitiesFrame:
 def parse_media_file(raw: object) -> MediaFileFrame:
     code = "invalid_media_file"
     value = _mapping(raw, code, "media_file frame must be an object")
-    _exact_fields(value, _ENVELOPE_FIELDS | _MEDIA_RECORD_FIELDS, code)
+    if set(value) not in {
+        _ENVELOPE_FIELDS | _MEDIA_RECORD_LEGACY_FIELDS,
+        _ENVELOPE_FIELDS | _MEDIA_RECORD_FIELDS,
+    }:
+        raise ContractError(code, "media frame metadata is all-or-none")
     _common_envelope(value, expected_type="media_file", code=code)
     record = {key: item for key, item in value.items() if key not in _ENVELOPE_FIELDS}
     return MediaFileFrame(
@@ -1728,7 +1738,7 @@ def _command_arguments(
     return MappingProxyType(result)
 
 
-_MEDIA_RECORD_FIELDS = frozenset(
+_MEDIA_RECORD_LEGACY_FIELDS = frozenset(
     {
         "capture_id",
         "file_id",
@@ -1736,21 +1746,24 @@ _MEDIA_RECORD_FIELDS = frozenset(
         "drone_id",
         "connection_epoch",
         "pose",
-        "position_frame",
         "actual_yaw_deg",
-        "yaw_frame",
         "gimbal_pitch_deg",
         "intrinsics",
         "checksum_sha256",
         "storage_ref",
         "retrieval_status",
-        "map_pose_provenance",
     }
 )
+_MEDIA_RECORD_FIELDS = _MEDIA_RECORD_LEGACY_FIELDS | {
+    "position_frame",
+    "yaw_frame",
+    "map_pose_provenance",
+}
 
 
 def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
-    _exact_fields(value, set(_MEDIA_RECORD_FIELDS), code)
+    if set(value) not in {_MEDIA_RECORD_LEGACY_FIELDS, _MEDIA_RECORD_FIELDS}:
+        raise ContractError(code, "media frame metadata is all-or-none")
     pose = _mapping(value["pose"], code, "pose must be an object")
     _exact_fields(pose, {"x", "y", "z"}, code)
     intrinsics = _mapping(value["intrinsics"], code, "intrinsics must be an object")
@@ -1772,13 +1785,18 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
         raise ContractError(code, "pending media requires the all-zero checksum sentinel")
     if retrieval_status == "completed" and checksum == MEDIA_PENDING_CHECKSUM:
         raise ContractError(code, "completed media requires a content checksum")
-    position_frame = _choice(
-        value["position_frame"], "position_frame", frozenset({"dji_local_enu", "map_enu"}), code
-    )
-    yaw_frame = _choice(value["yaw_frame"], "yaw_frame", frozenset({"dji_compass_deg"}), code)
-    provenance = _map_pose_provenance(value["map_pose_provenance"], code)
-    if (position_frame == "map_enu") != (provenance is not None):
-        raise ContractError(code, "map-frame media requires map pose provenance")
+    metadata_present = set(value) == _MEDIA_RECORD_FIELDS
+    position_frame = None
+    yaw_frame = None
+    provenance = None
+    if metadata_present:
+        position_frame = _choice(
+            value["position_frame"], "position_frame", frozenset({"dji_local_enu", "map_enu"}), code
+        )
+        yaw_frame = _choice(value["yaw_frame"], "yaw_frame", frozenset({"dji_compass_deg"}), code)
+        provenance = _map_pose_provenance(value["map_pose_provenance"], code)
+        if (position_frame == "map_enu") != (provenance is not None):
+            raise ContractError(code, "map-frame media requires map pose provenance")
     return MediaFileRecord(
         _nonempty_string(value["capture_id"], "capture_id", code),
         _nonempty_string(value["file_id"], "file_id", code),
@@ -1790,9 +1808,7 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
             _finite_number(pose["y"], "y", code),
             _finite_number(pose["z"], "z", code),
         ),
-        position_frame,
         _finite_number(value["actual_yaw_deg"], "actual_yaw_deg", code),
-        yaw_frame,
         _finite_number(value["gimbal_pitch_deg"], "gimbal_pitch_deg", code),
         WireIntrinsics(
             _positive_int(intrinsics["width_px"], "width_px", code),
@@ -1803,6 +1819,8 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
         checksum,
         _nonempty_string(value["storage_ref"], "storage_ref", code),
         retrieval_status,
+        position_frame,
+        yaw_frame,
         provenance,
     )
 

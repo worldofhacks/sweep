@@ -684,10 +684,16 @@ class FramesTest {
             checksumSha256 = MediaFileRecord.PENDING_CHECKSUM,
             storageRef = "aircraft://sdcard/DJI_0001.JPG",
             retrievalStatus = RetrievalStatus.PENDING,
+            positionFrame = MediaPositionFrame.DJI_LOCAL_ENU,
+            yawFrame = MediaYawFrame.DJI_COMPASS_DEG,
         )
         val frame = MediaFileFrame(t = 8000, eventId = "evt-media-1", session = "session-a", file = record)
         assertSameWire("media_file", frame.toEvent())
         assertEquals(frame, MediaFileFrame.parse(wire("media_file")))
+        val legacy = JsonObject(wire("media_file").fields - setOf("position_frame", "yaw_frame", "map_pose_provenance"))
+        val parsedLegacy = MediaFileFrame.parse(legacy)
+        assertEquals(null, parsedLegacy.file.positionFrame)
+        assertEquals(legacy, parsedLegacy.toEvent())
         assertThrows(ContractError::class.java) {
             MediaFileFrame.parse(JsonObject(wire("media_file").fields + ("retrieval_status" to Json.value("queued"))))
         }
