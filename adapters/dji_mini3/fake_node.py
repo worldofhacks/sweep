@@ -294,7 +294,9 @@ class FakeNode:
     def _navigation_pose_matches_aircraft(
         self, frame: dict[str, object], command: CommandFrame
     ) -> bool:
-        return frame.get("command_id") == command.command_id and self._navigation_pose_coordinates_match_aircraft(frame)
+        return frame.get(
+            "command_id"
+        ) == command.command_id and self._navigation_pose_coordinates_match_aircraft(frame)
 
     def _navigation_pose_coordinates_match_aircraft(self, frame: dict[str, object]) -> bool:
         coordinates = (frame.get("x_mm"), frame.get("y_mm"), frame.get("z_mm"))

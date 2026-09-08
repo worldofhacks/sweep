@@ -1750,9 +1750,7 @@ class AutonomySession:
 
         loop.call_soon_threadsafe(schedule)
 
-    def _report_multiview_execution(
-        self, intent: IntentV1, result: ExecutionResult
-    ) -> None:
+    def _report_multiview_execution(self, intent: IntentV1, result: ExecutionResult) -> None:
         try:
             self._composition.report_multiview_execution(self.session_id, intent, result)
         except Exception:
