@@ -1230,6 +1230,9 @@ class AutonomySession:
                 if ground is not None and self.ground_navigation is not None:
                     self.ground_navigation.deployment.cancel(ground.plan)
             stop.publications.append(event)
+            self._composition.report_multiview_lifecycle(
+                self.session_id, victim.intent.intent_id, victim.intent.name.value, "invalidated"
+            )
 
     def _run(self, lane: _Lane) -> None:
         while True:
@@ -1977,6 +1980,13 @@ class AutonomyComposition:
         listener = self._multiview_listener
         if listener is not None and result.status is not LifecycleStatus.EXECUTING:
             listener(session_id, intent.intent_id, intent.name.value, result.status.value)
+
+    def report_multiview_lifecycle(
+        self, session_id: str, intent_id: str, intent_name: str, status: str
+    ) -> None:
+        listener = self._multiview_listener
+        if listener is not None:
+            listener(session_id, intent_id, intent_name, status)
 
     def navigation_events(
         self, session_id: str, events: list[dict[str, object]]

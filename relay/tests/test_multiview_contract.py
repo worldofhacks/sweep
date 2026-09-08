@@ -148,3 +148,26 @@ def test_multiview_dispatches_capture_only_after_navigation_then_advances() -> N
         "s", f"platform-capture:{second_navigation}", "capture_room", "completed"
     )
     assert service.status("s", preview["previewId"])["status"] == "completed"
+
+
+def test_multiview_stops_after_a_preempted_navigation() -> None:
+    navigation = _Navigation()
+    execution = _Execution()
+    service = MultiviewService(navigation, execution)
+    preview = service.preview(
+        "s",
+        {
+            "intentId": "multiview-stop",
+            "selected": [{"id": 1, "deviceClass": "aircraft", "epoch": 2}],
+            "viewpoints": [
+                {"viewpointId": "north", "zoneId": "north-zone", "captureId": "capture-north"}
+            ],
+        },
+    )
+    service.confirm("s", {key: preview[key] for key in ("previewId", "intentId", "previewHash")})
+    service.observe_execution("s", navigation.confirmed["intentId"], "navigate", "invalidated")
+
+    status = service.status("s", preview["previewId"])
+    assert status["status"] == "failed"
+    assert status["views"][0]["state"] == "failed"
+    assert execution.captures == []
