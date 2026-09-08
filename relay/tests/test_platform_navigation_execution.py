@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -22,6 +23,7 @@ from relay.autonomy import AutonomyComposition, AutonomyConfig, create_autonomy_
 from relay.control_localization import ControlLocalizationProjector, ControlPose
 from relay.intent_v1 import IntentName, IntentV1, Mode
 from relay.navigation_service import NavigationService
+from relay.navigation_wire import NavigationTrackingError
 from relay.platform import _FlightExecutionAdapter
 from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.conftest import (
@@ -368,6 +370,203 @@ def test_platform_confirmation_runs_the_retained_route_through_the_real_flight_w
                     time.sleep(0.01)
                 assert expected_callback in callback_results
                 assert session.audit_log.root.exists()
+    finally:
+        composition.close()
+
+
+def test_tracking_disagreement_terminates_the_active_platform_route(tmp_path: Path) -> None:
+    deployment = _deployment(tmp_path)
+    clock = MutableClock(100_000)
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY},
+        localization_keys={1: LOCALIZATION_KEY},
+        log_dir=tmp_path / "logs",
+        adapter_backend=AdapterBackend.REMOTE,
+    )
+    config = AutonomyConfig(
+        planning=replace(planning_config(), flight_speed_m_s=0.2),
+        safety=replace(
+            safety_config(), geofence=Geofence(-100, 100, -100, 100, -100, 100), ceiling_m=50
+        ),
+        control_localization_projector=_projector(deployment),
+        navigation=deployment,
+    )
+    app, composition = create_autonomy_app(settings, config, clock=clock, event_ids=EventIds())
+    try:
+        with TestClient(app) as client:
+            session, autonomy = _prepare_session(composition, deployment)
+            preview = _preview(deployment)
+            execution = autonomy.preview_platform_navigation(preview)
+            with client.websocket_connect(f"/ws/{SESSION}") as adapter:
+                adapter.send_json(
+                    {
+                        "v": 1,
+                        "type": "auth",
+                        "source": "adapter",
+                        "drone_id": 1,
+                        "token": ADAPTER_KEY.decode(),
+                    }
+                )
+                assert adapter.receive_json()["type"] == "auth.accepted"
+                assert adapter.receive_json()["type"] == "state"
+                autonomy.confirm_platform_navigation(
+                    {**preview, "execution": execution["execution"]}
+                )
+                command = next(
+                    frame
+                    for _ in range(64)
+                    if (frame := adapter.receive_json()).get("type") == "command"
+                )
+                for status in ("accepted", "executing"):
+                    adapter.send_json(
+                        {
+                            "v": 1,
+                            "t": 100_000,
+                            "type": "acknowledgement",
+                            "event_id": f"tracking-{status}",
+                            "session": SESSION,
+                            "intent_id": command["intent_id"],
+                            "command_id": command["command_id"],
+                            "status": status,
+                            "drone_id": 1,
+                            "connection_epoch": 1,
+                            "roster_version": command["roster_version"],
+                            "reason": None,
+                            "detail": None,
+                        }
+                    )
+                deadline = threading.Event()
+                for _ in range(300):
+                    if command["intent_id"] in autonomy._awaiting:
+                        deadline.set()
+                        break
+                    time.sleep(0.01)
+                assert deadline.is_set()
+                clock.value = 100_001
+                telemetry = telemetry_payload(
+                    event_id="tracking-disagreement-telemetry",
+                    session=SESSION,
+                    timestamp=clock(),
+                    state="hovering",
+                )
+                telemetry.update(x=-19.9, y=9.8, z=-29.0)
+                session.process_telemetry(telemetry, Principal("adapter", 1, ADAPTER_KEY))
+                pose = session.control_pose(1)
+                assert pose is not None
+                session._control_pose[1] = replace(
+                    pose,
+                    t=clock() - 2,
+                    event_id="tracking-disagreement-pose",
+                    pose_time_ms=clock() - 2,
+                    fix_time_ms=clock() - 2,
+                )
+                asyncio.run_coroutine_threadsafe(
+                    composition.runtime.publish(
+                        SESSION,
+                        [{**session._control_pose[1].unsigned_event(), "signature": "test"}],
+                    ),
+                    composition.runtime.loop,
+                ).result(timeout=2)
+                terminal = next(
+                    frame
+                    for _ in range(64)
+                    if (frame := adapter.receive_json()).get("intent_id") == command["intent_id"]
+                    and frame.get("source") == "autonomy"
+                    and frame.get("status") == "failed"
+                )
+                assert terminal["status"] == "failed"
+                assert terminal["reason"] == "invalid_plan"
+                assert "disagrees with adapter ENU telemetry" in terminal["detail"]
+                assert command["intent_id"] not in autonomy._awaiting
+                assert session.current_state()["accepted_plan"] is None
+                hold = next(
+                    frame
+                    for _ in range(64)
+                    if (frame := adapter.receive_json()).get("type") == "command"
+                )
+                assert hold["operation"] == "hover"
+                assert hold["intent_id"].startswith("safety:navigation-tracking:")
+    finally:
+        composition.close()
+
+
+def test_tracking_failure_before_awaiting_execution_still_stops_the_platform_route(
+    tmp_path: Path,
+) -> None:
+    deployment = _deployment(tmp_path)
+    clock = MutableClock(100_000)
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY},
+        localization_keys={1: LOCALIZATION_KEY},
+        log_dir=tmp_path / "logs",
+        adapter_backend=AdapterBackend.REMOTE,
+    )
+    config = AutonomyConfig(
+        planning=replace(planning_config(), flight_speed_m_s=0.2),
+        safety=replace(
+            safety_config(), geofence=Geofence(-100, 100, -100, 100, -100, 100), ceiling_m=50
+        ),
+        control_localization_projector=_projector(deployment),
+        navigation=deployment,
+    )
+    app, composition = create_autonomy_app(settings, config, clock=clock, event_ids=EventIds())
+    try:
+        with TestClient(app) as client:
+            session, autonomy = _prepare_session(composition, deployment)
+            preview = _preview(deployment)
+            execution = autonomy.preview_platform_navigation(preview)
+            with client.websocket_connect(f"/ws/{SESSION}") as adapter:
+                adapter.send_json(
+                    {
+                        "v": 1,
+                        "type": "auth",
+                        "source": "adapter",
+                        "drone_id": 1,
+                        "token": ADAPTER_KEY.decode(),
+                    }
+                )
+                assert adapter.receive_json()["type"] == "auth.accepted"
+                assert adapter.receive_json()["type"] == "state"
+                autonomy.confirm_platform_navigation(
+                    {**preview, "execution": execution["execution"]}
+                )
+                command = next(
+                    frame
+                    for _ in range(64)
+                    if (frame := adapter.receive_json()).get("type") == "command"
+                )
+                active = None
+                for _ in range(100):
+                    active = next(iter(autonomy.navigation_wire._active.values()), None)
+                    if active is not None:
+                        break
+                    time.sleep(0.01)
+                assert active is not None
+                events = autonomy.fail_navigation_tracking(
+                    NavigationTrackingError(active, "control pose lost before execution wait")
+                )
+                asyncio.run_coroutine_threadsafe(
+                    composition.runtime.publish(SESSION, events), composition.runtime.loop
+                ).result(timeout=2)
+                terminal = next(
+                    frame
+                    for _ in range(64)
+                    if (frame := adapter.receive_json()).get("intent_id") == command["intent_id"]
+                    and frame.get("source") == "autonomy"
+                    and frame.get("status") == "failed"
+                )
+                assert terminal["reason"] == "invalid_plan"
+                assert command["intent_id"] not in autonomy._awaiting
+                assert session.current_state()["accepted_plan"] is None
+                hold = next(
+                    frame
+                    for _ in range(64)
+                    if (frame := adapter.receive_json()).get("type") == "command"
+                )
+                assert hold["operation"] == "hover"
+                assert hold["intent_id"].startswith("safety:navigation-tracking:")
     finally:
         composition.close()
 

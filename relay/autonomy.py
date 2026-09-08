@@ -87,7 +87,7 @@ from relay.control_localization import (
 )
 from relay.ground_navigation_execution import GroundPlatformNavigation, PreparedGroundNavigation
 from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, Mode, validate_intent
-from relay.navigation_wire import NavigationWirePublisher
+from relay.navigation_wire import NavigationTrackingError, NavigationWirePublisher
 from relay.search_deployment import load_search_config
 from relay.search_detection import SearchDetectionConfig, SearchDetectionFactory
 from relay.search_detection_deployment import load_search_detection_config
@@ -1634,6 +1634,116 @@ class AutonomySession:
             return  # a stop already recorded this plan's terminal lifecycle
         self._report(runtime, session, job, result)
 
+    def fail_navigation_tracking(self, error: NavigationTrackingError) -> list[dict[str, object]]:
+        with self._lock:
+            owner = self._awaiting.get(error.intent_id)
+            if owner is None:
+                job = next(
+                    (
+                        lane.running
+                        for lane in self._lanes
+                        if lane.running is not None
+                        and lane.running.intent.intent_id == error.intent_id
+                    ),
+                    None,
+                )
+                if job is None or job.session is None or job.cancelled_by is not None:
+                    return []
+                job.cancelled_by = "navigation_tracking_refused"
+                job.finished = True
+                pending = None
+                session = job.session
+            elif owner.job.cancelled_by is not None or not any(
+                acknowledgement.command_id == error.command_id
+                and acknowledgement.status in {LifecycleStatus.ACCEPTED, LifecycleStatus.EXECUTING}
+                for acknowledgement in owner.pending.acknowledgements
+            ):
+                return []
+            else:
+                owner.job.cancelled_by = "navigation_tracking_refused"
+                owner.job.finished = True
+                self._awaiting.pop(error.intent_id, None)
+                job = owner.job
+                pending = owner.pending
+                session = owner.session
+        if pending is None:
+            snapshot = self.snapshot(
+                session.current_state(), capture_readiness=session.capture_readiness
+            )
+            result = ExecutionResult(
+                intent_id=job.intent.intent_id,
+                roster_version=snapshot.roster_version,
+                status=LifecycleStatus.FAILED,
+                refusal=Refusal(
+                    intent_id=job.intent.intent_id,
+                    roster_version=snapshot.roster_version,
+                    drone_id=error.drone_id,
+                    connection_epoch=error.connection_epoch,
+                    reason=RefusalReason.INVALID_PLAN,
+                    detail=error.detail,
+                    status=LifecycleStatus.FAILED,
+                ),
+                degraded_aircraft=(error.drone_id,),
+            )
+        else:
+            result = self._tracking_failure_result(pending, error)
+        session.discard_command_waiter(error.command_id)
+        events = apply_result(session, job.intent, result)
+        self._composition.report_multiview_execution(self.session_id, job.intent, result)
+        events.extend(self._queue_navigation_tracking_hold(session, job.intent))
+        return events
+
+    def _queue_navigation_tracking_hold(
+        self, session: RelaySession, failed_intent: IntentV1
+    ) -> list[dict[str, object]]:
+        safety_intent = IntentV1(
+            v=1,
+            t=session.clock(),
+            type="intent",
+            intent_id=(
+                "safety:navigation-tracking:"
+                f"{hashlib.sha256(failed_intent.intent_id.encode()).hexdigest()[:24]}"
+            ),
+            retry_of=None,
+            source="safety",
+            session=self.session_id,
+            name=IntentName.HOLD,
+            args={},
+            selection=failed_intent.selection,
+            mode=Mode.INDOOR,
+            confirm=True,
+        )
+        events = [session.admit_safety_stop(safety_intent)]
+        hold_job = _Job(safety_intent, session)
+        hold_lane = self._route(hold_job)
+        with hold_lane.ready:
+            hold_lane.pending.append(hold_job)
+            hold_lane.ready.notify()
+        events.extend(hold_job.publications)
+        return events
+
+    @staticmethod
+    def _tracking_failure_result(
+        pending: ExecutionResult, failure: NavigationTrackingError
+    ) -> ExecutionResult:
+        return ExecutionResult(
+            intent_id=pending.intent_id,
+            roster_version=pending.roster_version,
+            status=LifecycleStatus.FAILED,
+            plan=pending.plan,
+            acknowledgements=pending.acknowledgements,
+            refusal=Refusal(
+                intent_id=pending.intent_id,
+                roster_version=pending.roster_version,
+                drone_id=failure.drone_id,
+                connection_epoch=failure.connection_epoch,
+                reason=RefusalReason.INVALID_PLAN,
+                detail=failure.detail,
+                status=LifecycleStatus.FAILED,
+            ),
+            degraded_aircraft=(failure.drone_id,),
+        )
+
     def prepare_resume(
         self, session: RelaySession, acknowledgement: WireAcknowledgement
     ) -> _ResumeToken | None:
@@ -2117,9 +2227,14 @@ class AutonomyComposition:
                             for frame in frames:
                                 session.record_navigation_evidence(frame)
                             output.extend(frames)
-                        except ValueError:
+                        except NavigationTrackingError as error:
                             _LOGGER.warning(
-                                "navigation tracking evidence refused for aircraft %s", drone_id
+                                "navigation tracking refused for aircraft %s", drone_id
+                            )
+                            output.extend(owner.fail_navigation_tracking(error))
+                        except ValueError:
+                            _LOGGER.exception(
+                                "navigation tracking publisher failed for aircraft %s", drone_id
                             )
             elif event.get("status") in {"completed", "failed", "refused", "invalidated"}:
                 command_id = event.get("command_id")

@@ -120,6 +120,16 @@ class _ActiveCommand:
     expires_at_ms: int
 
 
+class NavigationTrackingError(ValueError):
+    def __init__(self, active: _ActiveCommand, detail: str) -> None:
+        super().__init__(f"navigation wire refused: {detail}")
+        self.command_id = active.command.command_id
+        self.intent_id = active.command.intent_id
+        self.drone_id = active.command.drone_id
+        self.connection_epoch = active.command.connection_epoch
+        self.detail = detail
+
+
 class NavigationWirePublisher:
     def __init__(
         self,
@@ -285,47 +295,82 @@ class NavigationWirePublisher:
             active = next(
                 (
                     item
-                    for commands in (self._active, self._retained)
-                    for item in commands.values()
+                    for item in self._active.values()
                     if item.command.drone_id == pose.drone_id
                     and item.command.connection_epoch == pose.connection_epoch
                 ),
                 None,
             )
+            retained_command = (
+                None
+                if active is not None
+                else next(
+                    (
+                        item
+                        for item in self._retained.values()
+                        if item.command.drone_id == pose.drone_id
+                        and item.command.connection_epoch == pose.connection_epoch
+                    ),
+                    None,
+                )
+            )
+            active = retained_command if active is None else active
         if active is None:
             return []
-        now_ms = self._now()
-        if now_ms >= active.expires_at_ms:
-            self.retire(active.command.command_id)
-            return []
-        retained = self.runtime.control_pose
-        if retained is None or retained(active.command.drone_id) != pose:
-            raise ValueError("navigation pose update is not the retained control pose")
-        if pose.status == "ready":
-            checker = getattr(self.runtime, "check_tracking", None)
-            if not callable(checker):
-                raise ValueError("navigation runtime does not provide current-segment tracking")
-            refusal = checker(active.plan, active.command, active.snapshot(), pose=pose)
-            if refusal is not None:
+        try:
+            now_ms = self._now()
+            if now_ms >= active.expires_at_ms:
                 self.retire(active.command.command_id)
-                raise ValueError(f"navigation wire refused: {refusal.detail}")
-        with self._lock:
-            if (
-                self._active.get(active.command.command_id) != active
-                and self._retained.get(active.command.command_id) != active
-            ):
+                if retained_command is not None:
+                    return []
+                raise NavigationTrackingError(active, "navigation route authorization expired")
+            retained = self.runtime.control_pose
+            if retained is None or retained(active.command.drone_id) != pose:
+                self.retire(active.command.command_id)
+                if retained_command is not None:
+                    return []
+                raise NavigationTrackingError(
+                    active, "navigation pose update is not the retained control pose"
+                )
+            if pose.status == "ready":
+                checker = getattr(self.runtime, "check_tracking", None)
+                if not callable(checker):
+                    self.retire(active.command.command_id)
+                    if retained_command is not None:
+                        return []
+                    raise NavigationTrackingError(
+                        active, "navigation runtime does not provide current-segment tracking"
+                    )
+                refusal = checker(active.plan, active.command, active.snapshot(), pose=pose)
+                if refusal is not None:
+                    self.retire(active.command.command_id)
+                    if retained_command is not None:
+                        return []
+                    raise NavigationTrackingError(active, refusal.detail)
+            with self._lock:
+                if (
+                    self._active.get(active.command.command_id) != active
+                    and self._retained.get(active.command.command_id) != active
+                ):
+                    return []
+                sequence = self._next_sequence(pose.drone_id, pose.connection_epoch)
+            return [
+                self._pose_frame(
+                    pose,
+                    active.command,
+                    active.plan.navigation.route_id,
+                    sequence,
+                    self._key(pose.drone_id),
+                    active.profile,
+                )
+            ]
+        except NavigationTrackingError:
+            raise
+        except ValueError as error:
+            self.retire(active.command.command_id)
+            if retained_command is not None:
                 return []
-            sequence = self._next_sequence(pose.drone_id, pose.connection_epoch)
-        return [
-            self._pose_frame(
-                pose,
-                active.command,
-                active.plan.navigation.route_id,
-                sequence,
-                self._key(pose.drone_id),
-                active.profile,
-            )
-        ]
+            raise NavigationTrackingError(active, str(error)) from error
 
     def retain_arrival(self, command_id: str) -> bool:
         with self._lock:
