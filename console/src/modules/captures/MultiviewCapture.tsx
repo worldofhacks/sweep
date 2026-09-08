@@ -1,12 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { NavigationPoint } from '../../navigation/types'
 import type { MultiviewPreview, MultiviewStatus } from '../../relay/multiview'
 import type { ModuleProps } from '../types'
 import './multiview.css'
 
-export function MultiviewCapture({ controller, services, now }: Pick<ModuleProps, 'controller' | 'services' | 'now'>) {
+export interface MultiviewSemanticReview {
+  catalogIdentity: string
+  destinationIds: string[]
+}
+
+export function MultiviewCapture({
+  controller,
+  services,
+  now,
+  semanticReview,
+}: Pick<ModuleProps, 'controller' | 'services' | 'now'> & { semanticReview?: MultiviewSemanticReview }) {
   const { state, navigation } = controller
-  const [zones, setZones] = useState<string[]>(['', ''])
+  const [zones, setZones] = useState<string[]>(() => semanticReview?.destinationIds ?? ['', ''])
   const [preview, setPreview] = useState<MultiviewPreview | null>(null)
   const [status, setStatus] = useState<MultiviewStatus | null>(null)
   const [active, setActive] = useState(false)
@@ -14,9 +24,13 @@ export function MultiviewCapture({ controller, services, now }: Pick<ModuleProps
   const [error, setError] = useState<string | null>(null)
   const [time, setTime] = useState(now)
   const generation = useRef(0)
+  const preparedSemanticReview = useRef<string | null>(null)
   const client = services.multiview
   const catalog = navigation.catalog
-  const destinations = catalog?.destinations.filter((item) => !item.excluded && item.allowedClasses.includes('aircraft')) ?? []
+  const destinations = useMemo(
+    () => catalog?.destinations.filter((item) => !item.excluded && item.allowedClasses.includes('aircraft')) ?? [],
+    [catalog],
+  )
   const device = state.selection.length === 1 ? state.aircraft[state.selection[0]] : undefined
   const ready = state.connection.status === 'connected' && state.armed && !state.estop && device?.device_class === 'aircraft' &&
     device.membership === 'ready' && device.selectable && ['hovering', 'airborne'].includes(device.flight_state ?? '') &&
@@ -49,15 +63,16 @@ export function MultiviewCapture({ controller, services, now }: Pick<ModuleProps
   }, [active, preview, client])
 
   const edit = (next: string[]) => { generation.current++; setZones(next); setPreview(null); setStatus(null); setError(null) }
-  const prepare = async () => {
-    if (!client || !ready || !device) return
+  const prepare = useCallback(async (requestedZones = zones) => {
+    if (!client || !ready || !device || requestedZones.length < 1 || requestedZones.length > 8 ||
+      requestedZones.some((zoneId) => !destinations.some((destination) => destination.zoneId === zoneId))) return
     const requestGeneration = ++generation.current
     const requestedIdentity = identity
     setBusy(true); setError(null); setPreview(null); setStatus(null)
     try {
       const intentId = `multiview-${crypto.randomUUID()}`
       const value = await client.preview({ intentId, selected: [{ id: device.drone_id, deviceClass: 'aircraft', epoch: device.connection_epoch }],
-        viewpoints: zones.map((zoneId, index) => ({ viewpointId: `view-${index + 1}`, zoneId, captureId: `${intentId}-${index + 1}` })) })
+        viewpoints: requestedZones.map((zoneId, index) => ({ viewpointId: `view-${index + 1}`, zoneId, captureId: `${intentId}-${index + 1}` })) })
       if (requestGeneration !== generation.current) return
       const reviewedMap = value.execution.authoringMapPin ?? value.execution.mapPin
       if (!catalog || reviewedMap.version !== catalog.map.mapPin.version ||
@@ -69,7 +84,27 @@ export function MultiviewCapture({ controller, services, now }: Pick<ModuleProps
     } catch (reason) {
       if (requestGeneration === generation.current) setError(reason instanceof Error ? reason.message : 'The photo route could not be prepared.')
     } finally { if (requestGeneration === generation.current) setBusy(false) }
-  }
+  }, [catalog, client, destinations, device, identity, ready, zones])
+  const semanticKey = semanticReview === undefined
+    ? null
+    : JSON.stringify([semanticReview.catalogIdentity, semanticReview.destinationIds])
+  const semanticCatalogMatches = semanticReview !== undefined && catalog?.catalogVersion === semanticReview.catalogIdentity
+  const semanticZonesMatch =
+    semanticReview !== undefined &&
+    zones.length === semanticReview.destinationIds.length &&
+    zones.every((zoneId, index) => zoneId === semanticReview.destinationIds[index])
+  const semanticError =
+    semanticReview !== undefined && !semanticCatalogMatches
+      ? 'The accepted destination catalog changed after semantic review. Say it again after reloading the map.'
+      : null
+
+  useEffect(() => {
+    if (semanticReview === undefined || !semanticCatalogMatches || !semanticZonesMatch || semanticKey === null) return
+    if (preparedSemanticReview.current === semanticKey) return
+    preparedSemanticReview.current = semanticKey
+    void prepare(semanticReview.destinationIds)
+  }, [prepare, semanticCatalogMatches, semanticKey, semanticReview, semanticZonesMatch])
+
   const confirm = async () => {
     if (!client || !preview || !valid) return
     setBusy(true); setError(null)
@@ -118,7 +153,7 @@ export function MultiviewCapture({ controller, services, now }: Pick<ModuleProps
       <ol>{status.views.map((view) => <li key={view.viewpointId}>{view.zoneId}: {view.state}. {view.detail}</li>)}</ol>
     </div>}
     {active && <p>Use the console’s Hold or network stop controls to interrupt the mission.</p>}
-    {error && <p role="alert">{error}</p>}
+    {(semanticError ?? error) && <p role="alert">{semanticError ?? error}</p>}
   </section>
 }
 

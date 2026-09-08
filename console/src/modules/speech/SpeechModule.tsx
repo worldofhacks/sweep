@@ -1,4 +1,3 @@
-import { groundControlBlockedReason } from '../../control/ground'
 import { useEffect, useReducer, useState } from 'react'
 import './speech.css'
 import {
@@ -11,18 +10,13 @@ import {
 import type { DroneId, VoicePlan, VoicePlanStep } from '../../relay/contract'
 import { isValidRoomId } from '../../control/intent'
 import { Pane, type PaneTab } from '../../shell/Pane'
-import { isReady, sortedAircraft } from '../../shell/derive'
+import { isReady } from '../../shell/derive'
 import { humanizeCode, shortId } from '../../shell/format'
 import {
   TRY_PHRASES,
   VOICE_FAILS,
-  compileUtterance,
   describeCompilerReason,
   describeTranscriptRefusal,
-  resolveAmbiguity,
-  type AmbiguityOption,
-  type CompileContext,
-  type CompileOutcome,
 } from '../../speech/compiler'
 import { UnavailableTranscriptClient, type VoiceOutcome } from '../../voice/client'
 import {
@@ -31,6 +25,7 @@ import {
   type PushToTalkStatus,
 } from '../../voice/use-push-to-talk'
 import { TargetStrip } from '../gesture/TargetStrip'
+import { MultiviewCapture } from '../captures/MultiviewCapture'
 import type { ModuleProps } from '../types'
 
 type SpeechPane = 'talk' | 'pipeline'
@@ -66,38 +61,24 @@ interface RelayPlanState {
 interface SpeechState {
   utterance: string
   origin: TranscriptOrigin | null
-  compiled: CompileOutcome | null
-  /** Set when the relay transcribed but refused to compile, so the local fallback ran instead. */
+  compilerRefusal: { reason: string; sentence: string } | null
   relayCompilerReason: string | null
-  /** Set when the relay compiler returned a plan; the local fallback does not run. */
   relayPlan: RelayPlanState | null
   sttError: string | null
-  draftedIntentId: string | null
-  draftNote: string | null
   seen: SeenVoice
 }
 
 const INITIAL: SpeechState = {
   utterance: '',
   origin: null,
-  compiled: null,
+  compilerRefusal: null,
   relayCompilerReason: null,
   relayPlan: null,
   sttError: null,
-  draftedIntentId: null,
-  draftNote: null,
   seen: { outcome: null, status: null, detail: null },
 }
 
-/**
- * Speech to intents: hold to talk through the PR #49 recorder and transcript
- * client, or type. When the relay carries the plan compiler its validated plan
- * is previewed step by step and each step is staged through the control flow,
- * so it lands in the same confirmation dock as a button press; the local
- * fallback compiles only text the operator separately types. A relayed
- * transcript without a bound plan remains display-only, so its provenance
- * cannot be laundered into the console source. Nothing is sent from a compile.
- */
+/** Renders only relay-grounded language plans; compilation itself never emits an intent. */
 export function SpeechModule(props: ModuleProps) {
   return <SpeechSession key={props.controller.state.sessionId} {...props} />
 }
@@ -108,9 +89,6 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
   const {
     state,
     pendingRequest,
-    prepareCapture,
-    prepareHold,
-    prepareSelect,
     prepareVoicePlanStep,
     invalidatePending,
   } = controller
@@ -121,7 +99,6 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
     ...services.voice,
   })
   const [speech, setSpeech] = useState<SpeechState>(INITIAL)
-  const context = compileContext(state, roomId)
   const relay = speech.relayPlan
   const relayView = relay === null ? null : deriveRelayPlan(relay, state.requests)
   useTicker(voice.isRecording || (relayView !== null && relayView.deadline !== null && !relayView.finished))
@@ -131,7 +108,7 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
     speech.seen.status !== voice.status ||
     speech.seen.detail !== voice.detail
   ) {
-    setSpeech(absorbVoice(speech, voice.outcome, voice.status, voice.detail, context))
+    setSpeech(absorbVoice(speech, voice.outcome, voice.status, voice.detail))
   }
 
   const remainingSeconds =
@@ -139,22 +116,22 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
       ? null
       : Math.max(0, Math.ceil((voice.startedAt + voice.maxRecordingMs - now()) / 1_000))
   const captureWord = describeCapture(voice.status, languageEnabled)
-  const compiled = speech.compiled
-  const blocked =
-    compiled?.status === 'compiled'
-      ? emissionBlockedReason(compiled, state, pendingRequest, speech.origin)
-      : null
-  const drafted =
-    speech.draftedIntentId === null
-      ? null
-      : (state.requests.find((request) => request.intent.intent_id === speech.draftedIntentId) ?? null)
+  const compilerRefusal = speech.compilerRefusal
   const nextStep = relayView?.next ?? null
+  const semanticReview = relay?.plan.kind === 'review' ? relay.plan.review : null
+  const reviewCatalog = controller.navigation.catalog
+  const reviewBlocked =
+    semanticReview === null
+      ? null
+      : reviewCatalog?.catalogVersion !== semanticReview.catalog_identity
+        ? 'The accepted destination catalog changed after semantic review. Say it again after reloading the map.'
+        : null
   const stageBlocked =
     relay !== null && relayView !== null && nextStep !== null
       ? stageBlockedReason(relay, relayView, nextStep, state, pendingRequest, roomId, now())
       : null
 
-  const setUtterance = (utterance: string, origin: TranscriptOrigin, compile: boolean) => {
+  const setUtterance = (utterance: string, origin: TranscriptOrigin) => {
     const inputChanged = utterance !== speech.utterance || origin !== speech.origin
     if (inputChanged) {
       voice.reset()
@@ -169,40 +146,26 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
       ...previous,
       utterance,
       origin,
-      compiled: compile ? compileUtterance(utterance, context) : null,
+      compilerRefusal: null,
       relayCompilerReason: null,
       relayPlan: null,
-      draftNote: null,
     }))
   }
 
-  const pick = (option: AmbiguityOption) =>
-    setSpeech((previous) => {
-      if (previous.compiled?.status !== 'ambiguous') return previous
-      const resolved = resolveAmbiguity(previous.compiled, option, context)
-      return {
+  const compileTyped = (text = speech.utterance) => {
+    if (!text.trim()) {
+      setSpeech((previous) => ({
         ...previous,
-        compiled: resolved,
-        utterance: resolved === null ? '' : previous.utterance,
-        draftNote: null,
-      }
-    })
-
-  const draft = () => {
-    if (!compiled || compiled.status !== 'compiled' || blocked) return
-    const intent =
-      compiled.intent === 'capture_room'
-        ? prepareCapture(compiled.args.room_id, 'console', compiled.args.pattern)
-        : compiled.intent === 'hold'
-          ? prepareHold('console')
-          : compiled.intent === 'select' ? prepareSelect(compiled.args.ids, 'console')
-            : controller.prepareIntent({ name: compiled.intent, args: compiled.args }, 'console')
-    setSpeech((previous) => ({
-      ...previous,
-      draftedIntentId: intent?.intent_id ?? previous.draftedIntentId,
-      draftNote: intent ? null : 'The control flow refused the draft; nothing was emitted.',
-    }))
+        compilerRefusal: { reason: 'empty_utterance', sentence: 'Enter an utterance before compiling.' },
+        relayPlan: null,
+        sttError: null,
+      }))
+      return
+    }
+    voice.reset()
+    void voice.compileText(text)
   }
+
 
   /**
    * Stages the next relay-compiled step through the same control flow as the
@@ -230,6 +193,44 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
     })
   }
 
+  const prepareReview = async () => {
+    if (semanticReview === null || reviewBlocked !== null || semanticReview.kind === 'multiview') return
+    try {
+      const prepared =
+        semanticReview.kind === 'navigate'
+          ? await controller.prepareNavigation(semanticReview.destination_id)
+          : await controller.prepareSearch(
+              semanticReview.destination_id,
+              semanticReview.kind === 'survey' ? undefined : semanticReview.target_class,
+            )
+      setSpeech((previous) =>
+        previous.relayPlan === null
+          ? previous
+          : {
+              ...previous,
+              relayPlan: {
+                ...previous.relayPlan,
+                stageNote: prepared
+                  ? 'The current control workflow created a fresh review. Confirm it in the dock.'
+                  : 'The current control workflow could not prepare this review. Nothing was emitted.',
+              },
+            },
+      )
+    } catch (error) {
+      setSpeech((previous) =>
+        previous.relayPlan === null
+          ? previous
+          : {
+              ...previous,
+              relayPlan: {
+                ...previous.relayPlan,
+                stageNote: error instanceof Error ? error.message : 'The current control workflow could not prepare this review.',
+              },
+            },
+      )
+    }
+  }
+
   const startRecording = () => {
     if (!languageEnabled) return
     if (pendingRequest?.intent.source === 'language') {
@@ -240,11 +241,9 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
     }
     setSpeech((previous) => ({
       ...previous,
-      compiled: null,
+      compilerRefusal: null,
       relayCompilerReason: null,
       relayPlan: null,
-      draftedIntentId: null,
-      draftNote: null,
     }))
     void voice.start()
   }
@@ -313,13 +312,13 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
                 value={speech.utterance}
                 rows={2}
                 placeholder="capture the kitchen with a full panorama"
-                onChange={(event) => setUtterance(event.target.value, 'typed', false)}
+                onChange={(event) => setUtterance(event.target.value, 'typed')}
               />
             </label>
             <button
               type="button"
               className="sp-compile"
-              onClick={() => setUtterance(speech.utterance, speech.origin ?? 'typed', true)}
+              onClick={() => compileTyped()}
             >
               Compile to intents
             </button>
@@ -330,7 +329,7 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
                   key={phrase}
                   type="button"
                   className="sp-phrase"
-                  onClick={() => setUtterance(phrase, 'typed', true)}
+                  onClick={() => { setUtterance(phrase, 'typed'); compileTyped(phrase) }}
                 >
                   {phrase}
                 </button>
@@ -348,66 +347,38 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
                 blocked={stageBlocked}
                 onStage={stageStep}
                 label={deviceLabeller(state.aircraft)}
+                reviewBlocked={reviewBlocked}
+                onPrepareReview={() => void prepareReview()}
               />
             )}
-            {compiled && (
+            {semanticReview?.kind === 'multiview' && reviewBlocked === null && (
+              <MultiviewCapture
+                key={`${semanticReview.catalog_identity}:${semanticReview.destination_ids.join(':')}`}
+                controller={controller}
+                services={services}
+                now={now}
+                semanticReview={{
+                  catalogIdentity: semanticReview.catalog_identity,
+                  destinationIds: semanticReview.destination_ids,
+                }}
+              />
+            )}
+            {compilerRefusal && (
               <div className="sp-result" role="region" aria-label="Compiler result">
                 <p className="sp-result-head">
                   <span className="sp-eyebrow is-inline">Compiler result</span>
-                  <span className={`sp-result-status is-${compiled.status}`}>{compiled.status}</span>
+                  <span className="sp-result-status is-refused">refused</span>
                 </p>
-                <p className="sp-result-intent">
-                  <span className="is-name">{outcomeIntent(compiled)}</span>
-                  <span className="is-args">{compiled.status === 'compiled' ? JSON.stringify(compiled.args) : '{}'}</span>
-                </p>
-                {compiled.status === 'compiled' && (
-                  <p className="sp-result-line">
-                    Selection resolves to <span className="mono">{compiled.selection}</span> · confirmation required
-                  </p>
-                )}
-                {compiled.status === 'refused' && (
-                  <p className="sp-result-line">
-                    reason <span className="mono">{compiled.reason}</span>
-                  </p>
-                )}
                 <p className="sp-result-line">
-                  compiled by <span className="mono">local fallback</span>
-                  {speech.relayCompilerReason
-                    ? ` · relay compiler ${speech.relayCompilerReason}`
-                    : ' · the relay has no language service on this console'}
+                  reason <span className="mono">{compilerRefusal.reason}</span>
+                </p>
+                <p className="sp-result-line">
+                  compiled by <span className="mono">relay semantic compiler</span>
+                  {speech.relayCompilerReason ? ` · ${speech.relayCompilerReason}` : ''}
                   {' · transcript '}
                   <span className="mono">{speech.origin ?? 'typed'}</span>
                 </p>
-                <p className="sp-result-sentence">{compiled.sentence}</p>
-                {compiled.status === 'ambiguous' && (
-                  <div className="sp-options">
-                    {compiled.options.map((option) => (
-                      <button key={option} type="button" className="sp-option" onClick={() => pick(option)}>
-                        {option}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {compiled.status === 'compiled' && blocked && <p className="sp-result-blocked">{blocked}</p>}
-                {compiled.status === 'compiled' && (
-                  <button type="button" className="sp-emit" disabled={blocked !== null} onClick={draft}>
-                    Draft for confirmation
-                  </button>
-                )}
-                {compiled.status === 'compiled' && (
-                  <p className="sp-drafted">
-                    Typed fallback drafts use source <code>console</code>. A relayed transcript without a bound
-                    compiler plan is preview-only and cannot be staged. Nothing is sent until you confirm in the dock.
-                  </p>
-                )}
-                {speech.draftNote && <p className="sp-result-blocked">{speech.draftNote}</p>}
-                {drafted && (
-                  <p className="sp-drafted" aria-live="polite">
-                    Drafted <code title={drafted.intent.intent_id}>{shortId(drafted.intent.intent_id)}</code> ·{' '}
-                    {humanizeCode(drafted.status)}
-                    {drafted.status === 'pending_confirmation' ? ' — confirm or cancel it in the dock.' : '.'}
-                  </p>
-                )}
+                <p className="sp-result-sentence">{compilerRefusal.sentence}</p>
               </div>
             )}
             <div className="sp-fails-wrap">
@@ -429,7 +400,7 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
             remainingSeconds,
             utterance: speech.utterance,
             origin: speech.origin,
-            compiled,
+            compilerRefusal,
             relayPlan: relay?.plan ?? null,
             pending: pendingRequest !== null,
           }).map((step) => (
@@ -448,9 +419,8 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
           ))}
           <p className="sp-note">
             The compiler is the only place a model touches the request path, and its output is schema-constrained
-            to canonical intent names and validated deterministically on the relay before and after the model. When
-            the relay has no compiler, the local fallback compiles the same schema at reduced accuracy, and the
-            outcome card says which one ran.
+            to canonical intent names and validated deterministically on the relay before and after the model.
+            If the relay compiler is unavailable, the result says so and no request is staged.
           </p>
         </div>
       )}
@@ -578,6 +548,8 @@ function RelayPlanCard({
   blocked,
   onStage,
   label,
+  reviewBlocked,
+  onPrepareReview,
 }: {
   relay: RelayPlanState
   view: RelayPlanView
@@ -586,6 +558,8 @@ function RelayPlanCard({
   blocked: string | null
   onStage: () => void
   label: DeviceLabeller
+  reviewBlocked: string | null
+  onPrepareReview: () => void
 }) {
   const { plan } = relay
   const remainingMs = view.deadline === null ? null : Math.max(0, view.deadline - now)
@@ -677,6 +651,25 @@ function RelayPlanCard({
           </p>
         </>
       )}
+      {plan.kind === 'review' && plan.review && (
+        <>
+          <p className="sp-result-sentence">
+            The relay resolved this request against the accepted destination catalog. The console will request a fresh operational review before confirmation.
+          </p>
+          <p className="sp-result-line">
+            {plan.review.kind === 'multiview'
+              ? `${plan.review.destination_ids.length} photograph stops are ready for review.`
+              : `${plan.review.kind} at ${plan.review.destination_id}`}
+          </p>
+          {reviewBlocked && <p className="sp-result-blocked">{reviewBlocked}</p>}
+          {plan.review.kind !== 'multiview' && (
+            <button type="button" className="sp-emit" disabled={reviewBlocked !== null} onClick={onPrepareReview}>
+              Prepare current review
+            </button>
+          )}
+          {relay.stageNote && <p className="sp-result-blocked">{relay.stageNote}</p>}
+        </>
+      )}
       {plan.kind === 'clarify' && reason && (
         <>
           <p className="sp-result-line">
@@ -720,30 +713,17 @@ function planTone(kind: VoicePlan['kind']): 'compiled' | 'ambiguous' | 'refused'
   return 'refused'
 }
 
-function compileContext(state: ControlState, roomId: string): CompileContext {
-  return {
-    roomId: roomId.trim(),
-    selection: state.selection,
-    selectedGroundIds: state.selection.filter((id) => state.aircraft[id]?.node_type === 'ground'),
-    pattern: state.capturePattern,
-    readyIds: sortedAircraft(state.aircraft)
-      .filter(isReady)
-      .map((drone) => drone.drone_id),
-  }
-}
-
 /** Folds a recorder or transcript change into the module state; pure, so it runs during render. */
 function absorbVoice(
   previous: SpeechState,
   outcome: VoiceOutcome | null,
   status: PushToTalkStatus,
   detail: string | null,
-  context: CompileContext,
 ): SpeechState {
   const seen: SeenVoice = { outcome, status, detail }
   let next: SpeechState = { ...previous, seen }
   if (status === 'requesting_microphone' || status === 'recording') {
-    next = { ...next, sttError: null, draftNote: null }
+    next = { ...next, sttError: null }
   }
   if (status === 'error') {
     next = { ...next, sttError: detail ?? 'Voice capture failed. Nothing was emitted.' }
@@ -751,90 +731,29 @@ function absorbVoice(
   if (outcome !== previous.seen.outcome && outcome !== null) {
     const transcript = outcome.transcript?.trim() ?? ''
     if (outcome.status === 'transcribed' && outcome.plan) {
-      // The relay compiled the transcript: preview its plan; the local matcher does not run.
       next = {
         ...next,
         utterance: transcript,
         origin: outcome.source,
-        compiled: null,
+        compilerRefusal: null,
         relayCompilerReason: null,
         relayPlan: { plan: outcome.plan, staged: [], stageNote: null },
         sttError: null,
-        draftNote: null,
-      }
-    } else if (outcome.status === 'transcribed' || (outcome.reason === 'compiler_unavailable' && transcript)) {
-      next = {
-        ...next,
-        utterance: transcript,
-        origin: outcome.source,
-        compiled: compileUtterance(transcript, context),
-        relayCompilerReason: outcome.status === 'refused' ? (outcome.reason ?? 'unavailable') : null,
-        relayPlan: null,
-        sttError: null,
-        draftNote: null,
       }
     } else {
-      const refusal = describeTranscriptRefusal(outcome.reason)
+      const refusal = describeTranscriptRefusal(outcome.reason ?? 'compiler_unavailable')
       next = {
         ...next,
         utterance: transcript,
         origin: outcome.source,
-        compiled: { status: 'refused', reason: refusal.label, sentence: refusal.sentence },
-        relayCompilerReason: null,
+        compilerRefusal: { reason: refusal.label, sentence: refusal.sentence },
+        relayCompilerReason: outcome.reason,
         relayPlan: null,
         sttError: null,
-        draftNote: null,
       }
     }
   }
   return next
-}
-
-function emissionBlockedReason(
-  compiled: Extract<CompileOutcome, { status: 'compiled' }>,
-  state: ControlState,
-  pending: ControlState['requests'][number] | null,
-  origin: TranscriptOrigin | null,
-): string | null {
-  if (pending) return 'A plan preview is already pending; confirm or cancel it before drafting another.'
-  if (origin !== 'typed') {
-    return 'A relayed transcript without an exact bound compiler plan is preview-only. Type and compile it explicitly to draft a console intent.'
-  }
-  if (state.connection.status !== 'connected') {
-    return `The console connection is ${state.connection.status}. Nothing can be drafted.`
-  }
-  if (state.estop) return 'The network stop is active. Requests are refused until the relay reports it clear.'
-  const notReady = (id: number) => !isReady(state.aircraft[id])
-  const label = deviceLabeller(state.aircraft)
-  if (compiled.intent === 'select') {
-    const stale = compiled.args.ids.find(notReady)
-    if (stale !== undefined) return `${label(stale)} is no longer ready.`
-    if (
-      compiled.args.ids.length === state.selection.length &&
-      compiled.args.ids.every((id) => state.selection.includes(id))
-    ) {
-      return 'Every ready aircraft is already selected.'
-    }
-    return null
-  }
-  if (state.selection.length === 0) return 'Select at least one ready aircraft.'
-  const stale = state.selection.find(notReady)
-  if (stale !== undefined) return `${label(stale)} is not ready or selectable.`
-  if (compiled.intent === 'hold') return null
-  if (compiled.intent === 'ground_velocity' || compiled.intent === 'come_home') return groundControlBlockedReason(state, compiled.intent)
-  if (!compiled.args.room_id) return 'Enter a room identifier.'
-  if (state.selection.length !== 1) return 'Select exactly one ready aircraft for capture_room.'
-  const selected = state.aircraft[state.selection[0]]
-  if (!selected.camera_patterns.includes(compiled.args.pattern)) {
-    return `${label(selected.drone_id)} does not report ${compiled.args.pattern}; the console will not substitute a pattern.`
-  }
-  return null
-}
-
-function outcomeIntent(outcome: CompileOutcome): string {
-  if (outcome.status === 'compiled') return outcome.intent
-  if (outcome.status === 'ambiguous') return outcome.base
-  return outcome.intent ?? '—'
 }
 
 function listenLabel(status: PushToTalkStatus, languageEnabled: boolean): string {
@@ -880,7 +799,7 @@ function pipelineSteps(input: {
   remainingSeconds: number | null
   utterance: string
   origin: TranscriptOrigin | null
-  compiled: CompileOutcome | null
+  compilerRefusal: { reason: string; sentence: string } | null
   relayPlan: VoicePlan | null
   pending: boolean
 }): Array<{ n: string; title: string; value: string; note: string }> {
@@ -897,15 +816,15 @@ function pipelineSteps(input: {
             : 'idle'
   const compileValue = input.relayPlan
     ? `${input.relayPlan.kind} · relay compiler`
-    : input.compiled
-      ? `${input.compiled.status} · local fallback`
+    : input.compilerRefusal
+      ? 'refused · relay compiler'
       : 'waiting'
   const validateValue = input.relayPlan
     ? input.relayPlan.kind === 'plan'
       ? 'relay grounding and validation, then the Intent v1 mirror and the arbiter per step'
       : 'relay grounding refused a plan'
-    : input.compiled?.status === 'compiled'
-      ? 'Intent v1 mirror, then the relay arbiter'
+    : input.compilerRefusal
+      ? 'relay compiler refused an intent'
       : 'nothing to validate'
   return [
     {

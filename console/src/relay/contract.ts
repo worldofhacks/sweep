@@ -805,10 +805,11 @@ export interface RelayAuthFrame {
  * `unsupported` carry a typed compiler reason; `cancel_pending` names the
  * pending intent the operator may cancel.
  */
-export type VoicePlanKind = 'plan' | 'clarify' | 'unsupported' | 'refuse' | 'cancel_pending'
+export type VoicePlanKind = 'plan' | 'review' | 'clarify' | 'unsupported' | 'refuse' | 'cancel_pending'
 
 export const VOICE_PLAN_KINDS: readonly VoicePlanKind[] = [
   'plan',
+  'review',
   'clarify',
   'unsupported',
   'refuse',
@@ -828,6 +829,12 @@ export interface VoicePlanStep {
   /** The compiler's deterministic grounding notes for this step. */
   notes: string[]
 }
+
+export type VoicePlanReview =
+  | { kind: 'navigate'; catalog_identity: string; destination_id: string }
+  | { kind: 'search'; catalog_identity: string; destination_id: string; target_class: string }
+  | { kind: 'survey'; catalog_identity: string; destination_id: string }
+  | { kind: 'multiview'; catalog_identity: string; destination_ids: string[] }
 
 export interface VoicePlan {
   v: 1
@@ -850,6 +857,7 @@ export interface VoicePlan {
   prompt_schema_version: string
   response_source: string
   pending_intent_id: string | null
+  review: VoicePlanReview | null
 }
 
 export const MAX_VOICE_PLAN_STEPS = 8
@@ -873,6 +881,7 @@ const VOICE_PLAN_FIELDS = [
   'prompt_schema_version',
   'response_source',
   'pending_intent_id',
+  'review',
 ] as const
 const VOICE_PLAN_STEP_FIELDS = [
   'index',
@@ -903,6 +912,21 @@ function isNullableBoundedText(value: unknown): value is string | null {
 function hasExactFields(value: Record<string, unknown>, fields: readonly string[]): boolean {
   const keys = Object.keys(value)
   return keys.length === fields.length && fields.every((field) => field in value)
+}
+
+function isVoicePlanReview(value: unknown): value is VoicePlanReview {
+  if (!isRecord(value) || !isBoundedText(value.catalog_identity, 128)) return false
+  if (value.kind === 'navigate' || value.kind === 'survey') {
+    return hasExactFields(value, ['kind', 'catalog_identity', 'destination_id']) && isBoundedText(value.destination_id, 128)
+  }
+  if (value.kind === 'search') {
+    return hasExactFields(value, ['kind', 'catalog_identity', 'destination_id', 'target_class']) &&
+      isBoundedText(value.destination_id, 128) && isBoundedText(value.target_class, 128)
+  }
+  return value.kind === 'multiview' && hasExactFields(value, ['kind', 'catalog_identity', 'destination_ids']) &&
+    Array.isArray(value.destination_ids) && value.destination_ids.length >= 1 && value.destination_ids.length <= 8 &&
+    value.destination_ids.every((destination) => isBoundedText(destination, 128)) &&
+    new Set(value.destination_ids).size === value.destination_ids.length
 }
 
 function sameIds(left: DroneId[], right: DroneId[]): boolean {
@@ -1015,14 +1039,18 @@ export function isVoicePlan(value: unknown): value is VoicePlan {
       /^[0-9a-f]{64}$/.test(value.plan_digest) &&
       value.reason === null &&
       value.options.length === 0 &&
-      value.pending_intent_id === null
+      value.pending_intent_id === null &&
+      value.review === null
     )
   }
   if (value.steps.length > 0 || value.plan_digest !== null || value.expires_at_ms !== null) return false
-  if (value.kind === 'cancel_pending') {
-    return value.pending_intent_id !== null && value.reason === null && value.options.length === 0
+  if (value.kind === 'review') {
+    return value.reason === null && value.options.length === 0 && value.pending_intent_id === null && isVoicePlanReview(value.review)
   }
-  return value.reason !== null && value.pending_intent_id === null
+  if (value.kind === 'cancel_pending') {
+    return value.pending_intent_id !== null && value.reason === null && value.options.length === 0 && value.review === null
+  }
+  return value.reason !== null && value.pending_intent_id === null && value.review === null
 }
 
 /** Build the only Intent v1 draft permitted from a relay-bound voice step. */

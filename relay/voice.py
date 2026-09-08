@@ -752,6 +752,7 @@ class TranscriptService:
             source="whisper",
             grounded_state=grounded_state,
             grounded_rooms=grounded_rooms,
+            review_catalog=review_catalog,
             capability_version=capability_version,
             now_ms=now_ms,
             correlation_id=correlation_id,
@@ -767,6 +768,7 @@ class TranscriptService:
         text: object,
         relay_state: object,
         rooms: tuple[str, ...] = (),
+        review_catalog: object = None,
         now_ms: int,
         refresh_state: Callable[[], tuple[object, int]] | None = None,
     ) -> VoiceOutcome:
@@ -816,6 +818,7 @@ class TranscriptService:
             source="typed",
             grounded_state=grounded_state,
             grounded_rooms=grounded_rooms,
+            review_catalog=review_catalog,
             capability_version=capability_version,
             now_ms=now_ms,
             correlation_id=correlation_id,
@@ -830,6 +833,7 @@ class TranscriptService:
         source: Literal["whisper", "typed"],
         grounded_state: Mapping[str, object],
         grounded_rooms: tuple[str, ...],
+        review_catalog: object,
         capability_version: str,
         now_ms: int,
         correlation_id: str,
@@ -837,16 +841,16 @@ class TranscriptService:
         cost_usd: float | None,
     ) -> VoiceOutcome:
         try:
-            compiler_result = self._compiler.compile(
-                transcript,
-                grounded_state,
-                capability_version=capability_version,
-                rooms=grounded_rooms,
-                review_catalog=review_catalog,
-                now_ms=now_ms,
-                correlation_id=correlation_id,
-                session_id=session_id,
-            )
+            compiler_kwargs: dict[str, object] = {
+                "capability_version": capability_version,
+                "rooms": grounded_rooms,
+                "now_ms": now_ms,
+                "correlation_id": correlation_id,
+                "session_id": session_id,
+            }
+            if review_catalog is not None:
+                compiler_kwargs["review_catalog"] = review_catalog
+            compiler_result = self._compiler.compile(transcript, grounded_state, **compiler_kwargs)
         except CompilerUnavailable:
             return self._complete(
                 VoiceOutcome("refused", "template", "compiler_unavailable", transcript),

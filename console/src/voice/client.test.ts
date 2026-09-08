@@ -35,6 +35,7 @@ function compiledPlan(overrides: Partial<VoicePlan> = {}): VoicePlan {
     prompt_schema_version: 'intent-v1-compiler-8',
     response_source: 'anthropic',
     pending_intent_id: null,
+    review: null,
     ...overrides,
   }
 }
