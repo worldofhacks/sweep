@@ -45,8 +45,8 @@ def _wait_for(predicate, *, timeout_s: float = 15.0):
 def _select_aircraft(rehearsal: LoopbackDemoRehearsal, token: str) -> None:
     with connect(f"{rehearsal.relay_url}/ws/{rehearsal.session_id}") as socket:
         socket.send(json.dumps({"v": 1, "type": "auth", "source": "console", "token": token}))
-        assert json.loads(socket.recv())["type"] == "auth.accepted"
-        assert json.loads(socket.recv())["type"] == "state"
+        assert json.loads(socket.recv(timeout=10))["type"] == "auth.accepted"
+        assert json.loads(socket.recv(timeout=10))["type"] == "state"
         socket.send(
             json.dumps(
                 {
@@ -66,7 +66,7 @@ def _select_aircraft(rehearsal: LoopbackDemoRehearsal, token: str) -> None:
             )
         )
         for _ in range(32):
-            event = json.loads(socket.recv())
+            event = json.loads(socket.recv(timeout=10))
             if event.get("intent_id") == "loopback-select" and event.get("source") == "autonomy":
                 return
         raise AssertionError("selection did not complete")
@@ -83,8 +83,8 @@ def _submit_console_intent(
 ) -> None:
     with connect(f"{rehearsal.relay_url}/ws/{rehearsal.session_id}") as socket:
         socket.send(json.dumps({"v": 1, "type": "auth", "source": "console", "token": token}))
-        assert json.loads(socket.recv())["type"] == "auth.accepted"
-        assert json.loads(socket.recv())["type"] == "state"
+        assert json.loads(socket.recv(timeout=10))["type"] == "auth.accepted"
+        assert json.loads(socket.recv(timeout=10))["type"] == "state"
         socket.send(
             json.dumps(
                 {
@@ -104,7 +104,7 @@ def _submit_console_intent(
             )
         )
         for _ in range(32):
-            event = json.loads(socket.recv())
+            event = json.loads(socket.recv(timeout=10))
             if event.get("intent_id") == intent_id and event.get("source") == "autonomy":
                 assert event["status"] == "accepted", json.dumps(event, sort_keys=True)
                 return
@@ -380,11 +380,13 @@ def test_loopback_rehearsal_hold_prevents_a_future_multiview_leg(tmp_path) -> No
                 ],
             },
         )
-        _http_json(
+        accepted = _http_json(
             f"{base}/multiview/confirm",
             token,
             {key: preview[key] for key in ("previewId", "intentId", "previewHash")},
         )
+        workflow_id = accepted["workflowId"]
+        assert isinstance(workflow_id, str)
         first_goto = _wait_for(
             lambda: next(
                 (
@@ -406,7 +408,7 @@ def test_loopback_rehearsal_hold_prevents_a_future_multiview_leg(tmp_path) -> No
             args={},
             selection=[1],
         )
-        hold = _wait_for(
+        hold_command = _wait_for(
             lambda: next(
                 (
                     event
@@ -419,13 +421,37 @@ def test_loopback_rehearsal_hold_prevents_a_future_multiview_leg(tmp_path) -> No
             ),
             timeout_s=5,
         )
-        time.sleep(0.2)
+        hold_completed = _wait_for(
+            lambda: next(
+                (
+                    event
+                    for event in _audit_events(rehearsal)
+                    if event.get("type") == "acknowledgement"
+                    and event.get("intent_id") == "loopback-multiview-hold"
+                    and event.get("source") == "adapter"
+                    and event.get("status") == "completed"
+                ),
+                None,
+            ),
+            timeout_s=5,
+        )
+        assert hold_completed["t"] >= hold_command["t"]
+        workflow = _wait_for(
+            lambda: (
+                payload
+                if (payload := _http_json(f"{base}/multiview/{workflow_id}", token))["status"]
+                in {"completed", "failed"}
+                else None
+            ),
+            timeout_s=5,
+        )
+        assert workflow["status"] == "failed"
         later_gotos = [
             event
             for event in _audit_events(rehearsal)
             if event.get("type") == "command"
             and event.get("operation") == "goto"
-            and event.get("intent_id") == first_goto["intent_id"]
-            and event["t"] > hold["t"]
+            and event.get("intent_id", "").startswith("platform:")
+            and event["t"] > hold_command["t"]
         ]
         assert later_gotos == []
