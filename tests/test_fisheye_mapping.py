@@ -28,9 +28,7 @@ def test_rectification_refuses_overflowing_coefficients():
 
 
 def test_raw_sensor_inverse_refuses_the_unit11_candidate_before_its_first_radial_fold(tmp_path):
-    k = np.array(
-        [[642.6894077, 0, 595.5427391], [0, 651.1459971, 362.7115196], [0, 0, 1]]
-    )
+    k = np.array([[642.6894077, 0, 595.5427391], [0, 651.1459971, 362.7115196], [0, 0, 1]])
     d = np.array([-0.0734643443, 0.0453555594, -0.0494220576, 0.0015622331])
 
     qualification = raw_sensor_radial_invertibility(k, d, (1280, 720))

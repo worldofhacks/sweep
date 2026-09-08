@@ -733,9 +733,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, TypeError, ValueError) as error:
         raise SystemExit(f"ohmni multi-archive tag candidate failed: {error}") from error
     print(
-        json.dumps(
-            {"output": str(args.output), "tag_count": result["tag_count"]}, sort_keys=True
-        )
+        json.dumps({"output": str(args.output), "tag_count": result["tag_count"]}, sort_keys=True)
     )
     return 0
 

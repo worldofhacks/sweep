@@ -22,7 +22,9 @@ def _expected(path: Path) -> list[int]:
     if isinstance(raw, dict):
         raw = raw.get("expected_tag_ids")
     if not isinstance(raw, list) or not raw:
-        raise ValueError("expected tags must be a non-empty JSON array or expected_tag_ids object field")
+        raise ValueError(
+            "expected tags must be a non-empty JSON array or expected_tag_ids object field"
+        )
     if any(type(identifier) is not int or not 0 <= identifier <= MAX_TAG_ID for identifier in raw):
         raise ValueError(f"expected tag IDs must be integers from 0 through {MAX_TAG_ID}")
     if len(set(raw)) != len(raw):
@@ -42,7 +44,10 @@ def report(
 ) -> dict[str, object]:
     if not archives:
         raise ValueError("at least one accepted archive is required")
-    if type(maximum_association_error_ns) is not int or not 0 <= maximum_association_error_ns <= 100_000_000:
+    if (
+        type(maximum_association_error_ns) is not int
+        or not 0 <= maximum_association_error_ns <= 100_000_000
+    ):
         raise ValueError("maximum association error must be from 0 through 100000000 ns")
 
     baseline: tuple[object, object, object] | None = None
@@ -57,7 +62,9 @@ def report(
         if baseline is None:
             baseline = identity
         elif identity != baseline:
-            raise ValueError("archives must share an exact session, epoch, source, and frame identity")
+            raise ValueError(
+                "archives must share an exact session, epoch, source, and frame identity"
+            )
 
         cameras: set[tuple[str, str, int]] = set()
         poses: dict[str, list[int]] = defaultdict(list)
@@ -95,7 +102,10 @@ def report(
                 reasons[identifier]["camera_frame_not_capture_associated"] += 1
                 continue
             samples = poses[captured[0]]
-            if not samples or min(abs(value - captured[1]) for value in samples) > maximum_association_error_ns:
+            if (
+                not samples
+                or min(abs(value - captured[1]) for value in samples) > maximum_association_error_ns
+            ):
                 reasons[identifier]["body_pose_not_capture_associated"] += 1
                 continue
             preliminary_counts[identifier] += 1
@@ -105,7 +115,9 @@ def report(
                 "archive": str(archive),
                 "stop_reason": manifest["observations"]["stop_reason"],
                 "raw_tag_observations": dict(sorted(chunk_raw.items())),
-                "preliminary_capture_associated_observations": dict(sorted(chunk_preliminary.items())),
+                "preliminary_capture_associated_observations": dict(
+                    sorted(chunk_preliminary.items())
+                ),
             }
         )
 
@@ -127,7 +139,10 @@ def report(
     return {
         "schema_version": 1,
         "kind": "ohmni_map_coverage_report",
-        "claim_scope": "Archive coverage only. Each candidate still requires calibrated fusion, shared-frame review, and cross-chunk drift evaluation.",
+        "claim_scope": (
+            "Archive coverage only. Each candidate still requires calibrated fusion, "
+            "shared-frame review, and cross-chunk drift evaluation."
+        ),
         "expected_tag_count": len(expected_tags),
         "archive_count": len(archives),
         "maximum_association_error_ns": maximum_association_error_ns,
@@ -147,12 +162,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.output.exists() or args.output.is_symlink():
         raise SystemExit(f"coverage report output already exists: {args.output}")
     try:
-        result = report(args.archives, _expected(args.expected_tags), args.maximum_association_error_ns)
+        result = report(
+            args.archives, _expected(args.expected_tags), args.maximum_association_error_ns
+        )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, allow_nan=False, indent=2, sort_keys=True) + "\n")
     except (OSError, ValueError, TypeError) as error:
         raise SystemExit(f"ohmni map coverage failed: {error}") from error
-    print(json.dumps({"output": str(args.output), "revisit_tag_count": len(result["revisit_tag_ids"])}, sort_keys=True))
+    print(
+        json.dumps(
+            {"output": str(args.output), "revisit_tag_count": len(result["revisit_tag_ids"])},
+            sort_keys=True,
+        )
+    )
     return 0
 
 

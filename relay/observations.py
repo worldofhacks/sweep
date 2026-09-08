@@ -664,9 +664,7 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
                 _error("invalid_payload", "pose encoder timing has an unknown time basis")
             left = SourceTime.parse(timing["left_receipt"])
             right = SourceTime.parse(timing["right_receipt"])
-            skew = _integer(
-                timing["pair_skew_ns"], "encoder pair skew", maximum=350_000_000
-            )
+            skew = _integer(timing["pair_skew_ns"], "encoder pair skew", maximum=350_000_000)
             if (
                 (left.clock_id, left.unit) != (right.clock_id, right.unit)
                 or left.value > right.value

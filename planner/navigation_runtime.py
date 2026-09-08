@@ -6,6 +6,14 @@ from math import dist
 
 import numpy as np
 
+from planner.mapped_formations import (
+    FormationLayout,
+    FormationPermission,
+    FormationZone,
+    MappedFormationPlan,
+    MappedFormationPlanner,
+    MappedFormationRequest,
+)
 from planner.models import (
     Command,
     CommandOperation,
@@ -38,6 +46,16 @@ from planner.navigation_contracts import (
 from relay.capabilities import CapabilityProfile
 from relay.control_localization import ControlLocalizationPins, ControlPose
 from relay.intent_v1 import IntentName, IntentV1
+
+
+def _json_safe(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, frozenset):
+        return sorted(_json_safe(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +110,19 @@ class NavigationFrame:
 
 
 @dataclass(frozen=True, slots=True)
+class FormationBinding:
+    shape: str
+    zone: FormationZone
+    layout: FormationLayout
+
+    def __post_init__(self) -> None:
+        if self.shape not in {"line", "column"}:
+            raise ValueError("production mapped formations support line and column only")
+        if not isinstance(self.zone, FormationZone) or not isinstance(self.layout, FormationLayout):
+            raise ValueError("formation binding requires a typed volume and layout")
+
+
+@dataclass(frozen=True, slots=True)
 class NavigationExecutionConfig:
     floor_id: str
     motion: MotionConfig
@@ -104,6 +135,7 @@ class NavigationExecutionConfig:
     wire_config_sha256: str | None = None
     line_zone_id: str | None = None
     max_aircraft: int = 4
+    formation_bindings: tuple[FormationBinding, ...] = ()
 
     def __post_init__(self) -> None:
         normalized_text(self.floor_id, "floor_id")
@@ -132,12 +164,29 @@ class NavigationExecutionConfig:
             or len({frame.drone_id for frame in self.frames}) != len(self.frames)
         ):
             raise ValueError("navigation requires unique aircraft frames within max_aircraft")
+        if (
+            not isinstance(self.formation_bindings, tuple)
+            or any(not isinstance(binding, FormationBinding) for binding in self.formation_bindings)
+            or len({binding.shape for binding in self.formation_bindings})
+            != len(self.formation_bindings)
+            or any(
+                len(binding.layout.altitude_offsets_m) > self.max_aircraft
+                for binding in self.formation_bindings
+            )
+        ):
+            raise ValueError("navigation requires unique bounded mapped formation bindings")
 
     def frame(self, drone_id: int) -> NavigationFrame:
         for frame in self.frames:
             if frame.drone_id == drone_id:
                 return frame
         raise ValueError("navigation has no measured frame for aircraft")
+
+    def formation_binding(self, shape: str) -> FormationBinding | None:
+        return next(
+            (binding for binding in self.formation_bindings if binding.shape == shape),
+            None,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,12 +198,11 @@ class NavigationExecution:
     route_id: str
     approval_id: str
     configuration_sha256: str
+    formation: MappedFormationPlan | None = None
 
     def to_dict(self) -> dict[str, object]:
-        value = asdict(self)
-        value["route"]["permission"]["permitted_zone_ids"] = sorted(
-            self.route.permission.permitted_zone_ids
-        )
+        value = _json_safe(asdict(self))
+        assert isinstance(value, dict)
         value["intent_name"] = self.intent_name.value
         return value
 
@@ -185,12 +233,22 @@ class NavigationExecution:
         epochs = {drone.drone_id: drone.connection_epoch for drone in self.route.selected}
         return (
             self.intent_name
-            in {IntentName.COME_HOME, IntentName.FORMATION_SET, IntentName.NAVIGATE}
+            in {
+                IntentName.COME_HOME,
+                IntentName.FORMATION_NEXT,
+                IntentName.FORMATION_SET,
+                IntentName.NAVIGATE,
+            }
             and plan.intent_name is self.intent_name
             and plan.formation_update
-            == ("line" if self.intent_name is IntentName.FORMATION_SET else None)
+            == (
+                self.formation.shape
+                if self.formation is not None
+                else ("line" if self.intent_name is IntentName.FORMATION_SET else None)
+            )
             and plan.roster_version == self.route.roster_version
             and set(plan.selection) == set(epochs)
+            and (self.formation is None or self.formation.navigation_plan == self.route)
             and len(specs) == len(plan.commands)
             and all(
                 command.drone_id == drone_id
@@ -256,10 +314,17 @@ def navigation_configuration_digest(
 def navigation_capability_profile(
     base: CapabilityProfile, config: NavigationExecutionConfig
 ) -> CapabilityProfile:
-    if config.line_zone_id is None or base.supports(IntentName.FORMATION_SET):
+    if (config.line_zone_id is None and not config.formation_bindings) or base.supports(
+        IntentName.FORMATION_SET
+    ):
         return base
+    enabled = {IntentName.FORMATION_SET}
+    suffix = "_mapped_line"
+    if config.formation_bindings:
+        enabled.add(IntentName.FORMATION_NEXT)
+        suffix = "_mapped_formations"
     return CapabilityProfile(
-        f"{base.name[:50]}_mapped_line", base.enabled_intent_names | {IntentName.FORMATION_SET}
+        f"{base.name[: 64 - len(suffix)]}{suffix}", base.enabled_intent_names | enabled
     )
 
 
@@ -334,7 +399,13 @@ class NavigationRuntime:
                 destination = intent.args.get("zone_id")
                 if not isinstance(destination, str) or not destination:
                     raise ValueError("navigation requires a server-selected destination")
-            elif intent.name is IntentName.FORMATION_SET and intent.args.get("name") == "line":
+            elif intent.name in {IntentName.FORMATION_NEXT, IntentName.FORMATION_SET}:
+                shape = self._formation_shape(intent, snapshot)
+                binding = self.config.formation_binding(shape)
+                if binding is not None:
+                    return self._prepare_formation(intent, snapshot, artifact, binding)
+                if shape != "line":
+                    raise ValueError(f"no approved mapped formation binding for {shape}")
                 destination = self.config.line_zone_id
                 zone = next((zone for zone in artifact.zones if zone.zone_id == destination), None)
                 if zone is None or not _line_slots_match(
@@ -365,7 +436,11 @@ class NavigationRuntime:
             return self._refusal(intent.intent_id, snapshot, str(error))
 
     def prepare_route(
-        self, intent: IntentV1, snapshot: FleetSnapshot, route: NavigationPlan
+        self,
+        intent: IntentV1,
+        snapshot: FleetSnapshot,
+        route: NavigationPlan,
+        formation: MappedFormationPlan | None = None,
     ) -> Plan:
         artifact = self._validate(snapshot)
         execution = NavigationExecution(
@@ -378,6 +453,7 @@ class NavigationRuntime:
             navigation_configuration_digest(
                 artifact, self.config, self.permission, self.home_zone_id
             ),
+            formation,
         )
         epochs = {drone.drone_id: drone.connection_epoch for drone in route.selected}
         commands = tuple(
@@ -400,9 +476,63 @@ class NavigationRuntime:
             tuple(sorted(intent.selection)),
             intent.confirm,
             commands,
-            formation_update="line" if intent.name is IntentName.FORMATION_SET else None,
+            formation_update=formation.shape
+            if formation is not None
+            else ("line" if intent.name is IntentName.FORMATION_SET else None),
             navigation=execution,
         )
+
+    def _formation_shape(self, intent: IntentV1, snapshot: FleetSnapshot) -> str:
+        if intent.name is IntentName.FORMATION_SET:
+            shape = intent.args.get("name")
+            if isinstance(shape, str):
+                return shape
+            raise ValueError("formation requires a configured shape")
+        configured = tuple(binding.shape for binding in self.config.formation_bindings)
+        if not configured:
+            raise ValueError("navigation runtime has no configured formation transition")
+        try:
+            return configured[(configured.index(snapshot.formation) + 1) % len(configured)]
+        except ValueError:
+            return configured[0]
+
+    def _prepare_formation(
+        self,
+        intent: IntentV1,
+        snapshot: FleetSnapshot,
+        artifact: NavigationArtifact,
+        binding: FormationBinding,
+    ) -> Plan:
+        if not intent.confirm:
+            raise ValueError("mapped formation requires confirmation")
+        if self.config.speed_m_s > binding.zone.max_speed_mps:
+            raise ValueError("formation speed exceeds the approved formation volume")
+        positions = self._positions(snapshot)
+        selected = tuple(item for item in positions if item.drone_id in intent.selection)
+        if len(binding.layout.altitude_offsets_m) != len(selected):
+            raise ValueError("formation layout does not match the selected aircraft")
+        formation = MappedFormationPlanner(self.planner).plan(
+            MappedFormationRequest(
+                binding.shape,
+                snapshot.roster_version,
+                intent.t,
+                selected,
+                positions,
+                frozenset(
+                    aircraft.drone_id
+                    for aircraft in snapshot.aircraft.values()
+                    if aircraft.airborne
+                ),
+                self.config.motion,
+                FormationPermission(frozenset({binding.zone.zone_id})),
+                binding.layout,
+            ),
+            artifact,
+            binding.zone,
+        )
+        if not isinstance(formation, MappedFormationPlan):
+            raise ValueError(f"{formation.code}: {formation.detail}")
+        return self.prepare_route(intent, snapshot, formation.navigation_plan, formation)
 
     def check(
         self,
@@ -420,6 +550,8 @@ class NavigationRuntime:
                 plan
             ):
                 raise ValueError("navigation command shape changed")
+            if execution.formation is not None and not plan.confirmed:
+                raise ValueError("mapped formation plan requires confirmation")
             artifact = self._validate(snapshot)
             if (
                 execution.config != self.config
@@ -432,15 +564,26 @@ class NavigationRuntime:
             destination = self.home_zone_id
             if plan.intent_name is IntentName.NAVIGATE:
                 destination = route_plan.destination_zone_id
-            elif plan.intent_name is IntentName.FORMATION_SET:
-                destination = self.config.line_zone_id
-                if not _line_slots_match(
-                    route_plan.arrival_slots, len(plan.selection), snapshot.spacing
-                ):
-                    raise ValueError("line formation spacing or altitude changed")
+            elif plan.intent_name in {IntentName.FORMATION_NEXT, IntentName.FORMATION_SET}:
+                if execution.formation is not None:
+                    binding = self.config.formation_binding(execution.formation.shape)
+                    if (
+                        binding is None
+                        or binding.zone != execution.formation.formation_zone
+                        or binding.layout != execution.formation.layout
+                        or self.config.speed_m_s > binding.zone.max_speed_mps
+                    ):
+                        raise ValueError("mapped formation binding or approved speed changed")
+                    destination = execution.formation.navigation_plan.destination_zone_id
+                else:
+                    destination = self.config.line_zone_id
+                    if not _line_slots_match(
+                        route_plan.arrival_slots, len(plan.selection), snapshot.spacing
+                    ):
+                        raise ValueError("line formation spacing or altitude changed")
             if route_plan.destination_zone_id != destination:
                 raise ValueError("navigation destination differs from the configured operation")
-            if route_plan.permission != self.permission or route_plan.config != self.config.motion:
+            if route_plan.config != self.config.motion:
                 raise ValueError("navigation permission or motion envelope changed")
             if (
                 tuple(sorted(snapshot.selection)) != tuple(sorted(plan.selection))
@@ -453,6 +596,7 @@ class NavigationRuntime:
                 if cursor > count:
                     cursor -= count + 1
                     continue
+                self._require_prior_routes_held(route_plan, positions, snapshot, route_index)
                 active = next(item for item in positions if item.drone_id == command.drone_id)
                 arrival = completed or cursor == count
                 segment_index = min(cursor, count - 1)
@@ -545,14 +689,18 @@ class NavigationRuntime:
                     checked_plan = route_plan
                 refusal = self.planner.revalidate(
                     checked_plan,
-                    artifact,
+                    (
+                        execution.formation.revalidation_artifact(artifact)
+                        if execution.formation is not None
+                        else artifact
+                    ),
                     NavigationLiveState(
                         snapshot.roster_version,
                         route_plan.plan_revision,
                         tuple(snapshot.selection),
                         positions,
                         self.config.motion,
-                        self.permission,
+                        route_plan.permission,
                     ),
                     route_index,
                     segment_index,
@@ -566,6 +714,26 @@ class NavigationRuntime:
             return self._refusal(
                 plan.intent_id, snapshot, str(error) or "navigation pose is missing"
             )
+
+    def _require_prior_routes_held(
+        self,
+        route_plan: NavigationPlan,
+        positions: tuple[DronePose, ...],
+        snapshot: FleetSnapshot,
+        route_index: int,
+    ) -> None:
+        current = {item.drone_id: item for item in positions}
+        for route in route_plan.routes[:route_index]:
+            live = current[route.drone.drone_id]
+            if (
+                live.pose.floor_id != route.arrival_slot.pose.floor_id
+                or dist(live.pose.xyz, route.arrival_slot.pose.xyz)
+                > self.config.position_tolerance_m
+                or snapshot.aircraft[route.drone.drone_id].flight_state is not FlightState.HOVERING
+            ):
+                raise ValueError(
+                    "prior aircraft has not reached and held its assigned formation slot"
+                )
 
     def _pose_time(self, snapshot: FleetSnapshot, drone_id: int) -> int:
         if self.approval.mode == "simulation":

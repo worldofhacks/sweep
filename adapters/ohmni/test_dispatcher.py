@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 
 from adapters.dji_mini3.remote import CommandRequest
+from adapters.protocols import AdapterError
 from planner.models import CommandOperation, LifecycleStatus, RefusalReason
 from relay.contracts import AdapterAcknowledgement
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
@@ -73,6 +74,30 @@ def _dispatcher(link: _StopLink) -> GroundCommandDispatcher:
         command_ids=lambda: next(counter),
         monotonic=lambda: 0,
     )
+
+
+def test_route_guard_failure_during_acknowledgement_wait_is_a_terminal_result():
+    class LostLink(_StopLink):
+        def await_acknowledgement(self, command_id, *, timeout_ms):
+            raise AdapterError("route authority changed while waiting")
+
+    state = _state()
+    state["drones"][0].update(
+        membership="ready",
+        selectable=True,
+        control_authority=True,
+        adapter_capabilities=["ground_drive", "navigate"],
+        ground_readiness={"source_id": "ohmni-pose"},
+    )
+    result = _dispatcher(LostLink()).dispatch_navigation(
+        make_intent(IntentName.NAVIGATE, selection=(9,), confirm=True),
+        state,
+        route_id="route-a",
+        navigation_route='{"signed":"node-validates-this-envelope"}',
+    )
+    assert result.status is LifecycleStatus.FAILED
+    assert result.refusal.detail == "route authority changed while waiting"
+    assert result.plan.commands[0].operation is CommandOperation.GROUND_NAVIGATE
 
 
 def test_global_estop_fans_out_before_waiting_and_aggregates_terminal_acknowledgements() -> None:

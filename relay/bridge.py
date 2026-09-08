@@ -84,6 +84,11 @@ class RelayNodeLink:
             except ValueError as error:
                 raise AdapterError(str(error)) from error
             for navigation_frame in navigation_frames:
+                try:
+                    self._session.record_navigation_evidence(navigation_frame)
+                except (ValueError, RuntimeError) as error:
+                    self._navigation_publisher.retire(request.command_id)
+                    raise AdapterError(str(error)) from error
                 if not self._deliver(loop, request.drone_id, navigation_frame):
                     self._navigation_publisher.retire(request.command_id)
                     raise AdapterError(

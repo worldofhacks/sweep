@@ -119,7 +119,11 @@ def _prepare_session(
     adapter = Principal("adapter", 1, ADAPTER_KEY)
     session.process_membership(
         membership_payload(
-            action="join", event_id="platform-join", session=SESSION, timestamp=100_000
+            action="join",
+            event_id="platform-join",
+            session=SESSION,
+            timestamp=100_000,
+            capabilities=["flight", "pano_360", "navigate"],
         ),
         adapter,
     )

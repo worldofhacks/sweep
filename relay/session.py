@@ -360,6 +360,7 @@ class RelaySession:
         self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._control_pose: dict[int, ControlPose] = {}
+        self._world_observation_contexts: dict[tuple[int, str], str] = {}
         self._pending_intents: dict[str, _PendingIntent] = {}
         self._acknowledgements: dict[str, list[AdapterAcknowledgement]] = {}
         self._resuming_intents: set[str] = set()
@@ -483,7 +484,7 @@ class RelaySession:
                     raise SurveyLifecycleError(
                         "survey_not_configured", "survey lifecycle is unavailable"
                     )
-                self._append_audit({**request.to_event(), "source": principal.source})
+                self._append_audit({**request.to_event(), "source": principal.source}, t_ingest=now)
                 return handler(request)
             except (SurveyLifecycleError, ContractError) as error:
                 return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
@@ -689,7 +690,6 @@ class RelaySession:
                 or intent.retry_of is not None
                 or not intent.confirm
                 or not intent.selection
-                or self.registry.selection_includes_ground(intent.selection)
             ):
                 raise ValueError("platform navigation intent is not admissible")
             if self.intent_sink is None:
@@ -1110,12 +1110,12 @@ class RelaySession:
             projection = _material_state_projection(state)
             state_changed = transition is not None or self._state_projection_changed(projection)
             telemetry_event = telemetry.to_event()
-            self._append_audit(telemetry_event)
+            self._append_audit(telemetry_event, t_ingest=now)
             self._metrics["telemetry_events"] += 1
             events: list[dict[str, object]] = [telemetry_event]
             if transition is not None:
                 transition_event = transition.to_event(self.session_id)
-                self._append_audit(transition_event)
+                self._append_audit(transition_event, t_ingest=now)
                 self._metrics["membership_events"] += 1
                 events.append(transition_event)
             if state_changed or self._state_keepalive_due(now):
@@ -1158,7 +1158,7 @@ class RelaySession:
 
             event = acknowledgement.to_event()
             self._record_adapter_ack_fact(acknowledgement)
-            self._append_audit(event)
+            self._append_audit(event, t_ingest=now)
             self._metrics["acknowledgements"] += 1
             waiter = self._command_waiters.get(acknowledgement.command_id)
             if waiter is not None:
@@ -1341,7 +1341,8 @@ class RelaySession:
                     **frame.unsigned_event(),
                     "signature_verified": True,
                     "projected_event_id": pose.event_id,
-                }
+                },
+                t_ingest=now,
             )
             self._append_audit({**pose.unsigned_event(), "signature_emitted": True})
             return [signed_pose]
@@ -1412,7 +1413,7 @@ class RelaySession:
                 ]
 
             event = frame.to_event()
-            self._append_audit(event)
+            self._append_audit(event, t_ingest=now)
             self._metrics["node_events"] += 1
             if isinstance(frame, MediaFileFrame | CaptureBundleFrame):
                 return []
@@ -1466,7 +1467,11 @@ class RelaySession:
                     "command ledger is full of commands still awaiting a bounded terminal result"
                 )
             self.registry.check_current(drone_id, connection_epoch)
-            if operation in {CommandOperation.GROUND_VELOCITY, CommandOperation.GROUND_RETURN}:
+            if operation in {
+                CommandOperation.GROUND_VELOCITY,
+                CommandOperation.GROUND_RETURN,
+                CommandOperation.GROUND_NAVIGATE,
+            }:
                 # Revalidate at the actual signing boundary. A state sampled by
                 # the dispatcher cannot keep stale or withdrawn pose authority alive.
                 self.registry.check_ground_release(drone_id, connection_epoch, now_ms=now)
@@ -1572,13 +1577,14 @@ class RelaySession:
             )
 
     def await_command_acknowledgement(
-        self, command_id: str, *, timeout_ms: int
+        self, command_id: str, *, timeout_ms: int, retain_on_timeout: bool = False
     ) -> AdapterAcknowledgement | None:
         """Block outside the session lock until the node acknowledges or the wait expires.
 
         Each call returns the next acknowledgement for the command. The waiter is
         released after a terminal acknowledgement or a timeout; later acknowledgements
-        remain audited facts but no longer wake a caller.
+        remain audited facts but no longer wake a caller. Polling callers may retain
+        the waiter on timeout and must discard it when they stop waiting.
         """
         with self._lock:
             waiter = self._command_waiters.get(command_id)
@@ -1587,10 +1593,8 @@ class RelaySession:
         try:
             acknowledgement = waiter.get(timeout=max(timeout_ms, 0) / 1000)
         except queue.Empty:
-            with self._lock:
-                self._command_waiters.pop(command_id, None)
-                if issued := self._issued_commands.get(command_id):
-                    issued.waiter_active = False
+            if not retain_on_timeout:
+                self.discard_command_waiter(command_id)
             return None
         if acknowledgement.status in _TERMINAL_STATUSES:
             with self._lock:
@@ -1689,6 +1693,129 @@ class RelaySession:
 
         assert self._audit_undo is not None
         self._audit_undo.append(undo_readiness)
+
+    def record_navigation_evidence(self, frame: Mapping[str, object]) -> None:
+        """Commit signed host navigation evidence before delivery, without retaining signatures."""
+        event = json.loads(json.dumps(dict(frame), allow_nan=False))
+        signature = event.pop("signature", None)
+        device_id, epoch, timestamp = (
+            event.get("device_id"),
+            event.get("connection_epoch"),
+            event.get("t"),
+        )
+        if (
+            event.get("type") not in {"navigation_route_authorization", "navigation_pose"}
+            or event.get("session") != self.session_id
+            or type(event.get("v")) is not int
+            or event.get("v") != 1
+            or event.get("flight_approved") is not True
+            or event.get("position_frame") != "map_enu"
+            or type(device_id) is not int
+            or not 1 <= device_id <= 2**31 - 1
+            or type(epoch) is not int
+            or epoch < 1
+            or type(timestamp) is not int
+            or timestamp < 0
+            or any(
+                not isinstance(event.get(name), str) or not 1 <= len(event[name]) <= 128
+                for name in ("event_id", "command_id", "route_id")
+            )
+            or not isinstance(signature, str)
+        ):
+            raise ValueError("navigation audit evidence has invalid host scope")
+        signing_key = (
+            None
+            if self.control_pose_signing_key is None
+            else self.control_pose_signing_key(device_id)
+        )
+        if (
+            not isinstance(signing_key, bytes)
+            or not 32 <= len(signing_key) <= 4096
+            or not verify_event_signature(event, signature, signing_key)
+        ):
+            raise ValueError("navigation audit evidence signature is invalid")
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            self.registry.check_current(device_id, epoch)
+            if self.registry.node_type(device_id) is not NodeType.AIRCRAFT:
+                raise ValueError("flight navigation audit evidence requires an aircraft")
+            self._claim_transport_event(
+                event["event_id"],
+                timestamp,
+                Principal("relay_navigation", device_id, signing_key),
+                self.clock(),
+            )
+            self._append_audit({**event, "signature_emitted": True})
+
+    def record_world_observation(
+        self, raw: Mapping[str, object], registration: Mapping[str, object], manifest: Mapping
+    ) -> None:
+        """Audit host-admitted world observations and their immutable map evidence."""
+        from spatial.observations import Observation
+
+        accepted = Observation.parse(raw).to_dict()
+        if accepted["session"] != self.session_id or accepted["frame"] != "world":
+            raise ValueError("world observation audit scope differs from the session")
+        evidence = json.loads(json.dumps({"registration": registration, "manifest": manifest}))
+        context = json.dumps({**evidence, "epoch": accepted["connection_epoch"]}, sort_keys=True)
+        reference = evidence["registration"]["reference"]
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            identity = (accepted["drone_id"], accepted["source_id"])
+            if (
+                identity not in self._world_observation_contexts
+                and len(self._world_observation_contexts) >= 128
+            ):
+                raise ValueError("world observation source audit capacity reached")
+            common = {
+                "v": 1,
+                "session": self.session_id,
+                "t": accepted["t_ingest"],
+                "drone_id": accepted["drone_id"],
+                "connection_epoch": accepted["connection_epoch"],
+                "node_type": accepted["node_type"],
+                "source_id": accepted["source_id"],
+                "frame": "world",
+                "map_id": reference["bundleId"],
+                "map_version": registration["mapVersion"],
+                "map_sha256": reference["contentHash"],
+                "floor_id": registration["floorId"],
+            }
+            if self._world_observation_contexts.get(identity) != context:
+                measured = manifest["registration"]
+                self._append_audit(
+                    {
+                        **common,
+                        "type": "map_identity",
+                        "event_id": self.event_ids(),
+                        "static_grid_sha256": manifest["image"]["sha256"],
+                        "manifest": evidence["manifest"],
+                    }
+                )
+                self._append_audit(
+                    {
+                        **common,
+                        "type": "registration",
+                        "event_id": self.event_ids(),
+                        "registration_id": registration["transformId"],
+                        "source_frame": registration["sourceFrame"],
+                        "residual_m": measured["residualM"],
+                        "threshold_m": measured["thresholdM"],
+                        "evidence": measured["evidence"],
+                    }
+                )
+            self._append_audit(
+                {
+                    "v": 1,
+                    "type": "world_observation",
+                    "event_id": self.event_ids(),
+                    "session": self.session_id,
+                    "t": accepted["t_ingest"],
+                    "observation": accepted,
+                    "registration": evidence["registration"],
+                }
+            )
+            self._world_observation_contexts[identity] = context
 
     def record_lifecycle(
         self,
@@ -2128,7 +2255,7 @@ class RelaySession:
                 prior_roster_version=transition.prior_roster_version,
                 cleared_control_fields=list(transition.cleared_control_fields),
             )
-        self._append_audit(event)
+        self._append_audit(event, t_ingest=now)
         self._record_state_audit(state, _material_state_projection(state), now)
         self._metrics["membership_events"] += 1
         return [event, state, *self._reconcile_membership()]
@@ -2570,11 +2697,15 @@ class RelaySession:
         assert self._audit_undo is not None
         self._audit_undo.append(undo_sequence)
 
-    def _append_audit(self, event: Mapping[str, object]) -> dict[str, object]:
+    def _append_audit(
+        self, event: Mapping[str, object], *, t_ingest: int | None = None
+    ) -> dict[str, object]:
         self._ensure_mutation_usable()
         if self._audit_batch is None:
             raise RuntimeError("audit append requires an active relay operation")
         buffered = dict(event)
+        if t_ingest is not None:
+            buffered["t_ingest"] = t_ingest
         self._audit_batch.append(buffered)
         if self._audit_operation_id is None:
             self._audit_operation_id = self.audit_log.begin_operation()
@@ -2611,7 +2742,7 @@ class RelaySession:
     def _record_state_audit(self, state: dict[str, object], projection: str, now: int) -> None:
         """Audit a snapshot unconditionally; decisions always log the state they saw."""
         self._remember_audit_sampling()
-        self._append_audit(state)
+        self._append_audit(state, t_ingest=now)
         self._audit_sampling.state_projection = projection
         self._audit_sampling.state_audited_at = now
 
@@ -2685,7 +2816,7 @@ class RelaySession:
         return state
 
 
-_VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
+_VOLATILE_STATE_KEYS = frozenset({"t", "t_ingest", "event_id", "state_sequence"})
 _GROUND_SAFE_INTENTS = frozenset(
     {
         IntentName.SELECT,

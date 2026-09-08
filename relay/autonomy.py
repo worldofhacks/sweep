@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import stat
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
@@ -32,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from enum import Enum
+from pathlib import Path
 from typing import get_origin, get_type_hints
 
 from fastapi import FastAPI
@@ -42,6 +44,7 @@ from adapters.ohmni.dispatcher import GroundCommandDispatcher
 from adapters.sim.camera import SimCameraConfig
 from arbiter.safety import SafetyArbiter, SafetyConfig
 from planner.controller import AutonomyController, RelayExecution
+from planner.ground_navigation import GroundNavigationDeployment
 from planner.models import (
     CommandAcknowledgement,
     ExecutionResult,
@@ -78,6 +81,7 @@ from relay.control_localization import (
     ControlLocalizationPins,
     ControlLocalizationProjector,
 )
+from relay.ground_navigation_execution import GroundPlatformNavigation, PreparedGroundNavigation
 from relay.intent_v1 import IntentName, IntentV1, Mode
 from relay.navigation_wire import NavigationWirePublisher
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
@@ -147,6 +151,7 @@ class AutonomyConfig:
     sim_camera: SimCameraConfig | None = None
     control_localization_projector: ControlLocalizationProjector | None = None
     navigation: NavigationDeployment | None = None
+    ground_navigation: GroundNavigationDeployment | None = None
 
     def __post_init__(self) -> None:
         world = self.planning is not None or self.safety is not None
@@ -155,7 +160,9 @@ class AutonomyConfig:
         if world and (self.planning is None or self.safety is None):
             raise ValueError("world policy requires both planning and safety")
         if self.supervised_vertical is not None and (
-            self.control_localization_projector is not None or self.navigation is not None
+            self.control_localization_projector is not None
+            or self.navigation is not None
+            or self.ground_navigation is not None
         ):
             raise ValueError("supervised_vertical does not accept world localization or navigation")
 
@@ -166,6 +173,12 @@ class AutonomyConfig:
         camera_raw = values.get("SWEEP_SIM_CAMERA_JSON", "")
         localization_raw = values.get("SWEEP_CONTROL_LOCALIZATION_JSON", "")
         navigation_path = values.get("SWEEP_NAVIGATION_CONFIG", "")
+        ground_path = values.get("SWEEP_GROUND_NAVIGATION_CONFIG", "")
+        ground_key_path = values.get("SWEEP_GROUND_NAVIGATION_KEY_FILE", "")
+        if bool(ground_path) != bool(ground_key_path):
+            raise SettingsError(
+                "ground navigation requires both configuration and signing key file"
+            )
         vertical_raw = values.get("SWEEP_SUPERVISED_VERTICAL_JSON", "")
         if vertical_raw:
             if any(
@@ -174,6 +187,7 @@ class AutonomyConfig:
                     values.get("SWEEP_SAFETY_JSON", ""),
                     localization_raw,
                     navigation_path,
+                    ground_path,
                 )
             ):
                 raise SettingsError(
@@ -210,7 +224,20 @@ class AutonomyConfig:
                 )
             ),
             navigation=None if not navigation_path else load_navigation_deployment(navigation_path),
+            ground_navigation=(
+                None if not ground_path else _load_ground_navigation(ground_path, ground_key_path)
+            ),
         )
+
+
+def _load_ground_navigation(path: str, key_path: str) -> GroundNavigationDeployment:
+    key_file = Path(key_path)
+    info = key_file.stat(follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+        raise SettingsError("ground navigation signing key must be a regular mode-0600 file")
+    with key_file.open("rb") as stream:
+        key = stream.read(4097)
+    return GroundNavigationDeployment.load(Path(path), key)
 
 
 def relay_snapshot(
@@ -574,6 +601,16 @@ class AutonomySession:
             )
         )
         self.navigation_runtime = navigation_runtime
+        self.ground_navigation = (
+            None
+            if composition.config.ground_navigation is None
+            else GroundPlatformNavigation(
+                composition.runtime,
+                session_id,
+                composition.config.ground_navigation,
+            )
+        )
+        self._platform_ground_dispatch: dict[str, PreparedGroundNavigation] = {}
         self._platform_navigation: dict[str, tuple[int, PreparedExecution]] = {}
         self._platform_dispatch: dict[str, PreparedExecution] = {}
         self.navigation_wire = (
@@ -689,6 +726,18 @@ class AutonomySession:
         )
 
     def preview_platform_navigation(self, preview: Mapping[str, object]) -> dict[str, object]:
+        selected = preview.get("selected")
+        if (
+            isinstance(selected, list)
+            and selected
+            and all(
+                isinstance(target, Mapping) and target.get("deviceClass") == "ground_vehicle"
+                for target in selected
+            )
+        ):
+            if self.ground_navigation is None:
+                raise ValueError("qualified ground navigation is unavailable")
+            return self.ground_navigation.preview(preview)
         runtime = self.navigation_runtime
         if runtime is None or runtime.approval.mode != "flight":
             raise ValueError("qualified aircraft navigation is unavailable")
@@ -704,12 +753,15 @@ class AutonomySession:
             or not isinstance(destination, Mapping)
             or not isinstance(destination.get("zoneId"), str)
             or not isinstance(selected, list)
-            or len(selected) != 1
-            or not isinstance(selected[0], Mapping)
-            or selected[0].get("deviceClass") != "aircraft"
-            or not isinstance(selected[0].get("id"), int)
+            or not selected
+            or any(
+                not isinstance(target, Mapping)
+                or target.get("deviceClass") != "aircraft"
+                or type(target.get("id")) is not int
+                for target in selected
+            )
         ):
-            raise ValueError("qualified navigation requires exactly one selected aircraft")
+            raise ValueError("qualified navigation requires selected aircraft")
         session = self._composition.runtime.sessions.get(self.session_id)
         if session is None:
             raise ValueError("relay session is unavailable")
@@ -726,7 +778,7 @@ class AutonomySession:
             session=self.session_id,
             name=IntentName.NAVIGATE,
             args={"zone_id": destination["zoneId"]},
-            selection=(selected[0]["id"],),
+            selection=tuple(target["id"] for target in selected),
             mode=Mode.INDOOR,
             confirm=True,
         )
@@ -751,10 +803,11 @@ class AutonomySession:
             "contentSha256": navigation.route.map_pin.content_sha256,
         }:
             raise ValueError("platform map revision differs from the approved navigation artifact")
-        target = selected[0]
+        targets = {target["id"]: target for target in selected}
         routes = []
         for route in navigation.route.routes:
-            if route.drone.drone_id != target["id"]:
+            target = targets.get(route.drone.drone_id)
+            if target is None or target.get("epoch") != route.drone.connection_epoch:
                 raise ValueError("qualified navigation route target differs from the preview")
 
             def point(pose):
@@ -813,11 +866,49 @@ class AutonomySession:
                     "code": "route_qualified",
                     "detail": "A signed flight deployment qualified this route.",
                 }
+                for target in selected
             ],
             "execution": execution,
         }
 
     def confirm_platform_navigation(self, preview: Mapping[str, object]) -> dict[str, object]:
+        selected = preview.get("selected")
+        if (
+            isinstance(selected, list)
+            and selected
+            and all(
+                isinstance(target, Mapping) and target.get("deviceClass") == "ground_vehicle"
+                for target in selected
+            )
+        ):
+            if self.ground_navigation is None:
+                raise ValueError("qualified ground navigation is unavailable")
+            prepared_ground = self.ground_navigation.take(preview)
+            runtime = self._composition.runtime
+            session = runtime.sessions.get(self.session_id)
+            if session is None:
+                raise ValueError("relay session is unavailable")
+            with self._lock:
+                self._platform_ground_dispatch[prepared_ground.intent.intent_id] = prepared_ground
+            try:
+                self._publish(
+                    runtime, lambda: session.admit_platform_navigation(prepared_ground.intent)
+                )
+                self._publish(
+                    runtime,
+                    lambda: session.execute_pending_intent(
+                        prepared_ground.intent.intent_id, defer_resume=True
+                    ),
+                )
+            except Exception:
+                with self._lock:
+                    self._platform_ground_dispatch.pop(prepared_ground.intent.intent_id, None)
+                raise
+            return {
+                "status": "accepted",
+                "code": "navigation_accepted",
+                "detail": "The frozen qualified ground routes were accepted for scheduling.",
+            }
         preview_id = preview.get("previewId")
         execution = preview.get("execution")
         if not isinstance(preview_id, str) or not isinstance(execution, Mapping):
@@ -861,6 +952,13 @@ class AutonomySession:
         for preview_id, (expires_at, _) in tuple(self._platform_navigation.items()):
             if expires_at <= now:
                 self._platform_navigation.pop(preview_id, None)
+
+    def accepted_observation(self, observation: object) -> list[dict[str, object]]:
+        from relay.observations import Observation
+
+        if self.ground_navigation is not None and isinstance(observation, Observation):
+            self.ground_navigation.identities.accept(observation)
+        return []
 
     def close(self, timeout_s: float) -> None:
         for lane in self._lanes:
@@ -965,6 +1063,9 @@ class AutonomySession:
                 victim.cancelled_by = reason
                 self._awaiting.pop(victim.intent.intent_id, None)
                 self._platform_dispatch.pop(victim.intent.intent_id, None)
+                ground = self._platform_ground_dispatch.pop(victim.intent.intent_id, None)
+                if ground is not None and self.ground_navigation is not None:
+                    self.ground_navigation.deployment.cancel(ground.plan)
             stop.publications.append(event)
 
     def _run(self, lane: _Lane) -> None:
@@ -1016,7 +1117,27 @@ class AutonomySession:
             return _PreemptibleLink(link, job, session)
 
         try:
-            if intent.name is IntentName.GROUND_VELOCITY:
+            with self._lock:
+                prepared_ground = self._platform_ground_dispatch.pop(intent.intent_id, None)
+            if prepared_ground is not None:
+                if prepared_ground.intent != intent or self.ground_navigation is None:
+                    raise ValueError("ground intent differs from its frozen qualified plan")
+                ground_link = RelayNodeLink(
+                    runtime,
+                    self.session_id,
+                    delivery_timeout_ms=runtime.settings.command_ttl_ms,
+                )
+                try:
+                    result = self.ground_navigation.dispatch(
+                        prepared_ground,
+                        gate(ground_link),
+                        job.check,
+                        send_stop=ground_link.send,
+                    )
+                finally:
+                    self.ground_navigation.deployment.cancel(prepared_ground.plan)
+                dispatcher = None
+            elif intent.name is IntentName.GROUND_VELOCITY:
                 link = gate(
                     RelayNodeLink(
                         runtime,
@@ -1407,6 +1528,7 @@ class SurveyIntentRouter:
     def accepted_observation(self, observation: object) -> list[dict[str, object]]:
         from relay.observations import Observation
 
+        self.autonomy.accepted_observation(observation)
         return (
             []
             if not isinstance(observation, Observation)
@@ -1555,7 +1677,10 @@ class AutonomyComposition:
                     pose = session.control_pose(drone_id)
                     if pose is not None:
                         try:
-                            output.extend(publisher.update(pose))
+                            frames = publisher.update(pose)
+                            for frame in frames:
+                                session.record_navigation_evidence(frame)
+                            output.extend(frames)
                         except ValueError:
                             _LOGGER.warning(
                                 "navigation tracking evidence refused for aircraft %s", drone_id
@@ -1619,6 +1744,16 @@ def create_autonomy_app(
             {
                 "planning": None if config.planning is None else asdict(config.planning),
                 "safety": None if config.safety is None else asdict(config.safety),
+                "navigation_configuration_sha256": (
+                    None
+                    if config.navigation is None
+                    else config.navigation.approval.configuration_sha256
+                ),
+                "ground_navigation_configuration_sha256": (
+                    None
+                    if config.ground_navigation is None
+                    else config.ground_navigation.configuration_sha256
+                ),
                 "supervised_vertical": (
                     None
                     if config.supervised_vertical is None
@@ -1643,7 +1778,8 @@ def create_autonomy_app(
             motion_configuration=motion_configuration,
             flight_execution=(
                 composition
-                if config.navigation is not None and config.navigation.approval.mode == "flight"
+                if (config.navigation is not None and config.navigation.approval.mode == "flight")
+                or config.ground_navigation is not None
                 else None
             ),
         ),

@@ -168,14 +168,7 @@ def _normalized(value: str) -> str:
 
 
 def state_projection(raw: Mapping[str, object]) -> dict[str, object]:
-    """Project only authoritative relay readiness, class and current-epoch facts.
-
-    Telemetry coordinates are deliberately absent: their presence alone proves
-    neither a map registration nor the freshness/qualification of a world pose.
-    The material facts exclude event IDs and wall-clock ticks, so a new state
-    event by itself does not invalidate a review. Changes to readiness, current
-    telemetry/pose evidence, selection, authority or active plans do invalidate it.
-    """
+    """Freeze authenticated registry authority, excluding telemetry timing and coordinates."""
     state = _copy(dict(raw))
     session = _text(state.get("session"), 512)
     roster = _integer(state.get("roster_version"))
@@ -196,13 +189,24 @@ def state_projection(raw: Mapping[str, object]) -> dict[str, object]:
             ]
         )[0]
         telemetry = raw_node.get("telemetry")
+        # Registry state strips transport fields after validating the telemetry epoch.
         telemetry_current = (
             type(telemetry) is dict
-            and telemetry.get("connection_epoch") == target["epoch"]
+            and telemetry.get("connection_epoch", target["epoch"]) == target["epoch"]
             and type(telemetry.get("t")) is int
             and type(state.get("t")) is int
             and telemetry["t"] <= state["t"]
         )
+        ground_readiness = raw_node.get("ground_readiness")
+        if target["deviceClass"] == "ground_vehicle" and isinstance(ground_readiness, dict):
+            seen = raw_node.get("last_seen_at")
+            telemetry_current = (
+                isinstance(ground_readiness.get("source_id"), str)
+                and bool(ground_readiness["source_id"])
+                and type(seen) is int
+                and type(state.get("t")) is int
+                and 0 <= state["t"] - seen <= 1000
+            )
         nodes.append(
             {
                 "target": target,
@@ -213,7 +217,15 @@ def state_projection(raw: Mapping[str, object]) -> dict[str, object]:
                 "authority": raw_node.get("control_authority") is True,
                 "motionState": raw_node.get("flight_state"),
                 "capabilities": raw_node.get("adapter_capabilities", []),
-                "telemetry": telemetry,
+                "telemetry": (
+                    {
+                        name: telemetry.get(name)
+                        for name in ("state", "battery", "link", "pos_quality")
+                    }
+                    if type(telemetry) is dict
+                    else None
+                ),
+                "groundReadiness": ground_readiness,
                 "readinessReasons": raw_node.get("readiness_reasons"),
             }
         )
@@ -641,16 +653,16 @@ class NavigationService:
                     )
                 },
             }
-            return {
-                "kind": "review",
-                "intent": {
-                    "name": "navigate",
-                    "args": {"zone_id": zone_id},
-                    "selection": [target["id"] for target in selected],
-                    "mode": "indoor",
-                },
-                **self.preview(session, preview_request),
-            }
+        return {
+            "kind": "review",
+            "intent": {
+                "name": "navigate",
+                "args": {"zone_id": zone_id},
+                "selection": [target["id"] for target in selected],
+                "mode": "indoor",
+            },
+            **self.preview(session, preview_request),
+        }
 
     def _context(self, session: str, catalog: dict) -> dict[str, object]:
         raw_state = self.state(session)
@@ -722,51 +734,56 @@ class NavigationService:
                 )
             routes = []
             eligible = [item for item in outcomes if item["code"] == "class_planner_unavailable"]
-            if self.route_preview is not None and len(eligible) == len(selected):
-                planned = _copy(self.route_preview(_copy(request), _copy(catalog), _copy(state)))
-                routes, outcomes = validate_route_preview(planned, selected, destination)
-            preview = {
-                "previewId": str(uuid.uuid4()),
-                "session": session,
-                "intentId": request["intentId"],
-                "rosterVersion": request["rosterVersion"],
-                "selected": selected,
-                "destination": destination,
-                "map": catalog["map"],
-                "catalogVersion": catalog["catalogVersion"],
-                "configVersion": catalog["configVersion"],
-                "motionConfig": catalog["motionConfig"],
-                "routes": routes,
-                "outcomes": outcomes,
-                "receivedAt": now,
-                "expiresAt": now + self.review_ttl_ms,
-                "dispatchEligible": False,
-            }
-            if (
-                self.flight_execution is not None
-                and len(selected) == 1
-                and selected[0]["deviceClass"] == "aircraft"
-            ):
-                try:
-                    execution = _copy(self.flight_execution.preview(session, _copy(preview)))
-                    routes, outcomes, execution = validate_flight_execution_preview(
-                        execution, selected, destination, preview["map"]
-                    )
-                except (ValueError, KeyError, TypeError) as error:
-                    _fail(
-                        "navigation_execution_unavailable",
-                        str(error) or "Qualified aircraft navigation is unavailable.",
-                    )
-                preview.update(
-                    destination={**destination, "reachability": "reachable"},
-                    routes=routes,
-                    outcomes=outcomes,
-                    execution=execution,
-                    dispatchEligible=True,
+        # Providers may read world observations, whose map callback acquires this lock.
+        if self.route_preview is not None and len(eligible) == len(selected):
+            planned = _copy(self.route_preview(_copy(request), _copy(catalog), _copy(state)))
+            routes, outcomes = validate_route_preview(planned, selected, destination)
+        preview = {
+            "previewId": str(uuid.uuid4()),
+            "session": session,
+            "intentId": request["intentId"],
+            "rosterVersion": request["rosterVersion"],
+            "selected": selected,
+            "destination": destination,
+            "map": catalog["map"],
+            "catalogVersion": catalog["catalogVersion"],
+            "configVersion": catalog["configVersion"],
+            "motionConfig": catalog["motionConfig"],
+            "routes": routes,
+            "outcomes": outcomes,
+            "receivedAt": now,
+            "expiresAt": now + self.review_ttl_ms,
+            "dispatchEligible": False,
+        }
+        if (
+            self.flight_execution is not None
+            and len(eligible) == len(selected)
+            and len({target["deviceClass"] for target in selected}) == 1
+            and all(
+                target["deviceClass"]
+                in getattr(self.flight_execution, "device_classes", frozenset({"aircraft"}))
+                for target in selected
+            )
+        ):
+            try:
+                execution = _copy(self.flight_execution.preview(session, _copy(preview)))
+                routes, outcomes, execution = validate_flight_execution_preview(
+                    execution, selected, destination, preview["map"]
                 )
-            digest = _hash(preview)
-            # Re-read every authoritative input after provider work. A late route
-            # result cannot become a review for a changed roster/map/configuration.
+            except (ValueError, KeyError, TypeError) as error:
+                _fail(
+                    "navigation_execution_unavailable",
+                    str(error) or "Qualified aircraft navigation is unavailable.",
+                )
+            preview.update(
+                destination={**destination, "reachability": "reachable"},
+                routes=routes,
+                outcomes=outcomes,
+                execution=execution,
+                dispatchEligible=True,
+            )
+        digest = _hash(preview)
+        with self._lock:
             current = self._context(session, self._catalog(session, self._now()))
             if current != context:
                 _fail("frozen_inputs_changed", "Authoritative inputs changed during route review.")
@@ -797,8 +814,9 @@ class NavigationService:
                     ) from error
             return {"preview": _copy(preview), "previewHash": digest, "serverNowMs": self._now()}
 
-    @staticmethod
-    def _node_refusal(target: dict, node: dict, state: dict, destination: dict) -> tuple[str, str]:
+    def _node_refusal(
+        self, target: dict, node: dict, state: dict, destination: dict
+    ) -> tuple[str, str]:
         if state["estop"]:
             return "estop_active", "The emergency stop is active."
         if state["mode"] != "indoor":
@@ -825,7 +843,9 @@ class NavigationService:
                 "destination_unreachable",
                 "The class planner reports the destination unreachable.",
             )
-        if "navigate" not in state["enabledIntentNames"] or "navigate" not in node["capabilities"]:
+        if (
+            "navigate" not in state["enabledIntentNames"] and self.flight_execution is None
+        ) or "navigate" not in node["capabilities"]:
             return (
                 "capability_disabled",
                 "Navigation is not advertised by both the relay and this device.",
@@ -916,51 +936,51 @@ class NavigationService:
                     "UPDATE navigation_previews SET consumed=1 WHERE preview_id=?",
                     (request["previewId"],),
                 )
-            if current and retained.get("dispatchEligible") is True:
-                if self.flight_execution is None:
-                    code, detail = (
-                        "navigation_execution_unavailable",
-                        "Class-qualified navigation execution is not enabled.",
+        if current and retained.get("dispatchEligible") is True:
+            if self.flight_execution is None:
+                code, detail = (
+                    "navigation_execution_unavailable",
+                    "Class-qualified navigation execution is not enabled.",
+                )
+            else:
+                try:
+                    dispatched = _exact(
+                        _copy(self.flight_execution.confirm(session, _copy(retained))),
+                        {"status", "code", "detail"},
                     )
-                else:
-                    try:
-                        dispatched = _exact(
-                            _copy(self.flight_execution.confirm(session, _copy(retained))),
-                            {"status", "code", "detail"},
-                        )
-                        if (
-                            dispatched["status"] != "accepted"
-                            or not isinstance(dispatched["code"], str)
-                            or _IDENTITY.fullmatch(dispatched["code"]) is None
-                            or not isinstance(dispatched["detail"], str)
-                        ):
-                            raise ValueError("qualified navigation dispatch response is invalid")
-                        status, code, detail, dispatch_eligible = (
-                            "accepted",
-                            dispatched["code"],
-                            _text(dispatched["detail"], 2048),
-                            True,
-                        )
-                    except (ValueError, KeyError, TypeError) as error:
-                        code, detail = (
-                            "navigation_dispatch_failed",
-                            str(error) or "Qualified navigation dispatch failed.",
-                        )
-            return {
-                "status": status,
-                "code": code,
-                "detail": detail,
-                "previewId": request["previewId"],
-                "intentId": request["intentId"],
-                "dispatchEligible": dispatch_eligible,
-            }
+                    if (
+                        dispatched["status"] != "accepted"
+                        or not isinstance(dispatched["code"], str)
+                        or _IDENTITY.fullmatch(dispatched["code"]) is None
+                        or not isinstance(dispatched["detail"], str)
+                    ):
+                        raise ValueError("qualified navigation dispatch response is invalid")
+                    status, code, detail, dispatch_eligible = (
+                        "accepted",
+                        dispatched["code"],
+                        _text(dispatched["detail"], 2048),
+                        True,
+                    )
+                except (ValueError, KeyError, TypeError) as error:
+                    code, detail = (
+                        "navigation_dispatch_failed",
+                        str(error) or "Qualified navigation dispatch failed.",
+                    )
+        return {
+            "status": status,
+            "code": code,
+            "detail": detail,
+            "previewId": request["previewId"],
+            "intentId": request["intentId"],
+            "dispatchEligible": dispatch_eligible,
+        }
 
 
 def validate_flight_execution_preview(
     raw: object, selected: list[dict], destination: dict, map_ref: object
 ) -> tuple[list, list, dict]:
-    if len(selected) != 1 or selected[0].get("deviceClass") != "aircraft":
-        _fail("planner_contract_invalid", "Qualified aircraft execution requires one aircraft.")
+    if not selected or len({target.get("deviceClass") for target in selected}) != 1:
+        _fail("planner_contract_invalid", "Qualified execution requires one selected device class.")
     result = _exact(_copy(raw), {"routes", "outcomes", "execution"})
     routes, outcomes = validate_route_preview(
         {"routes": result["routes"], "outcomes": result["outcomes"]}, selected, destination

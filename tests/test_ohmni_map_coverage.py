@@ -33,8 +33,10 @@ def test_refuses_chunks_that_do_not_prove_a_common_epoch(tmp_path: Path) -> None
     second_root.mkdir()
     first, *_ = local_fixture._write_candidate_inputs(first_root)
     second, *_ = local_fixture._write_candidate_inputs(second_root)
-    observations = (second / "observations.jsonl").read_bytes().replace(
-        b'"connection_epoch":4', b'"connection_epoch":5'
+    observations = (
+        (second / "observations.jsonl")
+        .read_bytes()
+        .replace(b'"connection_epoch":4', b'"connection_epoch":5')
     )
     (second / "observations.jsonl").write_bytes(observations)
     manifest = json.loads((second / "manifest.json").read_text())
@@ -50,4 +52,7 @@ def test_reads_expected_tag_ids_from_the_office_inventory(tmp_path: Path) -> Non
     inventory = tmp_path / "office-tags.json"
     inventory.write_text(json.dumps({"expected_tag_ids": [7, 8]}))
 
-    assert __import__("tools.ohmni_map_coverage", fromlist=["_expected"])._expected(inventory) == [7, 8]
+    assert __import__("tools.ohmni_map_coverage", fromlist=["_expected"])._expected(inventory) == [
+        7,
+        8,
+    ]

@@ -31,6 +31,20 @@ MAP_OPERATIONS = ("list", "load", "save", "validate", "approve", "compare", "act
 class _FlightExecutionAdapter:
     def __init__(self, source: object) -> None:
         self.source = source
+        config = getattr(source, "config", None)
+        navigation = getattr(config, "navigation", None)
+        self.device_classes = frozenset(
+            (
+                {"aircraft"}
+                if navigation is not None and navigation.approval.mode == "flight"
+                else set()
+            )
+            | (
+                {"ground_vehicle"}
+                if getattr(config, "ground_navigation", None) is not None
+                else set()
+            )
+        )
 
     def preview(self, session: str, preview: Mapping[str, object]) -> Mapping[str, object]:
         handler = getattr(self.source, "preview_platform_navigation", None)
@@ -328,7 +342,13 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
 
         def perform():
             service.require_current()
-            state = service.session(session_id).current_state()
-            return service.observations.ingest(session_id, value, principal, state)
+            session = service.session(session_id)
+            accepted = service.observations.ingest(
+                session_id, value, principal, session.current_state()
+            )
+            registration = service.observations.registrations[accepted["source_id"]].to_dict()
+            approved = service.maps.approved_bundle(session_id, registration["reference"])
+            session.record_world_observation(accepted, registration, approved["bundle"]["manifest"])
+            return accepted
 
         return await call(perform)

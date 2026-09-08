@@ -238,6 +238,21 @@ class MappedFormationPlan:
         ):
             raise ValueError("formation assignments must exactly match the frozen navigation plan")
 
+    def revalidation_artifact(self, artifact: NavigationArtifact) -> NavigationArtifact:
+        if (
+            not isinstance(artifact, NavigationArtifact)
+            or artifact.map_pin != self.formation_zone.map_pin
+            or artifact.geometry_pin != self.formation_zone.geometry_pin
+        ):
+            raise ValueError("formation volume does not match the accepted map and geometry pins")
+        return _formation_artifact(
+            artifact,
+            self.formation_zone,
+            tuple(assignment.slot for assignment in self.assignments),
+            self.navigation_plan.config,
+            self.navigation_plan.destination_zone_id,
+        )
+
 
 FormationRefusalCode = Literal[
     "formation_not_permitted",

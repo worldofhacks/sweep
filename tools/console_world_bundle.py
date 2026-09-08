@@ -232,7 +232,7 @@ def _image_size(payload: bytes, mime: str) -> tuple[int, int]:
     raise BundleError("JPEG has no supported dimension header")
 
 
-def validate_image(value: object) -> dict[str, Any]:
+def validate_image(value: object, *, occupancy_only: bool = False) -> dict[str, Any]:
     image = _object(value, {"name", "dataUrl", "width", "height", "sha256"}, "image")
     _text(image["name"], "image.name", maximum=256)
     data_url = image["dataUrl"]
@@ -261,6 +261,13 @@ def validate_image(value: object) -> dict[str, Any]:
         and (width, height) == (image["width"], image["height"]),
         "image dimensions do not match its bytes",
     )
+    if occupancy_only:
+        from tools.occupancy_png import decode_occupancy_png
+
+        rows = decode_occupancy_png(payload)
+        _require(len(rows) == height and len(rows[0]) == width, "occupancy PNG dimensions differ")
+        return image
+
     import cv2
     import numpy as np
 
@@ -315,7 +322,7 @@ TAG_FIELDS = {
 }
 
 
-def validate_draft(value: object) -> list[dict[str, str]]:
+def validate_draft(value: object, *, occupancy_only: bool = False) -> list[dict[str, str]]:
     """Return bounded refusal details; incomplete drafts remain editable in the store."""
     issues: list[dict[str, str]] = []
 
@@ -378,7 +385,7 @@ def validate_draft(value: object) -> list[dict[str, str]]:
         add("metadata", error)
         metadata = None
     try:
-        image = validate_image(draft["image"])
+        image = validate_image(draft["image"], occupancy_only=occupancy_only)
     except (ValueError, TypeError, OverflowError) as error:
         add("image", error)
     ids: set[str] = set()
@@ -577,7 +584,7 @@ def world_bundle_hash(bundle: Mapping[str, Any], *, static_only: bool = False) -
     return content_hash(body)
 
 
-def validate_world_bundle(value: object) -> list[dict[str, str]]:
+def validate_world_bundle(value: object, *, occupancy_only: bool = False) -> list[dict[str, str]]:
     """Validate the independent #81 publication schema, hashes and derived bindings."""
     try:
         canonical_json(value)
@@ -673,7 +680,8 @@ def validate_world_bundle(value: object) -> list[dict[str, str]]:
                 "image": bundle["image"],
                 "features": features,
                 "tags": tags,
-            }
+            },
+            occupancy_only=occupancy_only,
         )
         _require(not issues, issues[0]["message"] if issues else "invalid draft")
         artifact_ids = set()

@@ -343,21 +343,27 @@ class FlightExecution:
         target = preview["selected"][0]
         arrival = {"xM": 2.0, "yM": 3.0, "zM": 1.5, "floorId": "floor-1", "frame": "world"}
         return {
-            "routes": [{
-                "target": target,
-                "waypoints": [
-                    {
-                        "xM": 0.0,
-                        "yM": 0.0,
-                        "zM": 1.5,
-                        "floorId": "floor-1",
-                        "frame": "world",
+            "routes": [
+                {
+                    "target": target,
+                    "waypoints": [
+                        {
+                            "xM": 0.0,
+                            "yM": 0.0,
+                            "zM": 1.5,
+                            "floorId": "floor-1",
+                            "frame": "world",
+                        },
+                        arrival,
+                    ],
+                    "arrivalSlot": {
+                        "slotId": "room-a-slot-1",
+                        "zoneId": "room-a",
+                        "position": arrival,
                     },
-                    arrival,
-                ],
-                "arrivalSlot": {"slotId": "room-a-slot-1", "zoneId": "room-a", "position": arrival},
-                "holdBehavior": "hover",
-            }],
+                    "holdBehavior": "hover",
+                }
+            ],
             "outcomes": [
                 {
                     "target": target,
@@ -414,6 +420,33 @@ def test_qualified_flight_preview_dispatches_the_exact_retained_route(tmp_path):
         case.service.close()
 
 
+def test_qualified_fleet_preview_requires_and_dispatches_every_selected_route(tmp_path):
+    class FleetExecution(FlightExecution):
+        def preview(self, session, preview):
+            result = super().preview(session, preview)
+            second = copy.deepcopy(result["routes"][0])
+            second["target"] = preview["selected"][1]
+            second["arrivalSlot"]["slotId"] = "room-a-slot-2"
+            second["waypoints"][-1]["xM"] = 4.0
+            second["arrivalSlot"]["position"]["xM"] = 4.0
+            result["routes"].append(second)
+            result["outcomes"].append({**result["outcomes"][0], "target": second["target"]})
+            return result
+
+    flight = FleetExecution()
+    case = Case(tmp_path, flight_execution=flight)
+    try:
+        case.state = live_state(("aircraft", "aircraft"))
+        envelope = case.preview()
+        assert envelope["preview"]["dispatchEligible"] is True
+        assert [route["target"]["id"] for route in envelope["preview"]["routes"]] == [1, 2]
+        result = case.service.confirm("test-session", case.confirmation(envelope))
+        assert result["status"] == "accepted"
+        assert flight.confirm_calls == [("test-session", envelope["preview"])]
+    finally:
+        case.service.close()
+
+
 def test_changed_state_invalidates_qualified_preview_without_dispatch(tmp_path):
     flight = FlightExecution()
     case = Case(tmp_path, flight_execution=flight)
@@ -427,6 +460,20 @@ def test_changed_state_invalidates_qualified_preview_without_dispatch(tmp_path):
         assert result["status"] == "invalidated"
         assert result["code"] == "frozen_inputs_changed"
         assert flight.confirm_calls == []
+    finally:
+        case.service.close()
+
+
+def test_fleet_executor_cannot_override_a_target_readiness_refusal(tmp_path):
+    flight = FlightExecution()
+    case = Case(tmp_path, flight_execution=flight)
+    try:
+        case.state = live_state(("aircraft",))
+        case.state["drones"][0]["control_authority"] = False
+        preview = case.preview()["preview"]
+        assert preview["dispatchEligible"] is False
+        assert preview["outcomes"][0]["code"] == "node_not_ready"
+        assert flight.preview_calls == []
     finally:
         case.service.close()
 
@@ -450,7 +497,8 @@ def test_flight_executor_preserves_ground_and_mixed_review_only_previews(tmp_pat
 
 
 @pytest.mark.parametrize(
-    "change", ["config", "map", "approval", "selection", "capability", "epoch", "pose", "estop"]
+    "change",
+    ["config", "map", "approval", "selection", "capability", "epoch", "flight_state", "estop"],
 )
 def test_confirmation_invalidates_on_any_frozen_input_change(case, change):
     envelope = case.preview()
@@ -466,8 +514,8 @@ def test_confirmation_invalidates_on_any_frozen_input_change(case, change):
         case.state["enabled_intent_names"] = []
     elif change == "epoch":
         case.state["drones"][0]["connection_epoch"] = 2
-    elif change == "pose":
-        case.state["drones"][0]["telemetry"]["x"] = 1
+    elif change == "flight_state":
+        case.state["drones"][0]["flight_state"] = "landed"
     else:
         case.state["estop"] = True
     result = case.service.confirm("test-session", case.confirmation(envelope))

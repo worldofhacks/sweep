@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
@@ -27,6 +27,9 @@ from relay.observations import ObservationSubmission
 from .models import EncoderPoseSample, GroundStatus, RangeScan
 from .paired_encoder import MAX_PAIR_SKEW_NS
 from .return_controller import ApprovedReturnRoute, ReturnController, read_approval_key
+
+if TYPE_CHECKING:
+    from planner.ground_navigation import GroundNavigationAdmission, GroundNavigationDeployment
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -92,6 +95,7 @@ class GroundRuntimeConfig:
     reconnect_initial_delay_s: float = 0.25
     reconnect_max_delay_s: float = 5.0
     return_approval: ApprovedReturnRoute | None = None
+    navigation: GroundNavigationDeployment | None = None
     monotonic: Callable[[], float] = time.monotonic
     event_ids: Callable[[], str] = lambda: str(uuid.uuid4())
     relay_connect_host: str | None = None
@@ -112,10 +116,7 @@ class GroundRuntimeConfig:
         )
         if any(value is not None for value in capture_values):
             if not all(
-                isinstance(value, str)
-                and value
-                and value == value.strip()
-                and value.isprintable()
+                isinstance(value, str) and value and value == value.strip() and value.isprintable()
                 for value in capture_values
             ):
                 raise ValueError("capture pose requires source, boot, and clock mapping identities")
@@ -157,6 +158,16 @@ class GroundRuntimeConfig:
             raise ValueError("odometry origin ID must be bounded non-empty text")
         if self.return_approval is not None and not self.odom_origin_id:
             raise ValueError("approved return requires an odometry origin ID")
+        if self.navigation is not None:
+            device = self.navigation.device(self.device_id)
+            if (device.odom_origin_id, device.pose_source_id, device.odom_frame) != (
+                self.odom_origin_id,
+                self.pose_source_id,
+                self.odom_frame,
+            ):
+                raise ValueError("navigation node source or odometry origin differs from approval")
+            if device.identity_source_id != self.status_source_id:
+                raise ValueError("navigation identity source differs from the node status source")
         mount = (
             self.lidar_mount_x_m,
             self.lidar_mount_y_m,
@@ -201,6 +212,9 @@ class OhmniRuntime:
         self._connection_authenticated = False
         self._transport_stopped = True
         self._command_tasks: set[asyncio.Task[None]] = set()
+        self._navigation_generation = 0
+        self._navigation_active = False
+        self._spent_navigation: dict[str, int] = {}
         self._return_controller = (
             None
             if config.return_approval is None
@@ -306,7 +320,10 @@ class OhmniRuntime:
                     self._membership(
                         "join",
                         adapter_id=self.config.adapter_id,
-                        capabilities=list(self.device.capabilities),
+                        capabilities=[
+                            *self.device.capabilities,
+                            *(["navigate"] if self.config.navigation is not None else []),
+                        ],
                         node_type="ground",
                     )
                 )
@@ -478,6 +495,12 @@ class OhmniRuntime:
                 and self._pose_event_id is not None
                 and self.device.enable()
             )
+            if self._ready and self.config.navigation is not None:
+                try:
+                    self.device.stop()
+                    self._ready = self.device.stop_confirmed()
+                except Exception:
+                    self._ready = False
             if not self._ready:
                 self._local_stop(refusal or "ground_guard_not_ready", disable=True)
             else:
@@ -539,6 +562,41 @@ class OhmniRuntime:
             assert self._loop is not None
             self._track_command_task(self._loop.create_task(self._complete_return(command)))
             return
+        if command.operation is CommandOperation.GROUND_NAVIGATE:
+            navigation = self.config.navigation
+            assert navigation is not None
+            now = self._relay_now_ms()
+            self._spent_navigation = {
+                identity: expiry
+                for identity, expiry in self._spent_navigation.items()
+                if expiry > now
+            }
+            route_id = command.args["route_id"]
+            try:
+                admission = navigation.admit_route(
+                    command.args["navigation_route"],
+                    route_id=route_id,
+                    session=self.config.session,
+                    device_id=self.config.device_id,
+                    connection_epoch=command.connection_epoch,
+                    roster_version=command.roster_version,
+                    now_ms=now,
+                )
+                if route_id in self._spent_navigation or len(self._spent_navigation) >= 256:
+                    raise ValueError("navigation route was consumed or route capacity is exhausted")
+            except (ValueError, OSError) as error:
+                self._enqueue(self._ack(command, "failed", "navigation_refused", str(error)))
+                return
+            self._spent_navigation[route_id] = admission.expires_at
+            self._navigation_active = True
+            self._enqueue(self._ack(command, "executing"))
+            assert self._loop is not None
+            self._track_command_task(
+                self._loop.create_task(
+                    self._complete_navigation(command, admission, self._navigation_generation)
+                )
+            )
+            return
         if command.operation is CommandOperation.HOVER:
             self._enqueue(self._ack(command, "executing"))
             stopped = self._local_stop("remote_hold", disable=False)
@@ -588,6 +646,70 @@ class OhmniRuntime:
             self._ack(command, "failed", outcome.reason or "return_failed", outcome.detail)
         )
 
+    async def _complete_navigation(
+        self, command: CommandFrame, admission: GroundNavigationAdmission, generation: int
+    ) -> None:
+        navigation = self.config.navigation
+        assert navigation is not None
+        controller = ReturnController(
+            admission.route,
+            status=self.device.status,
+            scan=self.device.latest_scan,
+            drive_velocity=self.device.drive_velocity,
+            motion_done=self.device.motion_done,
+            stop=self.device.stop,
+            grant_active=lambda: (
+                generation == self._navigation_generation
+                and command.roster_version == self._roster_version
+                and self._return_grant_active()
+                and navigation.check_active(admission, now_ms=self._relay_now_ms())
+            ),
+            epoch=lambda: self._epoch,
+            session=self.config.session,
+            device_id=self.config.device_id,
+            odom_origin_id=self.config.odom_origin_id or "",
+            pose_source_id=self.config.pose_source_id,
+            odom_frame=self.config.odom_frame,
+            monotonic=self.config.monotonic,
+            require_fresh_arrival=True,
+            allow_resume=False,
+        )
+        try:
+            outcome = await controller.run()
+            stopped = False
+            if outcome.completed:
+                self.device.stop()
+                status = self.device.status()
+                stopped = (
+                    self.device.stop_confirmed()
+                    and status.state in {"idle", "stopped"}
+                    and type(status.t_ms) is int
+                    and 0
+                    <= int(self.config.monotonic() * 1000) - status.t_ms
+                    <= admission.route.pose_max_age_ms
+                )
+            if not outcome.completed or not stopped:
+                self._local_stop(outcome.reason or "local_stop_unconfirmed", disable=True)
+            if outcome.completed and stopped:
+                self._enqueue(self._ack(command, "completed"))
+            else:
+                self._enqueue(
+                    self._ack(
+                        command,
+                        "failed",
+                        outcome.reason or "local_stop_unconfirmed",
+                        outcome.detail or "navigation STOP did not complete",
+                    )
+                )
+        except asyncio.CancelledError:
+            self._local_stop("navigation_cancelled", disable=True)
+            raise
+        except (OSError, ValueError, RuntimeError) as error:
+            self._local_stop("navigation_failed", disable=True)
+            self._enqueue(self._ack(command, "failed", "navigation_failed", str(error)))
+        finally:
+            self._navigation_active = False
+
     async def _complete_motion(self, command: CommandFrame, motion: str) -> None:
         while True:
             await asyncio.sleep(0.02)
@@ -634,6 +756,7 @@ class OhmniRuntime:
         if command.operation not in {
             CommandOperation.GROUND_VELOCITY,
             CommandOperation.GROUND_RETURN,
+            CommandOperation.GROUND_NAVIGATE,
             CommandOperation.HOVER,
             CommandOperation.ESTOP,
         }:
@@ -642,6 +765,13 @@ class OhmniRuntime:
             return None
         if command.operation is CommandOperation.GROUND_RETURN and self._return_controller is None:
             return "return_route_unavailable", "no externally approved return route is configured"
+        if command.operation is CommandOperation.GROUND_NAVIGATE and self.config.navigation is None:
+            return (
+                "navigation_unavailable",
+                "no approved ground navigation deployment is configured",
+            )
+        if self._navigation_active or self._command_tasks:
+            return "ground_motion_active", "another ground movement has not finished"
         if self._operator_rearm_required:
             return "operator_rearm_required", "physical operator rearm is required after estop"
         if self._lease_expired():
@@ -717,20 +847,47 @@ class OhmniRuntime:
                 confidence=confidence,
             )
         )
-        self._enqueue(
-            self._observation(
-                self.config.status_source_id,
-                self.config.odom_frame,
-                receipt,
-                {
-                    "kind": "status",
-                    "code": "ground_runtime",
-                    "detail": status.state,
-                    "capabilities": list(self.device.capabilities),
-                },
-                confidence=confidence,
+        if self.config.navigation is not None:
+            deployment = self.config.navigation
+            device = deployment.device(self.config.device_id)
+            self._enqueue(
+                self._observation(
+                    self.config.status_source_id,
+                    self.config.odom_frame,
+                    receipt,
+                    {
+                        "kind": "status",
+                        "code": "ground_navigation_identity",
+                        "detail": json.dumps(
+                            {
+                                "odom_origin_id": self.config.odom_origin_id,
+                                "pose_source_id": self.config.pose_source_id,
+                                "registration_id": device.registration_id,
+                                "configuration_sha256": deployment.configuration_sha256,
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        "capabilities": ["ground_drive", "navigate"],
+                    },
+                    confidence=confidence,
+                )
             )
-        )
+        else:
+            self._enqueue(
+                self._observation(
+                    self.config.status_source_id,
+                    self.config.odom_frame,
+                    receipt,
+                    {
+                        "kind": "status",
+                        "code": "ground_runtime",
+                        "detail": status.state,
+                        "capabilities": list(self.device.capabilities),
+                    },
+                    confidence=confidence,
+                )
+            )
         scan = self.device.latest_scan()
         if scan is not None and self._lidar_mount_configured and scan.t_ms != self._last_scan_t_ms:
             self._last_scan_t_ms = scan.t_ms
@@ -926,6 +1083,7 @@ class OhmniRuntime:
         return "ground_safety_unconfigured" if guard is None else guard()
 
     def _local_stop(self, reason: str, *, disable: bool, publish: bool = True) -> bool:
+        self._navigation_generation += 1
         self._ready = False
         self._watchdog_state = "failsafe" if disable else "hold"
         self._local_stop_ready = False
@@ -1082,6 +1240,12 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
         "--return-approval-key-file", default=os.environ.get("SWEEP_RETURN_APPROVAL_KEY_FILE")
     )
     parser.add_argument(
+        "--navigation-config", default=os.environ.get("SWEEP_GROUND_NAVIGATION_CONFIG")
+    )
+    parser.add_argument(
+        "--navigation-key-file", default=os.environ.get("SWEEP_GROUND_NAVIGATION_KEY_FILE")
+    )
+    parser.add_argument(
         "--lidar-mount-x-m", type=float, default=os.environ.get("SWEEP_LIDAR_MOUNT_X_M")
     )
     parser.add_argument(
@@ -1098,9 +1262,20 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
         parser.error("return approval and approval key files must be supplied together")
     if args.return_approval_file and not args.odom_origin_id:
         parser.error("return approval requires an odometry origin ID")
+    if bool(args.navigation_config) != bool(args.navigation_key_file):
+        parser.error("ground navigation configuration and key files must be supplied together")
+    if args.navigation_config and not args.odom_origin_id:
+        parser.error("ground navigation requires an odometry origin ID")
     if not args.relay or not args.session or not args.token or args.device_id is None:
         parser.error("relay, session, device ID, and adapter token are required")
     try:
+        navigation = None
+        if args.navigation_config:
+            from planner.ground_navigation import GroundNavigationDeployment
+
+            navigation = GroundNavigationDeployment.load(
+                Path(args.navigation_config), read_approval_key(Path(args.navigation_key_file))
+            )
         approval = (
             None
             if not args.return_approval_file
@@ -1125,6 +1300,7 @@ def parse_args(argv: Sequence[str] | None = None) -> GroundRuntimeConfig:
         relay_clock_offset_ms=args.relay_clock_offset_ms,
         telemetry_hz=args.telemetry_hz,
         return_approval=approval,
+        navigation=navigation,
         odom_origin_id=args.odom_origin_id,
         lidar_mount_x_m=args.lidar_mount_x_m,
         lidar_mount_y_m=args.lidar_mount_y_m,

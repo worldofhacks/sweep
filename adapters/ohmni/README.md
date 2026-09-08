@@ -23,7 +23,7 @@ python3 adapters/ohmni/tools/build_payload.py /private/ohmni-artifacts /private/
 adapters/ohmni/install.sh "$ADB_SERIAL" /private/ohmni-runtime.tar
 ```
 
-The builder produces an uncompressed tar because the measured robot’s Toybox extraction path is reliable for that format. It omits tests, tools, Git data, caches, logs, and environment files. The payload contains no keys, map artifacts, or approval records.
+The builder produces an uncompressed tar because the measured robot’s Toybox extraction path is reliable for that format. It omits tests, development scripts, Git data, caches, logs, and environment files. The payload contains no keys, map artifacts, or approval records.
 
 Create `/data/local/sweep/node.env` locally with mode 600. The example names the configuration values but contains no real endpoint or credential:
 
@@ -97,6 +97,67 @@ The node reads `SWEEP_RETURN_APPROVAL_FILE` and verifies it using the separate `
 At command admission, the controller checks the approved session, device ID, connection epoch, odometry-origin ID, pose source, and odometry frame against the live node. A confirmed start begins at the fixed start; a confirmed resume begins only inside one of the same pinned segment footprints. Before every turn and every forward pulse it requires a current external relay grant, a qualified pose in that epoch, and a current 360-degree scan aligned with that pose. Every scan bin must clear the robot footprint, stopping distance, and one forward pulse. Each approved polygon is simple, and its fixed segment must maintain that same clearance from every boundary. Before each pulse, the controller verifies the current pose and remaining direct segment preserve the clearance. It never asks the planner for a new route and it never commands negative linear velocity. A lost grant, stale pose, changed epoch, changed source/frame binding, stale scan, incomplete footprint clearance, missing record, hash mismatch, or departure from the footprint stops and refuses the return.
 
 The adapter acknowledges completion after the final pose is inside the approved arrival tolerance. `accepted` and `executing` acknowledgements do not complete a return. A local stop remains in effect after arrival; no return outcome clears an estop latch or reenables a stopped robot.
+
+## Named ground navigation
+
+Named navigation needs the same externally signed deployment on the relay host and
+each selected ground node. Set `SWEEP_GROUND_NAVIGATION_CONFIG` to that JSON file
+and `SWEEP_GROUND_NAVIGATION_KEY_FILE` to its separate approval key. The key file
+must have mode 600. The node also requires `SWEEP_ODOM_ORIGIN_ID`; its local pose
+source, status source, odometry frame, and origin must match the deployment.
+An unconfigured node does not advertise `navigate`.
+
+The signed document contains these fields:
+
+- `v: 1`, `approval_id`, `approved_by`, and `expires_at` in relay Unix milliseconds;
+- `approved_map`, the complete `{reference, approval, bundle}` returned by the map
+  authoring store's `approved_bundle()` API;
+- `devices`, one record per ground device with `device_id`, `pose_source_id`,
+  `world_pose_source_id`, `identity_source_id`, `registration_id`, `odom_origin_id`,
+  `odom_frame`, `world_to_odom`, and `limits`;
+- `signature`, produced by `relay.auth.sign_event()` over the other fields.
+
+`world_to_odom` carries measured `x_m`, `y_m`, `yaw_deg`, and `registration_id`.
+The three sources have distinct roles: `pose_source_id` identifies local odometry,
+`world_pose_source_id` identifies the host's qualified world projection, and
+`identity_source_id` identifies the node's canonical status observation. The latter
+publishes `ground_navigation_identity` with the origin, local pose source,
+registration, and deployment hash. Raw odometry alone cannot establish a robot's
+position on the approved map.
+
+`limits` contains measured `footprint_radius_m`, `position_uncertainty_m`, and
+`stopping_distance_m`, plus `speed_m_s`, `yaw_rate_deg_s`, `pulse_s`,
+`arrival_tolerance_m`, `pose_max_age_ms`, and `route_timeout_ms`. Software ceilings
+are 0.18 m/s, 45 degrees/s, 0.2 seconds per pulse, 500 ms pose age, and ten minutes
+per route. These ceilings do not establish safe physical values for a robot.
+
+Ground navigation accepts opaque 8-bit grayscale, non-interlaced PNG occupancy
+maps, capped at 262,144 pixels. The planner treats only image pixels equal to 255 as free. Unknown pixels,
+obstacles, and cells outside the geofence block travel. It reserves the footprint,
+position uncertainty, stopping distance, one pulse of travel, and arrival tolerance
+around every segment. Arrival tolerance also bounds tracking deviation. Waiting
+robots and earlier arrivals occupy reserved space; selected robots execute in
+order and receive distinct arrival positions within the named zone.
+Every admitted ground node, including unselected robots, needs a deployment
+binding and a fresh qualified world pose so the planner can reserve its footprint.
+
+Confirmation freezes the map revision, deployment hash, selected IDs, roster,
+epochs, pose bindings, starts, and routes. Any invalidation retires the review.
+The node independently verifies each signed route against its pinned deployment
+before converting world points to local odometry. During execution, current pose,
+full scan clearance, local authority, configuration integrity, and route expiry
+remain required. Arrival needs a fresh measured pose and confirmed STOP. HOLD,
+failure, and reconnection require a fresh review; heartbeat recovery cannot resume
+the consumed route.
+
+The node verifies image checksums, bounded decompression, and pixels using the
+Python standard library. The payload builder includes the portable map validators
+and smoke-imports navigation under the packaged musl interpreter. The PNG decoder
+implements the five [PNG filter types](https://www.w3.org/TR/png-3/#9Filters).
+The fake-device integration exercises the real
+relay transport and node controller, but hardware qualification still requires
+measured source registration, clearance, stopping distance, and supervised motion
+evidence for the installed robot.
 
 ## Qualification record
 

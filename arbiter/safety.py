@@ -484,7 +484,10 @@ class SafetyArbiter:
                 reason=RefusalReason.STALE_SELECTION,
                 detail="plan selection differs from authoritative state",
             )
-        if plan.intent_name in _CONFIRMED_INTENTS and plan.confirmed is not True:
+        if (
+            plan.intent_name in _CONFIRMED_INTENTS
+            or (plan.navigation is not None and plan.navigation.formation is not None)
+        ) and plan.confirmed is not True:
             return Refusal(
                 intent_id=plan.intent_id,
                 roster_version=snapshot.roster_version,

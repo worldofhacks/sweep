@@ -10,8 +10,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from planner.mapped_formations import FormationLayout, FormationZone
 from planner.navigation import (
     ArrivalSlot,
+    ArtifactPin,
     MotionConfig,
     NavigationArtifact,
     NavigationPermission,
@@ -20,6 +22,7 @@ from planner.navigation import (
 from planner.navigation_authorization import NavigationApproval, content_digest
 from planner.navigation_runtime import (
     MAX_AIRCRAFT,
+    FormationBinding,
     NavigationExecutionConfig,
     NavigationFrame,
     NavigationRuntime,
@@ -454,12 +457,18 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
         raise ValueError("home zone must have explicit arrival permission")
     execution_fields = set(NavigationExecutionConfig.__dataclass_fields__)
     execution_raw = raw["execution"]
-    if isinstance(execution_raw, dict) and set(execution_raw) == execution_fields - {
-        "max_aircraft"
-    }:
-        execution = {**execution_raw, "max_aircraft": 4}
-    else:
-        execution = dict(_fields(execution_raw, execution_fields, "navigation execution"))
+    optional_execution_fields = {"max_aircraft", "formation_bindings"}
+    if (
+        not isinstance(execution_raw, dict)
+        or not set(execution_raw) <= execution_fields
+        or execution_fields - set(execution_raw) - optional_execution_fields
+    ):
+        raise ValueError("navigation execution fields do not match the contract")
+    execution = {
+        **execution_raw,
+        "max_aircraft": execution_raw.get("max_aircraft", 4),
+        "formation_bindings": execution_raw.get("formation_bindings", []),
+    }
     execution["motion"] = MotionConfig(
         **_fields(execution["motion"], set(MotionConfig.__dataclass_fields__), "navigation motion")
     )
@@ -485,6 +494,48 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
             frame["control_pins"] = ControlLocalizationPins(**pin)
         frames.append(NavigationFrame(**frame))
     execution["frames"] = tuple(frames)
+    bindings_raw = execution["formation_bindings"]
+    if not isinstance(bindings_raw, list):
+        raise ValueError("formation bindings must be a list")
+    bindings = []
+    for value in bindings_raw:
+        binding = _fields(value, {"shape", "zone", "layout"}, "formation binding")
+        zone = dict(
+            _fields(
+                binding["zone"],
+                set(FormationZone.__dataclass_fields__),
+                "formation zone",
+            )
+        )
+        for name in ("map_pin", "geometry_pin"):
+            zone[name] = ArtifactPin(
+                **_fields(
+                    zone[name],
+                    set(ArtifactPin.__dataclass_fields__),
+                    f"formation {name}",
+                )
+            )
+        polygon = zone["polygon_xy"]
+        if not isinstance(polygon, list) or any(not isinstance(point, list) for point in polygon):
+            raise ValueError("formation zone polygon must be a list of coordinate lists")
+        zone["polygon_xy"] = tuple(tuple(point) for point in polygon)
+        layout = dict(
+            _fields(
+                binding["layout"],
+                set(FormationLayout.__dataclass_fields__),
+                "formation layout",
+            )
+        )
+        layout["center"] = Pose(
+            **_fields(layout["center"], set(Pose.__dataclass_fields__), "formation center")
+        )
+        if not isinstance(layout["altitude_offsets_m"], list):
+            raise ValueError("formation altitude offsets must be a list")
+        layout["altitude_offsets_m"] = tuple(layout["altitude_offsets_m"])
+        bindings.append(
+            FormationBinding(binding["shape"], FormationZone(**zone), FormationLayout(**layout))
+        )
+    execution["formation_bindings"] = tuple(bindings)
     config = NavigationExecutionConfig(**execution)
     approval_path = local("approval_file")
     key_path = local("approval_key_file")

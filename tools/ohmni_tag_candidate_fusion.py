@@ -845,7 +845,8 @@ def fuse_observations(
         "fusion observation limit is not approved",
     )
     _require(
-        1 <= len(observations) <= maximum_observations, "observation count is outside the fusion bound"
+        1 <= len(observations) <= maximum_observations,
+        "observation count is outside the fusion bound",
     )
     candidate_mode = request.get("candidate_mode", "world_registered")
     _require(

@@ -8,6 +8,7 @@ import pytest
 
 from perception.test_world_localization import evidence, measured_geometry, pins
 from perception.world_localization_runtime import WorldLocalizationRuntimeConfig
+from planner.mapped_formations import FormationLayout, FormationZone
 from planner.models import Plan, Position
 from planner.navigation import (
     ArrivalSlot,
@@ -19,6 +20,7 @@ from planner.navigation import (
 from planner.navigation_authorization import NavigationApproval
 from planner.navigation_deployment import load_navigation_deployment
 from planner.navigation_runtime import (
+    FormationBinding,
     NavigationExecutionConfig,
     NavigationFrame,
     NavigationRuntime,
@@ -114,6 +116,65 @@ def test_file_deployment_loads_real_generated_geometry_and_prepares_route(
     assert isinstance(plan, Plan)
     assert runtime.check(plan, plan.commands[0], snapshot) is None
     assert plan.commands[-2].parameters["x"] == 2.1
+
+
+def test_deployment_loads_a_signed_mapped_formation_binding(tmp_path, generated_geometry):
+    path = deployment_files(tmp_path, generated_geometry)
+    raw = json.loads(path.read_text())
+    bundle, geometry, accepted = generated_geometry
+    slot = ArrivalSlot("home-a", "atrium", Pose(2.1, 1.8, 1.8, "level_1"), 0.2, 0.2)
+    artifact = NavigationArtifact.from_geometry_directory(bundle, geometry, accepted, (slot,))
+    artifact = replace(
+        artifact,
+        zones=tuple(
+            replace(zone, owner_approved=zone.zone_id == "atrium") for zone in artifact.zones
+        ),
+    )
+    binding = FormationBinding(
+        "column",
+        FormationZone(
+            "approved-lobby",
+            "level_1",
+            ((0.2, 0.2), (3.0, 0.2), (3.0, 3.0), (0.2, 3.0), (0.2, 0.2)),
+            0.5,
+            2.5,
+            0.2,
+            True,
+            True,
+            artifact.map_pin,
+            artifact.geometry_pin,
+        ),
+        FormationLayout(Pose(1.6, 1.6, 1.8, "level_1"), 0.0, 0.8, (0.0, 0.0)),
+    )
+    config = NavigationExecutionConfig(
+        "level_1",
+        MotionConfig(0.1, 0.1, 0.01, 0.01, 0.05, 0.02, 0.2),
+        0.2,
+        0.04,
+        500,
+        0.5,
+        5000,
+        (NavigationFrame(1, "fixture-enu-world", IDENTITY),),
+        formation_bindings=(binding,),
+    )
+    permission = NavigationPermission(frozenset({"atrium"}))
+    raw["execution"] = asdict(config)
+    path.write_text(json.dumps(raw))
+    approval = json.loads((tmp_path / "approval.json").read_text())
+    unsigned = {name: value for name, value in approval.items() if name != "signature"}
+    unsigned["configuration_sha256"] = navigation_configuration_digest(
+        artifact,
+        config,
+        permission,
+        "atrium",
+    )
+    (tmp_path / "approval.json").write_text(
+        json.dumps({**unsigned, "signature": sign_event(unsigned, KEY)})
+    )
+
+    deployment = load_navigation_deployment(path)
+
+    assert deployment.config.formation_bindings == (binding,)
 
 
 def test_editing_loaded_deployment_invalidates_route_before_dispatch(tmp_path, generated_geometry):
