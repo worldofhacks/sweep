@@ -43,6 +43,7 @@ from tools.ohmni_tag_candidate_fusion import (
 MAX_ARCHIVES = 64
 MAX_AGGREGATE_BYTES = 64 * 1024 * 1024
 MAX_CONTINUITY_GAP_NS = 100_000_000
+MAX_TAG_ID = 586
 
 
 def _write_snapshot(path: Path, payload: bytes) -> None:
@@ -186,6 +187,25 @@ def _timestamp(value: object, name: str) -> dict[str, object]:
     ):
         raise ValueError(f"{name} is invalid")
     return timestamp
+
+
+def _expected_tag_inventory(path: Path) -> tuple[bytes, list[int]]:
+    payload = _read_regular(path, MAX_MANIFEST_BYTES)
+    try:
+        raw = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("expected tag inventory is not valid JSON") from error
+    if isinstance(raw, dict):
+        raw = raw.get("expected_tag_ids")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            "expected tags must be a non-empty JSON array or expected_tag_ids object field"
+        )
+    if any(type(identifier) is not int or not 0 <= identifier <= MAX_TAG_ID for identifier in raw):
+        raise ValueError(f"expected tag IDs must be integers from 0 through {MAX_TAG_ID}")
+    if len(set(raw)) != len(raw):
+        raise ValueError("expected tag IDs must be unique")
+    return payload, sorted(raw)
 
 
 def _collection(
@@ -339,6 +359,7 @@ def build(
     output: Path,
     maximum_continuity_gap_ns: int,
     collection_path: Path | None = None,
+    expected_tags_path: Path | None = None,
 ) -> dict[str, object]:
     if not 1 <= len(archives) <= MAX_ARCHIVES:
         raise ValueError(f"archive count must be from 1 through {MAX_ARCHIVES}")
@@ -351,6 +372,10 @@ def build(
     request = _request(_object(request_payload, "fusion request"))
     if request["candidate_mode"] != "local_odom":
         raise ValueError("multi-archive candidate requires a closed local_odom fusion request")
+    expected_tags_payload: bytes | None = None
+    expected_tags: list[int] | None = None
+    if expected_tags_path is not None:
+        expected_tags_payload, expected_tags = _expected_tag_inventory(expected_tags_path)
     (
         calibration,
         mount,
@@ -461,6 +486,10 @@ def build(
         maximum_observations=MAX_MULTI_ARCHIVE_OBSERVATIONS,
     )
     candidate_ids = {item["tag_id"] for item in result["candidates"]}
+    if expected_tags is not None:
+        missing = sorted(set(expected_tags).difference(candidate_ids))
+        if missing:
+            raise ValueError(f"expected tag candidates are missing IDs: {missing}")
     if shared - candidate_ids:
         raise ValueError("shared tag observations do not agree across archives")
     if result["candidate_frame"] != request["odom_frame"]:
@@ -481,6 +510,8 @@ def build(
         (inputs / "request.json").write_bytes(request_payload)
         _snapshot_pinned(inputs, calibration_pin, calibration_payload, "calibration")
         _snapshot_pinned(inputs, mount_pin, mount_payload, "mount")
+        if expected_tags_payload is not None:
+            _write_snapshot(inputs / "expected-tags.json", expected_tags_payload)
         for index, payload in enumerate(manifest_payloads):
             (inputs / f"archive-{index:03d}-manifest.json").write_bytes(payload)
         if collection_payload is not None and collection is not None:
@@ -499,6 +530,13 @@ def build(
             "maximum_gap_ns": maximum_continuity_gap_ns,
             "checked_boundaries": max(0, len(archives) - 1),
         }
+        if expected_tags is not None and expected_tags_payload is not None:
+            result["expected_tags"] = {
+                "path": "inputs/expected-tags.json",
+                "sha256": _digest(expected_tags_payload),
+            }
+            result["expected_tag_ids"] = expected_tags
+            result["expected_tag_count"] = len(expected_tags)
         if collection_payload is not None and collection is not None:
             result["collection"] = {
                 "path": "inputs/collection.json",
@@ -532,6 +570,7 @@ def build_map(
     output: Path,
     maximum_continuity_gap_ns: int,
     collection_path: Path | None = None,
+    expected_tags_path: Path | None = None,
 ) -> dict[str, object]:
     output = output.absolute()
     if output.exists() or output.is_symlink():
@@ -548,6 +587,7 @@ def build_map(
             tag_output,
             maximum_continuity_gap_ns,
             collection_path,
+            expected_tags_path,
         )
         inputs = tag_output / "inputs"
         combined = _read_regular(inputs / "combined-observations.jsonl", MAX_AGGREGATE_BYTES)
@@ -603,6 +643,7 @@ def build_map(
             *(archive["path"] for archive in tags["archives"]),
             *(archive["path"] for archive in tags.get("raw_archives", [])),
             *([tags["collection"]["path"]] if "collection" in tags else []),
+            *([tags["expected_tags"]["path"]] if "expected_tags" in tags else []),
             calibration_pin["path"],
             mount_pin["path"],
         ]
@@ -644,6 +685,10 @@ def build_map(
             },
             "tag_count": len(tags["candidates"]),
         }
+        if "expected_tags" in tags:
+            manifest["inputs"]["expected_tags"] = tags["expected_tags"]
+            manifest["expected_tag_ids"] = tags["expected_tag_ids"]
+            manifest["expected_tag_count"] = tags["expected_tag_count"]
         if "collection" in tags:
             manifest["collection"] = tags["collection"]
             manifest["raw_observations"] = tags["raw_observations"]
@@ -668,6 +713,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--lidar-config", required=True, type=Path)
     parser.add_argument("--lidar-mount-id", required=True)
     parser.add_argument("--collection", required=True, type=Path)
+    parser.add_argument("--expected-tags", type=Path)
     parser.add_argument("--maximum-continuity-gap-ns", required=True, type=int)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("archives", nargs="+", type=Path)
@@ -682,6 +728,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.output,
             args.maximum_continuity_gap_ns,
             args.collection,
+            args.expected_tags,
         )
     except (OSError, TypeError, ValueError) as error:
         raise SystemExit(f"ohmni multi-archive tag candidate failed: {error}") from error

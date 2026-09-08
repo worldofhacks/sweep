@@ -11,6 +11,7 @@ import pytest
 
 from relay.observations import Observation, decode_observation
 from tools import ohmni_multi_archive_tag_candidate
+from tools.ohmni_local_map_candidate import MAX_MANIFEST_BYTES
 from tools.ohmni_multi_archive_tag_candidate import (
     MAX_MULTI_ARCHIVE_OBSERVATIONS,
     build,
@@ -67,6 +68,11 @@ def _bind_request_observations(request: Path, events: list[Observation]) -> None
     payload = b"".join(event.encode() + b"\n" for event in events)
     document["observations"]["sha256"] = hashlib.sha256(payload).hexdigest()
     request.write_text(json.dumps(document))
+
+
+def _inventory(path: Path, tag_ids: list[int]) -> Path:
+    path.write_text(json.dumps({"expected_tag_ids": tag_ids}, indent=2) + "\n")
+    return path
 
 
 def _collection(path: Path, archives: list[Path], handoff: Observation) -> Path:
@@ -160,6 +166,106 @@ def test_build_map_records_every_combined_scan_and_pins_its_inputs(tmp_path: Pat
         result["files"]["inputs/combined-observations.jsonl"]["sha256"]
         == hashlib.sha256(b"".join(event.encode() + b"\n" for event in events)).hexdigest()
     )
+
+
+def test_expected_tags_require_actual_fused_candidates_before_publishing(tmp_path: Path) -> None:
+    archive, config, request, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
+    events = _events(archive)
+    raw_tag = events[2]
+    events.append(
+        Observation(
+            replace(
+                raw_tag.submission,
+                event_id="tag-8-raw",
+                payload={
+                    **raw_tag.submission.payload,
+                    "tag_id": 8,
+                    "pose_accepted": False,
+                    "tag_pose": None,
+                    "covariance_m2": None,
+                    "reason": "ambiguous",
+                },
+            ),
+            raw_tag.t_ingest,
+        )
+    )
+    _rewrite_archive(archive, events)
+    _bind_request_observations(request, events)
+    inventory = _inventory(tmp_path / "expected-tags.json", [7, 8])
+    output = tmp_path / "map"
+
+    with pytest.raises(ValueError, match=r"missing IDs: \[8\]"):
+        build_map(
+            [archive],
+            config,
+            "lidar-measured",
+            request,
+            evidence,
+            output,
+            100,
+            expected_tags_path=inventory,
+        )
+
+    assert not output.exists()
+
+
+def test_expected_tags_are_snapshotted_and_recorded_in_map_manifest(tmp_path: Path) -> None:
+    archive, config, request, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
+    inventory = _inventory(tmp_path / "expected-tags.json", [7])
+    inventory_payload = inventory.read_bytes()
+    output = tmp_path / "map"
+
+    result = build_map(
+        [archive],
+        config,
+        "lidar-measured",
+        request,
+        evidence,
+        output,
+        100,
+        expected_tags_path=inventory,
+    )
+
+    inventory.write_text(json.dumps({"expected_tag_ids": [8]}))
+    manifest = json.loads((output / "manifest.json").read_text())
+    pin = manifest["inputs"]["expected_tags"]
+    assert result["expected_tag_ids"] == [7]
+    assert manifest["expected_tag_ids"] == [7]
+    assert manifest["expected_tag_count"] == 1
+    assert pin["path"] == "inputs/expected-tags.json"
+    assert pin["sha256"] == hashlib.sha256(inventory_payload).hexdigest()
+    assert (output / pin["path"]).read_bytes() == inventory_payload
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b"{", "expected tag inventory is not valid JSON"),
+        (b"[7, 7]", "expected tag IDs must be unique"),
+        (b"[" + b"0," * MAX_MANIFEST_BYTES + b"0]", "must be a bounded regular file"),
+    ],
+)
+def test_refuses_malformed_or_oversized_expected_tag_inventory(
+    tmp_path: Path, payload: bytes, message: str
+) -> None:
+    archive, config, request, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
+    inventory = tmp_path / "expected-tags.json"
+    inventory.write_bytes(payload)
+    output = tmp_path / "map"
+
+    with pytest.raises(ValueError, match=message):
+        build_map(
+            [archive],
+            config,
+            "lidar-measured",
+            request,
+            evidence,
+            output,
+            100,
+            expected_tags_path=inventory,
+        )
+
+    assert not output.exists()
 
 
 def test_declared_pose_handoff_replaces_the_adjacent_gap_requirement(tmp_path: Path) -> None:
