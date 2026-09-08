@@ -1,7 +1,7 @@
 # AprilTag intrinsics capture
 
-Printed `tag36h11` squares can calibrate the 1280 by 720 Mini 3 downlink. Each
-decoded tag contributes four known, coplanar corners. A set of camera-to-tag views
+Printed `tag36h11` squares can provide intrinsics observations for a fixed camera
+and decoding pipeline. Each decoded tag contributes four known, coplanar corners. A set of camera-to-tag views
 with different normal directions constrains focal lengths, principal point, and
 distortion through the same planar homographies used for a checkerboard.
 
@@ -12,10 +12,10 @@ the homography constraints for intrinsics do not depend on absolute scale.
 
 ## Capture
 
-Record through the exact camera, 1280 by 720 downlink, gimbal mode, decoder, and
-image-processing path that will later supply tag poses. Turn off digital zoom and
-any changing stabilization or crop. Keep a single printed tag fixed and move the
-camera relative to it. A single tag is enough; multiple tags may be used if every
+Record through the exact camera, stream resolution, head or gimbal mode, decoder,
+and image-processing path that will later supply tag poses. Turn off digital zoom and
+any changing stabilization or crop. Either move the camera relative to a fixed tag or hold the tag on a rigid backing
+and change its orientation relative to a stationary camera. A single tag is enough; multiple tags may be used if every
 tag has the same recorded physical edge or its own recorded edge.
 
 Save one PNG from each of 30 separate, settled holds. Do not choose adjacent video
@@ -56,11 +56,31 @@ whose focal lengths move materially across those refits, even if its all-frame R
 is small. Reprojection residual alone cannot establish metric pose accuracy; the
 next check is a pose trial against independently surveyed room points.
 
-The single-tag procedure fits the pinhole candidate only. A fisheye fit needs a
-known rigid layout with at least six non-collinear tag corners in each frame, or a
-separate optimizer that solves a four-corner view. Do not apply a pinhole candidate
-to the bowed-line Ohmni camera. Its existing fisheye calibration path remains the
-required model until a multi-tag AprilTag layout is captured.
+The fisheye path requires at least 25 views with six validated observed corners
+per view. It can use a single printed tag when the raw raster validates its payload
+and supplies at least two internal module intersections in addition to the four
+outer corners. The extractor refines outer corners against the raster with a
+bounded displacement and rejects unsupported module geometry. Candidate selection
+validates each visible tag before choosing a view, balances image regions, and
+samples across the full capture. The fisheye fit also requires held-out RMS below
+0.5 pixels and bounded focal, principal-point, and distortion drift after refitting.
+
+## Unit 12 floor-tag sweep
+
+The 2026-09-08 head sweep retained 49 completed main-camera views across four
+capture runs. Two interrupted views were preserved as rejected provenance. The
+accepted views span the middle and lower image regions, with valid module tags
+mostly at the left and right sides.
+
+The full-span pinhole candidate had 0.273-pixel RMS but focal uncertainties of
+64.35% and 20.05%. The fisheye candidate had 0.280-pixel fit RMS and 0.299-pixel
+held-out RMS, but refitting changed focal length by 6.59%, principal point by 2.23%,
+and distortion by 53.01%, exceeding all three stability limits. Both candidates
+remain rejected, and independent FOV bounds for the installed lens are unavailable.
+Their homography condition metrics passed; these results show insufficient evidence
+for the fitted models, without proving that every head-only sequence is degenerate.
+A rigidly backed tag shown at different plane orientations and image locations is
+the next acquisition to test.
 
 ## Current directional clip
 

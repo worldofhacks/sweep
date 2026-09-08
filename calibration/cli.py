@@ -117,9 +117,13 @@ def _tag_export_command(args: argparse.Namespace) -> None:
         args.output,
         export_tag_calibration(
             TagCandidateRequest(
-                evidence=args.evidence, tag_size_m=args.tag_size_m, pipeline=pipeline,
-                minimum_frame_gap=args.minimum_frame_gap, maximum_views=args.maximum_views,
-                model=args.model, frames_dir=args.frames_dir,
+                evidence=args.evidence,
+                tag_size_m=args.tag_size_m,
+                pipeline=pipeline,
+                minimum_frame_gap=args.minimum_frame_gap,
+                maximum_views=args.maximum_views,
+                model=args.model,
+                frames_dir=args.frames_dir,
             ),
             camera_serial=args.camera_serial,
             evidence_kind=args.evidence_kind,
