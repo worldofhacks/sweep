@@ -414,6 +414,33 @@ def test_qualified_flight_preview_dispatches_the_exact_retained_route(tmp_path):
         case.service.close()
 
 
+def test_qualified_fleet_preview_requires_and_dispatches_every_selected_route(tmp_path):
+    class FleetExecution(FlightExecution):
+        def preview(self, session, preview):
+            result = super().preview(session, preview)
+            second = copy.deepcopy(result["routes"][0])
+            second["target"] = preview["selected"][1]
+            second["arrivalSlot"]["slotId"] = "room-a-slot-2"
+            second["waypoints"][-1]["xM"] = 4.0
+            second["arrivalSlot"]["position"]["xM"] = 4.0
+            result["routes"].append(second)
+            result["outcomes"].append({**result["outcomes"][0], "target": second["target"]})
+            return result
+
+    flight = FleetExecution()
+    case = Case(tmp_path, flight_execution=flight)
+    try:
+        case.state = live_state(("aircraft", "aircraft"))
+        envelope = case.preview()
+        assert envelope["preview"]["dispatchEligible"] is True
+        assert [route["target"]["id"] for route in envelope["preview"]["routes"]] == [1, 2]
+        result = case.service.confirm("test-session", case.confirmation(envelope))
+        assert result["status"] == "accepted"
+        assert flight.confirm_calls == [("test-session", envelope["preview"])]
+    finally:
+        case.service.close()
+
+
 def test_changed_state_invalidates_qualified_preview_without_dispatch(tmp_path):
     flight = FlightExecution()
     case = Case(tmp_path, flight_execution=flight)

@@ -744,8 +744,7 @@ class NavigationService:
             }
             if (
                 self.flight_execution is not None
-                and len(selected) == 1
-                and selected[0]["deviceClass"] == "aircraft"
+                and all(target["deviceClass"] == "aircraft" for target in selected)
             ):
                 try:
                     execution = _copy(self.flight_execution.preview(session, _copy(preview)))
@@ -959,8 +958,8 @@ class NavigationService:
 def validate_flight_execution_preview(
     raw: object, selected: list[dict], destination: dict, map_ref: object
 ) -> tuple[list, list, dict]:
-    if len(selected) != 1 or selected[0].get("deviceClass") != "aircraft":
-        _fail("planner_contract_invalid", "Qualified aircraft execution requires one aircraft.")
+    if not selected or any(target.get("deviceClass") != "aircraft" for target in selected):
+        _fail("planner_contract_invalid", "Qualified aircraft execution requires aircraft targets.")
     result = _exact(_copy(raw), {"routes", "outcomes", "execution"})
     routes, outcomes = validate_route_preview(
         {"routes": result["routes"], "outcomes": result["outcomes"]}, selected, destination

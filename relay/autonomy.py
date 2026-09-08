@@ -704,12 +704,15 @@ class AutonomySession:
             or not isinstance(destination, Mapping)
             or not isinstance(destination.get("zoneId"), str)
             or not isinstance(selected, list)
-            or len(selected) != 1
-            or not isinstance(selected[0], Mapping)
-            or selected[0].get("deviceClass") != "aircraft"
-            or not isinstance(selected[0].get("id"), int)
+            or not selected
+            or any(
+                not isinstance(target, Mapping)
+                or target.get("deviceClass") != "aircraft"
+                or type(target.get("id")) is not int
+                for target in selected
+            )
         ):
-            raise ValueError("qualified navigation requires exactly one selected aircraft")
+            raise ValueError("qualified navigation requires selected aircraft")
         session = self._composition.runtime.sessions.get(self.session_id)
         if session is None:
             raise ValueError("relay session is unavailable")
@@ -726,7 +729,7 @@ class AutonomySession:
             session=self.session_id,
             name=IntentName.NAVIGATE,
             args={"zone_id": destination["zoneId"]},
-            selection=(selected[0]["id"],),
+            selection=tuple(target["id"] for target in selected),
             mode=Mode.INDOOR,
             confirm=True,
         )
@@ -751,10 +754,11 @@ class AutonomySession:
             "contentSha256": navigation.route.map_pin.content_sha256,
         }:
             raise ValueError("platform map revision differs from the approved navigation artifact")
-        target = selected[0]
+        targets = {target["id"]: target for target in selected}
         routes = []
         for route in navigation.route.routes:
-            if route.drone.drone_id != target["id"]:
+            target = targets.get(route.drone.drone_id)
+            if target is None or target.get("epoch") != route.drone.connection_epoch:
                 raise ValueError("qualified navigation route target differs from the preview")
 
             def point(pose):
@@ -813,6 +817,7 @@ class AutonomySession:
                     "code": "route_qualified",
                     "detail": "A signed flight deployment qualified this route.",
                 }
+                for target in selected
             ],
             "execution": execution,
         }
