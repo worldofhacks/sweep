@@ -42,12 +42,11 @@ alongside fresh position evidence. Missing or stale samples could look like a
 zero-degree heading or zero speed.
 
 This is a concrete control defect: a valid world-frame displacement can become the
-wrong body-frame command when yaw is stale. The repair must carry availability
-and monotonic receipt time through the actual snapshot conversion, and reject or
-hold mapped movement when either sample exceeds the existing freshness policy.
-LAND and emergency control must retain priority. Tests need to call that conversion
-and the navigation controller together; constructing already-valid facts would
-miss the defect.
+wrong body-frame command when yaw is stale. The repair carries availability
+and monotonic receipt time through the snapshot conversion and rejects or holds
+mapped movement when either sample exceeds the existing freshness policy. LAND
+and emergency control retain priority. Regressions exercise the snapshot conversion
+and the navigation controller, including missing and stale heading or velocity.
 
 Position timing has a separate limitation. Android retains `positionMeasuredAtMs`,
 but its telemetry frame carries publication time. The relay compares that position
@@ -71,16 +70,35 @@ terminal callback. The regression crosses the real relay WebSocket and signed
 navigation-command boundary. It checks both completion and adapter failure.
 
 A separate failure path caught a rejected control-pose publication, logged it and
-retired wire state while leaving the mission waiting. The required outcome is an
-explicit failed lifecycle plus an independent stop, including when the route
-publisher has already removed its active entry. Tests must observe the stop on
-the adapter connection and verify that no later mission leg starts.
+retired wire state while leaving the mission waiting. The repair reports an explicit
+failed lifecycle and independently publishes HOLD, including when the route
+publisher has already removed its active entry. Cancellation retires every pending
+command owned by the intent. Late acknowledgements cannot restore a cancelled owner.
 
-The loopback test device moves instantaneously and originally published its
-telemetry later than the localization fixture. Those contradictory streams explain
-some rehearsal failures. A test fixture may order its own evidence consistently;
-production must continue rejecting conflicting positions. Ignoring every position
-disagreement would hide a real localization defect.
+Callback ordering also matters. A multi-stop workflow can hold its lock while
+waiting for command publication. Synchronously reporting back into that workflow
+from the publisher or a late acknowledgement created a lock cycle. Terminal
+callbacks now run after critical command publication. Another regression covers
+resume snapshot acquisition outside the non-reentrant owner lock, with ownership
+checked again before retaining the next command.
+
+## Coherent navigation observations
+
+The relay previously copied fleet state and then read the changing localization
+registry during navigation checks. A newly admitted pose could appear to come from
+the future relative to the copied state. Arrival checking could also combine the
+coordinates of one pose with the timestamp of another and accept an unproven arrival.
+
+The relay now copies fleet state and current-epoch control poses under one lock.
+Navigation validation, arrival checks and initial wire publication use the captured
+poses. Callers without a captured map sample each pose once per check. Regressions
+exercise both races, an empty captured map, and immutability of the copied mapping.
+This consistency fix leaves physical sample-time alignment as a separate field
+measurement requirement.
+
+The loopback device also needed consistent telemetry and localization publication.
+Its navigation fixture now advances through positions and derives localization from
+relay-admitted telemetry. Production continues rejecting conflicting positions.
 
 ## Camera geometry, time and search results
 
