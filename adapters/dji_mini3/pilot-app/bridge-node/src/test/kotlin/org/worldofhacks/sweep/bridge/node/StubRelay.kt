@@ -243,6 +243,9 @@ class StubRelay(
         commandId: String = "route-command-1",
         routeId: String = "route-1",
         navigationConfigId: String = "navigation-a",
+        xMm: Long = 0,
+        yMm: Long = 0,
+        zMm: Long = 1_000,
         signingKey: ByteArray = key,
     ): JsonObject {
         val unsigned = Json.value(linkedMapOf(
@@ -252,7 +255,7 @@ class StubRelay(
             "navigation_config_id" to navigationConfigId, "navigation_config_sha256" to NAV_HASH, "map_version" to "map-v1",
             "map_sha256" to NAV_HASH, "geometry_sha256" to NAV_HASH, "camera_calibration_sha256" to NAV_HASH,
             "body_extrinsics_sha256" to NAV_HASH, "world_transform_sha256" to NAV_HASH, "control_source_ids" to listOf("tag-source"),
-            "pose_time_ms" to timestamp, "fix_time_ms" to timestamp, "x_mm" to 0, "y_mm" to 0, "z_mm" to 1_000,
+            "pose_time_ms" to timestamp, "fix_time_ms" to timestamp, "x_mm" to xMm, "y_mm" to yMm, "z_mm" to zMm,
             "position_uncertainty_mm" to 20, "status" to "ready", "flight_approved" to true,
         )) as JsonObject
         return unsigned.with("signature", JsonString(Signing.sign(unsigned, signingKey))).also(::broadcast)

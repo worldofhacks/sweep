@@ -109,6 +109,16 @@ data class NavigationEvidence(
     val relayOffsetMs: Long? = null,
 )
 
+data class NavigationArrivalHold(
+    val commandId: String,
+    val routeId: String,
+    val targetXMm: Long,
+    val targetYMm: Long,
+    val targetZMm: Long,
+    val arrivalHorizontalToleranceMm: Long,
+    val arrivalVerticalToleranceMm: Long,
+)
+
 /** The loop's observable state for the screen, the bench log, and `node_status`. */
 data class FlightStatus(
     val phase: String = "idle",
@@ -126,4 +136,5 @@ data class FlightStatus(
     val mapping: AxisMapping = AxisMapping(),
     val lastEvent: String? = null,
     val failsafeSetting: String? = null,
+    val arrivalHold: NavigationArrivalHold? = null,
 )

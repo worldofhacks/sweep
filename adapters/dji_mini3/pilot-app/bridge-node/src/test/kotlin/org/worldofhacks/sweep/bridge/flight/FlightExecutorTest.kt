@@ -351,6 +351,27 @@ class FlightExecutorTest {
         assertTrue(logs.any { it.contains("flight loop stopped while virtual stick could be enabled") }, logs.joinToString("\n"))
     }
     @Test
+    fun `executor exposes retained signed arrival evidence until the pose becomes stale`() {
+        StubRelay(key).use { stub ->
+            node(stub, flying = true, navigation = true).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                stub.sendNavigationAuthorization(commandId = "route-command-1", routeId = "route-1")
+                stub.sendNavigationPose(commandId = "route-command-1", routeId = "route-1", xMm = 1_000)
+                await("route evidence") { node.link.state.value.navigationPose != null }
+                val command = stub.issueCommand(CommandArgs.Goto(1_000, 0, 1_000, 300, "route-1"), commandId = "route-command-1")
+                stub.awaitAck(command.commandId, "completed")
+                await("retained arrival hold") { node.executor.status.value.arrivalHold != null }
+                val hold = node.executor.status.value.arrivalHold!!
+                assertEquals("route-command-1", hold.commandId)
+                assertEquals("route-1", hold.routeId)
+                assertEquals(1_000, hold.targetXMm)
+                assertTrue(node.executor.status.value.virtualStickEnabled)
+                await("stale arrival evidence withdrawn", timeoutMs = 2_000) { node.executor.status.value.arrivalHold == null }
+            }
+        }
+    }
+
+    @Test
     fun `authorized route uses the executor and stale control evidence cannot restart it`() {
         StubRelay(key).use { stub ->
             node(stub, flying = true, navigation = true).use { node ->

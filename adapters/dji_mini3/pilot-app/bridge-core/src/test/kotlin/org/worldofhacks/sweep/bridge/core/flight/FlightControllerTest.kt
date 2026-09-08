@@ -188,6 +188,7 @@ class FlightControllerTest {
             targetZMm: Long = 1_200,
             expiresAtMs: Long = clock.nowMs() + 2_000,
             freshUntilMs: Long? = clock.nowMs() + 500,
+            poseConnectionEpoch: Int = 1,
         ) {
             val now = clock.nowMs()
             val authorization = NavigationRouteAuthorization(
@@ -203,7 +204,7 @@ class FlightControllerTest {
             )
             val ready = poseStatus == NavigationPose.Status.READY
             val pose = NavigationPose(
-                t = now, eventId = "pose-event", session = "session-a", deviceId = 1, connectionEpoch = 1,
+                t = now, eventId = "pose-event", session = "session-a", deviceId = 1, connectionEpoch = poseConnectionEpoch,
                 commandId = commandId, routeId = routeId, seq = 2, positionFrame = NavigationRouteAuthorization.POSITION_FRAME,
                 clockLeaseId = "lease-1", navigationConfigId = "navigation-a", navigationConfigSha256 = "a".repeat(64), mapVersion = "map-v1", mapSha256 = "a".repeat(64),
                 geometrySha256 = "a".repeat(64), cameraCalibrationSha256 = "a".repeat(64), bodyExtrinsicsSha256 = "a".repeat(64), worldTransformSha256 = "a".repeat(64),
@@ -482,7 +483,82 @@ class FlightControllerTest {
         h.navigation(yMm = 1_900)
         val arrived = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
         assertEquals(listOf("executing", "completed"), arrived.statuses, arrived.events.toString())
+        assertTrue(h.model.virtualStickEnabled)
+        assertEquals("navigation_arrival_hold", h.controller.status.phase)
+    }
+
+    @Test
+    fun `signed arrival keeps virtual stick and exposes only fresh arrival evidence`() {
+        val h = Harness(navigationEnabled = true)
+        h.hovering()
+        h.join()
+        h.navigation(yMm = 2_000)
+        val route = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+
+        assertEquals("completed", route.terminal?.first, route.events.toString())
+        assertEquals("navigation_arrival_hold", h.controller.status.phase)
+        assertTrue(h.model.virtualStickEnabled, "arrival retains virtual stick to correct drift")
+        assertEquals(
+            NavigationArrivalHold("route-command", "route-1", 0, 2_000, 1_200, 200, 200),
+            h.controller.status.arrivalHold,
+        )
+
+        val hover = h.run(CommandArgs.Hover)
+        assertEquals(listOf("executing", "completed"), hover.statuses, hover.events.toString())
+        assertEquals("navigation_arrival_hold", h.controller.status.phase)
+        assertEquals("route-1", h.controller.status.arrivalHold?.routeId)
+
+        val rotate = h.run(CommandArgs.RotateTo(90_000, 30_000))
+        assertEquals("navigation_hold", rotate.terminal?.second, rotate.events.toString())
+        val unsigned = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300))
+        assertEquals("navigation_hold", unsigned.terminal?.second, unsigned.events.toString())
+
+        h.navigation(commandId = "route-command-2", routeId = "route-2", yMm = 1_900)
+        val replacement = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-2"), "route-command-2")
+        assertEquals("completed", replacement.terminal?.first, replacement.events.toString())
+        assertEquals("route-2", h.controller.status.arrivalHold?.routeId)
+    }
+
+    @Test
+    fun `lost pose after signed arrival withdraws evidence then holds and lands`() {
+        val h = Harness(navigationEnabled = true)
+        h.hovering()
+        h.join()
+        h.navigation(yMm = 2_000)
+        h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        assertTrue(h.controller.status.arrivalHold != null)
+
+        h.navigation(poseStatus = NavigationPose.Status.HOLD, freshUntilMs = null)
+        h.tick(1)
+        assertEquals("navigation_hold", h.controller.status.phase)
+        assertNull(h.controller.status.arrivalHold)
+        assertTrue(h.frames.last().isNeutral)
+        h.tickMs(300)
+        assertEquals("navigation_lost", h.controller.status.landingReason)
         assertFalse(h.model.virtualStickEnabled)
+    }
+
+    @Test
+    fun `epoch or lease loss after signed arrival revokes retained hold`() {
+        val epoch = Harness(navigationEnabled = true)
+        epoch.hovering()
+        epoch.join()
+        epoch.navigation(yMm = 2_000)
+        epoch.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        epoch.navigation(yMm = 2_000, poseConnectionEpoch = 2)
+        epoch.tick(1)
+        assertEquals("navigation_hold", epoch.controller.status.phase)
+        assertNull(epoch.controller.status.arrivalHold)
+
+        val lease = Harness(navigationLeaseExpiresAtMs = 1_250, navigationEnabled = true)
+        lease.hovering()
+        lease.join()
+        lease.navigation(yMm = 2_000, expiresAtMs = 1_250, freshUntilMs = 1_250)
+        lease.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        assertTrue(lease.controller.status.arrivalHold != null)
+        lease.tick(3)
+        assertEquals("navigation_hold", lease.controller.status.phase)
+        assertNull(lease.controller.status.arrivalHold)
     }
 
     @Test
