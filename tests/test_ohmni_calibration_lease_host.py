@@ -100,6 +100,7 @@ def test_slow_send_does_not_accumulate_heartbeat_schedule_drift(monkeypatch) -> 
     host.serve_lease(Listener(), token, lifetime_s=0.19)
     assert len(sends) == 4
     assert all(
-        abs(actual - expected) < 1e-9 for actual, expected in zip(sends, [0, 0.05, 0.10, 0.15], strict=True)
+        abs(actual - expected) < 1e-9
+        for actual, expected in zip(sends, [0, 0.05, 0.10, 0.15], strict=True)
     )
     assert (socket.IPPROTO_TCP, socket.TCP_NODELAY, 1) in options
