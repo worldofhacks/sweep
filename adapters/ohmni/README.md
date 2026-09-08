@@ -6,6 +6,8 @@ This package runs the ground adapter on the measured Ohmni Android 7.1 image. It
 
 A normal runtime joins with motion disabled until the local spotter, calibrated lidar, current pose, and signed relay heartbeat qualify it. The local device deadman continues to run independently of the relay event loop. Deployment and physical motion are separate supervised activities.
 
+The full-circle guard reports whether a stopped motion found an obstacle, missing or sparse returns, stale data, invalid bins, or a lidar read error. It retains the failed scan evidence locally and only a newly complete, fresh scan can pass a later motion check. Software checks do not complete the required measured clearance, stopping, and supervised physical-motion acceptance.
+
 ## Build and install
 
 The host needs Python 3.12 and four reviewed files, each named in a private `manifest.json` with its SHA-256:

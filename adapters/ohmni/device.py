@@ -6,6 +6,7 @@ Neither pre_drive/pre_rot nor vendor Docker/ROS paths work on the measured robot
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -14,16 +15,81 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 
 from .botshell import DEFAULT_PATH, BotShell
 from .camera import Camera
 from .camera import from_environment as camera_from_environment
-from .lidar import Lidar, discover
+from .lidar import Lidar, SelfReturnBinding, SelfReturnProfile, discover
 from .models import EncoderPoseSample, GroundStatus, RangeScan
 from .odometry import BASE_MM, Odometry
 from .paired_encoder import PairedEncoderStream, default_socket_path
 
 MIN_CALIBRATION_RAW_POINTS = 20
+_MAX_OPERATOR_REPORT_CHARS = 512
+_MAX_REPORTED_BIN_INDICES = 32
+
+
+class LidarCoverage(StrEnum):
+    CLEAR = "clear"
+    OBSTACLE = "obstacle"
+    MISSING = "missing"
+    SPARSE = "sparse"
+    STALE = "stale"
+    INVALID = "invalid"
+    READ_ERROR = "read_error"
+    HARDWARE_MISSING = "hardware_missing"
+
+
+@dataclass(frozen=True, slots=True)
+class LidarGuardEvidence:
+    coverage: LidarCoverage
+    reason: str | None
+    scan_t_ms: int | None
+    scan_updated_ms: int | None
+    scan_age_ms: int | None
+    valid_bins: int | None
+    missing_bins: tuple[int, ...]
+    invalid_bins: tuple[int, ...]
+    raw_ranges_cm: tuple[object, ...]
+    read_error: str | None
+
+    def operator_report(self) -> dict[str, object]:
+        report: dict[str, object] = {
+            "coverage": self.coverage.value,
+            "reason": self.reason,
+            "scan_t_ms": self.scan_t_ms,
+            "scan_updated_ms": self.scan_updated_ms,
+            "scan_age_ms": self.scan_age_ms,
+            "valid_bins": self.valid_bins,
+            "missing_bin_count": len(self.missing_bins),
+            "missing_bins": list(self.missing_bins[:_MAX_REPORTED_BIN_INDICES]),
+            "invalid_bin_count": len(self.invalid_bins),
+            "invalid_bins": list(self.invalid_bins[:_MAX_REPORTED_BIN_INDICES]),
+            "read_error": self.read_error,
+        }
+        if len(_compact_report(report)) <= _MAX_OPERATOR_REPORT_CHARS:
+            return report
+        assert self.read_error is not None
+        report["read_error"] = _prefix_that_fits(report, self.read_error)
+        return report
+
+
+def _compact_report(value: dict[str, object]) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _prefix_that_fits(report: dict[str, object], value: str) -> str:
+    lower, upper = 0, len(value)
+    while lower < upper:
+        middle = (lower + upper + 1) // 2
+        report["read_error"] = value[:middle]
+        if len(_compact_report(report)) <= _MAX_OPERATOR_REPORT_CHARS:
+            lower = middle
+        else:
+            upper = middle - 1
+    report["read_error"] = value[:lower]
+    return value[:lower]
 
 
 @dataclass(frozen=True)
@@ -33,6 +99,9 @@ class Config:
     launch: tuple[float, float, float] = (0.0, 0.0, 0.0)
     lidar_offset_deg: float | None = None
     lidar_angle_sign: int | None = None
+    lidar_device_id: int | None = None
+    lidar_source_boot_id: str | None = None
+    self_return_profile: SelfReturnProfile | None = None
     # Retained only to reject old configurations that requested a bypass.
     allow_spotted_without_lidar: bool = False
     footprint_radius_m: float | None = None
@@ -100,6 +169,21 @@ class Config:
             raise ValueError("lidar offset must be finite")
         if isinstance(self.lidar_angle_sign, bool) or self.lidar_angle_sign not in (None, -1, 1):
             raise ValueError("lidar angle sign must be -1 or 1")
+        if self.lidar_device_id is not None and (
+            type(self.lidar_device_id) is not int or self.lidar_device_id <= 0
+        ):
+            raise ValueError("lidar device ID must be positive")
+        if self.lidar_source_boot_id is not None and (
+            not isinstance(self.lidar_source_boot_id, str)
+            or not self.lidar_source_boot_id
+            or self.lidar_source_boot_id != self.lidar_source_boot_id.strip()
+            or not self.lidar_source_boot_id.isprintable()
+        ):
+            raise ValueError("lidar source boot ID must be bounded non-empty text")
+        if self.self_return_profile is not None and not isinstance(
+            self.self_return_profile, SelfReturnProfile
+        ):
+            raise ValueError("self-return profile must be a profile")
         if not math.isfinite(self.wheel_diameter_mm) or self.wheel_diameter_mm <= 0:
             raise ValueError("wheel diameter must be finite and positive")
 
@@ -142,6 +226,7 @@ class OhmniDevice:
         )
         self.camera = camera
         port = lidar_discover()
+        self_return_binding = self._self_return_binding()
         self.lidar = (
             Lidar(
                 shell_factory(config.socket_path),
@@ -149,6 +234,8 @@ class OhmniDevice:
                 self.odometry.snapshot,
                 offset_deg=config.lidar_offset_deg,
                 angle_sign=config.lidar_angle_sign,
+                self_return_profile=config.self_return_profile,
+                self_return_binding=self_return_binding,
             )
             if port
             else None
@@ -167,6 +254,10 @@ class OhmniDevice:
         self.battery_updated = 0.0
         self.docked = False
         self.last_refusal: str | None = None
+        self._lidar_guard_evidence = LidarGuardEvidence(
+            LidarCoverage.MISSING, "lidar_scan_missing", None, None, None, None, (), (), (), None
+        )
+        self._last_lidar_guard_fault: LidarGuardEvidence | None = None
         self.motion: Motion | None = None
         self._results: dict[str, bool | None] = {}
         self._last_owner_tick = 0.0
@@ -186,6 +277,28 @@ class OhmniDevice:
                 self.lidar.start()
             if self.camera:
                 self.camera.start()
+
+    def _self_return_binding(self) -> SelfReturnBinding | None:
+        config = self.config
+        if (
+            config.lidar_device_id is None
+            or config.lidar_source_boot_id is None
+            or config.lidar_offset_deg is None
+            or config.lidar_angle_sign is None
+            or config.lidar_mount_x_m is None
+            or config.lidar_mount_y_m is None
+            or config.lidar_mount_z_m is None
+        ):
+            return None
+        return SelfReturnBinding(
+            config.lidar_device_id,
+            config.lidar_source_boot_id,
+            config.lidar_offset_deg,
+            config.lidar_angle_sign,
+            config.lidar_mount_x_m,
+            config.lidar_mount_y_m,
+            config.lidar_mount_z_m,
+        )
 
     def status(self) -> GroundStatus:
         pose = self.odometry.snapshot()
@@ -216,6 +329,10 @@ class OhmniDevice:
             extras={
                 "battery_voltage": self.battery_voltage,
                 "obstacle_guard": self.guard_reason() or "available",
+                "lidar_guard": self._lidar_guard_evidence.operator_report(),
+                "last_lidar_guard_fault": None
+                if self._last_lidar_guard_fault is None
+                else self._last_lidar_guard_fault.operator_report(),
                 "lidar_present": self.lidar is not None,
                 "lidar_calibrated": bool(self.lidar and self.lidar.calibrated),
                 "spotter_present": self.spotter_present,
@@ -329,6 +446,14 @@ class OhmniDevice:
             return "spotter_missing"
         if self.docked:
             return "robot_docked"
+        return self.lidar_guard_evidence(now=now).reason
+
+    @property
+    def last_lidar_guard_fault(self) -> LidarGuardEvidence | None:
+        return self._last_lidar_guard_fault
+
+    def lidar_guard_evidence(self, *, now: float | None = None) -> LidarGuardEvidence:
+        now = time.monotonic() if now is None else now
         measured = (
             self.config.footprint_radius_m,
             self.config.stopping_distance_m,
@@ -338,26 +463,163 @@ class OhmniDevice:
             self.config.lidar_mount_z_m,
         )
         if any(value is None for value in measured):
-            return "ground_clearance_unconfigured"
+            return self._record_lidar_guard(
+                LidarGuardEvidence(
+                    LidarCoverage.INVALID,
+                    "ground_clearance_unconfigured",
+                    None,
+                    None,
+                    None,
+                    None,
+                    (),
+                    (),
+                    (),
+                    None,
+                )
+            )
         if self.lidar is None:
-            return "lidar_missing"
+            return self._record_lidar_guard(
+                LidarGuardEvidence(
+                    LidarCoverage.HARDWARE_MISSING,
+                    "lidar_missing",
+                    None,
+                    None,
+                    None,
+                    None,
+                    (),
+                    (),
+                    (),
+                    None,
+                )
+            )
         if not self.lidar.calibrated:
-            return "lidar_calibration_required"
+            return self._record_lidar_guard(
+                LidarGuardEvidence(
+                    LidarCoverage.INVALID,
+                    "lidar_calibration_required",
+                    None,
+                    None,
+                    None,
+                    None,
+                    (),
+                    (),
+                    (),
+                    None,
+                )
+            )
+        error = getattr(self.lidar, "error", None)
+        if error:
+            return self._record_lidar_guard(
+                LidarGuardEvidence(
+                    LidarCoverage.READ_ERROR,
+                    "lidar_read_error",
+                    None,
+                    None,
+                    None,
+                    None,
+                    (),
+                    (),
+                    (),
+                    str(error),
+                )
+            )
         scan = self.lidar.scan
-        if scan is None or not 0 <= now - self.lidar.updated <= self.config.scan_max_age_s:
-            return "lidar_stale"
-        values = scan.ranges_cm
-        if (
-            scan.angle_min_deg != 0.0
-            or scan.angle_increment_deg != 1.0
-            or len(values) != 360
-            or any(type(value) is not int or value <= 0 for value in values)
-        ):
-            return "lidar_full_circle_coverage_missing"
-        # Ranges originate at the sensor. Enclose the body about that origin,
-        # including measured braking clearance and bounded travel during scan
-        # age, owner timeout and one hardware-loop tick. Unknown bins stay blocked.
-        radius, stopping, margin, mount_x, mount_y, _ = measured
+        updated = self.lidar.updated
+        if scan is None:
+            return self._record_lidar_guard(
+                LidarGuardEvidence(
+                    LidarCoverage.MISSING,
+                    "lidar_scan_missing",
+                    None,
+                    int(updated * 1_000),
+                    int((now - updated) * 1_000),
+                    None,
+                    (),
+                    (),
+                    (),
+                    None,
+                )
+            )
+        age_s = now - updated
+        values = tuple(scan.ranges_cm)
+        age_ms = int(age_s * 1_000)
+        if not 0 <= age_s <= self.config.scan_max_age_s:
+            return self._record_lidar_guard(
+                LidarGuardEvidence(
+                    LidarCoverage.STALE,
+                    "lidar_scan_stale",
+                    scan.t_ms,
+                    int(updated * 1_000),
+                    age_ms,
+                    None,
+                    (),
+                    (),
+                    values,
+                    None,
+                )
+            )
+        if scan.angle_min_deg != 0.0 or scan.angle_increment_deg != 1.0 or len(values) != 360:
+            return self._record_lidar_guard(
+                LidarGuardEvidence(
+                    LidarCoverage.INVALID,
+                    "lidar_scan_geometry_invalid",
+                    scan.t_ms,
+                    int(updated * 1_000),
+                    age_ms,
+                    None,
+                    (),
+                    (),
+                    values,
+                    None,
+                )
+            )
+        # Zero is the lidar protocol's no-return value. Negative and non-integer bins are invalid.
+        missing = tuple(
+            index for index, value in enumerate(values) if type(value) is int and value == 0
+        )
+        invalid = tuple(
+            index for index, value in enumerate(values) if type(value) is not int or value < 0
+        )
+        valid = len(values) - len(missing) - len(invalid)
+        if invalid:
+            return self._record_lidar_guard(
+                LidarGuardEvidence(
+                    LidarCoverage.INVALID,
+                    "lidar_scan_invalid",
+                    scan.t_ms,
+                    int(updated * 1_000),
+                    age_ms,
+                    valid,
+                    missing,
+                    invalid,
+                    values,
+                    None,
+                )
+            )
+        if missing:
+            return self._record_lidar_guard(
+                LidarGuardEvidence(
+                    LidarCoverage.MISSING if valid == 0 else LidarCoverage.SPARSE,
+                    "lidar_scan_coverage_missing" if valid == 0 else "lidar_scan_coverage_sparse",
+                    scan.t_ms,
+                    int(updated * 1_000),
+                    age_ms,
+                    valid,
+                    missing,
+                    (),
+                    values,
+                    None,
+                )
+            )
+        radius, stopping, margin, mount_x, mount_y, _ = (
+            self.config.footprint_radius_m,
+            self.config.stopping_distance_m,
+            self.config.clearance_margin_m,
+            self.config.lidar_mount_x_m,
+            self.config.lidar_mount_y_m,
+            self.config.lidar_mount_z_m,
+        )
+        assert None not in (radius, stopping, margin, mount_x, mount_y)
         clearance = (
             radius
             + stopping
@@ -366,9 +628,31 @@ class OhmniDevice:
             + self.config.max_speed_m_s
             * (self.config.scan_max_age_s + self.config.owner_timeout_s + 0.1)
         )
-        if any(value <= math.ceil(clearance * 100) for value in values):
-            return "obstacle_within_clearance"
-        return None
+        reason = (
+            "obstacle_within_clearance"
+            if any(value <= math.ceil(clearance * 100) for value in values)
+            else None
+        )
+        return self._record_lidar_guard(
+            LidarGuardEvidence(
+                LidarCoverage.OBSTACLE if reason else LidarCoverage.CLEAR,
+                reason,
+                scan.t_ms,
+                int(updated * 1_000),
+                age_ms,
+                valid,
+                (),
+                (),
+                values,
+                None,
+            )
+        )
+
+    def _record_lidar_guard(self, evidence: LidarGuardEvidence) -> LidarGuardEvidence:
+        self._lidar_guard_evidence = evidence
+        if evidence.reason is not None:
+            self._last_lidar_guard_fault = evidence
+        return evidence
 
     def pre_enable_refusal(self) -> str | None:
         reason = self.guard_reason()
@@ -425,9 +709,12 @@ class OhmniDevice:
         The lease callback returns a stop reason or None on admission and each control tick.
         """
         if (
-            not all(math.isfinite(value) for value in (velocity_m_s, yaw_rate_deg_s, duration_s))
+            not all(
+                type(value) in (int, float) and math.isfinite(value)
+                for value in (velocity_m_s, yaw_rate_deg_s, duration_s)
+            )
             or (velocity_m_s, yaw_rate_deg_s) not in {(0.04, 0.0), (0.0, 10.0)}
-            or duration_s != 0.5
+            or not 0 < duration_s <= 0.5
         ):
             raise ValueError("calibration pulse exceeds the fixed safety bounds")
         with self._lock:
@@ -708,6 +995,10 @@ def from_environment(*, key: str = "") -> OhmniDevice:
         ),
         lidar_offset_deg=float(offset) if offset else None,
         lidar_angle_sign=int(sign) if sign else None,
+        lidar_device_id=(
+            int(os.environ["SWEEP_DEVICE_UNIT"]) if os.environ.get("SWEEP_DEVICE_UNIT") else None
+        ),
+        lidar_source_boot_id=os.environ.get("SWEEP_LIDAR_SOURCE_BOOT_ID"),
         footprint_radius_m=measurement("SWEEP_GROUND_FOOTPRINT_RADIUS_M"),
         stopping_distance_m=measurement("SWEEP_GROUND_STOPPING_DISTANCE_M"),
         clearance_margin_m=measurement("SWEEP_GROUND_CLEARANCE_MARGIN_M"),

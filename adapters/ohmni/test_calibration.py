@@ -103,6 +103,19 @@ def test_supervised_calibration_pulse_uses_raw_lidar_while_normal_drive_requires
     assert "manual_move 55 -55" in device.drive_shell.commands
 
 
+def test_supervised_calibration_accepts_a_shorter_bounded_pulse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = Clock()
+    device = _device(monkeypatch, clock)
+
+    motion = device.calibration_drive_velocity(0.04, 0.0, 0.125, host_lease=_lease(clock).reason)
+
+    assert device.motion is not None
+    assert device.motion.identity == motion
+    assert device.motion.ends_at == pytest.approx(clock() + 0.125)
+
+
 def test_calibration_lease_expiry_stops_the_actual_device_without_runner_polling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -122,7 +135,17 @@ def test_calibration_lease_expiry_stops_the_actual_device_without_runner_polling
 
 @pytest.mark.parametrize(
     ("velocity", "yaw", "duration"),
-    [(0.041, 0.0, 0.5), (0.0, 10.1, 0.5), (0.04, 10.0, 0.5), (0.04, 0.0, 0.51)],
+    [
+        (0.041, 0.0, 0.5),
+        (0.0, 10.1, 0.5),
+        (0.04, 10.0, 0.5),
+        (0.04, 0.0, 0.51),
+        (0.04, 0.0, 0.0),
+        (0.04, 0.0, -0.1),
+        (0.04, 0.0, float("nan")),
+        (0.04, 0.0, float("inf")),
+        (0.04, 0.0, True),
+    ],
 )
 def test_calibration_rejects_oversized_or_combined_pulses(
     monkeypatch: pytest.MonkeyPatch, velocity: float, yaw: float, duration: float

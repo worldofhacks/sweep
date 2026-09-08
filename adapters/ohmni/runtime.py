@@ -537,7 +537,14 @@ class OhmniRuntime:
                     math.degrees(int(args["angular_mrad_s"]) / 1_000),
                     int(args["duration_ms"]) / 1_000,
                 )
-            except (OSError, RuntimeError, ValueError) as error:
+            except RuntimeError as error:
+                reason = str(error)
+                self._local_stop(reason, disable=True)
+                self._enqueue(
+                    self._ack(command, "failed", reason, "local guard stopped the ground pulse")
+                )
+                return
+            except (OSError, ValueError) as error:
                 self._local_stop("ground_drive_io_failure", disable=True)
                 self._enqueue(self._ack(command, "failed", "local_guard_refused", str(error)))
                 return
@@ -888,8 +895,29 @@ class OhmniRuntime:
                     confidence=confidence,
                 )
             )
+        guard = status.extras.get("lidar_guard")
+        if isinstance(guard, dict):
+            self._enqueue(
+                self._observation(
+                    self.config.status_source_id,
+                    self.config.odom_frame,
+                    receipt,
+                    {
+                        "kind": "status",
+                        "code": "ground_lidar_guard",
+                        "detail": json.dumps(guard, sort_keys=True, separators=(",", ":")),
+                        "capabilities": list(self.device.capabilities),
+                    },
+                    confidence=confidence,
+                )
+            )
         scan = self.device.latest_scan()
-        if scan is not None and self._lidar_mount_configured and scan.t_ms != self._last_scan_t_ms:
+        if (
+            scan is not None
+            and self._lidar_mount_configured
+            and scan.t_ms != self._last_scan_t_ms
+            and all(type(item) is int and item >= 0 for item in scan.ranges_cm)
+        ):
             self._last_scan_t_ms = scan.t_ms
             sensor_x, sensor_y, sensor_yaw = self._lidar_sensor_pose(scan)
             self._enqueue(
@@ -1049,6 +1077,9 @@ class OhmniRuntime:
         if self._epoch is None:
             return
         status = self.device.status()
+        guard_reason = status.extras.get("obstacle_guard")
+        if not isinstance(guard_reason, str) or guard_reason == "available":
+            guard_reason = None
         self._enqueue(
             {
                 **self._envelope("node_status"),
@@ -1056,7 +1087,7 @@ class OhmniRuntime:
                 "connection_epoch": self._epoch,
                 "virtual_stick_enabled": False,
                 "control_authority": self._ready and status.drive_authority,
-                "authority_change_reason": reason,
+                "authority_change_reason": reason or guard_reason,
                 "watchdog_state": self._watchdog_state,
                 "video_publish_state": self.device.video_publish_state(),
                 "phone_battery_percent": 0,
