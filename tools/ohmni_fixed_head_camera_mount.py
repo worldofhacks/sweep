@@ -181,6 +181,33 @@ def _fit(
     return parameters, rank, condition, _residual(parameters, observations, tags)
 
 
+def _resampling(
+    grouped: Sequence[tuple[int, tuple[np.ndarray, np.ndarray, int]]], tags: int, motions: int
+) -> dict[str, object]:
+    def evaluate(name: str, held: set[int]) -> dict[str, object]:
+        train = [observation for index, observation in grouped if index not in held]
+        test = [observation for index, observation in grouped if index in held]
+        if not train or not test:
+            return {"name": name, "status": "unavailable"}
+        parameters, rank, condition, _ = _fit(train, tags)
+        if rank < len(parameters) or not math.isfinite(condition) or condition > 1e8:
+            return {"name": name, "status": "underconstrained", "rank": rank}
+        residual = _residual(parameters, test, tags)
+        return {
+            "name": name,
+            "status": "evaluated",
+            "rms_transform_residual": float(np.sqrt(np.mean(residual * residual))),
+        }
+
+    last_capture = max(index for index, _ in grouped)
+    return {
+        "held_out": evaluate("last_capture", {last_capture}),
+        "leave_one_motion_out": [
+            evaluate(f"motion_{index}", {index + 1}) for index in range(motions)
+        ],
+    }
+
+
 def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, object]:
     request_payload = _read(request_path, 1024 * 1024)
     request = _object(request_payload, "mount request")
@@ -239,7 +266,7 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
         value > 0.02 for value in translations
     ):
         raise ValueError("mount observations require both yaw and translation excitation")
-    observations, frame_pins, frame_payloads = [], [], []
+    observations, grouped, frame_pins, frame_payloads = [], [], [], []
     tag_indexes: dict[int, int] = {}
     for item in request["captures"]:
         if (
@@ -261,18 +288,19 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
         for detection in accepted:
             tag_id = detection["tag_id"]
             tag_indexes.setdefault(tag_id, len(tag_indexes))
-            observations.append(
-                (
-                    transforms[index],
-                    np.asarray(detection["T_camera_tag"], dtype=float),
-                    tag_indexes[tag_id],
-                )
+            observation = (
+                transforms[index],
+                np.asarray(detection["T_camera_tag"], dtype=float),
+                tag_indexes[tag_id],
             )
+            observations.append(observation)
+            grouped.append((index, observation))
         frame_pins.append(pin)
         frame_payloads.append(payload)
     parameters, rank, condition, residual = _fit(observations, len(tag_indexes))
     if rank < len(parameters) or not math.isfinite(condition) or condition > 1e8:
         raise ValueError("mount observations are rank-deficient or poorly conditioned")
+    resampling = _resampling(grouped, len(tag_indexes), len(deltas))
     output = output.absolute()
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
@@ -309,8 +337,7 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
                 "jacobian_columns": len(parameters),
                 "condition_number": condition,
                 "rms_transform_residual": float(np.sqrt(np.mean(residual * residual))),
-                "held_out": "not_evaluated",
-                "leave_one_motion_out": "not_evaluated",
+                **resampling,
             },
         }
         (temporary / "candidate.json").write_text(
