@@ -1073,11 +1073,11 @@ class AutonomySession:
         with self._lock:
             self._prune_platform_navigation(runtime.clock())
             retained = self._platform_navigation.pop(preview_id, None)
-            self._platform_navigation_intents_by_preview.pop(preview_id, None)
             prepared = retained[1] if retained is not None else None
             if prepared is None or execution.get("planHash") != content_digest(
                 prepared.plan.to_dict()
             ):
+                self._platform_navigation_intents_by_preview.pop(preview_id, None)
                 raise ValueError("retained navigation plan is unavailable")
             self._platform_navigation_reservations[preview_id] = prepared
         return {
@@ -1227,9 +1227,12 @@ class AutonomySession:
                     self._platform_navigation_intents_by_preview.pop(preview_id, None)
                 self._platform_navigation_reservations.clear()
                 self._platform_dispatch.clear()
-            self._composition.report_multiview_lifecycle(
-                self.session_id, job.intent.intent_id, name.value, "accepted"
-            )
+            try:
+                self._composition.report_multiview_lifecycle(
+                    self.session_id, job.intent.intent_id, name.value, "accepted"
+                )
+            except Exception:
+                _LOGGER.exception("multiview lifecycle reporting failed for safety intent")
         if name is IntentName.ESTOP:
             with self._lock:
                 self._stop_requested = True
@@ -1688,8 +1691,15 @@ class AutonomySession:
         else:
             result = self._tracking_failure_result(pending, error)
         session.discard_command_waiter(error.command_id)
-        events = apply_result(session, job.intent, result)
-        self._composition.report_multiview_execution(self.session_id, job.intent, result)
+        try:
+            events = apply_result(session, job.intent, result)
+        except Exception:
+            _LOGGER.exception("navigation tracking failure could not be published")
+            events = []
+        try:
+            self._composition.report_multiview_execution(self.session_id, job.intent, result)
+        except Exception:
+            _LOGGER.exception("multiview execution reporting failed for navigation tracking")
         events.extend(self._queue_navigation_tracking_hold(session, job.intent))
         return events
 
@@ -1713,9 +1723,17 @@ class AutonomySession:
             mode=Mode.INDOOR,
             confirm=True,
         )
-        events = [session.admit_safety_stop(safety_intent)]
+        try:
+            events = [session.admit_safety_stop(safety_intent)]
+        except Exception:
+            _LOGGER.exception("navigation tracking safety hold could not be recorded")
+            events = []
         hold_job = _Job(safety_intent, session)
-        hold_lane = self._route(hold_job)
+        try:
+            hold_lane = self._route(hold_job)
+        except Exception:
+            _LOGGER.exception("navigation tracking safety hold could not be routed")
+            hold_lane = self._hold
         with hold_lane.ready:
             hold_lane.pending.append(hold_job)
             hold_lane.ready.notify()

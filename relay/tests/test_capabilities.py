@@ -58,6 +58,7 @@ def test_c2_profile_is_a_strict_c1_superset() -> None:
         C2_CAPABILITY_PROFILE.enabled_intent_names
         | GROUND_ADDITIONAL_INTENT_NAMES
         | SURVEY_ADDITIONAL_INTENT_NAMES
+        | {IntentName.NAVIGATE, IntentName.SEARCH}
     )
 
 

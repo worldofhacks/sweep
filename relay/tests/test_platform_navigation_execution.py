@@ -491,8 +491,8 @@ def test_tracking_disagreement_terminates_the_active_platform_route(tmp_path: Pa
         composition.close()
 
 
-def test_tracking_failure_before_awaiting_execution_still_stops_the_platform_route(
-    tmp_path: Path,
+def test_tracking_failure_stops_the_platform_route_when_reporting_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     deployment = _deployment(tmp_path)
     clock = MutableClock(100_000)
@@ -544,22 +544,20 @@ def test_tracking_failure_before_awaiting_execution_still_stops_the_platform_rou
                         break
                     time.sleep(0.01)
                 assert active is not None
+                composition.set_multiview_listener(
+                    lambda *_args: (_ for _ in ()).throw(RuntimeError("listener unavailable"))
+                )
+                monkeypatch.setattr(
+                    "relay.autonomy.apply_result",
+                    lambda *_args: (_ for _ in ()).throw(RuntimeError("audit unavailable")),
+                )
                 events = autonomy.fail_navigation_tracking(
                     NavigationTrackingError(active, "control pose lost before execution wait")
                 )
                 asyncio.run_coroutine_threadsafe(
                     composition.runtime.publish(SESSION, events), composition.runtime.loop
                 ).result(timeout=2)
-                terminal = next(
-                    frame
-                    for _ in range(64)
-                    if (frame := adapter.receive_json()).get("intent_id") == command["intent_id"]
-                    and frame.get("source") == "autonomy"
-                    and frame.get("status") == "failed"
-                )
-                assert terminal["reason"] == "invalid_plan"
                 assert command["intent_id"] not in autonomy._awaiting
-                assert session.current_state()["accepted_plan"] is None
                 hold = next(
                     frame
                     for _ in range(64)

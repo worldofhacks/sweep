@@ -102,14 +102,17 @@
             "projection": "rectilinear",
             "width_px": 4000
           },
+          "map_pose_provenance": null,
           "pose": {
             "x": 1.5,
             "y": -0.25,
             "z": 1.0
           },
+          "position_frame": "dji_local_enu",
           "retrieval_status": "completed",
           "storage_ref": "file:///data/user/0/org.worldofhacks.sweep.bridge/files/captures/cap-0042/DJI_0001.JPG",
-          "timestamp_ms": 8000
+          "timestamp_ms": 8000,
+          "yaw_frame": "dji_compass_deg"
         }
       ],
       "pattern": "reconstruct_8",
@@ -226,6 +229,7 @@
         "projection": "rectilinear",
         "width_px": 4000
       },
+      "map_pose_provenance": null,
       "pose": {
         "x": 1.5,
         "y": -0.25,
@@ -233,7 +237,6 @@
       },
       "position_frame": "dji_local_enu",
       "retrieval_status": "pending",
-      "map_pose_provenance": null,
       "session": "session-a",
       "storage_ref": "aircraft://sdcard/DJI_0001.JPG",
       "t": 8000,

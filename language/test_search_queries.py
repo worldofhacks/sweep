@@ -24,7 +24,10 @@ def test_search_query_replay_resolves_only_configured_targets_and_rooms(case) ->
     assert result.source == "template"
     if result.status == "resolved":
         assert result.zone_id in facts.zones
-        assert result.target_class in facts.target_classes
+        if result.mode == "survey":
+            assert result.target_class is None
+        else:
+            assert result.target_class in facts.target_classes
 
 
 def test_query_trace_records_grounding_outcome_without_user_text() -> None:

@@ -508,6 +508,8 @@ def test_the_composed_capture_bundle_closes_the_capture_from_the_autonomy_result
                 checksum_sha256="a" * 64,
                 storage_ref="file:///captures/capture-1/DJI_0001.JPG",
                 retrieval_status=CameraResultStatus.COMPLETED,
+                position_frame="dji_local_enu",
+                yaw_frame="dji_compass_deg",
             ),
         ),
     )
