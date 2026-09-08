@@ -125,17 +125,23 @@ data class FlightConfig(
     val defaultStickHz: Int = FlightSettings.DEFAULT_STICK_HZ,
     val navigation: NavigationConfig? = null,
     val supervisedVertical: SupervisedVerticalConfig? = null,
-)
+) {
+    init {
+        require(navigation == null || supervisedVertical == null) { "navigation and supervised vertical cannot both be enabled" }
+    }
+}
 
 /** Fresh height at or above the hard ceiling triggers landing. */
 data class SupervisedVerticalConfig(
     val maximumHeightAgeMs: Long = 500,
-    val hardCeilingM: Double = 2.5908,
+    val softCeilingM: Double = 2.1336,
+    val hardCeilingM: Double = 2.4384,
     val targetSettleMs: Long = 500,
     val approachGainPerS: Double = 1.0,
 ) {
     init {
         require(maximumHeightAgeMs > 0) { "maximum height age must be positive" }
+        require(softCeilingM.isFinite() && softCeilingM > 0) { "soft ceiling must be positive and finite" }
         require(hardCeilingM.isFinite() && hardCeilingM > 0) { "hard ceiling must be positive and finite" }
         require(targetSettleMs >= 0) { "target settle time must be non-negative" }
         require(approachGainPerS.isFinite() && approachGainPerS > 0) { "approach gain must be positive and finite" }

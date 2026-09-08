@@ -143,6 +143,7 @@ class FlightController(
     private var flownIntoHold = false
     private var landingReason: String? = null
     private var supervisedFlightTargetZM: Double? = null
+    private var supervisedFlightLimits: SupervisedVerticalConfig? = null
     private var supervisedFlightAirborne = false
     private var supervisedTakeoffStopIssued = false
     private var stickSeq = 0L
@@ -227,6 +228,7 @@ class FlightController(
         groundedAuthorityQualified = false
         flownIntoHold = false
         supervisedFlightTargetZM = null
+        supervisedFlightLimits = null
         supervisedFlightAirborne = false
         supervisedTakeoffStopIssued = false
         releaseVirtualStick()
@@ -369,12 +371,19 @@ class FlightController(
             return
         }
         val targetZ = args.zMm / 1000.0
-        config.supervisedVertical?.let { supervised ->
-            if (targetZ >= supervised.hardCeilingM) {
+        val supervised = config.supervisedVertical?.let { local ->
+            local.copy(
+                maximumHeightAgeMs = minOf(local.maximumHeightAgeMs, args.maxLocalHeightAgeMs ?: local.maximumHeightAgeMs),
+                hardCeilingM = minOf(local.hardCeilingM, (args.maximumHeightMm ?: Long.MAX_VALUE) / 1000.0),
+            )
+        }
+        if (supervised != null) {
+            val softCeiling = minOf(supervised.softCeilingM, supervised.hardCeilingM)
+            if (targetZ > softCeiling || targetZ >= supervised.hardCeilingM) {
                 fail(
                     sink,
                     FlightReason.VERTICAL_CEILING_EXCEEDED,
-                    "takeoff target ${format(targetZ)} m is at or above the local hard ceiling ${format(supervised.hardCeilingM)} m",
+                    "takeoff target ${format(targetZ)} m exceeds the local soft ceiling ${format(softCeiling)} m",
                 )
                 return
             }
@@ -405,8 +414,9 @@ class FlightController(
             }
         }
         active = Active(command, sink, now, "auto takeoff")
-        if (config.supervisedVertical != null) {
+        if (supervised != null) {
             supervisedFlightTargetZM = targetZ
+            supervisedFlightLimits = supervised
             supervisedFlightAirborne = false
             supervisedTakeoffStopIssued = false
         }
@@ -418,6 +428,7 @@ class FlightController(
                 PortResult.Ok -> active?.executingNow("auto takeoff started; target z ${format(targetZ)} m, completes on the reported flight state")
                 is PortResult.Failed -> {
                     supervisedFlightTargetZM = null
+                    supervisedFlightLimits = null
                     supervisedFlightAirborne = false
                     supervisedTakeoffStopIssued = false
                     failActive(FlightReason.TAKEOFF_FAILED, "takeoff action refused: ${result.detail}")
@@ -813,7 +824,7 @@ class FlightController(
 
     private fun checkSupervisedFlight(now: Long) {
         if (supervisedFlightTargetZM == null) return
-        val supervised = config.supervisedVertical ?: return
+        val supervised = supervisedFlightLimits ?: return
         if (facts.flying) supervisedFlightAirborne = true
         if (supervisedTakeoffStopIssued && facts.flying && phase !is Phase.Landing) {
             startLanding(now, "supervised_takeoff_cancelled")
@@ -821,6 +832,7 @@ class FlightController(
         }
         if (supervisedFlightAirborne && facts.onGround) {
             supervisedFlightTargetZM = null
+            supervisedFlightLimits = null
             supervisedFlightAirborne = false
             supervisedTakeoffStopIssued = false
             return
@@ -1078,7 +1090,7 @@ class FlightController(
     }
 
     private fun advanceTakeoff(current: Phase.TakingOff, now: Long) {
-        config.supervisedVertical?.let { supervised ->
+        supervisedFlightLimits?.let { supervised ->
             if (guardVerticalHeight(supervised, now) == null) return
         }
         val elapsed = now - current.startedMs
@@ -1099,6 +1111,7 @@ class FlightController(
             }
         } else if (!facts.flying && elapsed >= config.takeoffTimeoutMs) {
             supervisedFlightTargetZM = null
+            supervisedFlightLimits = null
             supervisedFlightAirborne = false
             supervisedTakeoffStopIssued = false
             failActive(FlightReason.TAKEOFF_TIMEOUT, "aircraft is still ${facts.flightState} after $elapsed ms")
@@ -1109,7 +1122,7 @@ class FlightController(
     }
 
     private fun advanceSupervisedClimb(current: Phase.SupervisedClimb, now: Long) {
-        val supervised = config.supervisedVertical ?: return
+        val supervised = supervisedFlightLimits ?: return
         val height = guardVerticalHeight(supervised, now) ?: return
         if (height >= current.targetZM) {
             val since = current.settledSinceMs ?: now
@@ -1190,7 +1203,7 @@ class FlightController(
     }
 
     private fun afterTakeoff(targetZM: Double, now: Long, elapsedMs: Long) {
-        val supervised = config.supervisedVertical
+        val supervised = supervisedFlightLimits
         if (supervised != null) {
             if (guardVerticalHeight(supervised, now) == null) return
             event("takeoff hover reached at z ${format(facts.zUp)} m; closing the climb on fresh KeyAltitude toward ${format(targetZM)} m")
@@ -1253,6 +1266,7 @@ class FlightController(
             completeActive("landed after $elapsed ms (${current.reason})")
             event("landed (${current.reason})")
             supervisedFlightTargetZM = null
+            supervisedFlightLimits = null
             supervisedFlightAirborne = false
             supervisedTakeoffStopIssued = false
             landingReason = null
@@ -1297,9 +1311,9 @@ class FlightController(
     }
 
     private fun supervisedClimbFrame(current: Phase.SupervisedClimb, now: Long): StickFrame {
-        val supervised = config.supervisedVertical ?: return StickFrame.NEUTRAL
+        val supervised = supervisedFlightLimits ?: return StickFrame.NEUTRAL
         val height = guardVerticalHeight(supervised, now) ?: return StickFrame.NEUTRAL
-        if (height >= current.targetZM) return StickFrame.NEUTRAL
+        if (height >= minOf(current.targetZM, supervised.softCeilingM, supervised.hardCeilingM)) return StickFrame.NEUTRAL
         return StickFrame.NEUTRAL.copy(verticalThrottle = config.limits.maxVerticalMS)
     }
 

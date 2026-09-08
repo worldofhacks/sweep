@@ -34,8 +34,12 @@ from planner.models import (
     Position,
     RefusalReason,
 )
+from relay.contracts import (
+    MAX_SUPERVISED_TAKEOFF_HEIGHT_MM,
+    CapabilitiesFrame,
+    MediaFileRecord,
+)
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
-from relay.contracts import CapabilitiesFrame, MediaFileRecord
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "invalidated", "refused"})
 
@@ -223,7 +227,10 @@ class RemoteBridgeAdapter:
                 policy = {name: command.parameters[name] for name in policy_names}
                 if any(type(value) is not int or value <= 0 for value in policy.values()):
                     raise AdapterError("supervised height policy must contain positive integers")
-                if policy["maximum_height_mm"] > 2590 or policy["max_local_height_age_ms"] > 500:
+                if (
+                    policy["maximum_height_mm"] > MAX_SUPERVISED_TAKEOFF_HEIGHT_MM
+                    or policy["max_local_height_age_ms"] > 500
+                ):
                     raise AdapterError("supervised height policy exceeds the supported limits")
                 takeoff_policies[command.drone_id] = MappingProxyType(policy)
             route_id = command.parameters.get("navigation_route_id")
