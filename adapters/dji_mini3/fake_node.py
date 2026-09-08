@@ -107,10 +107,15 @@ class FakeNode:
         self._media_t = 0
         self._frame_counts: dict[str, int] = {}
         self._media: dict[str, dict[str, object]] = {}
+        self._media_checksums: dict[str, str] = {}
         self._navigation_route: dict[str, object] | None = None
         self._navigation_pose: dict[str, object] | None = None
         self._pending_goto_start: CommandFrame | None = None
         self._pending_goto_completion: CommandFrame | None = None
+        self._pending_hover_completion: CommandFrame | None = None
+        self._hover_pose_event_id: str | None = None
+        self._pending_retrieval_completion: CommandFrame | None = None
+        self._retrieval_pose_event_id: str | None = None
         self._outbound: asyncio.Queue[dict[str, object]] | None = None
         self._stop: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -288,13 +293,31 @@ class FakeNode:
             pending = self._pending_goto_completion
             if pending is not None and self._navigation_pose_matches_aircraft(frame, pending):
                 self._pending_goto_completion = None
+                self._enqueue(self._acknowledgement(pending, "executing"))
                 self._enqueue(self._acknowledgement(pending, "completed"))
+            hover = self._pending_hover_completion
+            if (
+                hover is not None
+                and frame.get("event_id") != self._hover_pose_event_id
+                and self._navigation_pose_coordinates_match_aircraft(frame)
+            ):
+                self._pending_hover_completion = None
+                self._enqueue(self._acknowledgement(hover, "completed"))
+            retrieval = self._pending_retrieval_completion
+            if (
+                retrieval is not None
+                and frame.get("event_id") != self._retrieval_pose_event_id
+                and self._navigation_pose_coordinates_match_aircraft(frame)
+            ):
+                self._pending_retrieval_completion = None
+                self._enqueue(self._acknowledgement(retrieval, "completed"))
 
     def _navigation_pose_matches_aircraft(
         self, frame: dict[str, object], command: CommandFrame
     ) -> bool:
-        if frame.get("command_id") != command.command_id:
-            return False
+        return frame.get("command_id") == command.command_id and self._navigation_pose_coordinates_match_aircraft(frame)
+
+    def _navigation_pose_coordinates_match_aircraft(self, frame: dict[str, object]) -> bool:
         coordinates = (frame.get("x_mm"), frame.get("y_mm"), frame.get("z_mm"))
         expected = tuple(
             round(value * 1_000)
@@ -328,6 +351,9 @@ class FakeNode:
             return
         self._last_seq = frame.seq
         self._enqueue(self._acknowledgement(frame, "accepted"))
+        if frame.operation is CommandOperation.GOTO and "navigate" in self.config.capabilities:
+            self._finish_command(frame)
+            return
         self._enqueue(self._acknowledgement(frame, "executing"))
         if frame.operation.value in self.config.slow_operations and self.config.slow_ack_delay_s:
             assert self._loop is not None
@@ -343,6 +369,30 @@ class FakeNode:
                 self._start_goto(frame)
             else:
                 self._pending_goto_start = frame
+            return
+        if frame.operation is CommandOperation.HOVER and self._navigation_route is not None:
+            status, reason, detail = self._execute(frame)
+            if status != "completed":
+                self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
+                return
+            self._hover_pose_event_id = (
+                None if self._navigation_pose is None else self._navigation_pose.get("event_id")
+            )
+            self._enqueue(self._telemetry_frame())
+            self._enqueue(self._node_status_frame())
+            self._pending_hover_completion = frame
+            return
+        if frame.operation is CommandOperation.RETRIEVE_MEDIA and self._navigation_route is not None:
+            status, reason, detail = self._execute(frame)
+            if status != "completed":
+                self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
+                return
+            self._retrieval_pose_event_id = (
+                None if self._navigation_pose is None else self._navigation_pose.get("event_id")
+            )
+            self._enqueue(self._telemetry_frame())
+            self._enqueue(self._node_status_frame())
+            self._pending_retrieval_completion = frame
             return
         status, reason, detail = self._execute(frame)
         self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
@@ -446,8 +496,12 @@ class FakeNode:
             record = self._media.get(str(args["file_id"]))
             if record is None:
                 return "failed", "download_failure", "the node has no such file"
-            record = {**record, "retrieval_status": "completed"}
-            self._media[str(args["file_id"])] = record
+            file_id = str(args["file_id"])
+            checksum = self._media_checksums.get(file_id)
+            if checksum is None:
+                return "failed", "download_failure", "the node has no checksum for this file"
+            record = {**record, "checksum_sha256": checksum, "retrieval_status": "completed"}
+            self._media[file_id] = record
             self._enqueue(self._media_file_frame(record))
         return "completed", None, None
 
@@ -637,6 +691,8 @@ class FakeNode:
                     )
                 },
             }
+        checksum = sha256(payload).hexdigest()
+        self._media_checksums[file_id] = checksum
         record: dict[str, object] = {
             "capture_id": capture_id,
             "file_id": file_id,
@@ -654,7 +710,7 @@ class FakeNode:
                 "horizontal_fov_deg": horizontal_fov_deg,
                 "projection": projection,
             },
-            "checksum_sha256": sha256(payload).hexdigest(),
+            "checksum_sha256": "0" * 64,
             "storage_ref": f"fake-node://media/{self.config.drone_id}/{file_id}",
             "retrieval_status": "pending",
             "map_pose_provenance": provenance,

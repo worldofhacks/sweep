@@ -400,7 +400,7 @@ class MovingControlPosePublisher:
             sequence = 0
             while not self._stop.is_set():
                 sequence += 1
-                current_s = time.time() - 0.01
+                current_s = time.time()
                 position = self.position()
                 if position is None:
                     await asyncio.sleep(0.05)
@@ -479,7 +479,6 @@ class LoopbackDemoRehearsal:
         self._app: Any | None = None
         self._node: FakeNode | None = None
         self._pose_publisher: MovingControlPosePublisher | None = None
-        self._last_published_telemetry_at: int | None = None
         self._composition: Any = None
         self._started = False
 
@@ -584,10 +583,6 @@ class LoopbackDemoRehearsal:
             not isinstance(telemetry.get(axis), (int, float)) for axis in ("x", "y", "z")
         ):
             return None
-        telemetry_at = telemetry.get("t")
-        if not isinstance(telemetry_at, int) or telemetry_at == self._last_published_telemetry_at:
-            return None
-        self._last_published_telemetry_at = telemetry_at
         return float(telemetry["x"]), float(telemetry["y"]), float(telemetry["z"])
 
     def stop(self) -> None:

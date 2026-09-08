@@ -72,6 +72,45 @@ def _select_aircraft(rehearsal: LoopbackDemoRehearsal, token: str) -> None:
         raise AssertionError("selection did not complete")
 
 
+def _submit_console_intent(
+    rehearsal: LoopbackDemoRehearsal,
+    token: str,
+    *,
+    intent_id: str,
+    name: str,
+    args: dict[str, object],
+    selection: list[int],
+) -> None:
+    with connect(f"{rehearsal.relay_url}/ws/{rehearsal.session_id}") as socket:
+        socket.send(json.dumps({"v": 1, "type": "auth", "source": "console", "token": token}))
+        assert json.loads(socket.recv())["type"] == "auth.accepted"
+        assert json.loads(socket.recv())["type"] == "state"
+        socket.send(
+            json.dumps(
+                {
+                    "v": 1,
+                    "t": epoch_ms(),
+                    "type": "intent",
+                    "intent_id": intent_id,
+                    "retry_of": None,
+                    "source": "console",
+                    "session": rehearsal.session_id,
+                    "name": name,
+                    "args": args,
+                    "selection": selection,
+                    "mode": "indoor",
+                    "confirm": True,
+                }
+            )
+        )
+        for _ in range(32):
+            event = json.loads(socket.recv())
+            if event.get("intent_id") == intent_id and event.get("source") == "autonomy":
+                assert event["status"] == "accepted", json.dumps(event, sort_keys=True)
+                return
+        raise AssertionError(f"{intent_id} was not admitted")
+
+
 def test_rehearsal_deployment_reloads_a_signed_fresh_session(tmp_path) -> None:
     now = epoch_ms()
     deployment, projector, pins = _rehearsal_deployment(
@@ -179,7 +218,10 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
 
         def ready_pose() -> bool:
             pose = rehearsal._composition.runtime.sessions[rehearsal.session_id].control_pose(1)
-            return pose is not None and epoch_ms() - pose.fix_time_ms >= 2
+            if pose is None:
+                return False
+            age_ms = epoch_ms() - pose.fix_time_ms
+            return 2 <= age_ms <= 100
 
         _wait_for(ready_pose, timeout_s=3)
         selected = [{"id": 1, "deviceClass": "aircraft", "epoch": 1}]
@@ -203,6 +245,14 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
                 ],
             },
         )
+        _wait_for(
+            lambda: (
+                (pose := rehearsal._composition.runtime.sessions[rehearsal.session_id].control_pose(1))
+                is not None
+                and 0 <= epoch_ms() - pose.fix_time_ms <= 20
+            ),
+            timeout_s=3,
+        )
         accepted = _http_json(
             f"{base}/multiview/confirm",
             credentials["token"],
@@ -223,7 +273,7 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
             status = _wait_for(terminal_status, timeout_s=15)
         except AssertionError as error:
             raise AssertionError(last_status) from error
-        assert status["status"] == "completed", json.dumps(status, sort_keys=True)
+        assert status["status"] == "completed", status
         assert [view["state"] for view in status["views"]] == ["completed", "completed"]
         captures = rehearsal._composition.runtime.sessions[rehearsal.session_id].current_state()[
             "captures"
@@ -234,3 +284,72 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
             item["files"] and {file["retrieval_status"] for file in item["files"]} == {"completed"}
             for item in (completed["loopback-west"], completed["loopback-east"])
         )
+
+
+def test_loopback_rehearsal_holds_an_empty_aircraft_survey(tmp_path) -> None:
+    bootstrap = tmp_path / "bootstrap.json"
+    with LoopbackDemoRehearsal(
+        start_console=False,
+        bootstrap_path=bootstrap,
+        console_port=47769,
+    ) as rehearsal:
+        token = json.loads(bootstrap.read_text())["relay"]["token"]
+        base = f"http://127.0.0.1:{rehearsal.relay_port}/session/{rehearsal.session_id}"
+        _select_aircraft(rehearsal, token)
+        intent_id = "loopback-empty-survey"
+        intent = {
+            "v": 1,
+            "t": epoch_ms(),
+            "type": "intent",
+            "intent_id": intent_id,
+            "retry_of": None,
+            "source": "console",
+            "session": rehearsal.session_id,
+            "name": "search",
+            "args": {"zone_id": "lobby", "mode": "survey"},
+            "selection": [1],
+            "mode": "indoor",
+            "confirm": True,
+        }
+        preview = _http_json(f"{base}/search/preview", token, {"intent": intent})
+        assert preview["preview"]["mode"] == "survey"
+        assert preview["preview"]["target_class"] is None
+
+        _submit_console_intent(
+            rehearsal,
+            token,
+            intent_id=intent_id,
+            name="search",
+            args={"zone_id": "lobby", "mode": "survey"},
+            selection=[1],
+        )
+        search = rehearsal._composition.session(rehearsal.session_id).search_runtime
+        assert search is not None
+        running = _wait_for(
+            lambda: (
+                status
+                if (status := search.status_payload(intent_id))["state"] == "running"
+                else None
+            ),
+            timeout_s=5,
+        )
+        assert running["candidates"] == []
+
+        _submit_console_intent(
+            rehearsal,
+            token,
+            intent_id="loopback-survey-hold",
+            name="hold",
+            args={},
+            selection=[1],
+        )
+        status = _wait_for(
+            lambda: (
+                payload
+                if (payload := search.status_payload(intent_id))["state"] in {"hold", "cancelled"}
+                else None
+            ),
+            timeout_s=5,
+        )
+        assert status["mode"] == "survey"
+        assert status["candidates"] == []
