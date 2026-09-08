@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from perception.camera_tags import CameraTagDetector
+from perception.tag_localization import tag_corners
 
 TAG_SIZE_M = 0.199898
 FIXED_HEAD_POSITION = 368
@@ -106,13 +107,39 @@ def _pose(value: object, name: str) -> np.ndarray:
     return result
 
 
-def _motion(root: Path, value: object) -> tuple[dict[str, str], bytes, np.ndarray]:
+def _motion(
+    root: Path, value: object
+) -> tuple[dict[str, str], bytes, dict[str, object], np.ndarray]:
     if not isinstance(value, Mapping) or set(value) != {"evidence", "before_stage", "after_stage"}:
         raise ValueError("motion must bind evidence and two stage names")
     if not isinstance(value["before_stage"], str) or not isinstance(value["after_stage"], str):
         raise ValueError("motion stages must be text")
     pin, payload = _pin(root, value["evidence"], "motion evidence", 2 * 1024 * 1024)
-    stages = _object(payload, "motion evidence").get("stages")
+    document = _object(payload, "motion evidence")
+    if set(document) != {
+        "schema_version",
+        "kind",
+        "device_id",
+        "boot_id",
+        "camera_serial",
+        "motion_chain_id",
+        "chain_index",
+        "stages",
+    }:
+        raise ValueError("motion evidence schema is invalid")
+    if (
+        document["schema_version"] != 1
+        or document["kind"] != "ohmni_fixed_head_motion"
+        or type(document["device_id"]) is not int
+        or any(
+            not isinstance(document[key], str) or not document[key]
+            for key in ("boot_id", "camera_serial", "motion_chain_id")
+        )
+        or type(document["chain_index"]) is not int
+        or document["chain_index"] < 0
+    ):
+        raise ValueError("motion evidence values are invalid")
+    stages = document["stages"]
     if not isinstance(stages, Mapping):
         raise ValueError("motion evidence has no stages")
     try:
@@ -123,9 +150,79 @@ def _motion(root: Path, value: object) -> tuple[dict[str, str], bytes, np.ndarra
     return (
         pin,
         payload,
+        document,
         np.linalg.inv(_pose(before_pose, "motion before pose"))
         @ _pose(after_pose, "motion after pose"),
     )
+
+
+def _stage(value: object, name: str) -> dict[str, object]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "pose",
+        "encoder",
+        "neck_position",
+        "stationary",
+        "state_id",
+    }:
+        raise ValueError(f"{name} is invalid")
+    _pose(value["pose"], f"{name} pose")
+    encoder = value["encoder"]
+    if (
+        not isinstance(encoder, Mapping)
+        or set(encoder) != {"left", "right"}
+        or any(type(encoder[key]) is not int for key in encoder)
+        or value["neck_position"] != FIXED_HEAD_POSITION
+        or value["stationary"] is not True
+        or not isinstance(value["state_id"], str)
+        or not value["state_id"]
+    ):
+        raise ValueError(f"{name} must retain stationary fixed-head encoder evidence")
+    return {
+        "pose": dict(value["pose"]),
+        "encoder": dict(encoder),
+        "state_id": value["state_id"],
+    }
+
+
+def _capture_manifest(
+    root: Path,
+    value: object,
+    *,
+    frame_pin: Mapping[str, str],
+    identity: Mapping[str, object],
+    expected_stage: str,
+    stage: Mapping[str, object],
+) -> tuple[dict[str, str], bytes]:
+    pin, payload = _pin(root, value, "raw frame manifest", 1024 * 1024)
+    document = _object(payload, "raw frame manifest")
+    if set(document) != {
+        "schema_version",
+        "kind",
+        "device_id",
+        "boot_id",
+        "camera_serial",
+        "motion_chain_id",
+        "stage",
+        "state_id",
+        "neck_position",
+        "stationary",
+        "encoder",
+        "frame",
+    }:
+        raise ValueError("raw frame manifest schema is invalid")
+    if (
+        document["schema_version"] != 1
+        or document["kind"] != "ohmni_fixed_head_camera_capture"
+        or any(document[key] != identity[key] for key in identity)
+        or document["stage"] != expected_stage
+        or document["state_id"] != stage["state_id"]
+        or document["neck_position"] != FIXED_HEAD_POSITION
+        or document["stationary"] is not True
+        or document["encoder"] != stage["encoder"]
+        or document["frame"] != frame_pin
+    ):
+        raise ValueError("raw frame manifest does not bind the fixed-head motion endpoint")
+    return pin, payload
 
 
 def _rotation(vector: np.ndarray) -> np.ndarray:
@@ -136,74 +233,163 @@ def _log(rotation: np.ndarray) -> np.ndarray:
     return cv2.Rodrigues(rotation)[0].reshape(3)
 
 
-def _residual(
-    parameters: np.ndarray, observations: Sequence[tuple[np.ndarray, np.ndarray, int]], tags: int
+def _pixel_residual(
+    parameters: np.ndarray,
+    observations: Sequence[tuple[np.ndarray, np.ndarray, int]],
+    tags: int,
+    camera_matrix: np.ndarray,
+    distortion: np.ndarray,
 ) -> np.ndarray:
     camera = np.eye(4)
     camera[:3, :3], camera[:3, 3] = _rotation(parameters[:3]), parameters[3:6]
     tag_parameters = parameters[6:].reshape(tags, 3)
-    residuals = []
-    for body, camera_tag, tag_id in observations:
-        world_tag = body @ camera @ camera_tag
+    residuals: list[float] = []
+    for body, corners, tag_id in observations:
         x, y, yaw = tag_parameters[tag_id]
-        expected = np.array(
-            [[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]]
-        )
-        residuals.extend(world_tag[:3, 3] - [x, y, 0])
-        residuals.extend(_log(expected.T @ world_tag[:3, :3]))
+        world_tag = np.eye(4)
+        world_tag[:3, :3] = [
+            [math.cos(yaw), -math.sin(yaw), 0],
+            [math.sin(yaw), math.cos(yaw), 0],
+            [0, 0, 1],
+        ]
+        world_tag[:3, 3] = [x, y, 0]
+        camera_tag = np.linalg.inv(body @ camera) @ world_tag
+        projected = cv2.projectPoints(
+            tag_corners(TAG_SIZE_M),
+            cv2.Rodrigues(camera_tag[:3, :3])[0],
+            camera_tag[:3, 3],
+            camera_matrix,
+            distortion,
+        )[0].reshape(4, 2)
+        residuals.extend((projected - corners).reshape(-1))
     return np.asarray(residuals)
 
 
+def _initial_parameters(
+    observations: Sequence[tuple[np.ndarray, np.ndarray, int]],
+    tags: int,
+    camera_matrix: np.ndarray,
+    distortion: np.ndarray,
+) -> np.ndarray:
+    parameters = np.zeros(6 + 3 * tags)
+    body, corners, _ = observations[0]
+    success, vector, translation = cv2.solvePnP(
+        tag_corners(TAG_SIZE_M), corners, camera_matrix, distortion, flags=cv2.SOLVEPNP_ITERATIVE
+    )
+    if not success or translation[2, 0] <= 0:
+        raise ValueError("could not initialize floor-tag reprojection fit")
+    camera_tag = np.eye(4)
+    camera_tag[:3, :3] = _rotation(vector.reshape(3))
+    camera_tag[:3, 3] = translation.reshape(3)
+    inferred_tag = body @ camera_tag
+    yaw = math.atan2(inferred_tag[1, 0], inferred_tag[0, 0])
+    world_tag = np.eye(4)
+    world_tag[:3, :3] = [
+        [math.cos(yaw), -math.sin(yaw), 0],
+        [math.sin(yaw), math.cos(yaw), 0],
+        [0, 0, 1],
+    ]
+    world_tag[:2, 3] = inferred_tag[:2, 3]
+    camera = np.linalg.inv(body) @ world_tag @ np.linalg.inv(camera_tag)
+    parameters[:3] = _log(camera[:3, :3])
+    parameters[3:6] = camera[:3, 3]
+    for observation_body, observation_corners, tag_id in observations:
+        success, vector, translation = cv2.solvePnP(
+            tag_corners(TAG_SIZE_M),
+            observation_corners,
+            camera_matrix,
+            distortion,
+            flags=cv2.SOLVEPNP_ITERATIVE,
+        )
+        if not success or translation[2, 0] <= 0:
+            continue
+        camera_tag = np.eye(4)
+        camera_tag[:3, :3] = _rotation(vector.reshape(3))
+        camera_tag[:3, 3] = translation.reshape(3)
+        inferred_tag = observation_body @ camera @ camera_tag
+        parameters[6 + 3 * tag_id : 9 + 3 * tag_id] = (
+            inferred_tag[0, 3],
+            inferred_tag[1, 3],
+            math.atan2(inferred_tag[1, 0], inferred_tag[0, 0]),
+        )
+    return parameters
+
+
 def _fit(
-    observations: Sequence[tuple[np.ndarray, np.ndarray, int]], tags: int
+    observations: Sequence[tuple[np.ndarray, np.ndarray, int]],
+    tags: int,
+    camera_matrix: np.ndarray,
+    distortion: np.ndarray,
 ) -> tuple[np.ndarray, int, float, np.ndarray]:
     if len(observations) < 2:
         raise ValueError("at least two accepted tag observations are required")
-    parameters = np.zeros(6 + 3 * tags)
+    parameters = _initial_parameters(observations, tags, camera_matrix, distortion)
     damping = 1e-5
     for _ in range(80):
-        residual = _residual(parameters, observations, tags)
+        residual = _pixel_residual(parameters, observations, tags, camera_matrix, distortion)
         jacobian = np.empty((len(residual), len(parameters)))
         for column in range(len(parameters)):
             step = 1e-6
             shifted = parameters.copy()
             shifted[column] += step
-            jacobian[:, column] = (_residual(shifted, observations, tags) - residual) / step
-        update = np.linalg.solve(
-            jacobian.T @ jacobian + damping * np.eye(len(parameters)), -jacobian.T @ residual
+            jacobian[:, column] = (
+                _pixel_residual(shifted, observations, tags, camera_matrix, distortion) - residual
+            ) / step
+        try:
+            update = np.linalg.solve(
+                jacobian.T @ jacobian + damping * np.eye(len(parameters)), -jacobian.T @ residual
+            )
+        except np.linalg.LinAlgError as error:
+            raise ValueError("floor-tag reprojection fit is singular") from error
+        candidate = parameters + update
+        candidate_residual = _pixel_residual(
+            candidate, observations, tags, camera_matrix, distortion
         )
-        parameters += update
+        if np.dot(candidate_residual, candidate_residual) < np.dot(residual, residual):
+            parameters = candidate
+            damping = max(damping / 3, 1e-10)
+        else:
+            damping *= 10
         if np.linalg.norm(update) < 1e-8:
             break
     singular = np.linalg.svd(jacobian, compute_uv=False)
     rank = int(np.count_nonzero(singular > singular[0] * 1e-8)) if len(singular) else 0
     condition = float(singular[0] / singular[-1]) if singular[-1] > 0 else float("inf")
-    return parameters, rank, condition, _residual(parameters, observations, tags)
+    return (
+        parameters,
+        rank,
+        condition,
+        _pixel_residual(parameters, observations, tags, camera_matrix, distortion),
+    )
 
 
 def _resampling(
-    grouped: Sequence[tuple[int, tuple[np.ndarray, np.ndarray, int]]], tags: int, motions: int
+    grouped: Sequence[tuple[int, tuple[np.ndarray, np.ndarray, int]]],
+    tags: int,
+    camera_matrix: np.ndarray,
+    distortion: np.ndarray,
 ) -> dict[str, object]:
     def evaluate(name: str, held: set[int]) -> dict[str, object]:
         train = [observation for index, observation in grouped if index not in held]
         test = [observation for index, observation in grouped if index in held]
         if not train or not test:
             return {"name": name, "status": "unavailable"}
-        parameters, rank, condition, _ = _fit(train, tags)
+        parameters, rank, condition, _ = _fit(train, tags, camera_matrix, distortion)
         if rank < len(parameters) or not math.isfinite(condition) or condition > 1e8:
             return {"name": name, "status": "underconstrained", "rank": rank}
-        residual = _residual(parameters, test, tags)
+        residual = _pixel_residual(parameters, test, tags, camera_matrix, distortion)
         return {
             "name": name,
             "status": "evaluated",
-            "rms_transform_residual": float(np.sqrt(np.mean(residual * residual))),
+            "rms_reprojection_error_px": float(np.sqrt(np.mean(residual * residual))),
         }
 
     last_capture = max(index for index, _ in grouped)
     return {
         "held_out": evaluate("last_capture", {last_capture}),
-        "leave_one_motion_out": [
-            evaluate(f"motion_{index}", {index + 1}) for index in range(motions)
+        "leave_one_capture_state_out": [
+            evaluate(f"capture_state_{index}", {index})
+            for index in sorted({index for index, _ in grouped})
         ],
     }
 
@@ -214,7 +400,10 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
     required = {
         "schema_version",
         "kind",
+        "device_id",
+        "boot_id",
         "camera_serial",
+        "motion_chain_id",
         "intrinsics",
         "floor",
         "tag_ids",
@@ -231,7 +420,12 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
     if floor != {"z_m": 0.0, "normal": [0.0, 0.0, 1.0], "tag_size_m": TAG_SIZE_M}:
         raise ValueError("mount request requires the declared floor plane and tag size")
     if (
-        not isinstance(request["camera_serial"], str)
+        type(request["device_id"]) is not int
+        or not isinstance(request["boot_id"], str)
+        or not request["boot_id"]
+        or not isinstance(request["camera_serial"], str)
+        or not isinstance(request["motion_chain_id"], str)
+        or not request["motion_chain_id"]
         or not isinstance(request["motions"], list)
         or not isinstance(request["captures"], list)
         or not isinstance(request["tag_ids"], list)
@@ -253,11 +447,28 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
         tag_sizes_m={identifier: TAG_SIZE_M for identifier in request["tag_ids"]},
     )
     transforms = [np.eye(4)]
-    motion_pins, motion_payloads, deltas = [], [], []
-    for item in request["motions"]:
-        pin, payload, delta = _motion(evidence_root, item)
+    identity = {
+        key: request[key]
+        for key in ("device_id", "boot_id", "camera_serial", "motion_chain_id")
+    }
+    motion_pins, motion_payloads, deltas, motion_documents = [], [], [], []
+    previous_after: dict[str, object] | None = None
+    for motion_index, item in enumerate(request["motions"]):
+        pin, payload, document, delta = _motion(evidence_root, item)
+        if any(document[key] != identity[key] for key in identity):
+            raise ValueError("motion evidence identity does not match the camera request")
+        if document["chain_index"] != motion_index:
+            raise ValueError("motion evidence is not in the declared chain order")
+        for stage_name in (item["before_stage"], item["after_stage"]):
+            _stage(document["stages"].get(stage_name), f"motion {stage_name}")
+        before = _stage(document["stages"][item["before_stage"]], "motion before")
+        after = _stage(document["stages"][item["after_stage"]], "motion after")
+        if previous_after is not None and before != previous_after:
+            raise ValueError("motion evidence does not form one endpoint chain")
+        previous_after = after
         motion_pins.append(pin)
         motion_payloads.append(payload)
+        motion_documents.append(document)
         deltas.append(delta)
         transforms.append(transforms[-1] @ delta)
     rotations = [abs(math.atan2(delta[1, 0], delta[0, 0])) for delta in deltas]
@@ -266,19 +477,41 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
         value > 0.02 for value in translations
     ):
         raise ValueError("mount observations require both yaw and translation excitation")
-    observations, grouped, frame_pins, frame_payloads = [], [], [], []
+    if {
+        item.get("chain_index") for item in request["captures"] if isinstance(item, Mapping)
+    } != set(range(len(transforms))):
+        raise ValueError("captures must retain every motion-chain endpoint")
+    (
+        observations,
+        grouped,
+        frame_pins,
+        frame_payloads,
+        frame_manifest_pins,
+        frame_manifest_payloads,
+    ) = ([], [], [], [], [], [])
     tag_indexes: dict[int, int] = {}
     for item in request["captures"]:
-        if (
-            not isinstance(item, Mapping)
-            or set(item) != {"chain_index", "head_position", "frame"}
-            or item["head_position"] != FIXED_HEAD_POSITION
-        ):
+        if not isinstance(item, Mapping) or set(item) != {"chain_index", "frame", "manifest"}:
             raise ValueError("each capture must use fixed head position 368")
         index = item["chain_index"]
         if type(index) is not int or not 0 <= index < len(transforms):
             raise ValueError("capture chain index is invalid")
         pin, payload = _pin(evidence_root, item["frame"], "raw frame", MAX_FRAME_BYTES)
+        motion_index = 0 if index == 0 else index - 1
+        stage_name = (
+            request["motions"][motion_index]["before_stage"]
+            if index == 0
+            else request["motions"][motion_index]["after_stage"]
+        )
+        stage = _stage(motion_documents[motion_index]["stages"][stage_name], f"motion {stage_name}")
+        manifest_pin, manifest_payload = _capture_manifest(
+            evidence_root,
+            item["manifest"],
+            frame_pin=pin,
+            identity=identity,
+            expected_stage=stage_name,
+            stage=stage,
+        )
         image = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError("raw frame cannot be decoded")
@@ -290,17 +523,27 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
             tag_indexes.setdefault(tag_id, len(tag_indexes))
             observation = (
                 transforms[index],
-                np.asarray(detection["T_camera_tag"], dtype=float),
+                np.asarray(detection["corners_px"], dtype=float),
                 tag_indexes[tag_id],
             )
             observations.append(observation)
             grouped.append((index, observation))
         frame_pins.append(pin)
         frame_payloads.append(payload)
-    parameters, rank, condition, residual = _fit(observations, len(tag_indexes))
+        frame_manifest_pins.append(manifest_pin)
+        frame_manifest_payloads.append(manifest_payload)
+    parameters, rank, condition, residual = _fit(
+        observations, len(tag_indexes), detector.K, detector.D
+    )
     if rank < len(parameters) or not math.isfinite(condition) or condition > 1e8:
         raise ValueError("mount observations are rank-deficient or poorly conditioned")
-    resampling = _resampling(grouped, len(tag_indexes), len(deltas))
+    resampling = _resampling(grouped, len(tag_indexes), detector.K, detector.D)
+    evaluations = [resampling["held_out"], *resampling["leave_one_capture_state_out"]]
+    if any(
+        item["status"] != "evaluated" or item["rms_reprojection_error_px"] > 2
+        for item in evaluations
+    ):
+        raise ValueError("mount held-out capture-state validation failed")
     output = output.absolute()
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
@@ -313,6 +556,8 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
         (inputs / "intrinsics.json").write_bytes(intrinsics_payload)
         for index, payload in enumerate(frame_payloads):
             (inputs / f"frame-{index:03d}.bin").write_bytes(payload)
+        for index, payload in enumerate(frame_manifest_payloads):
+            (inputs / f"frame-{index:03d}-manifest.json").write_bytes(payload)
         for index, payload in enumerate(motion_payloads):
             (inputs / f"motion-{index:03d}.json").write_bytes(payload)
         camera = np.eye(4)
@@ -328,6 +573,7 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
                 "request_sha256": _digest(request_payload),
                 "intrinsics": intrinsics_pin,
                 "frames": frame_pins,
+                "frame_manifests": frame_manifest_pins,
                 "motions": motion_pins,
             },
             "diagnostics": {
@@ -336,7 +582,7 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
                 "jacobian_rank": rank,
                 "jacobian_columns": len(parameters),
                 "condition_number": condition,
-                "rms_transform_residual": float(np.sqrt(np.mean(residual * residual))),
+                "rms_reprojection_error_px": float(np.sqrt(np.mean(residual * residual))),
                 **resampling,
             },
         }
