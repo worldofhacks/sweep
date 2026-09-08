@@ -164,6 +164,9 @@ COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingP
             }
         ),
         CommandOperation.GROUND_RETURN: MappingProxyType({"return_id": "id"}),
+        CommandOperation.GROUND_NAVIGATE: MappingProxyType(
+            {"route_id": "id", "navigation_route": "ground_route_document"}
+        ),
         CommandOperation.CAMERA_CAPABILITIES: MappingProxyType({}),
         CommandOperation.SET_GIMBAL_PITCH: MappingProxyType({"pitch_mdeg": "integer"}),
         CommandOperation.CAMERA_READY: MappingProxyType({}),
@@ -1623,6 +1626,17 @@ def _command_arguments(
             continue
         if kind in {"id", "optional_id"}:
             result[field] = _nonempty_string(value[field], field, code)
+        elif kind == "ground_route_document":
+            document = value[field]
+            if not isinstance(document, str) or not document:
+                raise ContractError(code, "navigation_route must be a bounded JSON document")
+            try:
+                size = len(document.encode("utf-8"))
+            except UnicodeError:
+                raise ContractError(code, "navigation_route must be valid UTF-8") from None
+            if size > 32_768:
+                raise ContractError(code, "navigation_route exceeds its byte bound")
+            result[field] = document
         elif kind in {"positive", "optional_positive"}:
             result[field] = _positive_int(value[field], field, code)
         elif kind == "ground_linear_mm_s":

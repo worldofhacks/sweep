@@ -1466,7 +1466,11 @@ class RelaySession:
                     "command ledger is full of commands still awaiting a bounded terminal result"
                 )
             self.registry.check_current(drone_id, connection_epoch)
-            if operation in {CommandOperation.GROUND_VELOCITY, CommandOperation.GROUND_RETURN}:
+            if operation in {
+                CommandOperation.GROUND_VELOCITY,
+                CommandOperation.GROUND_RETURN,
+                CommandOperation.GROUND_NAVIGATE,
+            }:
                 # Revalidate at the actual signing boundary. A state sampled by
                 # the dispatcher cannot keep stale or withdrawn pose authority alive.
                 self.registry.check_ground_release(drone_id, connection_epoch, now_ms=now)
