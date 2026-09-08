@@ -360,6 +360,7 @@ class RelaySession:
         self._media_files: dict[tuple[int, int, str], list[MediaFileRecord]] = {}
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
         self._control_pose: dict[int, ControlPose] = {}
+        self._world_observation_contexts: dict[tuple[int, str], str] = {}
         self._pending_intents: dict[str, _PendingIntent] = {}
         self._acknowledgements: dict[str, list[AdapterAcknowledgement]] = {}
         self._resuming_intents: set[str] = set()
@@ -689,7 +690,6 @@ class RelaySession:
                 or intent.retry_of is not None
                 or not intent.confirm
                 or not intent.selection
-                or self.registry.selection_includes_ground(intent.selection)
             ):
                 raise ValueError("platform navigation intent is not admissible")
             if self.intent_sink is None:
@@ -1576,13 +1576,14 @@ class RelaySession:
             )
 
     def await_command_acknowledgement(
-        self, command_id: str, *, timeout_ms: int
+        self, command_id: str, *, timeout_ms: int, retain_on_timeout: bool = False
     ) -> AdapterAcknowledgement | None:
         """Block outside the session lock until the node acknowledges or the wait expires.
 
         Each call returns the next acknowledgement for the command. The waiter is
         released after a terminal acknowledgement or a timeout; later acknowledgements
-        remain audited facts but no longer wake a caller.
+        remain audited facts but no longer wake a caller. Polling callers may retain
+        the waiter on timeout and must discard it when they stop waiting.
         """
         with self._lock:
             waiter = self._command_waiters.get(command_id)
@@ -1591,10 +1592,8 @@ class RelaySession:
         try:
             acknowledgement = waiter.get(timeout=max(timeout_ms, 0) / 1000)
         except queue.Empty:
-            with self._lock:
-                self._command_waiters.pop(command_id, None)
-                if issued := self._issued_commands.get(command_id):
-                    issued.waiter_active = False
+            if not retain_on_timeout:
+                self.discard_command_waiter(command_id)
             return None
         if acknowledgement.status in _TERMINAL_STATUSES:
             with self._lock:
@@ -1693,6 +1692,129 @@ class RelaySession:
 
         assert self._audit_undo is not None
         self._audit_undo.append(undo_readiness)
+
+    def record_navigation_evidence(self, frame: Mapping[str, object]) -> None:
+        """Commit signed host navigation evidence before delivery, without retaining signatures."""
+        event = json.loads(json.dumps(dict(frame), allow_nan=False))
+        signature = event.pop("signature", None)
+        device_id, epoch, timestamp = (
+            event.get("device_id"),
+            event.get("connection_epoch"),
+            event.get("t"),
+        )
+        if (
+            event.get("type") not in {"navigation_route_authorization", "navigation_pose"}
+            or event.get("session") != self.session_id
+            or type(event.get("v")) is not int
+            or event.get("v") != 1
+            or event.get("flight_approved") is not True
+            or event.get("position_frame") != "map_enu"
+            or type(device_id) is not int
+            or not 1 <= device_id <= 2**31 - 1
+            or type(epoch) is not int
+            or epoch < 1
+            or type(timestamp) is not int
+            or timestamp < 0
+            or any(
+                not isinstance(event.get(name), str) or not 1 <= len(event[name]) <= 128
+                for name in ("event_id", "command_id", "route_id")
+            )
+            or not isinstance(signature, str)
+        ):
+            raise ValueError("navigation audit evidence has invalid host scope")
+        signing_key = (
+            None
+            if self.control_pose_signing_key is None
+            else self.control_pose_signing_key(device_id)
+        )
+        if (
+            not isinstance(signing_key, bytes)
+            or not 32 <= len(signing_key) <= 4096
+            or not verify_event_signature(event, signature, signing_key)
+        ):
+            raise ValueError("navigation audit evidence signature is invalid")
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            self.registry.check_current(device_id, epoch)
+            if self.registry.node_type(device_id) is not NodeType.AIRCRAFT:
+                raise ValueError("flight navigation audit evidence requires an aircraft")
+            self._claim_transport_event(
+                event["event_id"],
+                timestamp,
+                Principal("relay_navigation", device_id, signing_key),
+                self.clock(),
+            )
+            self._append_audit({**event, "signature_emitted": True})
+
+    def record_world_observation(
+        self, raw: Mapping[str, object], registration: Mapping[str, object], manifest: Mapping
+    ) -> None:
+        """Audit host-admitted world observations and their immutable map evidence."""
+        from spatial.observations import Observation
+
+        accepted = Observation.parse(raw).to_dict()
+        if accepted["session"] != self.session_id or accepted["frame"] != "world":
+            raise ValueError("world observation audit scope differs from the session")
+        evidence = json.loads(json.dumps({"registration": registration, "manifest": manifest}))
+        context = json.dumps({**evidence, "epoch": accepted["connection_epoch"]}, sort_keys=True)
+        reference = evidence["registration"]["reference"]
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            identity = (accepted["drone_id"], accepted["source_id"])
+            if (
+                identity not in self._world_observation_contexts
+                and len(self._world_observation_contexts) >= 128
+            ):
+                raise ValueError("world observation source audit capacity reached")
+            common = {
+                "v": 1,
+                "session": self.session_id,
+                "t": accepted["t_ingest"],
+                "drone_id": accepted["drone_id"],
+                "connection_epoch": accepted["connection_epoch"],
+                "node_type": accepted["node_type"],
+                "source_id": accepted["source_id"],
+                "frame": "world",
+                "map_id": reference["bundleId"],
+                "map_version": registration["mapVersion"],
+                "map_sha256": reference["contentHash"],
+                "floor_id": registration["floorId"],
+            }
+            if self._world_observation_contexts.get(identity) != context:
+                measured = manifest["registration"]
+                self._append_audit(
+                    {
+                        **common,
+                        "type": "map_identity",
+                        "event_id": self.event_ids(),
+                        "static_grid_sha256": manifest["image"]["sha256"],
+                        "manifest": evidence["manifest"],
+                    }
+                )
+                self._append_audit(
+                    {
+                        **common,
+                        "type": "registration",
+                        "event_id": self.event_ids(),
+                        "registration_id": registration["transformId"],
+                        "source_frame": registration["sourceFrame"],
+                        "residual_m": measured["residualM"],
+                        "threshold_m": measured["thresholdM"],
+                        "evidence": measured["evidence"],
+                    }
+                )
+            self._append_audit(
+                {
+                    "v": 1,
+                    "type": "world_observation",
+                    "event_id": self.event_ids(),
+                    "session": self.session_id,
+                    "t": accepted["t_ingest"],
+                    "observation": accepted,
+                    "registration": evidence["registration"],
+                }
+            )
+            self._world_observation_contexts[identity] = context
 
     def record_lifecycle(
         self,

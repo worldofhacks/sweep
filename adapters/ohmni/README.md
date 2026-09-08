@@ -138,6 +138,8 @@ position uncertainty, stopping distance, one pulse of travel, and arrival tolera
 around every segment. Arrival tolerance also bounds tracking deviation. Waiting
 robots and earlier arrivals occupy reserved space; selected robots execute in
 order and receive distinct arrival positions within the named zone.
+Every admitted ground node, including unselected robots, needs a deployment
+binding and a fresh qualified world pose so the planner can reserve its footprint.
 
 Confirmation freezes the map revision, deployment hash, selected IDs, roster,
 epochs, pose bindings, starts, and routes. Any invalidation retires the review.

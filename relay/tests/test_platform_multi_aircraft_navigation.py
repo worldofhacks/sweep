@@ -34,6 +34,7 @@ from relay.tests.conftest import (
     telemetry_payload,
 )
 from tests.autonomy_fixtures import planning_config, safety_config
+from tools.world_replay import export_audit, read_replay
 
 SESSION = "flight-session"
 ADAPTER_KEYS = {
@@ -400,6 +401,44 @@ def test_platform_fleet_routes_are_qualified_and_sent_one_aircraft_at_a_time(tmp
                 command, _ = _next_command(second)
                 assert command["drone_id"] == 2
                 assert _issued_drones(session) == [1, 1, 2]
+            output = tmp_path / "platform-flight.mcap"
+            assert (
+                export_audit(session.audit_log.path, SESSION, output)
+                == session.audit_log.last_sequence
+            )
+            records = list(read_replay(output, SESSION))
+            assert records == session.audit_log.replay()
+            routes = [
+                record["event"]
+                for record in records
+                if record["event"]["type"] == "navigation_route_authorization"
+            ]
+            assert {route["device_id"] for route in routes} == {1, 2}
+            for route in routes:
+                profile = deployment.wire_profiles[route["device_id"]]
+                assert route["map_sha256"] == profile.map_sha256
+                assert route["geometry_sha256"] == profile.geometry_sha256
+                assert route["world_transform_sha256"] == profile.world_transform_sha256
+            poses = [
+                record["event"]
+                for record in records
+                if record["event"]["type"] == "navigation_pose"
+            ]
+            assert {pose["device_id"] for pose in poses} == {1, 2}
+            for pose in poses:
+                profile = deployment.wire_profiles[pose["device_id"]]
+                assert pose["position_frame"] == "map_enu"
+                assert pose["map_sha256"] == profile.map_sha256
+                assert pose["geometry_sha256"] == profile.geometry_sha256
+                assert pose["world_transform_sha256"] == profile.world_transform_sha256
+            acknowledgements = [
+                record["event"]
+                for record in records
+                if record["event"]["type"] == "acknowledgement"
+            ]
+            assert {acknowledgement["command_id"] for acknowledgement in acknowledgements} >= {
+                route["command_id"] for route in routes if route["device_id"] == 1
+            }
     finally:
         composition.close()
 

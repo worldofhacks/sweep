@@ -315,6 +315,7 @@ def test_three_aircraft_navigation_publishes_only_to_their_phones_and_excludes_g
         )
         for drone_id in (1, 2, 3)
     }
+    routes_by_drone = {route.drone.drone_id: route for route in plan.navigation.route.routes}
 
     def request(command: Command) -> CommandRequest:
         return CommandRequest(
@@ -334,6 +335,7 @@ def test_three_aircraft_navigation_publishes_only_to_their_phones_and_excludes_g
         )
 
     async def exercise() -> None:
+        nonlocal snapshot
         phones = {
             drone_id: await relay.subscribe(
                 "test-session", Principal("adapter", drone_id, keys[drone_id])
@@ -341,7 +343,7 @@ def test_three_aircraft_navigation_publishes_only_to_their_phones_and_excludes_g
             for drone_id in (1, 2, 3)
         }
         for drone_id, command in first_gotos.items():
-            with publisher.command_scope(plan, lambda: snapshot):
+            with publisher.command_scope(plan, lambda current=snapshot: current):
                 frames = publisher.prepare_request(request(command))
             await relay.publish("test-session", frames)
             publisher.activate(command.command_id)
@@ -355,10 +357,9 @@ def test_three_aircraft_navigation_publishes_only_to_their_phones_and_excludes_g
             assert all(
                 phones[other_id].queue.empty() for other_id in (1, 2, 3) if other_id != drone_id
             )
-        for drone_id in (1, 2, 3):
             poses[drone_id] = replace(
                 poses[drone_id],
-                t=100_000,
+                t=clock(),
                 event_id=f"control-pose-update-{drone_id}",
             )
             await relay.publish("test-session", [{"type": "control_pose", "drone_id": drone_id}])
@@ -367,6 +368,23 @@ def test_three_aircraft_navigation_publishes_only_to_their_phones_and_excludes_g
             assert delivered[1]["device_id"] == drone_id
             assert all(
                 phones[other_id].queue.empty() for other_id in (1, 2, 3) if other_id != drone_id
+            )
+            publisher.retire(command.command_id)
+            slot = routes_by_drone[drone_id].arrival_slot.pose
+            x, y, z = slot.xyz
+            snapshot = replace_aircraft(
+                snapshot,
+                drone_id,
+                pose=Position(*slot.xyz),
+                position_last_seen_ms=clock(),
+            )
+            poses[drone_id] = replace(
+                poses[drone_id],
+                t=clock(),
+                event_id=f"control-pose-arrived-{drone_id}",
+                x_mm=round(x * 1_000),
+                y_mm=round(y * 1_000),
+                z_mm=round(z * 1_000),
             )
 
     asyncio.run(exercise())

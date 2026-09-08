@@ -24,8 +24,14 @@ def _pose(pose):
 def scene_update(record):
     event = record["event"]
     kind = event["type"]
+    world_registration = event.get("registration") if kind == "world_observation" else None
+    if world_registration is not None:
+        event = event["observation"]
     ground_route = kind == "command" and event.get("operation") == "ground_navigate"
-    if kind not in {"observation", "navigation_route_authorization"} and not ground_route:
+    if (
+        kind not in {"observation", "world_observation", "navigation_route_authorization"}
+        and not ground_route
+    ):
         return None
     stamp = event.get("t_ingest", event.get("t"))
     timestamp = {"sec": stamp // 1000, "nsec": (stamp % 1000) * 1_000_000}
@@ -63,6 +69,14 @@ def scene_update(record):
             )
         },
     }
+    if world_registration is not None:
+        entity["metadata"].extend(
+            [
+                {"key": "map_sha256", "value": world_registration["reference"]["contentHash"]},
+                {"key": "registration_id", "value": world_registration["transformId"]},
+                {"key": "floor_id", "value": world_registration["floorId"]},
+            ]
+        )
     if kind == "navigation_route_authorization" or ground_route:
         entity["id"] += "/route/" + event["command_id"]
         if ground_route:
@@ -121,7 +135,18 @@ def scene_update(record):
                 "deletions": [{"timestamp": timestamp, "type": 0, "id": entity["id"]}],
             }
         if payload_kind in {"pose", "telemetry", "tag_observation"}:
-            if payload_kind == "pose":
+            if payload_kind == "pose" and world_registration is not None:
+                frame = payload["position"]["frame"]
+                pose = {
+                    "position": {axis: payload["position"][f"{axis}_m"] for axis in "xyz"},
+                    "orientation": {
+                        "x": 0.0,
+                        "y": 0.0,
+                        "z": math.sin(payload["yaw_rad"] / 2),
+                        "w": math.cos(payload["yaw_rad"] / 2),
+                    },
+                }
+            elif payload_kind == "pose":
                 pose, frame = _pose(payload["pose"]), payload["pose"]["parent_frame"]
             elif payload_kind == "telemetry":
                 frame = payload["position"]["frame"]

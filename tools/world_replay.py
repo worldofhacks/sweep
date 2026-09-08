@@ -52,6 +52,184 @@ TOPICS = (
 )
 
 
+def _rule(types: tuple[str, ...], required: tuple[str, ...]) -> dict[str, object]:
+    return {
+        "if": {"properties": {"type": {"enum": list(types)}}, "required": ["type"]},
+        "then": {"required": list(required)},
+    }
+
+
+def _world_identity_rule(event_type: str, required: tuple[str, ...]) -> dict[str, object]:
+    rule = _rule((event_type,), required)
+    rule["then"]["properties"] = {
+        "drone_id": {"type": "integer", "minimum": 1},
+        "connection_epoch": {"type": "integer", "minimum": 1},
+        "node_type": {"enum": ["ground_vehicle", "aircraft"]},
+        "source_id": {"type": "string", "minLength": 1},
+        "frame": {"const": "world"},
+        "map_id": {"type": "string", "minLength": 1},
+        "map_version": {"type": "string", "minLength": 1},
+        "map_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    }
+    return rule
+
+
+def _world_observation_rule(node_type: str) -> dict[str, object]:
+    return {
+        "if": {
+            "properties": {"type": {"const": "world_observation"}},
+            "required": ["type"],
+        },
+        "then": {
+            "required": ["observation", "registration"],
+            "properties": {
+                "observation": {
+                    "type": "object",
+                    "required": [
+                        "drone_id",
+                        "node_type",
+                        "connection_epoch",
+                        "source_id",
+                        "frame",
+                        "payload",
+                        "t_capture",
+                        "t_ingest",
+                        "frame_provenance",
+                        "authority",
+                    ],
+                    "properties": {
+                        "drone_id": {"type": "integer", "minimum": 1},
+                        "node_type": {"const": node_type},
+                        "connection_epoch": {"type": "integer", "minimum": 1},
+                        "source_id": {"type": "string"},
+                        "frame": {"const": "world"},
+                        "payload": {
+                            "type": "object",
+                            "required": ["position"],
+                            "properties": {
+                                "position": {
+                                    "type": "object",
+                                    "required": ["x_m", "y_m", "z_m", "frame"],
+                                    "properties": {"frame": {"const": "world"}},
+                                }
+                            },
+                        },
+                        "authority": {"const": "diagnostic"},
+                    },
+                },
+                "registration": {
+                    "type": "object",
+                    "required": [
+                        "reference",
+                        "mapVersion",
+                        "floorId",
+                        "sourceFrame",
+                        "transformId",
+                        "qualifiedWorldPose",
+                    ],
+                    "properties": {
+                        "reference": {
+                            "type": "object",
+                            "required": ["bundleId", "revision", "contentHash"],
+                        },
+                        "qualifiedWorldPose": {"const": True},
+                    },
+                },
+            },
+        },
+    }
+
+
+_CHANNEL_RULES: dict[str, tuple[dict[str, object], ...]] = {
+    "roster": (
+        _rule(("membership",), ("drone_id", "connection_epoch", "node_type")),
+        _rule(("node_status",), ("drone_id", "connection_epoch")),
+    ),
+    "plans": (
+        _rule(("intent_record",), ("intent_id", "roster_version")),
+        _rule(("autonomy_result",), ("intent_id",)),
+        _rule(
+            ("navigation_route_authorization",),
+            (
+                "device_id",
+                "connection_epoch",
+                "command_id",
+                "route_id",
+                "position_frame",
+                "map_sha256",
+                "geometry_sha256",
+                "world_transform_sha256",
+                "segments",
+            ),
+        ),
+        _rule(("command",), ("command_id", "intent_id", "drone_id", "connection_epoch")),
+    ),
+    "acknowledgements": (
+        _rule(("acknowledgement",), ("intent_id", "command_id", "roster_version")),
+    ),
+    "aircraft": (
+        _rule(("telemetry",), ("drone", "connection_epoch")),
+        _rule(("control_pose",), ("drone_id", "connection_epoch")),
+        _rule(
+            ("navigation_pose",),
+            ("device_id", "connection_epoch", "command_id", "route_id", "position_frame"),
+        ),
+        _world_observation_rule("aircraft"),
+    ),
+    "ground": (_world_observation_rule("ground_vehicle"),),
+    "tags": (_rule(("observation",), ("node_type", "connection_epoch", "frame", "payload")),),
+    "observations": (
+        _rule(("observation",), ("node_type", "connection_epoch", "frame", "payload")),
+    ),
+    "registration": (
+        _world_identity_rule(
+            "registration",
+            (
+                "drone_id",
+                "connection_epoch",
+                "node_type",
+                "source_id",
+                "frame",
+                "map_id",
+                "map_version",
+                "map_sha256",
+                "floor_id",
+                "registration_id",
+                "source_frame",
+                "residual_m",
+                "threshold_m",
+                "evidence",
+            ),
+        ),
+    ),
+    "map": (
+        _world_identity_rule(
+            "map_identity",
+            (
+                "drone_id",
+                "connection_epoch",
+                "node_type",
+                "source_id",
+                "frame",
+                "map_id",
+                "map_version",
+                "map_sha256",
+                "floor_id",
+                "static_grid_sha256",
+                "manifest",
+            ),
+        ),
+    ),
+    "safety": (
+        _rule(
+            ("refusal",),
+            ("intent_id", "command_id", "drone_id", "connection_epoch", "roster_version", "reason"),
+        ),
+        _rule(("command",), ("command_id", "intent_id", "drone_id", "connection_epoch")),
+    ),
+}
+
+
 class ReplayError(ValueError):
     pass
 
@@ -59,6 +237,11 @@ class ReplayError(ValueError):
 def channel_name(record: dict) -> str:
     event = record["event"]
     kind = event.get("type")
+    if kind == "world_observation":
+        observation = event.get("observation")
+        if not isinstance(observation, dict):
+            return "events"
+        return "ground" if observation.get("node_type") == "ground_vehicle" else "aircraft"
     if kind == "observation":
         payload_kind = event["payload"]["kind"]
         if payload_kind == "tag_observation":
@@ -100,13 +283,21 @@ def channel_schema(name: str) -> bytes:
             "t": {"type": "integer", "minimum": 0},
             "device_id": {"type": ["integer", "null"]},
             "drone_id": {"type": ["integer", "null"]},
-            "node_type": {"enum": ["ground", "aircraft"]},
+            "node_type": {"enum": ["ground", "ground_vehicle", "aircraft"]},
             "connection_epoch": {"type": ["integer", "null"], "minimum": 1},
             "source_id": {"type": "string"},
             "frame": {"type": "string"},
             "reason": {"type": ["string", "null"]},
+            "intent_id": {"type": ["string", "null"]},
+            "command_id": {"type": ["string", "null"]},
+            "roster_version": {"type": "integer", "minimum": 0},
+            "route_id": {"type": "string"},
+            "position_frame": {"type": "string"},
             "map_id": {"type": "string"},
             "map_version": {"type": "string"},
+            "map_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "geometry_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "world_transform_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "registration_id": {"type": "string"},
             "expires_at": {"type": "integer"},
         },
@@ -130,7 +321,8 @@ def channel_schema(name: str) -> bytes:
         {
             "if": {"properties": {"type": {"const": "observation"}}},
             "then": observation,
-        }
+        },
+        *_CHANNEL_RULES.get(name, ()),
     ]
     return json.dumps(
         {

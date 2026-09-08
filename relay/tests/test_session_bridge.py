@@ -633,6 +633,28 @@ def test_await_command_acknowledgement_returns_node_acknowledgements_in_order(
     assert late[0]["type"] == "acknowledgement"
 
 
+def test_ground_guard_poll_preserves_a_later_terminal_acknowledgement(
+    relay_session: RelaySession,
+    adapter_principal: Principal,
+    console_principal: Principal,
+) -> None:
+    _join(relay_session, adapter_principal)
+    relay_session.process_intent(intent_payload(), console_principal)
+    _issue_hover(relay_session, "command-1")
+    assert (
+        relay_session.await_command_acknowledgement(
+            "command-1", timeout_ms=1, retain_on_timeout=True
+        )
+        is None
+    )
+    relay_session.process_acknowledgement(
+        acknowledgement_payload(event_id="ack-later", command_id="command-1", status="completed"),
+        adapter_principal,
+    )
+    terminal = relay_session.await_command_acknowledgement("command-1", timeout_ms=1)
+    assert terminal is not None and terminal.status is LifecycleStatus.COMPLETED
+
+
 def test_await_command_acknowledgement_wakes_a_waiting_thread(
     relay_session: RelaySession,
     adapter_principal: Principal,

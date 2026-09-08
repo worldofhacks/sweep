@@ -20,7 +20,114 @@ from relay.observations import (
 )
 from relay.session import RelayLimits, RelaySession
 from relay.tests.conftest import ADAPTER_KEY, SESSION, MutableClock, membership_payload
-from tools.world_replay import CommittedTail, ReplayError, export_audit, read_replay
+from tools.world_replay import (
+    CommittedTail,
+    ReplayError,
+    channel_schema,
+    export_audit,
+    read_replay,
+)
+
+
+def _schema_valid(channel: str, event: dict[str, object]) -> bool:
+    schema = json.loads(channel_schema(channel))
+    return Draft202012Validator(schema).is_valid({"seq": 1, "event": event})
+
+
+@pytest.mark.parametrize(
+    ("channel", "event"),
+    (
+        (
+            "roster",
+            {
+                "type": "membership",
+                "session": SESSION,
+                "event_id": "member-without-epoch",
+                "drone_id": 1,
+                "node_type": "aircraft",
+            },
+        ),
+        (
+            "acknowledgements",
+            {
+                "type": "acknowledgement",
+                "session": SESSION,
+                "event_id": "ack-without-roster",
+                "intent_id": "intent-1",
+                "command_id": None,
+            },
+        ),
+        (
+            "plans",
+            {
+                "type": "navigation_route_authorization",
+                "session": SESSION,
+                "event_id": "route-without-transform",
+                "device_id": 1,
+                "connection_epoch": 1,
+                "command_id": "command-1",
+                "route_id": "route-1",
+                "position_frame": "map_enu",
+                "map_sha256": "a" * 64,
+                "geometry_sha256": "b" * 64,
+                "segments": [],
+            },
+        ),
+        (
+            "ground",
+            {
+                "type": "world_observation",
+                "session": SESSION,
+                "event_id": "world-without-registration",
+                "observation": {
+                    "drone_id": 9,
+                    "node_type": "ground_vehicle",
+                    "connection_epoch": 1,
+                    "source_id": "ground-localizer",
+                    "frame": "world",
+                    "payload": {"position": {"x_m": 1, "y_m": 2, "z_m": 0, "frame": "world"}},
+                    "t_capture": None,
+                    "t_ingest": 1,
+                    "frame_provenance": {},
+                    "authority": "diagnostic",
+                },
+            },
+        ),
+        (
+            "map",
+            {
+                "type": "map_identity",
+                "session": SESSION,
+                "event_id": "map-without-source",
+                "drone_id": 9,
+                "connection_epoch": 1,
+                "node_type": "ground_vehicle",
+                "frame": "world",
+                "map_id": "demo-map",
+                "map_version": "v1",
+                "map_sha256": "a" * 64,
+                "floor_id": "level-1",
+                "static_grid_sha256": "b" * 64,
+                "manifest": {},
+            },
+        ),
+    ),
+)
+def test_channel_schemas_reject_missing_type_specific_identity(channel, event):
+    assert not _schema_valid(channel, event)
+
+
+def test_channel_schemas_preserve_nullable_and_optional_acknowledgement_context():
+    event = {
+        "type": "acknowledgement",
+        "session": SESSION,
+        "event_id": "intent-level-ack",
+        "intent_id": "intent-1",
+        "command_id": None,
+        "roster_version": 3,
+    }
+
+    assert _schema_valid("acknowledgements", event)
 
 
 def test_real_membership_and_refusal_survive_mcap_round_trip(tmp_path):

@@ -114,6 +114,8 @@ class _AircraftRecord:
     pose_identity: GroundPoseIdentity | None = None
     accepted_pose_identity: GroundPoseIdentity | None = None
     accepted_pose_at: int | None = None
+    qualified_pose_identity: GroundPoseIdentity | None = None
+    qualified_pose_at: int | None = None
     telemetry: TelemetryV1 | None = None
     disconnected_at: int | None = None
     history: list[dict[str, object]] = field(default_factory=list)
@@ -315,6 +317,8 @@ class FleetRegistry:
                 record.pose_identity = None
                 record.accepted_pose_identity = None
                 record.accepted_pose_at = None
+                record.qualified_pose_identity = None
+                record.qualified_pose_at = None
                 record.telemetry = None
                 record.disconnected_at = None
                 record.camera_capabilities = None
@@ -390,6 +394,12 @@ class FleetRegistry:
                 record.local_stop_ready = request.local_stop_ready
                 record.heartbeat_ready = request.heartbeat_ready
                 record.pose_identity = request.pose_identity
+                if request.pose_identity == record.accepted_pose_identity:
+                    record.qualified_pose_identity = request.pose_identity
+                    record.qualified_pose_at = record.accepted_pose_at
+                else:
+                    record.qualified_pose_identity = None
+                    record.qualified_pose_at = None
             else:
                 if (
                     request.home_pose_confirmed is None
@@ -415,7 +425,7 @@ class FleetRegistry:
                     }
                 elif not request.home_pose_confirmed and self._is_grounded(record):
                     record.home_pose = None
-            # accepted_pose_at is the relay's ingest clock, not adapter wall time.
+            # Pose freshness uses relay ingest time, not the adapter's readiness clock.
             reasons = self._readiness_reasons(record, observed_at)
             record.membership = Membership.READY if not reasons else Membership.DEGRADED
             record.updated_at = observed_at
@@ -457,9 +467,9 @@ class FleetRegistry:
                 or record.node_type is not NodeType.GROUND
                 or record.membership is not Membership.READY
                 or record.pose_identity is None
-                or record.pose_identity != record.accepted_pose_identity
-                or record.accepted_pose_at is None
-                or not 0 <= now_ms - record.accepted_pose_at <= self.telemetry_freshness_ms
+                or record.pose_identity != record.qualified_pose_identity
+                or record.qualified_pose_at is None
+                or not 0 <= now_ms - record.qualified_pose_at <= self.telemetry_freshness_ms
             ):
                 return None
             return record.pose_identity
@@ -481,6 +491,16 @@ class FleetRegistry:
                 return
             if not event_id or not session or not source_id or not frame or t < 0:
                 raise ValueError("ground pose observation identity is invalid")
+            qualified = record.qualified_pose_identity
+            if qualified is not None and (
+                qualified.session,
+                qualified.connection_epoch,
+                qualified.source_id,
+                qualified.frame,
+            ) != (session, connection_epoch, source_id, frame):
+                record.qualified_pose_identity = None
+                record.qualified_pose_at = None
+            # Same-provenance candidates cannot replace or refresh a matched readiness pair.
             record.accepted_pose_identity = GroundPoseIdentity(
                 event_id=event_id,
                 session=session,
@@ -497,6 +517,8 @@ class FleetRegistry:
                 return
             record.accepted_pose_identity = None
             record.accepted_pose_at = None
+            record.qualified_pose_identity = None
+            record.qualified_pose_at = None
 
     def apply_graceful_leave(self, request: MembershipRequest) -> MembershipTransition:
         if request.action is not MembershipAction.GRACEFUL_LEAVE:
@@ -843,11 +865,11 @@ class FleetRegistry:
                 reasons.append("heartbeat_not_ready")
             if record.pose_identity is None:
                 reasons.append("pose_identity_missing")
-            elif record.pose_identity != record.accepted_pose_identity:
+            elif record.pose_identity != record.qualified_pose_identity:
                 reasons.append("pose_identity_not_accepted")
             elif (
-                record.accepted_pose_at is None
-                or not 0 <= now_ms - record.accepted_pose_at <= self.telemetry_freshness_ms
+                record.qualified_pose_at is None
+                or not 0 <= now_ms - record.qualified_pose_at <= self.telemetry_freshness_ms
             ):
                 reasons.append("pose_observation_stale")
             return tuple(reasons)
@@ -966,7 +988,13 @@ class FleetRegistry:
                 if record.node_type is NodeType.GROUND
                 else record.control_authority
             ),
-            "last_seen_at": None if record.telemetry is None else record.telemetry.t,
+            "last_seen_at": (
+                record.accepted_pose_at
+                if record.node_type is NodeType.GROUND
+                else None
+                if record.telemetry is None
+                else record.telemetry.t
+            ),
             "camera_patterns": camera_patterns,
             "selectable": record.membership is Membership.READY and not reasons,
             "adapter_id": record.adapter_id,

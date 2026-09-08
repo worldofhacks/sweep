@@ -69,7 +69,7 @@ dispatch path.
 | `/sweep/aircraft`, `/sweep/ground` | Canonical poses and telemetry, including confidence and timing |
 | `/sweep/tags`, `/sweep/observations` | Accepted/rejected tag estimates, scans, camera and status observations |
 | `/sweep/safety` | Refusals, audited safety events, and hold/hover/estop commands |
-| `/sweep/registration`, `/sweep/map` | Explicit registration/residual or map-identity audit events, when emitted |
+| `/sweep/registration`, `/sweep/map` | Approved registration, residual evidence, and map identity from qualified world observations |
 | `/sweep/occupancy` | Explicit occupancy/expiry audit events, when emitted |
 | `/sweep/events` | Other original audit events |
 | `/sweep/scene` | Derived `foxglove.SceneUpdate` display geometry |
@@ -84,6 +84,12 @@ to session, device, epoch, and source; choose that frame in a separate 3D panel 
 inspect it. Scans apply their recorded sensor pose and omit unknown returns from
 display geometry while retaining every null in the original scan. No static grid
 or free-space clearance is inferred from those returns.
+
+The qualified world-observation endpoint records its accepted projection and the
+approved map and registration context in the session audit. Navigation delivery
+records aircraft route authorizations and navigation poses before sending them
+to the node, including subsequent pose updates. Authentication signatures are
+excluded from these replay records; the verified identity and pinned hashes remain.
 
 Aircraft route authorizations retain their map, geometry, navigation, calibration,
 and transform hashes. Their line display stays in the recorded `map_enu` frame.
@@ -106,9 +112,12 @@ hour. Four viewers can connect; each has bounded inbound messages/subscriptions
 and a 250 ms outbound send deadline. Slow viewers lose their connection. These
 limits and filesystem failures affect the sidecar process independently of control.
 
-Tests run real relay membership, canonical aircraft and ground observation
-admission, refusal handling, and the navigation publisher through audit storage
-and actual MCAP decoding. The existing scan/tag fixtures also pass through
+Tests confirm a two-aircraft platform route through the production composition,
+signed node wire, audit storage, and actual MCAP decoding. Ground tests run the
+HTTP preview and confirmation endpoints through the node controller and a fake
+device, checking arrival STOP and STOP after tracking or host approval loss before
+decoding the recorded world poses, map identity, registration, and routes.
+The existing scan/tag fixtures also pass through
 observation admission before export. Live tests subscribe over a real socket,
 refuse client publication, record concurrent appends, and keep a healthy viewer
 and audit writer progressing while another viewer stops reading. Hardware demo
