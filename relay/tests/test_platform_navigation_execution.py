@@ -7,6 +7,7 @@ import time
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +23,7 @@ from relay.auth import Principal, sign_event
 from relay.autonomy import AutonomyComposition, AutonomyConfig, create_autonomy_app
 from relay.control_localization import ControlLocalizationProjector, ControlPose
 from relay.intent_v1 import IntentName, IntentV1, Mode
+from relay.multiview import MultiviewService
 from relay.navigation_service import NavigationService
 from relay.navigation_wire import NavigationTrackingError
 from relay.platform import _FlightExecutionAdapter
@@ -566,13 +568,13 @@ def test_tracking_failure_stops_the_platform_route_when_reporting_fails(
 
                     monkeypatch.setattr(session, "admit_safety_stop", retry_once)
                 else:
-                        monkeypatch.setattr(
-                            autonomy,
-                            "_route",
-                            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                                RuntimeError("routing unavailable")
-                            ),
-                        )
+                    monkeypatch.setattr(
+                        autonomy,
+                        "_route",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                            RuntimeError("routing unavailable")
+                        ),
+                    )
                 events = autonomy.fail_navigation_tracking(
                     NavigationTrackingError(active, "control pose lost before execution wait")
                 )
@@ -1003,4 +1005,147 @@ def test_platform_preview_uses_a_prior_qualified_arrival_as_its_next_route_start
                 "frame": "world",
             }
     finally:
+        composition.close()
+
+
+def test_tracking_failure_keeps_hold_and_heartbeat_live_during_multiview_callback_lock(
+    tmp_path: Path,
+) -> None:
+    deployment = _deployment(tmp_path)
+    clock = MutableClock(100_000)
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY},
+        localization_keys={1: LOCALIZATION_KEY},
+        log_dir=tmp_path / "logs",
+        adapter_backend=AdapterBackend.REMOTE,
+    )
+    config = AutonomyConfig(
+        planning=replace(planning_config(), flight_speed_m_s=0.2),
+        safety=replace(
+            safety_config(), geofence=Geofence(-100, 100, -100, 100, -100, 100), ceiling_m=50
+        ),
+        control_localization_projector=_projector(deployment),
+        navigation=deployment,
+    )
+    app, composition = create_autonomy_app(settings, config, clock=clock, event_ids=EventIds())
+    release = threading.Event()
+    try:
+        with TestClient(app) as client:
+            session, autonomy = _prepare_session(composition, deployment)
+            preview = _preview(deployment)
+            execution = autonomy.preview_platform_navigation(preview)
+            with client.websocket_connect(f"/ws/{SESSION}") as adapter:
+                adapter.send_json(
+                    {
+                        "v": 1,
+                        "type": "auth",
+                        "source": "adapter",
+                        "drone_id": 1,
+                        "token": ADAPTER_KEY.decode(),
+                    }
+                )
+                assert adapter.receive_json()["type"] == "auth.accepted"
+                assert adapter.receive_json()["type"] == "state"
+                autonomy.confirm_platform_navigation(
+                    {**preview, "execution": execution["execution"]}
+                )
+                command = next(
+                    frame
+                    for _ in range(64)
+                    if (frame := adapter.receive_json()).get("type") == "command"
+                )
+                for status in ("accepted", "executing"):
+                    adapter.send_json(
+                        {
+                            "v": 1,
+                            "t": 100_000,
+                            "type": "acknowledgement",
+                            "event_id": f"lock-{status}",
+                            "session": SESSION,
+                            "intent_id": command["intent_id"],
+                            "command_id": command["command_id"],
+                            "status": status,
+                            "drone_id": 1,
+                            "connection_epoch": 1,
+                            "roster_version": command["roster_version"],
+                            "reason": None,
+                            "detail": None,
+                        }
+                    )
+                for _ in range(200):
+                    if command["intent_id"] in autonomy._awaiting:
+                        break
+                    time.sleep(0.01)
+                assert command["intent_id"] in autonomy._awaiting
+                service = MultiviewService(
+                    SimpleNamespace(discard_reserved=lambda *_: None), SimpleNamespace()
+                )
+                composition.set_multiview_listener(service.observe_execution)
+                locked = threading.Event()
+
+                def hold_multiview_lock() -> None:
+                    with service._lock:
+                        locked.set()
+                        assert release.wait(5)
+
+                lock_thread = threading.Thread(target=hold_multiview_lock)
+                lock_thread.start()
+                assert locked.wait(1)
+                received: list[dict[str, object]] = []
+                hold_received = threading.Event()
+                heartbeat_received = threading.Event()
+
+                def receive() -> None:
+                    while True:
+                        try:
+                            frame = adapter.receive_json()
+                        except BaseException:
+                            return
+                        received.append(frame)
+                        if frame.get("type") == "control_heartbeat":
+                            heartbeat_received.set()
+                        if frame.get("type") == "command" and frame.get("operation") == "hover":
+                            hold_received.set()
+
+                threading.Thread(target=receive, daemon=True).start()
+                clock.value = 100_001
+                telemetry = telemetry_payload(
+                    event_id="lock-telemetry", session=SESSION, timestamp=clock(), state="hovering"
+                )
+                telemetry.update(x=-19.9, y=9.8, z=-29.0)
+                session.process_telemetry(telemetry, Principal("adapter", 1, ADAPTER_KEY))
+                pose = session.control_pose(1)
+                assert pose is not None
+                session._control_pose[1] = replace(
+                    pose,
+                    t=clock() - 2,
+                    event_id="lock-pose",
+                    pose_time_ms=clock() - 2,
+                    fix_time_ms=clock() - 2,
+                )
+                failure = asyncio.run_coroutine_threadsafe(
+                    composition.runtime.process_and_publish(
+                        SESSION,
+                        lambda: [
+                            {**session._control_pose[1].unsigned_event(), "signature": "test"}
+                        ],
+                    ),
+                    composition.runtime.loop,
+                )
+                composition.runtime._control_heartbeat_last.clear()
+                heartbeat = asyncio.run_coroutine_threadsafe(
+                    composition.runtime._publish_control_heartbeats(SESSION, session),
+                    composition.runtime.loop,
+                )
+                assert hold_received.wait(2)
+                assert heartbeat_received.wait(2)
+                assert failure.done()
+                assert heartbeat.done()
+                release.set()
+                failure.result(timeout=2)
+                heartbeat.result(timeout=2)
+                lock_thread.join(1)
+    finally:
+        release.set()
         composition.close()
