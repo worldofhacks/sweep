@@ -48,6 +48,16 @@ from relay.control_localization import ControlLocalizationPins, ControlPose
 from relay.intent_v1 import IntentName, IntentV1
 
 
+def _json_safe(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, frozenset):
+        return sorted(_json_safe(item) for item in value)
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class NavigationFrame:
     drone_id: int
@@ -191,10 +201,8 @@ class NavigationExecution:
     formation: MappedFormationPlan | None = None
 
     def to_dict(self) -> dict[str, object]:
-        value = asdict(self)
-        value["route"]["permission"]["permitted_zone_ids"] = sorted(
-            self.route.permission.permitted_zone_ids
-        )
+        value = _json_safe(asdict(self))
+        assert isinstance(value, dict)
         value["intent_name"] = self.intent_name.value
         return value
 
@@ -495,6 +503,8 @@ class NavigationRuntime:
         artifact: NavigationArtifact,
         binding: FormationBinding,
     ) -> Plan:
+        if not intent.confirm:
+            raise ValueError("mapped formation requires confirmation")
         if self.config.speed_m_s > binding.zone.max_speed_mps:
             raise ValueError("formation speed exceeds the approved formation volume")
         positions = self._positions(snapshot)
@@ -540,6 +550,8 @@ class NavigationRuntime:
                 plan
             ):
                 raise ValueError("navigation command shape changed")
+            if execution.formation is not None and not plan.confirmed:
+                raise ValueError("mapped formation plan requires confirmation")
             artifact = self._validate(snapshot)
             if (
                 execution.config != self.config

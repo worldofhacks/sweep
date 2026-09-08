@@ -124,6 +124,12 @@ def test_deployment_loads_a_signed_mapped_formation_binding(tmp_path, generated_
     bundle, geometry, accepted = generated_geometry
     slot = ArrivalSlot("home-a", "atrium", Pose(2.1, 1.8, 1.8, "level_1"), 0.2, 0.2)
     artifact = NavigationArtifact.from_geometry_directory(bundle, geometry, accepted, (slot,))
+    artifact = replace(
+        artifact,
+        zones=tuple(
+            replace(zone, owner_approved=zone.zone_id == "atrium") for zone in artifact.zones
+        ),
+    )
     binding = FormationBinding(
         "column",
         FormationZone(

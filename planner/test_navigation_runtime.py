@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 
 import pytest
@@ -319,6 +320,9 @@ def test_mapped_column_executes_each_aircraft_in_order_after_the_prior_hold():
 
     assert isinstance(plan, Plan)
     assert plan.formation_update == "column"
+    assert json.loads(json.dumps(plan.to_dict()))["navigation"]["formation"]["permission"][
+        "permitted_zone_ids"
+    ] == ["approved-lobby"]
     first_route_commands = len(plan.navigation.route.routes[0].swept_segments) + 1
     blocked = runtime.check(plan, plan.commands[first_route_commands], snapshot)
     assert isinstance(blocked, Refusal)
@@ -388,12 +392,79 @@ def test_mapped_formation_next_transitions_from_line_to_the_approved_column():
     snapshot = replace_aircraft(snapshot, 2, pose=Position(1.5, 4.0, 1.0))
 
     plan = DeterministicPlanner(planning_config(), navigation_runtime=runtime).plan(
-        make_intent(IntentName.FORMATION_NEXT, selection=(1, 2)), snapshot
+        make_intent(IntentName.FORMATION_NEXT, selection=(1, 2), confirm=True), snapshot
     )
 
     assert isinstance(plan, Plan)
     assert plan.formation_update == "column"
     assert runtime.check(plan, plan.commands[0], snapshot) is None
+
+
+def test_mapped_formation_requires_confirmation_at_preparation_and_dispatch():
+    from arbiter.safety import SafetyArbiter
+    from planner.planner import DeterministicPlanner
+    from tests.autonomy_fixtures import planning_config, safety_config
+
+    runtime, _, _, geometry = setup_runtime()
+    binding = FormationBinding(
+        "column",
+        FormationZone(
+            "approved-lobby",
+            "level_1",
+            ((0.0, 0.0), (7.5, 0.0), (7.5, 4.5), (0.0, 4.5), (0.0, 0.0)),
+            0.5,
+            2.0,
+            0.2,
+            True,
+            True,
+            geometry[0].map_pin,
+            geometry[0].geometry_pin,
+        ),
+        FormationLayout(Pose(5.5, 2.5, 1.0, "level_1"), 0.0, 1.0, (0.0, 0.0)),
+    )
+    runtime.config = replace(
+        runtime.config,
+        frames=tuple(
+            NavigationFrame(drone_id, f"world-{drone_id}", IDENTITY) for drone_id in (1, 2)
+        ),
+        max_aircraft=2,
+        formation_bindings=(binding,),
+    )
+    from dataclasses import asdict
+
+    raw = asdict(runtime.approval)
+    raw.update(
+        v=1,
+        type="navigation_approval",
+        epochs=[[1, 1], [2, 1]],
+        evidence_sha256=[],
+        configuration_sha256=navigation_configuration_digest(
+            geometry[0], runtime.config, PERMISSION, "atrium"
+        ),
+    )
+    runtime.approval = NavigationApproval.verify({**raw, "signature": sign_event(raw, KEY)}, KEY)
+    snapshot = make_snapshot(2, spacing=1.0)
+    snapshot = replace_aircraft(snapshot, 1, pose=Position(1.5, 1.0, 1.0))
+    snapshot = replace_aircraft(snapshot, 2, pose=Position(1.5, 4.0, 1.0))
+    planner = DeterministicPlanner(planning_config(), navigation_runtime=runtime)
+    unconfirmed = planner.plan(
+        make_intent(IntentName.FORMATION_SET, selection=(1, 2), args={"name": "column"}),
+        snapshot,
+    )
+    assert isinstance(unconfirmed, Refusal)
+    confirmed = planner.plan(
+        make_intent(
+            IntentName.FORMATION_SET,
+            selection=(1, 2),
+            args={"name": "column"},
+            confirm=True,
+        ),
+        snapshot,
+    )
+    assert isinstance(confirmed, Plan)
+    forged = replace(confirmed, confirmed=False)
+    assert isinstance(SafetyArbiter(safety_config()).check_plan(forged, snapshot), Refusal)
+    assert isinstance(runtime.check(forged, forged.commands[0], snapshot), Refusal)
 
 
 def test_unbound_column_is_refused_before_a_route_is_prepared():
