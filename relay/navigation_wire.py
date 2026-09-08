@@ -307,6 +307,8 @@ class NavigationWirePublisher:
                 raise ValueError("navigation runtime does not provide current-segment tracking")
             refusal = checker(active.plan, active.command, active.snapshot(), pose=pose)
             if refusal is not None:
+                if refusal.detail == "navigation control pose disagrees with adapter ENU telemetry":
+                    return []
                 self.retire(active.command.command_id)
                 raise ValueError(f"navigation wire refused: {refusal.detail}")
         with self._lock:
