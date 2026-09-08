@@ -6,12 +6,14 @@ from pathlib import Path
 
 import pytest
 
+import planner.navigation_deployment as deployment_module
 from perception.test_world_localization import evidence, measured_geometry, pins
 from perception.world_localization_runtime import WorldLocalizationRuntimeConfig
 from planner.mapped_formations import FormationLayout, FormationZone
 from planner.models import Plan, Position
 from planner.navigation import (
     ArrivalSlot,
+    ArtifactPin,
     MotionConfig,
     NavigationArtifact,
     NavigationPermission,
@@ -24,6 +26,8 @@ from planner.navigation_runtime import (
     NavigationExecutionConfig,
     NavigationFrame,
     NavigationRuntime,
+    PrecisionReturnBinding,
+    TagDestinationBinding,
     navigation_configuration_digest,
 )
 from planner.test_navigation import FIXTURE
@@ -116,6 +120,63 @@ def test_file_deployment_loads_real_generated_geometry_and_prepares_route(
     assert isinstance(plan, Plan)
     assert runtime.check(plan, plan.commands[0], snapshot) is None
     assert plan.commands[-2].parameters["x"] == 2.1
+
+
+def test_deployment_binds_a_pinned_tag_and_a_dedicated_marked_return_slot(
+    tmp_path, generated_geometry
+):
+    path = deployment_files(tmp_path, generated_geometry)
+    original = load_navigation_deployment(path)
+    document = json.loads(path.read_text())
+    document["execution"]["tag_destinations"] = [
+        {
+            "tag_id": 0,
+            "zone_id": "atrium",
+            "arrival_slot_id": "home-a",
+            "maximum_horizontal_offset_m": 3.0,
+            "minimum_height_above_tag_m": 0.1,
+            "maximum_height_above_tag_m": 2.0,
+        }
+    ]
+    document["execution"]["precision_returns"] = [
+        {
+            "drone_id": 1,
+            "connection_epoch": 1,
+            "zone_id": "atrium",
+            "marked_slot_id": "home-a",
+        }
+    ]
+    config = replace(
+        original.config,
+        tag_destinations=(TagDestinationBinding(0, "atrium", "home-a", 3.0, 0.1, 2.0),),
+        precision_returns=(PrecisionReturnBinding(1, 1, "atrium", "home-a"),),
+    )
+    approval_path = tmp_path / "approval.json"
+    approval = json.loads(approval_path.read_text())
+    approval["configuration_sha256"] = navigation_configuration_digest(
+        original.artifact(), config, original.permission, original.home_zone_id
+    )
+    unsigned = {key: value for key, value in approval.items() if key != "signature"}
+    approval["signature"] = sign_event(unsigned, KEY)
+    path.write_text(json.dumps(document))
+    approval_path.write_text(json.dumps(approval))
+    loaded = load_navigation_deployment(path)
+    assert loaded.config.tag_destinations[0].tag_id == 0
+    assert loaded.config.precision_returns[0].marked_slot_id == "home-a"
+    assert loaded.tag_destinations(loaded.artifact().map_pin) == loaded.config.tag_destinations
+    assert loaded.tag_destinations(ArtifactPin("other-map", "f" * 64)) == ()
+    too_far = replace(
+        loaded.config,
+        tag_destinations=(TagDestinationBinding(0, "atrium", "home-a", 0.1, 0.1, 2.0),),
+    )
+    with pytest.raises(ValueError, match="measured approach slot"):
+        deployment_module._validate_destination_bindings(
+            loaded.artifact(),
+            too_far,
+            generated_geometry[0],
+            generated_geometry[2],
+            loaded.permission,
+        )
 
 
 def test_deployment_loads_a_signed_mapped_formation_binding(tmp_path, generated_geometry):

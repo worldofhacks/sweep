@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from planner.navigation import ArtifactPin
 from relay.auth import AuthenticationError, authenticate
 from relay.map_authoring import MapAuthoringError, MapAuthoringStore
 from relay.navigation_service import NavigationError, NavigationService
@@ -58,6 +59,19 @@ class _FlightExecutionAdapter:
             raise ValueError("qualified aircraft navigation is unavailable")
         return handler(session, preview)
 
+    def tag_destinations(self, map_ref: dict[str, object]) -> tuple[object, ...]:
+        config = getattr(self.source, "config", None)
+        deployment = getattr(config, "navigation", None)
+        resolver = getattr(deployment, "tag_destinations", None)
+        pin = map_ref.get("mapPin")
+        if (
+            not callable(resolver)
+            or not isinstance(pin, dict)
+            or set(pin) != {"version", "contentSha256"}
+        ):
+            return ()
+        return resolver(ArtifactPin(pin["version"], pin["contentSha256"]))
+
 
 class PlatformServices:
     def __init__(
@@ -76,15 +90,17 @@ class PlatformServices:
         # arbiter, never from a browser request or guessed dataclass defaults.
         motion_config = json.loads(json.dumps(motion_configuration))
         with ExitStack() as cleanup:
+            execution = (
+                None if flight_execution is None else _FlightExecutionAdapter(flight_execution)
+            )
             self.navigation = NavigationService(
                 directory / "navigation.sqlite3",
                 clock_ms=runtime.clock,
                 approved_bundle=self.maps.approved_bundle,
                 state=lambda session: self.session(session).current_state(),
                 motion_config=lambda _session: motion_config,
-                flight_execution=(
-                    None if flight_execution is None else _FlightExecutionAdapter(flight_execution)
-                ),
+                flight_execution=execution,
+                tag_destinations=None if execution is None else execution.tag_destinations,
             )
             cleanup.callback(self.navigation.close)
             self.observations = WorldObservationService.from_env(

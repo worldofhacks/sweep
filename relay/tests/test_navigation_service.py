@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from planner.navigation_runtime import TagDestinationBinding
 from relay.navigation_service import NavigationError, NavigationService, state_projection
 
 
@@ -144,6 +145,24 @@ def test_compiler_resolves_accepted_names_and_aliases_without_coordinates(case, 
     }
     assert result["preview"]["dispatchEligible"] is False
     assert result["preview"]["routes"] == []
+
+
+def test_compiler_resolves_a_pinned_tag_destination_through_the_review_workflow(case):
+    case.service.close()
+    case.service = NavigationService(
+        case.path,
+        clock_ms=lambda: case.now,
+        approved_bundle=lambda _: case.approved,
+        state=lambda _: case.state,
+        motion_config=lambda _: case.config,
+        tag_destinations=lambda _: (
+            TagDestinationBinding(42, "room-a", "room-a-slot", 0.2, 0.5, 1.5),
+        ),
+    )
+    result = case.service.compile("test-session", {"intentId": "tag-42", "query": "tag 42"})
+    assert result["kind"] == "review"
+    assert result["intent"]["args"] == {"zone_id": "room-a"}
+    assert result["preview"]["destination"]["aliases"] == ["Workshop", "Shared", "tag 42"]
 
 
 def test_compiler_ambiguity_clarifies_and_never_chooses_first_match(case):

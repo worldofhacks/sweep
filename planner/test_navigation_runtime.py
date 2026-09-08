@@ -11,6 +11,7 @@ from planner.navigation_runtime import (
     NavigationExecutionConfig,
     NavigationFrame,
     NavigationRuntime,
+    PrecisionReturnBinding,
     navigation_configuration_digest,
 )
 from planner.test_navigation import MOTION, PERMISSION, artifact
@@ -71,6 +72,45 @@ def test_signed_approval_plans_and_checks_actual_route_without_changing_preview_
     assert plan.navigation.route.evidence.flight_approved is False
     assert runtime.check(plan, plan.commands[0], snapshot) is None
     assert plan.commands[0].parameters["x"] == 6.5
+
+
+def test_empty_destination_bindings_preserve_the_prechange_configuration_digest():
+    runtime, _, _, geometry = setup_runtime()
+    assert (
+        navigation_configuration_digest(geometry[0], runtime.config, PERMISSION, "atrium")
+        == "2bf30c7e891329829f60b6dc8c3d80fc9e834db94fc7d8256032695b3b076a20"
+    )
+
+
+def test_precision_return_keeps_the_signed_marked_slot_and_identity_at_every_check():
+    from dataclasses import asdict
+
+    runtime, snapshot, _, geometry = setup_runtime()
+    runtime.config = replace(
+        runtime.config,
+        precision_returns=(PrecisionReturnBinding(1, 1, "atrium", "atrium-a"),),
+    )
+    raw = asdict(runtime.approval)
+    raw.update(
+        v=1,
+        type="navigation_approval",
+        configuration_sha256=navigation_configuration_digest(
+            geometry[0], runtime.config, PERMISSION, "atrium"
+        ),
+        epochs=[[1, 1]],
+        evidence_sha256=[],
+    )
+    runtime.approval = NavigationApproval.verify({**raw, "signature": sign_event(raw, KEY)}, KEY)
+    intent = make_intent(
+        IntentName.NAVIGATE, selection=(1,), args={"zone_id": "atrium"}, confirm=True
+    )
+    plan = runtime.prepare(intent, snapshot)
+    assert isinstance(plan, Plan)
+    assert plan.navigation.route.arrival_slots[0].slot_id == "atrium-a"
+    assert plan.commands[-1].operation.value == "hover"
+    assert runtime.check(plan, plan.commands[0], snapshot) is None
+    changed = replace_aircraft(snapshot, 1, connection_epoch=2)
+    assert isinstance(runtime.check(plan, plan.commands[0], changed), Refusal)
 
 
 def test_world_route_converts_back_to_aircraft_enu():

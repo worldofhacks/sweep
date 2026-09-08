@@ -123,6 +123,47 @@ class FormationBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class TagDestinationBinding:
+    tag_id: int
+    zone_id: str
+    arrival_slot_id: str
+    maximum_horizontal_offset_m: float
+    minimum_height_above_tag_m: float
+    maximum_height_above_tag_m: float
+
+    def __post_init__(self) -> None:
+        integer(self.tag_id, "tag_id")
+        normalized_text(self.zone_id, "zone_id")
+        normalized_text(self.arrival_slot_id, "arrival_slot_id")
+        horizontal = finite_number(
+            self.maximum_horizontal_offset_m, "maximum_horizontal_offset_m", positive=True
+        )
+        minimum = finite_number(self.minimum_height_above_tag_m, "minimum_height_above_tag_m")
+        maximum = finite_number(
+            self.maximum_height_above_tag_m, "maximum_height_above_tag_m", positive=True
+        )
+        if minimum < 0 or minimum > maximum:
+            raise ValueError("tag approach height bounds are invalid")
+        object.__setattr__(self, "maximum_horizontal_offset_m", horizontal)
+        object.__setattr__(self, "minimum_height_above_tag_m", minimum)
+        object.__setattr__(self, "maximum_height_above_tag_m", maximum)
+
+
+@dataclass(frozen=True, slots=True)
+class PrecisionReturnBinding:
+    drone_id: int
+    connection_epoch: int
+    zone_id: str
+    marked_slot_id: str
+
+    def __post_init__(self) -> None:
+        integer(self.drone_id, "drone_id", minimum=1)
+        integer(self.connection_epoch, "connection_epoch", minimum=1)
+        normalized_text(self.zone_id, "zone_id")
+        normalized_text(self.marked_slot_id, "marked_slot_id")
+
+
+@dataclass(frozen=True, slots=True)
 class NavigationExecutionConfig:
     floor_id: str
     motion: MotionConfig
@@ -136,6 +177,8 @@ class NavigationExecutionConfig:
     line_zone_id: str | None = None
     max_aircraft: int = 4
     formation_bindings: tuple[FormationBinding, ...] = ()
+    tag_destinations: tuple[TagDestinationBinding, ...] = ()
+    precision_returns: tuple[PrecisionReturnBinding, ...] = ()
 
     def __post_init__(self) -> None:
         normalized_text(self.floor_id, "floor_id")
@@ -175,6 +218,29 @@ class NavigationExecutionConfig:
             )
         ):
             raise ValueError("navigation requires unique bounded mapped formation bindings")
+        if (
+            not isinstance(self.tag_destinations, tuple)
+            or any(
+                not isinstance(binding, TagDestinationBinding) for binding in self.tag_destinations
+            )
+            or len({binding.tag_id for binding in self.tag_destinations})
+            != len(self.tag_destinations)
+            or len({binding.zone_id for binding in self.tag_destinations})
+            != len(self.tag_destinations)
+        ):
+            raise ValueError("navigation requires unique tag destination bindings")
+        if (
+            not isinstance(self.precision_returns, tuple)
+            or any(
+                not isinstance(binding, PrecisionReturnBinding)
+                for binding in self.precision_returns
+            )
+            or len({binding.drone_id for binding in self.precision_returns})
+            != len(self.precision_returns)
+            or len({binding.zone_id for binding in self.precision_returns})
+            != len(self.precision_returns)
+        ):
+            raise ValueError("navigation requires unique precision return bindings")
 
     def frame(self, drone_id: int) -> NavigationFrame:
         for frame in self.frames:
@@ -186,6 +252,16 @@ class NavigationExecutionConfig:
         return next(
             (binding for binding in self.formation_bindings if binding.shape == shape),
             None,
+        )
+
+    def precision_return(self, zone_id: str) -> PrecisionReturnBinding | None:
+        return next(
+            (binding for binding in self.precision_returns if binding.zone_id == zone_id), None
+        )
+
+    def tag_destination(self, zone_id: str) -> TagDestinationBinding | None:
+        return next(
+            (binding for binding in self.tag_destinations if binding.zone_id == zone_id), None
         )
 
 
@@ -299,12 +375,17 @@ def navigation_configuration_digest(
     permission: NavigationPermission,
     home_zone_id: str,
 ) -> str:
+    configuration = asdict(config)
+    if not config.tag_destinations:
+        configuration.pop("tag_destinations")
+    if not config.precision_returns:
+        configuration.pop("precision_returns")
     return content_digest(
         {
             "map": asdict(artifact.map_pin),
             "geometry": asdict(artifact.geometry_pin),
             "navigation": asdict(artifact.navigation_pin),
-            "config": asdict(config),
+            "config": configuration,
             "permitted_zone_ids": sorted(permission.permitted_zone_ids),
             "home_zone_id": home_zone_id,
         }
@@ -431,6 +512,8 @@ class NavigationRuntime:
             )
             if isinstance(route, NavigationRefusal):
                 raise ValueError(f"{route.code}: {route.detail}")
+            self._require_tag_destination(route)
+            self._require_precision_return(route)
             return self.prepare_route(intent, snapshot, route)
         except (ValueError, KeyError) as error:
             return self._refusal(intent.intent_id, snapshot, str(error))
@@ -443,6 +526,8 @@ class NavigationRuntime:
         formation: MappedFormationPlan | None = None,
     ) -> Plan:
         artifact = self._validate(snapshot)
+        self._require_tag_destination(route)
+        self._require_precision_return(route)
         execution = NavigationExecution(
             route,
             self.config,
@@ -561,6 +646,8 @@ class NavigationRuntime:
                 raise ValueError("navigation configuration or approval changed")
             positions = self._positions(snapshot, _tracking_pose)
             route_plan = execution.route
+            self._require_tag_destination(route_plan)
+            self._require_precision_return(route_plan)
             destination = self.home_zone_id
             if plan.intent_name is IntentName.NAVIGATE:
                 destination = route_plan.destination_zone_id
@@ -714,6 +801,29 @@ class NavigationRuntime:
             return self._refusal(
                 plan.intent_id, snapshot, str(error) or "navigation pose is missing"
             )
+
+    def _require_precision_return(self, route: NavigationPlan) -> None:
+        binding = self.config.precision_return(route.destination_zone_id)
+        if binding is None:
+            return
+        if (
+            len(route.selected) != 1
+            or route.selected[0].drone_id != binding.drone_id
+            or route.selected[0].connection_epoch != binding.connection_epoch
+            or len(route.arrival_slots) != 1
+            or route.arrival_slots[0].slot_id != binding.marked_slot_id
+        ):
+            raise ValueError("precision return requires its marked aircraft identity and slot")
+
+    def _require_tag_destination(self, route: NavigationPlan) -> None:
+        binding = self.config.tag_destination(route.destination_zone_id)
+        if binding is None:
+            return
+        if (
+            len(route.arrival_slots) != 1
+            or route.arrival_slots[0].slot_id != binding.arrival_slot_id
+        ):
+            raise ValueError("tag visit requires its measured approach slot")
 
     def _require_prior_routes_held(
         self,

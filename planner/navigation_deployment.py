@@ -6,6 +6,7 @@ import os
 import stat
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, replace
+from math import hypot
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
@@ -26,6 +27,8 @@ from planner.navigation_runtime import (
     NavigationExecutionConfig,
     NavigationFrame,
     NavigationRuntime,
+    PrecisionReturnBinding,
+    TagDestinationBinding,
     navigation_configuration_digest,
 )
 from relay.control_localization import (
@@ -34,6 +37,7 @@ from relay.control_localization import (
     ControlLocalizationProjector,
     ControlPose,
 )
+from tools.map_validate import validate_bundle
 
 if TYPE_CHECKING:
     from relay.navigation_wire import NavigationWireConfig
@@ -219,6 +223,12 @@ class NavigationDeployment:
             control_pose=control_pose,
         )
 
+    def tag_destinations(self, map_pin: ArtifactPin) -> tuple[TagDestinationBinding, ...]:
+        artifact = self.artifact()
+        if artifact.map_pin != map_pin:
+            return ()
+        return self.config.tag_destinations
+
 
 _WIRE_LIMIT_FIELDS = frozenset(
     {
@@ -358,6 +368,56 @@ def _validate_world_localization(
             raise ValueError("navigation deployment does not bind world localization evidence")
 
 
+def _validate_destination_bindings(
+    artifact: NavigationArtifact,
+    config: NavigationExecutionConfig,
+    bundle: Path,
+    accepted_map_versions: object,
+    permission: NavigationPermission,
+) -> None:
+    if not isinstance(accepted_map_versions, dict):
+        raise ValueError("accepted map versions are invalid")
+    tags = validate_bundle(bundle, accepted_map_versions).document("tags.yaml")["tags"]
+    tags_by_id = {tag["id"]: tag for tag in tags}
+    zones = {zone.zone_id: zone for zone in artifact.zones}
+    slots = {slot.slot_id: slot for zone in artifact.zones for slot in zone.arrival_slots}
+    for binding in config.tag_destinations:
+        tag = tags_by_id.get(binding.tag_id)
+        if tag is None:
+            raise ValueError("tag destination references a tag absent from the pinned map")
+        zone = zones.get(binding.zone_id)
+        slot = slots.get(binding.arrival_slot_id)
+        if (
+            zone is None
+            or not zone.owner_approved
+            or binding.zone_id not in permission.permitted_zone_ids
+            or slot is None
+            or slot.zone_id != binding.zone_id
+            or len(zone.arrival_slots) != 1
+            or zone.arrival_slots[0] != slot
+            or hypot(slot.pose.x_m - tag["T_map_tag"][0][3], slot.pose.y_m - tag["T_map_tag"][1][3])
+            > binding.maximum_horizontal_offset_m
+            or not binding.minimum_height_above_tag_m
+            <= slot.pose.z_m - tag["T_map_tag"][2][3]
+            <= binding.maximum_height_above_tag_m
+        ):
+            raise ValueError("tag destination requires a measured approach slot at its map tag")
+    for binding in config.precision_returns:
+        zone = zones.get(binding.zone_id)
+        slot = slots.get(binding.marked_slot_id)
+        if (
+            zone is None
+            or not zone.owner_approved
+            or binding.zone_id not in permission.permitted_zone_ids
+            or slot is None
+            or slot.zone_id != binding.zone_id
+            or len(zone.arrival_slots) != 1
+            or zone.arrival_slots[0] != slot
+            or binding.drone_id not in {frame.drone_id for frame in config.frames}
+        ):
+            raise ValueError("precision return requires one approved marked slot for its aircraft")
+
+
 def _flight_input_roots(
     path: Path,
     approval_path: Path,
@@ -457,7 +517,12 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
         raise ValueError("home zone must have explicit arrival permission")
     execution_fields = set(NavigationExecutionConfig.__dataclass_fields__)
     execution_raw = raw["execution"]
-    optional_execution_fields = {"max_aircraft", "formation_bindings"}
+    optional_execution_fields = {
+        "max_aircraft",
+        "formation_bindings",
+        "tag_destinations",
+        "precision_returns",
+    }
     if (
         not isinstance(execution_raw, dict)
         or not set(execution_raw) <= execution_fields
@@ -468,6 +533,8 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
         **execution_raw,
         "max_aircraft": execution_raw.get("max_aircraft", 4),
         "formation_bindings": execution_raw.get("formation_bindings", []),
+        "tag_destinations": execution_raw.get("tag_destinations", []),
+        "precision_returns": execution_raw.get("precision_returns", []),
     }
     execution["motion"] = MotionConfig(
         **_fields(execution["motion"], set(MotionConfig.__dataclass_fields__), "navigation motion")
@@ -536,6 +603,37 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
             FormationBinding(binding["shape"], FormationZone(**zone), FormationLayout(**layout))
         )
     execution["formation_bindings"] = tuple(bindings)
+    tags_raw = execution["tag_destinations"]
+    if not isinstance(tags_raw, list):
+        raise ValueError("tag destinations must be a list")
+    tags = []
+    for value in tags_raw:
+        binding = _fields(
+            value,
+            {
+                "tag_id",
+                "zone_id",
+                "arrival_slot_id",
+                "maximum_horizontal_offset_m",
+                "minimum_height_above_tag_m",
+                "maximum_height_above_tag_m",
+            },
+            "tag destination",
+        )
+        tags.append(TagDestinationBinding(**binding))
+    execution["tag_destinations"] = tuple(tags)
+    returns_raw = execution["precision_returns"]
+    if not isinstance(returns_raw, list):
+        raise ValueError("precision returns must be a list")
+    returns = []
+    for value in returns_raw:
+        binding = _fields(
+            value,
+            {"drone_id", "connection_epoch", "zone_id", "marked_slot_id"},
+            "precision return",
+        )
+        returns.append(PrecisionReturnBinding(**binding))
+    execution["precision_returns"] = tuple(returns)
     config = NavigationExecutionConfig(**execution)
     approval_path = local("approval_file")
     key_path = local("approval_key_file")
@@ -580,6 +678,9 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
 
     if approval.mode != "flight":
         loaded = artifact()
+        _validate_destination_bindings(
+            loaded, config, bundle, raw["accepted_map_versions"], permission
+        )
         if (
             navigation_configuration_digest(loaded, config, permission, raw["home_zone_id"])
             != approval.configuration_sha256
@@ -616,6 +717,7 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
         return result
 
     loaded = frozen_artifact()
+    _validate_destination_bindings(loaded, config, bundle, raw["accepted_map_versions"], permission)
     if (
         navigation_configuration_digest(loaded, config, permission, raw["home_zone_id"])
         != approval.configuration_sha256

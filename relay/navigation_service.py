@@ -274,12 +274,14 @@ class NavigationService:
         motion_config: Callable[[str], dict[str, object] | None],
         route_preview: RoutePreviewProvider | None = None,
         flight_execution: FlightNavigationExecution | None = None,
+        tag_destinations: Callable[[dict[str, object]], tuple[object, ...]] | None = None,
         review_ttl_ms: int = 15_000,
         max_previews: int = 256,
     ) -> None:
         self.clock_ms, self.approved_bundle = clock_ms, approved_bundle
         self.state, self.motion_config = state, motion_config
         self.route_preview, self.flight_execution = route_preview, flight_execution
+        self.tag_destinations = tag_destinations
         self.review_ttl_ms = _integer(review_ttl_ms, 1, 60_000)
         self.max_previews = _integer(max_previews, 1, 4096)
         self._lock = threading.RLock()
@@ -543,6 +545,26 @@ class NavigationService:
             "accepted": True,
             "approvalId": approval_id,
         }
+        if self.tag_destinations is not None:
+            by_zone = {destination["zoneId"]: destination for destination in destinations}
+            try:
+                bindings = self.tag_destinations(_copy(map_ref))
+            except ValueError as error:
+                raise NavigationError(
+                    "map_unavailable", "The configured tag destinations are unavailable."
+                ) from error
+            if not isinstance(bindings, tuple):
+                _fail("map_unavailable", "The configured tag destinations are invalid.")
+            for binding in bindings:
+                tag_id = getattr(binding, "tag_id", None)
+                zone_id = getattr(binding, "zone_id", None)
+                destination = by_zone.get(zone_id)
+                if type(tag_id) is not int or destination is None:
+                    _fail("map_unavailable", "The configured tag destinations are invalid.")
+                combined = [*destination["aliases"], f"tag {tag_id}"]
+                if len({_normalized(alias) for alias in combined}) != len(combined):
+                    _fail("map_unavailable", "Tag destination aliases conflict with the map.")
+                destination["aliases"] = combined
         catalog_identity = {"map": map_ref, "destinations": destinations}
         return {
             "session": session,

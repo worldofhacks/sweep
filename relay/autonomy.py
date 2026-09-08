@@ -781,6 +781,14 @@ class AutonomySession:
         now = self._composition.runtime.clock()
         if expires_at <= now:
             raise ValueError("qualified navigation preview has expired")
+        precision_return = runtime.config.precision_return(destination["zoneId"])
+        if precision_return is not None and (
+            len(selected) != 1
+            or selected[0].get("id") != precision_return.drone_id
+            or selected[0].get("deviceClass") != "aircraft"
+            or selected[0].get("epoch") != precision_return.connection_epoch
+        ):
+            raise ValueError("precision return requires its marked aircraft identity")
         intent = IntentV1(
             v=1,
             t=now,

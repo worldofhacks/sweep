@@ -12,7 +12,7 @@ from planner.models import Geofence
 from planner.navigation import MotionConfig
 from planner.navigation_authorization import content_digest
 from planner.navigation_deployment import NavigationDeployment, load_navigation_deployment
-from planner.navigation_runtime import navigation_configuration_digest
+from planner.navigation_runtime import PrecisionReturnBinding, navigation_configuration_digest
 from planner.test_navigation_deployment import _flight_deployment_files
 from planner.test_navigation_runtime import KEY
 from relay.auth import Principal, sign_event
@@ -35,7 +35,7 @@ SESSION = "flight-session"
 LOCALIZATION_KEY = b"localization-test-key-32-characters"
 
 
-def _deployment(tmp_path: Path) -> NavigationDeployment:
+def _deployment(tmp_path: Path, *, precision_return: bool = False) -> NavigationDeployment:
     path, _, _ = _flight_deployment_files(tmp_path)
     original = load_navigation_deployment(path)
     artifact = original.artifact()
@@ -65,6 +65,9 @@ def _deployment(tmp_path: Path) -> NavigationDeployment:
         motion=MotionConfig(0.005, 0.005, 0.001, 0.005, 0.005, 0.01, 0.2),
         position_tolerance_m=0.005,
         wire_config_sha256=content_digest({"1": limits}),
+        precision_returns=(
+            (PrecisionReturnBinding(1, 1, "lobby", "flight-home"),) if precision_return else ()
+        ),
     )
     document["execution"] = asdict(config)
     path.write_text(json.dumps(document))
@@ -78,6 +81,41 @@ def _deployment(tmp_path: Path) -> NavigationDeployment:
     approval["signature"] = sign_event(approval_unsigned, KEY)
     approval_path.write_text(json.dumps(approval))
     return load_navigation_deployment(path)
+
+
+def test_precision_return_uses_its_marked_slot_and_refuses_a_changed_aircraft_identity(
+    tmp_path: Path,
+) -> None:
+    deployment = _deployment(tmp_path, precision_return=True)
+    clock = MutableClock(100_000)
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY},
+        localization_keys={1: LOCALIZATION_KEY},
+        log_dir=tmp_path / "logs",
+        adapter_backend=AdapterBackend.REMOTE,
+    )
+    config = AutonomyConfig(
+        planning=replace(planning_config(), flight_speed_m_s=0.2),
+        safety=replace(
+            safety_config(), geofence=Geofence(-100, 100, -100, 100, -100, 100), ceiling_m=50
+        ),
+        control_localization_projector=_projector(deployment),
+        navigation=deployment,
+    )
+    app, composition = create_autonomy_app(settings, config, clock=clock, event_ids=EventIds())
+    try:
+        with TestClient(app):
+            _prepare_session(composition, deployment)
+            preview = _preview(deployment)
+            planned = composition.preview_platform_navigation(SESSION, preview)
+            assert planned["routes"][0]["arrivalSlot"]["slotId"] == "flight-home"
+            assert planned["routes"][0]["holdBehavior"] == "hover"
+            changed = {**preview, "selected": [{"id": 1, "deviceClass": "aircraft", "epoch": 2}]}
+            with pytest.raises(ValueError, match="precision return"):
+                composition.preview_platform_navigation(SESSION, changed)
+    finally:
+        composition.close()
 
 
 def _projector(deployment: NavigationDeployment) -> ControlLocalizationProjector:
