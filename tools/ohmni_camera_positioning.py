@@ -62,6 +62,8 @@ RESUME_NECK_TOLERANCE = 200
 RESUME_REQUEST_MAX_BYTES = 4096
 FORWARD_TERMINAL_TOLERANCE_M = FORWARD_SPEED_M_S * 0.1
 INSPECTED_FORWARD_TARGET_M = 0.02
+# Software guard band for discrete drive response; it does not claim position accuracy.
+INSPECTED_TRAVEL_TOLERANCE_M = 0.001
 
 
 class PositioningProfile:
@@ -790,6 +792,17 @@ class CameraPoseCaptureRunner(CalibrationRunner):
             return "camera_inspection_live_state_changed"
         return self._forward_device_guard(now)
 
+    def _validate_inspected_displacement(self, current: Pose) -> float:
+        displacement_m = self._forward_displacement(current)
+        self.forward_distance_m = displacement_m
+        if displacement_m < -INSPECTED_TRAVEL_TOLERANCE_M:
+            self.device.stop()
+            raise CalibrationError("camera_pose_reverse_motion")
+        if displacement_m > INSPECTED_FORWARD_TARGET_M + INSPECTED_TRAVEL_TOLERANCE_M:
+            self.device.stop()
+            raise CalibrationError("camera_pose_inspected_forward_limit")
+        return displacement_m
+
     def _run_inspected_forward(self, stages: dict[str, object]) -> None:
         self.device.stop()
         self.device.disable()
@@ -863,6 +876,8 @@ class CameraPoseCaptureRunner(CalibrationRunner):
         motion_deadline = self.monotonic() + pulse.duration_s + LEASE_MAX_AGE_S
         while self.device.motion_done(motion_id) is False:
             self._require_lease()
+            current, _ = self._snapshot()
+            self._validate_inspected_displacement(current)
             if self.monotonic() >= motion_deadline:
                 self.device.stop()
                 raise CalibrationError("camera_pose_pulse_timeout")
@@ -871,7 +886,11 @@ class CameraPoseCaptureRunner(CalibrationRunner):
             self.device.stop()
             raise CalibrationError(self.device.last_refusal or "camera_pose_pulse_failed")
         self.forward_pulses_completed = 1
-        self.forward_distance_m = self._forward_displacement(self._snapshot()[0])
+        pose_after, _ = self._snapshot()
+        self.forward_distance_m = self._validate_inspected_displacement(pose_after)
+        if self.forward_distance_m < INSPECTED_TRAVEL_TOLERANCE_M:
+            self.device.stop()
+            raise CalibrationError("camera_pose_no_motion")
         self.device.stop()
         stages["after_inspected_forward"] = self._capture_stage()
 
@@ -1074,6 +1093,7 @@ class CameraPoseCaptureRunner(CalibrationRunner):
                 "shape": "inspected_forward_only",
                 "velocity_m_s": FORWARD_SPEED_M_S,
                 "target_distance_m": INSPECTED_FORWARD_TARGET_M,
+                "travel_tolerance_m": INSPECTED_TRAVEL_TOLERANCE_M,
                 "pulse_duration_s": 0.5,
                 "maximum_pulses": 1,
                 "measured_distance_m": self.forward_distance_m,
@@ -1148,6 +1168,7 @@ def _limits() -> dict[str, object]:
             "inspected-forward": {
                 "target_distance_m": INSPECTED_FORWARD_TARGET_M,
                 "velocity_m_s": FORWARD_SPEED_M_S,
+                "travel_tolerance_m": INSPECTED_TRAVEL_TOLERANCE_M,
                 "pulse_duration_s": 0.5,
                 "maximum_pulses": 1,
             },

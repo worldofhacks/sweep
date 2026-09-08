@@ -1,6 +1,6 @@
 # Unit 12 camera positioning capture
 
-`tools/ohmni_camera_positioning.py` captures fixed-head camera-position evidence for Unit 12. It has three modes: read-only baseline, bounded yaw, and a bounded 0.20 m forward capture. The tool rejects every other device ID, so Unit 12 measurements cannot be applied to Unit 11.
+`tools/ohmni_camera_positioning.py` captures fixed-head camera-position evidence for Unit 12. It has four modes: read-only baseline, bounded yaw, a bounded 0.20 m forward capture, and a camera-inspected 0.02 m forward pulse. The tool rejects every other device ID, so Unit 12 measurements cannot be applied to Unit 11.
 
 Forward motion completes within 4 mm of the 0.20 m target. This avoids issuing a final drive command that is shorter than the drive owner’s 100 ms control interval; the artifact records both the measured distance and the terminal tolerance.
 
@@ -12,4 +12,8 @@ Before the retained owner sends another pulse, it checks the lease, a qualified 
 
 The source pin hashes both the adapter source bundle and this entry point. Pass the resulting `camera_positioning_source_sha256()` value as `--expected-source-sha256`.
 
-`--mode inspected-forward` stops the owner, writes `<output>.inspection-challenge.json`, and waits up to 30 seconds for a camera review. Copy that challenge to the capture host, use `python -m tools.ohmni_camera_inspection --challenge FILE --frame-record FILE --manifest FILE --operator-id ID --review-notes TEXT --accept`, then copy the capture files and the resulting `FILE.approval.json` to the owner at the paths named in the request. The owner verifies the retained image, raw frame, manifest, challenge, current head, lease, source pin, and LiDAR immediately before one 0.02 m maximum pulse. It stops after that pulse and records the approval in the final or failed artifact.
+The inspected-forward pulse uses a 1 mm travel tolerance around its 0.02 m cap. This software guard absorbs the discrete motor command response: the nominal 56-unit command maps to 0.04032 m/s. The final and failed artifacts record the tolerance. It does not establish physical positioning accuracy.
+
+`--mode inspected-forward` stops the owner, writes `<output>.inspection-challenge.json`, and waits up to 30 seconds for a camera review. Copy that file to the capture host. Run `python -m tools.ohmni_dual_calibration_capture` there with `--inspection-challenge-file FILE`, `--device-id 12`, and the challenge boot ID as `--expected-boot-id`.
+
+Copy the root `manifest.json` and the selected camera directory, including its frame record, PNG, and raw source, back to the device. Keep their relative paths. On the device, run `python -m tools.ohmni_camera_inspection --challenge CHALLENGE --frame-record CAPTURE/main/frame-000000.json --manifest CAPTURE/manifest.json --operator-id ID --review-notes TEXT --accept`. It writes `CHALLENGE.approval.json`, which the waiting owner reads. The owner verifies the retained image, raw frame, manifest, challenge, current head, lease, source pin, and LiDAR immediately before one 0.02 m maximum pulse. It stops after that pulse and records the approval in the final or failed artifact.

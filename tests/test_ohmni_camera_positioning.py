@@ -514,36 +514,6 @@ def test_forward_guard_rechecks_existing_obstacle_policy_during_motion(
     runner._resume_gate.close()
 
 
-def test_later_live_pause_keeps_the_first_artifact_and_issues_a_fresh_one(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    runner, simulation = _simulated_capture_runner(
-        monkeypatch, tmp_path, sleep_factory=_obstacle_after_motion_sleep
-    )
-    runner._started = simulation.clock()
-    runner._deadline = simulation.clock() + runner.config.max_runtime_s
-    assert simulation.device.enable()
-    runner._initialize()
-    with pytest.raises(capture.CameraPosePaused):
-        runner._forward_until_target()
-    simulation.device.disable()
-    stages = {"before_motion": {"revolutions": []}}
-    runner._pause_for_live_resume(stages, "obstacle_within_clearance")
-    first = tmp_path / "capture.json.paused.json"
-    first_bytes = first.read_bytes()
-    runner._pause_for_live_resume(stages, "obstacle_within_clearance")
-    second = tmp_path / "capture.json.paused-2.json"
-
-    assert first.read_bytes() == first_bytes
-    assert json.loads(second.read_text())["pause_sequence"] == 2
-    with pytest.raises(CalibrationError, match="camera_pose_resume_owner_unavailable"):
-        capture._submit_live_resume(
-            capture._read_pause(first), boot_id="boot", device_id=12, source_sha256="source"
-        )
-    assert runner._resume_gate is not None
-    runner._resume_gate.close()
-
-
 def _yaw_overshoot_sleep(simulation: RunnerSimulation):
     original_sleep = simulation.sleep
 
@@ -753,6 +723,97 @@ def _wait_for(path: Path) -> None:
         time.sleep(0.001)
 
 
+def _live_resume_args(tmp_path: Path, paused: Path, boot_id: str, source_sha256: str) -> list[str]:
+    return [
+        "--lease-port",
+        "1",
+        "--lease-token-file",
+        str(tmp_path / "unused-token"),
+        "--output",
+        str(tmp_path / "ignored.json"),
+        "--mode",
+        "forward",
+        "--device-id",
+        "12",
+        "--resume-from",
+        str(paused),
+        "--expected-boot-id",
+        boot_id,
+        "--expected-source-sha256",
+        source_sha256,
+    ]
+
+
+def test_two_live_pauses_keep_prior_evidence_and_the_original_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pauses = 0
+    allow_second_pause = False
+
+    def two_obstacles(simulation: RunnerSimulation):
+        raw_sleep = simulation.sleep
+
+        def sleep(delay: float) -> None:
+            nonlocal pauses
+            raw_sleep(delay)
+            if simulation.device.motion is not None and (
+                pauses == 0 or (pauses == 1 and allow_second_pause)
+            ):
+                pauses += 1
+                simulation.forward_scan_cm = 44
+
+        return sleep
+
+    runner, simulation = _simulated_capture_runner(
+        monkeypatch, tmp_path, sleep_factory=two_obstacles
+    )
+    boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    source_sha256 = capture.camera_positioning_source_sha256()
+    runner.boot_id = boot_id
+    runner.executed_bundle_source_sha256 = source_sha256
+    runner._capture_stage = lambda: {"revolutions": []}
+    runner._settle = lambda: None
+    raw_sleep = runner.sleep
+
+    def sleep(delay: float) -> None:
+        raw_sleep(delay)
+        _set_forward_scan(simulation)
+        if runner._resume_gate is not None:
+            time.sleep(0.001)
+
+    runner.sleep = sleep
+    outcome: list[BaseException] = []
+    owner = threading.Thread(target=lambda: _run_owner(runner, outcome))
+    owner.start()
+    first = tmp_path / "capture.json.paused.json"
+    _wait_for(first)
+    first_bytes = first.read_bytes()
+    first_pause = json.loads(first_bytes)
+    allow_second_pause = True
+    simulation.forward_scan_cm = 100
+    _set_forward_scan(simulation)
+    assert capture.main(_live_resume_args(tmp_path, first, boot_id, source_sha256)) == 0
+    second = tmp_path / "capture.json.paused-2.json"
+    _wait_for(second)
+    second_pause = json.loads(second.read_text())
+    with pytest.raises(CalibrationError, match="camera_pose_resume_owner_unavailable"):
+        capture.main(_live_resume_args(tmp_path, first, boot_id, source_sha256))
+    simulation.forward_scan_cm = 100
+    _set_forward_scan(simulation)
+    assert capture.main(_live_resume_args(tmp_path, second, boot_id, source_sha256)) == 0
+    owner.join(2)
+
+    assert not owner.is_alive()
+    assert outcome == []
+    assert first.read_bytes() == first_bytes
+    assert (
+        first_pause["live_resume"]["expires_at_monotonic_s"]
+        == second_pause["live_resume"]["expires_at_monotonic_s"]
+    )
+    assert runner._progress.values()[0] >= first_pause["motion"]["measured_distance_m"]
+    assert (tmp_path / "capture.json").exists()
+
+
 def test_live_resume_request_is_bound_to_one_exact_pause_artifact(tmp_path: Path) -> None:
     gate = capture._LiveResumeGate(
         boot_id="boot",
@@ -867,6 +928,10 @@ def test_inspected_forward_consumes_one_verified_review_for_one_pulse(
     document = json.loads((tmp_path / "capture.json").read_text())
     assert submitted
     assert document["motion"]["pulses_completed"] == 1
+    assert document["motion"]["travel_tolerance_m"] == 0.001
+    assert (
+        document["limits"]["predeclared_modes"]["inspected-forward"]["travel_tolerance_m"] == 0.001
+    )
     assert document["inspection_approval"]["consumed"] is True
     assert simulation.device.motion is None
     assert not simulation.device.enabled
