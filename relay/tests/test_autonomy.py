@@ -19,6 +19,7 @@ from relay.autonomy import (
     AutonomyComposition,
     AutonomyConfig,
     PlanPreempted,
+    _ground_return_selected,
     _Job,
     _PreemptibleLink,
     apply_result,
@@ -28,6 +29,7 @@ from relay.autonomy import (
 )
 from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
+from relay.contracts import NodeType
 from relay.control_frames import sign_localization_frame
 from relay.control_localization import ControlLocalizationWire, to_wire_payload
 from relay.intent_v1 import IntentName, IntentV1, Mode
@@ -55,7 +57,7 @@ LOCALIZATION_KEY = b"localization-test-key-32-characters"
 def _env_example() -> dict[str, str]:
     """Parse the dotenv file the way ``uv run --env-file`` does for single-quoted values."""
     values: dict[str, str] = {}
-    for line in (REPO_ROOT / ".env.example").read_text().splitlines():
+    for line in (REPO_ROOT / "tests/fixtures/autonomy-sim.env").read_text().splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
@@ -164,7 +166,7 @@ def _autonomy_outcome(socket: WebSocketTestSession, intent_id: str) -> dict[str,
     )
 
 
-def test_env_example_autonomy_values_are_the_ci_fixtures() -> None:
+def test_isolated_autonomy_fixture_values_are_the_ci_fixtures() -> None:
     config = AutonomyConfig.from_env(_env_example())
 
     assert config.planning == replace(
@@ -272,6 +274,27 @@ def test_localization_config_rejects_an_unmeasured_clock_mapping() -> None:
     }
     with pytest.raises(SettingsError, match="clock mapping must be measured"):
         AutonomyConfig.from_env(environment)
+
+
+def test_autonomy_composition_advertises_ground_velocity_only_for_a_ground_roster(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY, 9: b"ground-adapter-key-that-is-at-least-32-bytes"},
+        node_types={1: NodeType.AIRCRAFT, 9: NodeType.GROUND},
+        log_dir=tmp_path,
+        adapter_backend=AdapterBackend.SIM,
+    )
+    app, composition = create_autonomy_app(settings, _config(), clock=clock, event_ids=event_ids)
+    try:
+        with TestClient(app):
+            runtime = app.state.relay_runtime
+            assert runtime.capability_profile.name == "c1_basic_control.ground"
+            enabled = runtime.capability_profile.state_value()["enabled_intent_names"]
+            assert "ground_velocity" in enabled
+    finally:
+        composition.close()
 
 
 def test_autonomy_composition_threads_one_ungrounded_profile(
@@ -851,3 +874,30 @@ def test_localization_config_rejects_duplicate_fields(field: str) -> None:
     raw = raw.replace(marker, f'"{field}": null, {marker}', 1)
     with pytest.raises(SettingsError, match="unique fields"):
         AutonomyConfig.from_env(_env_example() | {"SWEEP_CONTROL_LOCALIZATION_JSON": raw})
+
+
+def test_ground_return_selection_does_not_hijack_a_mixed_come_home() -> None:
+    intent = IntentV1(
+        v=1,
+        t=1,
+        type="intent",
+        intent_id="mixed-return",
+        retry_of=None,
+        source="console",
+        session=SESSION,
+        name=IntentName.COME_HOME,
+        args={},
+        selection=(1, 9),
+        mode=Mode.INDOOR,
+        confirm=True,
+    )
+
+    assert not _ground_return_selected(
+        intent,
+        {
+            "drones": [
+                {"drone_id": 1, "node_type": "aircraft"},
+                {"drone_id": 9, "node_type": "ground"},
+            ]
+        },
+    )

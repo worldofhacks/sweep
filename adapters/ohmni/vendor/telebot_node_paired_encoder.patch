@@ -1,0 +1,20 @@
+--- a/telebot_node.js
++++ b/telebot_node.js
+@@ -20,0 +21 @@
++const PairedEncoderSampler = require('./sweep_paired_encoder_sampler');
+@@ -57,0 +59,4 @@
++  this._sweep_encoder = new PairedEncoderSampler(
++    this._serial, config_path + '/sweep_encoder.sock'
++  );
++  this._sweep_encoder.start();
+@@ -85,0 +90,11 @@
++  const sweepEncoderModelStart = this._model.start.bind(this._model);
++  this._model.start = function () {
++    sweepEncoderModelStart();
++    self._sweep_encoder.activate();
++  };
++  const sweepEncoderModelInitialize = this._model.initialize.bind(this._model);
++  this._model.initialize = function (fw_version) {
++    self._sweep_encoder.beginInitialization();
++    return sweepEncoderModelInitialize(fw_version);
++  };

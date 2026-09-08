@@ -1,4 +1,8 @@
+import { GroundPane } from './GroundPane'
+import { NavigationPane } from './navigation/NavigationPane'
 import { useState } from 'react'
+import { captureGuidance } from '../devices/telemetry'
+import { useSecondTick } from '../live/use-second-tick'
 import './control.css'
 import { Pane, type PaneTab } from '../../shell/Pane'
 import type { ModuleProps } from '../types'
@@ -9,10 +13,12 @@ import { RequestsPane } from './RequestsPane'
 import { SwarmPane } from './SwarmPane'
 import type { CaptureReadiness } from './controls'
 
-export type ControlPaneId = 'swarm' | 'capture' | 'commands' | 'requests' | 'fleet'
+export type ControlPaneId = 'swarm' | 'ground' | 'navigation' | 'capture' | 'commands' | 'requests' | 'fleet'
 
 const PANES: PaneTab[] = [
   { id: 'swarm', label: 'Swarm' },
+  { id: 'navigation', label: 'Navigate' },
+  { id: 'ground', label: 'Ground' },
   { id: 'capture', label: 'Capture' },
   { id: 'commands', label: 'Commands' },
   { id: 'requests', label: 'Requests' },
@@ -41,6 +47,9 @@ export function ControlModule({
   guidance = null,
   initialPane = 'swarm',
 }: ControlModuleProps) {
+  useSecondTick(controller.state.selection.length > 0)
+  const selectedDevice = controller.state.selection.length === 1 ? controller.state.aircraft[controller.state.selection[0]] : undefined
+  const currentGuidance = guidance ?? captureGuidance(selectedDevice, roomId, now())
   const [pane, setPane] = useState<ControlPaneId>(initialPane)
   const [steps, setSteps] = useState(2)
   const [formationPreview, setFormationPreview] = useState<string | null>(null)
@@ -63,8 +72,13 @@ export function ControlModule({
           onFormationPreview={setFormationPreview}
         />
       )}
+      {pane === 'ground' && <GroundPane controller={controller} />}
+      {pane === 'navigation' && <NavigationPane state={controller.state} snapshot={controller.navigation}
+        now={now()} onPreview={(zoneId) => { void controller.prepareNavigation(zoneId) }}
+        onDestinationChange={controller.invalidateNavigation} verification={controller.navigationVerification}
+        canVerify={controller.canVerifyNavigation} onVerify={() => { void controller.verifyNavigationReview() }} />}
       {pane === 'capture' && (
-        <CapturePane controller={controller} roomId={roomId} onRoomId={onRoomIdChange} guidance={guidance} />
+        <CapturePane controller={controller} roomId={roomId} onRoomId={onRoomIdChange} guidance={currentGuidance} />
       )}
       {pane === 'commands' && <CommandsPane controller={controller} steps={steps} onSteps={setSteps} />}
       {pane === 'requests' && <RequestsPane controller={controller} />}

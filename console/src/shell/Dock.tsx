@@ -1,5 +1,6 @@
+import { NavigationPreviewDetails } from '../modules/control/navigation/NavigationPane'
 import { useEffect, useRef, useState } from 'react'
-import type { RequestRecord } from '../control/state'
+import type { DeviceLabeller, RequestRecord } from '../control/state'
 import { formatDroneId } from '../control/state'
 import type { InvalidationView } from './derive'
 import { shortId } from './format'
@@ -13,13 +14,15 @@ export interface DockProps {
   now: number
   onConfirm: (intentId: string) => void
   onCancel: (intentId: string) => void
+  /** Names each target by its class; the shell passes the roster's labeller. */
+  label?: DeviceLabeller
 }
 
 /**
  * Footer dock. Shows the one pending plan until it is confirmed, cancelled, or
  * invalidated; otherwise the newest never-sent invalidation, if any.
  */
-export function Dock({ pending, invalidation, now, onConfirm, onCancel }: DockProps) {
+export function Dock({ pending, invalidation, now, onConfirm, onCancel, label = formatDroneId }: DockProps) {
   if (pending) {
     return (
       <PendingPlan
@@ -28,6 +31,7 @@ export function Dock({ pending, invalidation, now, onConfirm, onCancel }: DockPr
         now={now}
         onConfirm={onConfirm}
         onCancel={onCancel}
+        label={label}
       />
     )
   }
@@ -47,11 +51,13 @@ function PendingPlan({
   now,
   onConfirm,
   onCancel,
+  label,
 }: {
   pending: RequestRecord
   now: number
   onConfirm: (intentId: string) => void
   onCancel: (intentId: string) => void
+  label: DeviceLabeller
 }) {
   const region = useRef<HTMLDivElement>(null)
   const [jsonOpen, setJsonOpen] = useState(true)
@@ -60,6 +66,7 @@ function PendingPlan({
   const expiresAt = plan?.expiresAt
   const remainingMs = expiresAt === undefined ? null : Math.max(0, expiresAt - now)
   const expired = remainingMs === 0
+  const confirmationBlocked = plan?.confirmationBlockedReason ?? (expired ? 'The confirmation window expired; nothing can be sent from this preview.' : null)
 
   useEffect(() => {
     region.current?.focus()
@@ -80,7 +87,7 @@ function PendingPlan({
           <br />
           <span className="sh-dock-title">{plan?.title ?? pending.intent.name}</span>{' '}
           <span className="sh-dock-targets">
-            {pending.intent.selection.map(formatDroneId).join('  ') || 'whole roster'}
+            {pending.intent.selection.map(label).join('  ') || 'whole roster'}
           </span>{' '}
           <span className="sh-dock-meta">
             roster v{plan?.rosterVersion ?? 'unreported'} · source {pending.intent.source} ·{' '}
@@ -94,7 +101,7 @@ function PendingPlan({
               aria-hidden="true"
             >
               {' '}
-              confirm within {Math.round(remainingMs / 1000)} s
+              {plan?.navigation ? 'review expires in' : 'confirm within'} {Math.round(remainingMs / 1000)} s
             </span>
           )}
           {expired && (
@@ -108,8 +115,8 @@ function PendingPlan({
           <button
             type="button"
             className="sh-confirm"
-            disabled={expired}
-            title={expired ? 'The confirmation window expired; nothing can be sent from this preview.' : undefined}
+            disabled={confirmationBlocked !== null}
+            title={confirmationBlocked ?? undefined}
             onClick={() => onConfirm(intentId)}
           >
             Confirm and send
@@ -119,6 +126,8 @@ function PendingPlan({
           </button>
         </span>
       </div>
+      {plan?.confirmationBlockedReason && <p role="status" className="sh-json-note">{plan.confirmationBlockedReason}</p>}
+      {plan?.navigation && <NavigationPreviewDetails preview={plan.navigation} now={now} />}
       {plan && plan.steps.length > 0 && (
         <ol className="sh-dock-steps">
           {plan.steps.map((step) => (
@@ -137,7 +146,7 @@ function PendingPlan({
       {jsonOpen && (
         <div className="sh-json">
           <p className="sh-json-note">
-            Exact Intent v1 draft. Confirming stamps t and sets confirm true; nothing else changes.
+            {plan?.navigation ? 'Destination request draft for review. Navigation confirmation and transmission are unavailable.' : 'Exact Intent v1 draft. Confirming stamps t and sets confirm true; nothing else changes.'}
           </p>
           <pre className="sh-json-pre" data-scroll="1">
             {JSON.stringify(pending.intent, null, 2)}

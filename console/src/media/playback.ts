@@ -3,6 +3,7 @@
  * Only the WHEP request is carried over; the HLS fallback and its hls.js
  * dependency stay on #68 and are reconciled when that branch merges.
  */
+import { validMediaStreamName, type DeviceClass } from '../relay/contract'
 
 export interface MediaRuntimeConfiguration {
   /** MediaMTX WebRTC origin without path, query, or credentials. */
@@ -11,8 +12,16 @@ export interface MediaRuntimeConfiguration {
   readerPassword: string
 }
 
+/** What names a stream: the device's class and its unit within that class. */
+export interface StreamDevice {
+  device_class: DeviceClass
+  unit: number
+}
+
 export interface PlaybackConfiguration extends MediaRuntimeConfiguration {
-  droneId: number
+  device: StreamDevice
+  /** Explicit camera stream provisioned by the relay; never an arbitrary URL. */
+  stream?: string
 }
 
 export interface PlaybackRequest {
@@ -26,20 +35,25 @@ export interface PlaybackDescriptor {
   primary: PlaybackRequest
 }
 
-/** The console derives stream names; no adapter-supplied media URL is ever used. */
-export function streamName(droneId: number): string {
-  return `drone${droneId}`
+/**
+ * The console derives stream names as the relay's media monitor does:
+ * `drone{unit}` for aircraft and `ground{unit}` for ground vehicles. No
+ * adapter-supplied media URL is ever used.
+ */
+export function streamName(device: StreamDevice): string {
+  return `${device.device_class === 'ground_vehicle' ? 'ground' : 'drone'}${device.unit}`
 }
 
 export function createPlaybackDescriptor(config: PlaybackConfiguration): PlaybackDescriptor {
-  if (!Number.isInteger(config.droneId) || config.droneId < 1 || config.droneId > 6) {
-    throw new Error('droneId must be an integer from 1 through 6')
+  if (!Number.isInteger(config.device.unit) || config.device.unit < 1) {
+    throw new Error('unit must be a positive integer')
   }
   if (!config.readerUsername || !config.readerPassword) {
     throw new Error('Media reader credentials are required')
   }
 
-  const stream = streamName(config.droneId)
+  const stream = config.stream ?? streamName(config.device)
+  if (!validMediaStreamName(stream)) throw new Error('Invalid configured camera stream name')
   const authorization = `Basic ${btoa(`${config.readerUsername}:${config.readerPassword}`)}`
   return {
     stream,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -11,10 +12,16 @@ from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import urlsplit
 
+from media.streams import CameraStream, parse_camera_mapping, validate_camera_mapping
 from relay.auth import StaticCredentialResolver
 from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, CapabilityProfile
+from relay.contracts import NodeType
+from relay.observation_ingress import ObservationConfiguration
 from relay.session import RelayLimits
-from relay.state import aircraft_limit_for_profile
+from relay.state import (
+    DEFAULT_PHYSICAL_AIRCRAFT,
+    MAX_PHYSICAL_AIRCRAFT,
+)
 
 DEFAULT_CONSOLE_ORIGINS = (
     "http://localhost:5173",
@@ -42,6 +49,10 @@ class CapabilityRelease(StrEnum):
 class RelaySettings:
     relay_token: bytes = field(repr=False)
     adapter_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
+    node_types: Mapping[int, NodeType] = field(default_factory=dict)
+    device_units: Mapping[int, int] = field(default_factory=dict)
+    media_streams: Mapping[int, str] = field(default_factory=dict)
+    media_cameras: Mapping[int, tuple[CameraStream, ...]] = field(default_factory=dict)
     allow_shared_adapter_token: bool = False
     localization_keys: Mapping[int, bytes] = field(default_factory=dict, repr=False)
     log_dir: Path = Path(".sweep/session-logs")
@@ -54,6 +65,7 @@ class RelaySettings:
     adapter_backend: AdapterBackend = AdapterBackend.SIM
     capability_release: CapabilityRelease = CapabilityRelease.C1
     sim_aircraft_count: int | None = None
+    physical_aircraft_limit: int = DEFAULT_PHYSICAL_AIRCRAFT
     command_ttl_ms: int = 2_000
     command_deadline_ms: int = 10_000
     virtual_stick_hz: int = 10
@@ -73,6 +85,8 @@ class RelaySettings:
     media_read_password: str | None = field(default=None, repr=False)
     audit_state_interval_ms: int = 10_000
     state_membership_history: int = 8
+    ground_return_id: str | None = None
+    observation_configuration: ObservationConfiguration | None = None
 
     def __post_init__(self) -> None:
         if type(self.relay_token) is not bytes or not 32 <= len(self.relay_token) <= 4_096:
@@ -110,6 +124,71 @@ class RelaySettings:
             )
         object.__setattr__(self, "adapter_keys", MappingProxyType(adapter_keys))
         object.__setattr__(self, "localization_keys", MappingProxyType(localization_keys))
+        if not isinstance(self.node_types, Mapping):
+            raise SettingsError("SWEEP_NODE_TYPES_JSON must be a mapping")
+        node_types = dict(self.node_types)
+        if any(
+            type(device_id) is not int
+            or device_id not in adapter_keys
+            or not isinstance(node_type, NodeType)
+            for device_id, node_type in node_types.items()
+        ):
+            raise SettingsError(
+                "SWEEP_NODE_TYPES_JSON must map configured adapter IDs to aircraft or ground"
+            )
+        object.__setattr__(self, "node_types", MappingProxyType(node_types))
+        for name, mapping in (
+            ("device_units", self.device_units),
+            ("media_streams", self.media_streams),
+        ):
+            if not isinstance(mapping, Mapping) or any(
+                type(key) is not int or key not in adapter_keys for key in mapping
+            ):
+                raise SettingsError(f"{name} must map configured adapter IDs")
+        units = dict(self.device_units)
+        if any(type(unit) is not int or not 1 <= unit <= 64 for unit in units.values()):
+            raise SettingsError("device units must be integers from 1 through 64")
+        identities = [
+            (node_types.get(key, NodeType.AIRCRAFT), units.get(key, key)) for key in adapter_keys
+        ]
+        if len(identities) != len(set(identities)):
+            raise SettingsError("device units must be unique within each node type")
+        streams = dict(self.media_streams)
+        if any(
+            not isinstance(name, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name) is None
+            for name in streams.values()
+        ):
+            raise SettingsError("media streams must be unique bounded path names")
+        resolved_streams = [streams.get(key, f"drone{key}") for key in adapter_keys]
+        if len(set(resolved_streams)) != len(resolved_streams):
+            raise SettingsError("media streams must be unique across all configured adapters")
+        object.__setattr__(self, "device_units", MappingProxyType(units))
+        object.__setattr__(self, "media_streams", MappingProxyType(streams))
+        if self.ground_return_id is not None and (
+            not self.ground_return_id
+            or len(self.ground_return_id) > 128
+            or self.ground_return_id != self.ground_return_id.strip()
+            or not self.ground_return_id.isprintable()
+        ):
+            raise SettingsError("SWEEP_GROUND_RETURN_ID must be a bounded non-empty identifier")
+        if self.observation_configuration is not None:
+            for binding in self.observation_configuration.bindings:
+                if (
+                    binding.producer_role == "localization"
+                    and binding.device_id not in localization_keys
+                ):
+                    raise SettingsError(
+                        "localization observation binding requires a device credential"
+                    )
+                if (
+                    binding.device_id not in adapter_keys
+                    or binding.node_type
+                    != node_types.get(binding.device_id, NodeType.AIRCRAFT).value
+                ):
+                    raise SettingsError(
+                        "observation binding must match the authenticated device class"
+                    )
         if (
             type(self.transcript_upload_timeout_ms) is not int
             or not 1 <= self.transcript_upload_timeout_ms <= MAX_TRANSCRIPT_UPLOAD_TIMEOUT_MS
@@ -130,18 +209,20 @@ class RelaySettings:
         ):
             raise SettingsError("SWEEP_CAPABILITY_RELEASE=c2 is allowed only with the sim backend")
         if self.sim_aircraft_count is not None and (
-            type(self.sim_aircraft_count) is not int or not 1 <= self.sim_aircraft_count <= 6
+            type(self.sim_aircraft_count) is not int or not 1 <= self.sim_aircraft_count <= 32
         ):
-            raise SettingsError("SWEEP_SIM_AIRCRAFT_COUNT must be an integer from 1 through 6")
+            raise SettingsError("SWEEP_SIM_AIRCRAFT_COUNT must be an integer from 1 through 32")
         if self.capability_release is CapabilityRelease.C2 and not (
-            4 <= self.effective_sim_aircraft_count <= 6
+            4 <= self.effective_sim_aircraft_count <= 32
         ):
-            raise SettingsError("the C2 simulator requires 4 through 6 aircraft")
-        profile_limit = aircraft_limit_for_profile(self.capability_profile)
-        if self.effective_sim_aircraft_count > profile_limit:
+            raise SettingsError("the C2 simulator requires 4 through 32 aircraft")
+        if (
+            type(self.physical_aircraft_limit) is not int
+            or not 1 <= self.physical_aircraft_limit <= MAX_PHYSICAL_AIRCRAFT
+        ):
             raise SettingsError(
-                f"the {self.capability_release.value.upper()} simulator supports at most "
-                f"{profile_limit} aircraft"
+                "SWEEP_PHYSICAL_AIRCRAFT_LIMIT must be an integer from 1 through "
+                f"{MAX_PHYSICAL_AIRCRAFT}"
             )
         if not 5 <= self.virtual_stick_hz <= 25:
             raise SettingsError("SWEEP_VIRTUAL_STICK_HZ must be within the documented 5 to 25")
@@ -176,6 +257,29 @@ class RelaySettings:
         if self.media_webrtc_origin is not None and not _is_origin(self.media_webrtc_origin):
             raise SettingsError("SWEEP_MEDIA_WEBRTC_ORIGIN must be an explicit HTTP(S) origin")
 
+        try:
+            cameras = validate_camera_mapping(self.media_cameras, set(adapter_keys))
+            object.__setattr__(self, "media_cameras", MappingProxyType(cameras))
+            self.configured_cameras()
+        except ValueError as error:
+            raise SettingsError(str(error)) from error
+
+    def configured_cameras(self) -> Mapping[int, tuple[CameraStream, ...]]:
+        cameras = {
+            device_id: self.media_cameras.get(
+                device_id,
+                (
+                    CameraStream(
+                        "primary",
+                        "Primary camera",
+                        self.media_streams.get(device_id, f"drone{device_id}"),
+                    ),
+                ),
+            )
+            for device_id in self.adapter_keys
+        }
+        return MappingProxyType(validate_camera_mapping(cameras, set(self.adapter_keys)))
+
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> RelaySettings:
         values = os.environ if environ is None else environ
@@ -188,7 +292,22 @@ class RelaySettings:
         )
         return cls(
             relay_token=token.encode(),
+            observation_configuration=(
+                ObservationConfiguration.load(Path(values["SWEEP_OBSERVATIONS_FILE"]))
+                if values.get("SWEEP_OBSERVATIONS_FILE")
+                else None
+            ),
             adapter_keys=adapter_keys,
+            media_cameras=_media_cameras_config(
+                values.get("SWEEP_MEDIA_CAMERAS_JSON", "{}"), set(adapter_keys)
+            ),
+            node_types=_node_types(values.get("SWEEP_NODE_TYPES_JSON", "{}")),
+            device_units=_device_mapping(
+                values.get("SWEEP_DEVICE_UNITS_JSON", "{}"), "SWEEP_DEVICE_UNITS_JSON"
+            ),
+            media_streams=_device_mapping(
+                values.get("SWEEP_MEDIA_STREAMS_JSON", "{}"), "SWEEP_MEDIA_STREAMS_JSON"
+            ),
             localization_keys=_credential_keys(
                 values.get("SWEEP_LOCALIZATION_KEYS_JSON", "{}"),
                 "SWEEP_LOCALIZATION_KEYS_JSON",
@@ -220,10 +339,14 @@ class RelaySettings:
                 ),
                 "SWEEP_TRANSCRIPT_UPLOAD_TIMEOUT_MS",
             ),
-            adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "sim")),
+            adapter_backend=_backend(values.get("SWEEP_ADAPTER_BACKEND", "remote")),
             capability_release=_capability_release(values.get("SWEEP_CAPABILITY_RELEASE", "c1")),
             sim_aircraft_count=_optional_positive_integer(
                 values.get("SWEEP_SIM_AIRCRAFT_COUNT"), "SWEEP_SIM_AIRCRAFT_COUNT"
+            ),
+            physical_aircraft_limit=_positive_integer(
+                values.get("SWEEP_PHYSICAL_AIRCRAFT_LIMIT", str(DEFAULT_PHYSICAL_AIRCRAFT)),
+                "SWEEP_PHYSICAL_AIRCRAFT_LIMIT",
             ),
             command_ttl_ms=_positive_integer(
                 values.get("SWEEP_COMMAND_TTL_MS", "2000"), "SWEEP_COMMAND_TTL_MS"
@@ -272,6 +395,7 @@ class RelaySettings:
                 values.get("SWEEP_STATE_MEMBERSHIP_HISTORY", "8"),
                 "SWEEP_STATE_MEMBERSHIP_HISTORY",
             ),
+            ground_return_id=_optional(values.get("SWEEP_GROUND_RETURN_ID")),
         )
 
     def media_runtime_config(self) -> dict[str, str] | None:
@@ -343,6 +467,49 @@ def _credential_keys(raw: str, name: str) -> dict[int, bytes]:
         if not isinstance(raw_key, str) or not raw_key:
             raise SettingsError(f"{name} credentials must be non-empty strings")
         result[drone_id] = raw_key.encode()
+    return result
+
+
+def _device_mapping(raw: str, name: str) -> dict:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SettingsError(f"{name} must be valid JSON") from error
+    if not isinstance(value, dict):
+        raise SettingsError(f"{name} must be an object")
+    result = {}
+    for key, item in value.items():
+        if (
+            not isinstance(key, str)
+            or not key.isascii()
+            or not key.isdecimal()
+            or str(int(key)) != key
+            or int(key) <= 0
+        ):
+            raise SettingsError(f"{name} IDs must be canonical positive integers")
+        result[int(key)] = item
+    return result
+
+
+def _node_types(raw: str) -> dict[int, NodeType]:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SettingsError("SWEEP_NODE_TYPES_JSON must be valid JSON") from error
+    if not isinstance(value, dict):
+        raise SettingsError("SWEEP_NODE_TYPES_JSON must be an object")
+    result: dict[int, NodeType] = {}
+    for raw_id, raw_node_type in value.items():
+        try:
+            device_id = int(raw_id)
+            node_type = NodeType(raw_node_type)
+        except (TypeError, ValueError):
+            raise SettingsError(
+                "SWEEP_NODE_TYPES_JSON must map positive device IDs to aircraft or ground"
+            ) from None
+        if str(device_id) != str(raw_id) or device_id <= 0:
+            raise SettingsError("SWEEP_NODE_TYPES_JSON IDs must be canonical positive integers")
+        result[device_id] = node_type
     return result
 
 
@@ -423,3 +590,14 @@ def _is_origin(origin: str) -> bool:
 def console_origins_from_env(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
     values = os.environ if environ is None else environ
     return _origins(values.get("SWEEP_CONSOLE_ORIGINS", ",".join(DEFAULT_CONSOLE_ORIGINS)))
+
+
+def _media_cameras_config(
+    raw: str, configured_ids: set[int]
+) -> dict[int, tuple[CameraStream, ...]]:
+    try:
+        return parse_camera_mapping(json.loads(raw), configured_ids)
+    except (ValueError, TypeError) as error:
+        raise SettingsError(
+            "SWEEP_MEDIA_CAMERAS_JSON must contain bounded unique cameras for configured devices"
+        ) from error

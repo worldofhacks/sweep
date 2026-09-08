@@ -1,6 +1,7 @@
 package org.worldofhacks.sweep.bridge
 
 import android.app.Application
+import android.os.SystemClock
 import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -25,6 +26,7 @@ import org.worldofhacks.sweep.bridge.node.RelayLink
 import org.worldofhacks.sweep.bridge.node.VideoPublishSource
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.SensorRecordingSession
+import org.worldofhacks.sweep.bridge.session.CaptureAlignmentSession
 import org.worldofhacks.sweep.bridge.session.SensorRelayContext
 
 /**
@@ -131,6 +133,32 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                 logLine("cannot start the relay link: no setup stored")
                 return@launch
             }
+            val observationSource = try {
+                loadObservationSource(application.filesDir)
+            } catch (_: Exception) {
+                logLine("cannot start the relay link: observation-source.json is invalid")
+                return@launch
+            }
+            val captureAlignment = try {
+                loadCaptureAlignment(application.filesDir)
+            } catch (_: Exception) {
+                logLine("cannot start the relay link: capture-alignment.json is invalid")
+                return@launch
+            }
+            val navigationAdmission = try {
+                loadNavigationAdmission(
+                    application.filesDir, setup.session, setup.droneId,
+                    setup.token.toByteArray(Charsets.UTF_8),
+                )
+            } catch (_: Exception) {
+                logLine("cannot start the relay link: navigation-admission.json is invalid")
+                return@launch
+            }
+            if (BuildConfig.SUPERVISED_VERTICAL && navigationAdmission != null) {
+                logLine("cannot start the relay link: supervised vertical does not allow navigation-admission.json")
+                return@launch
+            }
+            if (captureAlignment == null) logLine("body-camera localization disabled: capture-alignment.json is missing")
             val loopback = isLoopback(hostOf(setup.relayUrl))
             val wifi = wifiNetwork
             // Loopback (adb reverse over USB) is not on the Wi-Fi network, so do not bind it there.
@@ -152,15 +180,20 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     adapterId = "${BuildConfig.AIRCRAFT}-${setup.droneId}",
                     capabilities = AircraftVariant.capabilities,
                     localizationPins = setup.localizationPins,
+                    observationSource = observationSource,
+                    captureAlignment = captureAlignment,
                 )
                 val link = RelayLink(
                     config = config,
                     aircraft = session.aircraft,
                     executor = session.executor,
                     phone = phone,
+                    monotonicNowMs = SystemClock::elapsedRealtime,
                     log = { line -> logLine(line) },
                     clientProvider = if (loopback) null else ({ wifi?.binding?.value?.client }),
                     videoPublish = { videoPublish.current() },
+                    captureAlignmentSamples = (session as? CaptureAlignmentSession)?.captureAlignmentSamples,
+                    navigationAdmission = navigationAdmission,
                 )
                 relayLink = link
                 mirror = scope.launch {

@@ -12,7 +12,7 @@ import { EmptyModule } from '../shared'
 import type { ModuleProps } from '../types'
 
 /**
- * Configuration, rendered under Reference › Config. Ordinary groups apply now
+ * Configuration, rendered under Devices › Config. Ordinary groups apply now
  * and, while a plan is pending, warn before invalidating it; safety-sensitive
  * groups are staged and applied between runs, so they never touch a plan.
  */

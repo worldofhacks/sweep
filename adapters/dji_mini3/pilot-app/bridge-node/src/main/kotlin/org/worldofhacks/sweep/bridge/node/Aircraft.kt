@@ -59,7 +59,16 @@ data class AircraftSnapshot(
     val yawDeg: Double = 0.0,
     val virtualStickEnabled: Boolean = false,
     val authorityLostReason: String? = null,
+    /** A finite KeyAltitude result and its monotonic receipt time; null until a real callback arrives. */
+    val localHeight: LocalHeightMeasurement? = null,
 )
+
+data class LocalHeightMeasurement(val zM: Double, val receivedAtMonotonicMs: Long) {
+    init {
+        require(zM.isFinite()) { "local height must be finite" }
+        require(receivedAtMonotonicMs >= 0) { "local height receipt time must be non-negative" }
+    }
+}
 
 interface AircraftSource {
     val snapshot: StateFlow<AircraftSnapshot>

@@ -33,7 +33,7 @@ describe('fixture catalog client', () => {
     expect(snapshots[0]).toMatchObject({ captures: [], jobs: [], services: [], metrics: [], nodes: {} })
     expect(snapshots[0].building?.rooms).toEqual([])
     expect(snapshots[0].building?.floor_plan).toBeNull()
-    expect(snapshots[0].config).toEqual({ groups: [], staged_changes: [], modes: [] })
+    expect(snapshots[0].config).toEqual({ groups: [], staged_changes: [], modes: [], geofence: null })
   })
 
   test('the design scenarios carry the design tables with public false on every job', () => {

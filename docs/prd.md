@@ -1,5 +1,11 @@
 # Sweep (working name): PRD, architecture, and division of labor
 
+Current platform scope: one console for an additive fleet of aerial drones and ground robots,
+with explicit onboard camera/sensor inventory and real live data only. See the
+[modular fleet contract](modular-fleet.md) and its current implementation/qualification boundaries.
+Model-specific milestones and recorded tests below retain their original evidence scope.
+
+
 Version 0.6. Delivery is organized into three capability areas: Interaction, Autonomy, and Platform. Engineers claim ready work per task; capability areas coordinate module boundaries and review. Status: M0 scope and contracts in progress.
 
 This document answers every item in the Pre-Search Checklist. Section headers carry the checklist numbers so nothing is skipped, and Appendix F is a crosswalk from each question to the section that answers it.
@@ -8,7 +14,7 @@ This document answers every item in the Pre-Search Checklist. Section headers ca
 
 ## 0. Summary
 
-One person clicks Capture room, reviews and confirms the resulting Intent v1 request, and one DJI Mini 3 holds an operator-approved pose while its files create a private AI-generated Marble room world with provenance and visible job state. The completed three-guided-phone-photo flow remains fallback evidence; M1 begins with drone capture. The north-star command is “Map this floor.” It resolves against a supplied occupancy map and room graph for a bounded 3-to-5-room, single-floor indoor test area. Four Mini 3 and RC-N1 sets are on hand. The physical MVP uses four aircraft with four Android bridge nodes and supports live aircraft join, leave, and rejoin. Four to six drones remain in simulation; physical expansion beyond four belongs to Future.
+One person clicks Capture room, reviews and confirms the resulting Intent v1 request, and one DJI Mini 3 holds an operator-approved pose while its files create a private AI-generated Marble room world with provenance and visible job state. The completed three-guided-phone-photo flow remains fallback evidence; M1 begins with drone capture. The north-star command is “Map this floor.” It resolves against a supplied occupancy map and room graph for a bounded 3-to-5-room, single-floor indoor test area. Four Mini 3 and RC-N1 sets are on hand. The DJI acceptance track uses four aircraft with four Android bridge nodes and live join, leave and rejoin. This is one hardware track within the additive aerial and ground platform; it does not set a product-wide fleet limit. Ground scope includes at least five robots, each with two cameras and one LiDAR.
 
 This MVP is a live technical proof. It prioritizes visible capability breadth, one recorded end-to-end proof for each headline workflow, and every safety control required around real aircraft. Production access governance, retention policy, multi-user administration, operational reporting, and deployment automation move to post-demo hardening. Room captures use empty staged spaces and disposable demo data.
 
@@ -42,7 +48,7 @@ The product has four parts: an input-agnostic **intent contract**, an **autonomy
 
 **Extension goals.** An EMG band can become a registered input source after the core MVP. Automated multi-room registration, a branded multi-room splat viewer, metric mapping, time-indexed rescans, Atlas integration, and autonomous exploration of an initially unmapped area also remain Future work. These items do not block M1 through M4.
 
-**Non-goals.** Outdoor swarm flight, lethal or surveillance use, face or person identification, autonomous flight without an operator present, autonomous exploration of an initially unmapped area, more than six drones, metric or as-built reconstruction from Marble, automatic room registration, factual inventory from generated content, use of Marble geometry for planning, geofencing, collision avoidance, or safety, production access-control verification, retention and deletion governance, multi-user administration, and deployment automation.
+**Non-goals.** Outdoor swarm flight, lethal or surveillance use, face or person identification, autonomous flight without an operator present, autonomous exploration of an initially unmapped area, unqualified fleet expansion, metric or as-built reconstruction from Marble, automatic room registration, factual inventory from generated content, use of Marble geometry for planning, geofencing, collision avoidance, or safety, production access-control verification, retention and deletion governance, multi-user administration, and deployment automation.
 
 **Success metrics.**
 
@@ -579,9 +585,10 @@ class CameraCapture(Protocol):
 sweep/
   console/          button controls and operator dashboard (static)
   relay/            FastAPI relay, schemas, logging, replay
+  spatial/          explicit frames and bounded shared observation contracts
   planner/          formations, sweep, allocation, modes
   arbiter/          safety rules, e-stop, battery return
-  adapters/         deterministic sim and DJI Mini 3 bridge contract
+  adapters/         vendor aircraft/ground bridges and isolated deterministic test adapters
   calibration/      offline camera intrinsics and latency artifacts
   media/            MediaMTX config, stream naming
   perception/       detector, world-position estimate

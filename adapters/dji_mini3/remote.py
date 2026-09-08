@@ -79,6 +79,8 @@ class _IntentContext:
     intent_id: str
     roster_version: int
     command_ids: Mapping[tuple[int, CommandOperation], str]
+    navigation_route_ids: Mapping[tuple[int, CommandOperation], str]
+    takeoff_policies: Mapping[int, Mapping[str, int]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,7 +180,13 @@ class RemoteBridgeAdapter:
         """
         if self._context is not None:
             raise AdapterError("an intent context is already bound")
-        self._context = _IntentContext(intent_id, roster_version, MappingProxyType({}))
+        self._context = _IntentContext(
+            intent_id,
+            roster_version,
+            MappingProxyType({}),
+            MappingProxyType({}),
+            MappingProxyType({}),
+        )
         try:
             yield
         finally:
@@ -195,6 +203,8 @@ class RemoteBridgeAdapter:
         if self._context is not None:
             raise AdapterError("an intent context is already bound")
         identities: dict[tuple[int, CommandOperation], str] = {}
+        route_ids: dict[tuple[int, CommandOperation], str] = {}
+        takeoff_policies: dict[int, Mapping[str, int]] = {}
         for command in commands:
             if command.intent_id != intent_id or command.roster_version != roster_version:
                 raise AdapterError("command scope contains a command from another intent")
@@ -202,10 +212,31 @@ class RemoteBridgeAdapter:
             if key in identities:
                 raise AdapterError("command scope contains an ambiguous aircraft operation")
             identities[key] = command.command_id
+            policy_names = {"maximum_height_mm", "max_local_height_age_ms"}
+            policy_present = policy_names & set(command.parameters)
+            if policy_present:
+                if (
+                    command.operation is not CommandOperation.TAKEOFF
+                    or policy_present != policy_names
+                ):
+                    raise AdapterError("supervised height policy must belong to a takeoff command")
+                policy = {name: command.parameters[name] for name in policy_names}
+                if any(type(value) is not int or value <= 0 for value in policy.values()):
+                    raise AdapterError("supervised height policy must contain positive integers")
+                if policy["maximum_height_mm"] > 2590 or policy["max_local_height_age_ms"] > 500:
+                    raise AdapterError("supervised height policy exceeds the supported limits")
+                takeoff_policies[command.drone_id] = MappingProxyType(policy)
+            route_id = command.parameters.get("navigation_route_id")
+            if route_id is not None:
+                if command.operation is not CommandOperation.GOTO or not isinstance(route_id, str):
+                    raise AdapterError("navigation route id must belong to a goto command")
+                route_ids[key] = route_id
         self._context = _IntentContext(
             intent_id,
             roster_version,
             MappingProxyType(identities),
+            MappingProxyType(route_ids),
+            MappingProxyType(takeoff_policies),
         )
         try:
             yield
@@ -213,21 +244,37 @@ class RemoteBridgeAdapter:
             self._context = None
 
     def takeoff(self, ids: list[int], z: float) -> tuple[AdapterAcknowledgement, ...]:
-        args = {"z_mm": _milli(z, "z")}
-        return tuple(self._flight(drone_id, CommandOperation.TAKEOFF, args) for drone_id in ids)
+        replies = []
+        for drone_id in ids:
+            args = {"z_mm": _milli(z, "z")}
+            if self._context is not None:
+                args.update(self._context.takeoff_policies.get(drone_id, {}))
+            replies.append(self._flight(drone_id, CommandOperation.TAKEOFF, args))
+        return tuple(replies)
 
     def goto(
         self, drone_id: int, x: float, y: float, z: float, speed: float
     ) -> AdapterAcknowledgement:
+        args: dict[str, int | str] = {
+            "x_mm": _milli(x, "x"),
+            "y_mm": _milli(y, "y"),
+            "z_mm": _milli(z, "z"),
+            "speed_mm_s": _positive_milli(speed, "speed"),
+        }
+        if (
+            self._context is not None
+            and (
+                route_id := self._context.navigation_route_ids.get(
+                    (drone_id, CommandOperation.GOTO)
+                )
+            )
+            is not None
+        ):
+            args["navigation_route_id"] = route_id
         return self._flight(
             drone_id,
             CommandOperation.GOTO,
-            {
-                "x_mm": _milli(x, "x"),
-                "y_mm": _milli(y, "y"),
-                "z_mm": _milli(z, "z"),
-                "speed_mm_s": _positive_milli(speed, "speed"),
-            },
+            args,
         )
 
     def rotate_to(self, drone_id: int, yaw: float, speed: float) -> AdapterAcknowledgement:

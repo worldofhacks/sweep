@@ -364,8 +364,15 @@ def _validate_bundle(bundle, accepted_versions):
     return ValidatedBundle(manifest, documents, sources)
 
 
+def validate_candidate(path):
+    """Return a bounded schema-v2 world candidate without granting approval."""
+    from tools.world_bundle import validate_candidate as validate_world_candidate
+
+    return validate_world_candidate(path)
+
+
 def validate_bundle(path, accepted_versions):
-    """Return a validated byte snapshot; accepted_versions externally binds versions to SHA-256."""
+    """Return an externally approved v1 or v2 byte snapshot."""
     try:
         _require(
             isinstance(accepted_versions, dict)
@@ -380,6 +387,15 @@ def validate_bundle(path, accepted_versions):
             ),
             "accepted_versions must be a nonempty version-to-content-sha256 mapping",
         )
+        from tools.world_bundle import candidate_schema_version
+
+        if candidate_schema_version(path) == 2:
+            candidate = validate_candidate(path)
+            _require(
+                accepted_versions.get(candidate["bundle_version"]) == candidate["content_sha256"],
+                "accepted version content hash mismatch",
+            )
+            return candidate
         return _validate_bundle(Path(path), dict(accepted_versions))
     except (KeyError, TypeError, IndexError, OSError, OverflowError) as exc:
         raise ValueError(f"malformed or missing bundle data: {exc}") from exc

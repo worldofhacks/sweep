@@ -39,6 +39,7 @@ fun FlightCards(session: AircraftSession) {
 @Composable
 private fun FlightCard(flight: FlightNode, simulation: FlightSimulation?) {
     val status by flight.executor.status.collectAsStateWithLifecycle()
+    val qualification by flight.groundedAuthorityQualification.collectAsStateWithLifecycle()
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Flight (Virtual Stick loop)", style = MaterialTheme.typography.titleMedium)
@@ -72,6 +73,9 @@ private fun FlightCard(flight: FlightNode, simulation: FlightSimulation?) {
                 }
                 Switch(checked = status.mapping.transposed, onCheckedChange = flight::setTransposed)
             }
+            Text("Grounded authority check verifies the Virtual Stick mode contract, then releases it. Direct owner remains UNKNOWN. It does not take off or send a motion frame.", style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(enabled = !qualification.active, onClick = flight::qualifyGroundedAuthority) { Text("Check authority on ground") }
+            Text(qualification.detail, color = if (qualification.active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodySmall)
             status.lastEvent?.let { Text("Last: $it", style = MaterialTheme.typography.bodySmall) }
             if (simulation != null) {
                 Text("Fake RC (takeover drills without an aircraft)", style = MaterialTheme.typography.bodySmall)
@@ -132,4 +136,21 @@ private fun shortId(id: String?): String = when {
     id == null -> ""
     id.length <= 13 -> id
     else -> id.take(8) + "…" + id.takeLast(4)
+}
+
+@Composable
+fun GimbalPitchCard(controls: org.worldofhacks.sweep.bridge.session.GimbalPitchControls) {
+    val state by controls.gimbalPitch.collectAsStateWithLifecycle()
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Gimbal pitch (supervised floor-tag test)", style = MaterialTheme.typography.titleMedium)
+            Text("Tilt camera toward floor tags.", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(enabled = !state.active, onClick = { controls.requestGimbalPitch(-45.0) }) { Text("Tilt −45°") }
+                Button(enabled = !state.active, onClick = { controls.requestGimbalPitch(-75.0) }) { Text("Tilt −75°") }
+                OutlinedButton(enabled = !state.active, onClick = { controls.requestGimbalPitch(-90.0) }) { Text("Tilt −90°") }
+            }
+            Text(state.detail, color = if (state.active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+        }
+    }
 }

@@ -23,6 +23,7 @@ from planner.models import (
     Refusal,
     RefusalReason,
 )
+from planner.navigation_runtime import NavigationExecution
 from planner.planner import SELECTION_TARGETED_INTENTS, _formation_targets, _next_formation
 from relay.intent_v1 import FORMATION_NAMES, IntentName, IntentV1
 
@@ -161,6 +162,8 @@ class SafetyConfig:
 
 
 class SafetyArbiter:
+    requires_world_positioning = True
+
     def __init__(self, config: SafetyConfig) -> None:
         self.config = config
 
@@ -260,7 +263,12 @@ class SafetyArbiter:
                     return armed_refusal
 
             if intent.name not in {IntentName.ESTOP, IntentName.HOLD, IntentName.LAND_ALL}:
-                authority_refusal = self._check_authority(intent.intent_id, snapshot, aircraft)
+                authority_refusal = self._check_authority(
+                    intent.intent_id,
+                    snapshot,
+                    aircraft,
+                    allow_landing_recovery=intent.name is IntentName.LAND,
+                )
                 if authority_refusal is not None:
                     return authority_refusal
 
@@ -662,7 +670,15 @@ class SafetyArbiter:
             if operator_refusal is not None:
                 return operator_refusal
             authority_refusal = self._check_authority(
-                command.intent_id, snapshot, aircraft, command
+                command.intent_id,
+                snapshot,
+                aircraft,
+                command,
+                allow_landing_recovery=(
+                    plan.intent_name is IntentName.LAND
+                    and plan.confirmed is True
+                    and command.operation is CommandOperation.LAND
+                ),
             )
             if authority_refusal is not None:
                 return authority_refusal
@@ -880,34 +896,45 @@ class SafetyArbiter:
                 reason=RefusalReason.INVALID_PLAN,
                 detail="plan contains duplicate command ids",
             )
-        expected_operations = {
-            IntentName.ARM: frozenset(),
-            IntentName.DISARM: frozenset(),
-            IntentName.SELECT: frozenset(),
-            IntentName.TAKEOFF: frozenset({CommandOperation.TAKEOFF}),
-            IntentName.TRANSLATE: frozenset({CommandOperation.GOTO}),
-            IntentName.ALTITUDE: frozenset({CommandOperation.GOTO, CommandOperation.HOVER}),
-            IntentName.FORMATION_NEXT: frozenset({CommandOperation.GOTO}),
-            IntentName.FORMATION_SET: frozenset({CommandOperation.GOTO}),
-            IntentName.SPACING: frozenset({CommandOperation.GOTO}),
-            IntentName.SWEEP: frozenset({CommandOperation.GOTO}),
-            IntentName.HOLD: frozenset({CommandOperation.HOVER}),
-            IntentName.COME_HOME: frozenset({CommandOperation.GOTO}),
-            IntentName.LAND: frozenset({CommandOperation.LAND}),
-            IntentName.LAND_ALL: frozenset({CommandOperation.LAND}),
-            IntentName.ESTOP: frozenset({CommandOperation.ESTOP}),
-            IntentName.CAPTURE_ROOM: _CAMERA_OPERATIONS | frozenset({CommandOperation.ROTATE_TO}),
-        }
-        allowed = expected_operations.get(plan.intent_name)
-        if allowed is None:
-            return Refusal(
-                intent_id=plan.intent_id,
-                roster_version=snapshot.roster_version,
-                drone_id=None,
-                connection_epoch=None,
-                reason=RefusalReason.INVALID_PLAN,
-                detail="plan intent has no supported command shape",
-            )
+        navigation = plan.navigation
+        if navigation is not None:
+            if not isinstance(navigation, NavigationExecution) or not navigation.matches_commands(
+                plan
+            ):
+                return self._invalid_plan_refusal(
+                    plan, snapshot, "navigation commands differ from the approved execution"
+                )
+            allowed = frozenset({CommandOperation.GOTO, CommandOperation.HOVER})
+        else:
+            expected_operations = {
+                IntentName.ARM: frozenset(),
+                IntentName.DISARM: frozenset(),
+                IntentName.SELECT: frozenset(),
+                IntentName.TAKEOFF: frozenset({CommandOperation.TAKEOFF}),
+                IntentName.TRANSLATE: frozenset({CommandOperation.GOTO}),
+                IntentName.ALTITUDE: frozenset({CommandOperation.GOTO, CommandOperation.HOVER}),
+                IntentName.FORMATION_NEXT: frozenset({CommandOperation.GOTO}),
+                IntentName.FORMATION_SET: frozenset({CommandOperation.GOTO}),
+                IntentName.SPACING: frozenset({CommandOperation.GOTO}),
+                IntentName.SWEEP: frozenset({CommandOperation.GOTO}),
+                IntentName.HOLD: frozenset({CommandOperation.HOVER}),
+                IntentName.COME_HOME: frozenset({CommandOperation.GOTO}),
+                IntentName.LAND: frozenset({CommandOperation.LAND}),
+                IntentName.LAND_ALL: frozenset({CommandOperation.LAND}),
+                IntentName.ESTOP: frozenset({CommandOperation.ESTOP}),
+                IntentName.CAPTURE_ROOM: _CAMERA_OPERATIONS
+                | frozenset({CommandOperation.ROTATE_TO}),
+            }
+            allowed = expected_operations.get(plan.intent_name)
+            if allowed is None:
+                return Refusal(
+                    intent_id=plan.intent_id,
+                    roster_version=snapshot.roster_version,
+                    drone_id=None,
+                    connection_epoch=None,
+                    reason=RefusalReason.INVALID_PLAN,
+                    detail="plan intent has no supported command shape",
+                )
         deterministic_shape = self._check_deterministic_plan_shape(
             plan, geometry_snapshot or snapshot
         )
@@ -1023,6 +1050,7 @@ class SafetyArbiter:
                 if plan.intent_name is IntentName.ALTITUDE
                 else plan.altitude_grounding is None
             )
+            and (plan.navigation is None or isinstance(plan.navigation, NavigationExecution))
             and optional_updates_are_typed
             and plan.status is LifecycleStatus.ACCEPTED
         )
@@ -1072,6 +1100,8 @@ class SafetyArbiter:
         plan: Plan,
         snapshot: FleetSnapshot,
     ) -> Refusal | None:
+        if plan.navigation is not None:
+            return None
         if plan.intent_name is IntentName.ALTITUDE:
             pairs = tuple(zip(plan.commands[::2], plan.commands[1::2], strict=False))
             targets = tuple(goto.drone_id for goto, _ in pairs)
@@ -1709,8 +1739,17 @@ class SafetyArbiter:
         snapshot: FleetSnapshot,
         aircraft: AircraftState,
         command: Command | None = None,
+        *,
+        allow_landing_recovery: bool = False,
     ) -> Refusal | None:
-        if not aircraft.control_authority:
+        recovery = aircraft.landing_recovery
+        recovery_current = (
+            allow_landing_recovery
+            and recovery is not None
+            and not self.timestamp_exceeds_future_skew(snapshot, recovery.observed_at_ms)
+            and snapshot.now_ms - recovery.observed_at_ms <= self.config.max_link_age_ms
+        )
+        if not aircraft.control_authority and not recovery_current:
             return self._refusal_for(
                 intent_id,
                 snapshot,

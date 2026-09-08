@@ -27,16 +27,20 @@ class IntentName(StrEnum):
     CAPTURE_ROOM = "capture_room"
     SURVEY_AREA = "survey_area"
     MAP_AREA = "map_area"
+    GROUND_VELOCITY = "ground_velocity"
 
 
 @dataclass(frozen=True, slots=True)
 class CapabilityProfile:
     name: str
     enabled_intent_names: frozenset[IntentName]
+    requires_home_pose: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or _SAFE_PROFILE_NAME.fullmatch(self.name) is None:
             raise ValueError("capability profile name must be a non-empty safe identifier")
+        if not isinstance(self.requires_home_pose, bool):
+            raise ValueError("requires_home_pose must be a boolean")
         raw_names = self.enabled_intent_names
         if isinstance(raw_names, (str, bytes)) or not isinstance(raw_names, Iterable):
             raise ValueError("enabled intent names must be an iterable of intent names")
@@ -60,6 +64,7 @@ class CapabilityProfile:
     def state_value(self) -> dict[str, object]:
         return {
             "capability_profile": self.name,
+            **({"requires_home_pose": False} if not self.requires_home_pose else {}),
             "enabled_intent_names": sorted(name.value for name in self.enabled_intent_names),
         }
 
@@ -80,6 +85,8 @@ C1_IMPLEMENTED_INTENT_NAMES = frozenset(
     }
 )
 
+GROUND_ADDITIONAL_INTENT_NAMES = frozenset({IntentName.GROUND_VELOCITY})
+
 C2_ADDITIONAL_INTENT_NAMES = frozenset(
     {
         IntentName.DISARM,
@@ -90,7 +97,27 @@ C2_ADDITIONAL_INTENT_NAMES = frozenset(
     }
 )
 
-IMPLEMENTED_INTENT_NAMES = C1_IMPLEMENTED_INTENT_NAMES | C2_ADDITIONAL_INTENT_NAMES
+SURVEY_ADDITIONAL_INTENT_NAMES = frozenset({IntentName.SURVEY_AREA})
+
+IMPLEMENTED_INTENT_NAMES = (
+    C1_IMPLEMENTED_INTENT_NAMES
+    | C2_ADDITIONAL_INTENT_NAMES
+    | GROUND_ADDITIONAL_INTENT_NAMES
+    | SURVEY_ADDITIONAL_INTENT_NAMES
+)
+
+
+def with_ground_capabilities(profile: CapabilityProfile) -> CapabilityProfile:
+    """Enable the authenticated ground route without widening the base deployment profile."""
+    if profile.supports(IntentName.GROUND_VELOCITY):
+        return profile
+    suffix = ".ground"
+    return CapabilityProfile(
+        f"{profile.name[: 64 - len(suffix)]}{suffix}",
+        profile.enabled_intent_names | GROUND_ADDITIONAL_INTENT_NAMES,
+        requires_home_pose=profile.requires_home_pose,
+    )
+
 
 C1_CAPABILITY_PROFILE = CapabilityProfile(
     name="c1_basic_control",
@@ -99,5 +126,5 @@ C1_CAPABILITY_PROFILE = CapabilityProfile(
 
 C2_CAPABILITY_PROFILE = CapabilityProfile(
     name="c2_fleet_operations",
-    enabled_intent_names=IMPLEMENTED_INTENT_NAMES,
+    enabled_intent_names=C1_IMPLEMENTED_INTENT_NAMES | C2_ADDITIONAL_INTENT_NAMES,
 )

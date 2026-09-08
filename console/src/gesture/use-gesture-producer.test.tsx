@@ -1,3 +1,4 @@
+import { fieldGroundPose, fieldGroundState } from '../testing/field-ground'
 import { act, render } from '@testing-library/react'
 import { useEffect } from 'react'
 import { describe, expect, test } from 'vitest'
@@ -6,7 +7,7 @@ import { useControlConsole, type ControlClients } from '../control/use-control-c
 import { isConsoleIntentV1 } from '../relay/contract'
 import { FixtureRelayClient } from '../testing/fixture-relay-client'
 import { createGestureTestRig, type GestureTestRig } from '../testing/gesture-fixtures'
-import type { GestureCategory } from './policy'
+import type { GestureCategory, GestureProfile } from './policy'
 import { emissionBlockedReason, useGestureProducer } from './use-gesture-producer'
 
 const session = 'gesture-hook-session'
@@ -21,8 +22,10 @@ function Harness({
   rig,
   roomId,
   onRender,
+  profile,
 }: {
   clients: ControlClients
+  profile?: GestureProfile
   rig: GestureTestRig
   roomId: string
   onRender: (latest: Latest) => void
@@ -36,7 +39,7 @@ function Harness({
       nextId: () => `gesture-intent-${++sequence}`,
     },
   })
-  const producer = useGestureProducer({ control, roomId, dependencies: rig.dependencies })
+  const producer = useGestureProducer({ control, roomId, dependencies: rig.dependencies, profile })
   const { videoRef } = producer
   useEffect(() => {
     onRender({ control, producer })
@@ -50,24 +53,25 @@ interface FixtureClients extends ControlClients {
   webcam?: FixtureRelayClient
 }
 
-function fixtureClients(rig: GestureTestRig, withWebcam = true): FixtureClients {
+function fixtureClients(rig: GestureTestRig, withWebcam = true, mixed = false, c2 = false): FixtureClients {
   const wall = () => rig.dependencies.clock.wall()
   return {
-    console: new FixtureRelayClient(session, wall, 'console'),
-    keyboard: new FixtureRelayClient(session, wall, 'keyboard'),
-    ...(withWebcam ? { webcam: new FixtureRelayClient(session, wall, 'webcam') } : {}),
+    console: new FixtureRelayClient(session, wall, 'console', mixed ? 'mixed' : 4, true, c2 ? 'c2_fleet_operations' : 'c1_basic_control'),
+    keyboard: new FixtureRelayClient(session, wall, 'keyboard', mixed ? 'mixed' : 4, true, c2 ? 'c2_fleet_operations' : 'c1_basic_control'),
+    ...(withWebcam ? { webcam: new FixtureRelayClient(session, wall, 'webcam', mixed ? 'mixed' : 4, true, c2 ? 'c2_fleet_operations' : 'c1_basic_control') } : {}),
   }
 }
 
-async function mount(options: { loadError?: Error; withWebcam?: boolean; roomId?: string } = {}) {
+async function mount(options: { loadError?: Error; withWebcam?: boolean; roomId?: string; profile?: GestureProfile; mixed?: boolean; c2?: boolean } = {}) {
   const rig = createGestureTestRig({ loadError: options.loadError })
-  const clients = fixtureClients(rig, options.withWebcam ?? true)
+  const clients = fixtureClients(rig, options.withWebcam ?? true, options.mixed, options.c2)
   const latest: { current: Latest | null } = { current: null }
   render(
     <Harness
       clients={clients}
       rig={rig}
       roomId={options.roomId ?? 'room-01'}
+      profile={options.profile}
       onRender={(value) => {
         latest.current = value
       }}
@@ -194,12 +198,30 @@ describe('useGestureProducer', () => {
   test('low confidence emits nothing and is shown', async () => {
     const { clients, get, hold, enable } = await mount()
     await enable()
-    hold('Open_Palm', 1000, 0.6)
+    hold('Open_Palm', 1000, 0.59)
     expect(get().control.pendingRequest).toBeNull()
     expect(get().control.state.requests).toHaveLength(0)
     expect(clients.webcam?.sent).toHaveLength(0)
-    expect(get().producer.view.notable?.outcome).toMatchObject({ kind: 'low_confidence', score: 0.6 })
+    expect(get().producer.view.notable?.outcome).toMatchObject({ kind: 'low_confidence', score: 0.59 })
     expect(get().producer.view.phase).toBe('idle')
+  })
+
+  test('per-action readiness reports exact targets and an invalid capture room does not block HOLD', async () => {
+    const { clients, get, hold, enable } = await mount({ roomId: 'INVALID ROOM' })
+    await enable()
+    const readiness = get().producer.view.actionReadiness
+    expect(readiness.find((item) => item.pair.gesture === 'Open_Palm')).toMatchObject({
+      targets: [1], scope: 'devices', blockedReason: 'Enter a valid room identifier (3–24 lowercase letters, digits or hyphens).',
+    })
+    expect(readiness.find((item) => item.pair.gesture === 'Closed_Fist')).toMatchObject({
+      targets: [1], scope: 'devices', blockedReason: null,
+    })
+    hold('Closed_Fist', 650)
+    expect(get().control.pendingRequest?.intent).toMatchObject({ name: 'hold', selection: [1], confirm: false })
+    expect(get().producer.view.actionReadiness.find((item) => item.pair.gesture === 'Thumb_Up')).toMatchObject({
+      targets: [1], scope: 'devices', blockedReason: null,
+    })
+    expect(clients.webcam?.sent).toEqual([])
   })
 
   test('a dwell timeout emits nothing and is shown', async () => {
@@ -396,6 +418,108 @@ describe('emissionBlockedReason', () => {
     expect(blocked('connected', 'disconnected')).toBe(
       'The webcam relay source is not connected; no gesture intent can be sent.',
     )
-    expect(blocked('connected', 'connected')).toBe('Select at least one ready aircraft.')
+    // An empty roster has no class to name, so the reason says device.
+    expect(blocked('connected', 'connected')).toBe('Select at least one ready device.')
   })
+})
+
+
+describe('mixed fleet gestures', () => {
+  test.each([
+    ['Pointing_Up', { dx: 0, dy: 1 }],
+    ['Victory', { dx: 1, dy: 0 }],
+    ['Closed_Fist', { dx: 0, dy: -1 }],
+    ['ILoveYou', { dx: -1, dy: 0 }],
+  ] as const)('%s translates an aircraft subset of a mixed roster only after confirmation', async (pose, args) => {
+    const { clients, get, hold, enable } = await mount({ profile: 'fleet', mixed: true })
+    await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [1] }, targets: [1] }) })
+    await enable()
+    hold(pose, 650)
+    const preview = get().control.pendingRequest?.intent
+    expect(preview).toMatchObject({ name: 'translate', args, selection: [1], source: 'webcam', confirm: false })
+    expect(clients.webcam?.sent).toHaveLength(0)
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.webcam?.sent[0]).toMatchObject({ ...preview, confirm: true, t: expect.any(Number) })
+    expect(clients.console.sent.map((intent) => intent.name)).toEqual(['select'])
+    expect(clients.keyboard.sent).toHaveLength(0)
+  })
+
+  test('changing selection invalidates a pending movement before thumb confirmation', async () => {
+    const { clients, get, hold, enable } = await mount({ profile: 'fleet', mixed: true })
+    await enable()
+    hold('Victory', 650)
+    expect(get().control.pendingRequest?.intent.name).toBe('translate')
+    await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [11] }, targets: [11] }) })
+    expect(get().control.pendingRequest).toBeNull()
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(0)
+  })
+
+  test.each([false, true])('swarm formation refuses a mixed selection, C2=%s', async (c2) => {
+    const { clients, get, hold, enable } = await mount({ profile: 'swarm', mixed: true, c2 })
+    await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [1, 11, 12] }, targets: [1, 11, 12] }) })
+    await enable()
+    hold('Victory', 650)
+    if (!c2) {
+      expect(get().control.pendingRequest).toBeNull()
+      expect(get().producer.view.lastAction?.detail).toContain('disabled by relay capability profile')
+      return
+    }
+    expect(get().control.pendingRequest).toBeNull()
+    expect(get().producer.view.lastAction?.detail).toContain('Select only aircraft')
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(0)
+  })
+})
+
+
+describe('ground gesture confirmation through the real controller', () => {
+  test('dwell drafts a bounded ground pulse, neutral then thumb up sends only on webcam', async () => {
+    const { rig, clients, get, hold, enable } = await mount({ profile: 'ground' })
+    const t = rig.dependencies.clock.wall()
+    act(() => { clients.console.emitServer(fieldGroundState(t, session)); clients.console.emitServer(fieldGroundPose(t, session)); clients.console.emitServer(fieldGroundState(t + 1, session)) })
+    await enable()
+    hold('Pointing_Up', 650)
+    const draft = get().control.pendingRequest?.intent
+    expect(draft).toMatchObject({ name: 'ground_velocity', selection: [11], source: 'webcam', confirm: false,
+      args: { linear_mm_s: 80, angular_mrad_s: 0, duration_ms: 250 } })
+    expect(clients.webcam?.sent).toEqual([])
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toEqual([])
+    hold(null, 250)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.webcam?.sent[0]).toMatchObject({ ...draft, t: expect.any(Number), confirm: true })
+    expect(clients.console.sent).toEqual([])
+    expect(clients.keyboard.sent).toEqual([])
+  })
+
+  test('loss of drive authority after dwell prevents gesture confirmation', async () => {
+    const { rig, clients, get, hold, enable } = await mount({ profile: 'ground' })
+    const t = rig.dependencies.clock.wall()
+    act(() => { clients.console.emitServer(fieldGroundState(t, session)); clients.console.emitServer(fieldGroundPose(t, session)); clients.console.emitServer(fieldGroundState(t + 1, session)) })
+    await enable(); hold('Victory', 650)
+    expect(get().control.pendingRequest?.intent.name).toBe('ground_velocity')
+    const next = fieldGroundState(rig.dependencies.clock.wall(), session)
+    next.drones[0].control_authority = false
+    act(() => { clients.console.emitServer(next) })
+    hold(null, 250); hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toEqual([])
+    expect(clients.console.sent).toEqual([])
+  })
+})
+
+
+test('fleet translation gestures refuse a mixed selection without sending a preview', async () => {
+  const { clients, get, hold, enable } = await mount({ profile: 'fleet', mixed: true })
+  await act(async () => { get().control.issueIntent({ name: 'select', args: { ids: [1, 11] }, targets: [1, 11] }) })
+  await enable(); hold('Pointing_Up', 650)
+  expect(get().control.pendingRequest).toBeNull()
+  expect(get().producer.view.lastAction?.detail).toContain('Select only aircraft')
+  hold(null, 250); hold('Thumb_Up', 450)
+  expect(clients.webcam?.sent).toEqual([])
 })

@@ -1,5 +1,11 @@
 # relay
 
+Current platform scope: one console for an additive fleet of aerial drones and ground robots,
+with explicit onboard camera/sensor inventory and real live data only. See the
+[modular fleet contract](../docs/modular-fleet.md) and its current implementation/qualification boundaries.
+Model-specific milestones and recorded tests below retain their original evidence scope.
+
+
 Capability area: Platform. Milestone: M1.
 
 Any engineer may claim a ready task and owns it through review, integration, and evidence. Changes to shared contracts or the authoritative relay state shape name one change owner and require cross-review.
@@ -36,6 +42,7 @@ Install the locked environment, copy `.env.example` to the git-ignored `.env`, a
 ```dotenv
 SWEEP_RELAY_TOKEN=<at-least-32-characters>
 SWEEP_ADAPTER_KEYS_JSON='{"1":"<adapter-1-key-at-least-32-characters>"}'
+SWEEP_NODE_TYPES_JSON='{}'
 SWEEP_LOCALIZATION_KEYS_JSON='{}'
 SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=false
 ```
@@ -43,6 +50,8 @@ SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=false
 Single-quote JSON values in `.env`: `just relay` and `just fake-node` read the file with `uv run --env-file`, which strips double quotes from unquoted values.
 
 `SWEEP_ALLOW_SHARED_ADAPTER_TOKEN=true` is a demo-only fallback. It proves that a frame came from a holder of the shared secret, but cannot prove which aircraft sent it; keep it false for hardware. The freshness settings in `.env.example` are explicit demo values and must be measured and configured for a hardware session.
+
+`SWEEP_NODE_TYPES_JSON` is an optional map from configured adapter IDs to `aircraft` or `ground`; absent IDs are aircraft for compatibility. For example, `'{"9":"ground"}'` assigns adapter ID 9 to the ground class. The host configuration is authoritative: a configured ground node must sign `node_type: "ground"` on join, while a legacy join without that field is accepted only for aircraft. A session permits four aircraft on C1 or six on C2, plus up to three ground nodes. State and membership records expose each node's class and signed adapter capabilities.
 
 `SWEEP_LOCALIZATION_KEYS_JSON` is an optional, separately generated per-aircraft credential map. It defaults to empty, and every configured relay, adapter, and localization secret must be distinct. `relay.main` enables diagnostic localization only when `SWEEP_CONTROL_LOCALIZATION_JSON` supplies every deployment pin and bound. A projected pose also requires an explicit per-aircraft adapter key; the demo-only shared relay-token fallback is never used to sign one. The pose remains diagnostic and has `flight_approved: false`.
 
@@ -204,7 +213,7 @@ membership_history_truncated, camera_capabilities, node_status, video
 
 `camera_capabilities` and `node_status` are the node's latest `capabilities` and `node_status` frames (see the node protocol below) without their transport-only fields, or null until the node has sent one in the current connection epoch; a rejoin clears both. They are informational projections for the console and the command wire. Neither changes membership or `control_authority`: only a signed `readiness` frame does that, so a node that loses authority must report it through readiness as well as `node_status`.
 
-`video` is the per-aircraft stream projection the console's Live module plays from, exactly `{"status", "last_frame_at"}` with `status` one of `live`, `offline`, `unreported` and `last_frame_at` a millisecond timestamp or null (mirrored by `MediaStreamState` in `console/src/relay/contract.ts`, which accepts no other keys). Two sources feed it (`relay/media.py`). The node's current-epoch `node_status.video_publish_state` is its own claim: `publishing` is live, `stopped`, `connecting`, and `failed` are offline, and no frame yet is unreported. When `SWEEP_MEDIA_API_URL` is set, a background task reads MediaMTX's `/v3/paths/get/drone{id}` for ids 1 to 4 every `SWEEP_MEDIA_POLL_INTERVAL_MS` with a `SWEEP_MEDIA_API_TIMEOUT_MS` bound on each request and never inside the session lock or the fan-out; while the last complete read is younger than `SWEEP_MEDIA_STALE_AFTER_MS`, MediaMTX decides `status` (path `online` is live, anything else including a missing path is offline) because it is what the console can actually play. An unreachable, failing, or unconfigured MediaMTX degrades to the node's claim after that window and never upgrades anything to live on its own; a disconnected aircraft's stale claim is offline, or unreported when no frame was ever seen. `last_frame_at` is the newest evidence of frames: the read at which the path's inbound byte count last grew, or the `t` of the node's latest `node_status` that said `publishing`, whichever is later, and it survives a rejoin as history. Nodes resend `node_status` only when it changes, so without the MediaMTX API the age on a live tile counts from the node's claim rather than from a frame.
+`video` is the per-aircraft stream projection the console's Live module plays from, exactly `{"status", "last_frame_at"}` with `status` one of `live`, `offline`, `unreported` and `last_frame_at` a millisecond timestamp or null (mirrored by `MediaStreamState` in `console/src/relay/contract.ts`, which accepts no other keys). Two sources feed it (`relay/media.py`). The node's current-epoch `node_status.video_publish_state` is its own claim: `publishing` is live, `stopped`, `connecting`, and `failed` are offline, and no frame yet is unreported. When `SWEEP_MEDIA_API_URL` is set, a background task reads MediaMTX's `/v3/paths/get/drone{id}` for every configured adapter identity every `SWEEP_MEDIA_POLL_INTERVAL_MS` with a `SWEEP_MEDIA_API_TIMEOUT_MS` bound on each request and never inside the session lock or the fan-out; while the last complete read is younger than `SWEEP_MEDIA_STALE_AFTER_MS`, MediaMTX decides `status` (path `online` is live, anything else including a missing path is offline) because it is what the console can actually play. An unreachable, failing, or unconfigured MediaMTX degrades to the node's claim after that window and never upgrades anything to live on its own; a disconnected aircraft's stale claim is offline, or unreported when no frame was ever seen. `last_frame_at` is the newest evidence of frames: the read at which the path's inbound byte count last grew, or the `t` of the node's latest `node_status` that said `publishing`, whichever is later, and it survives a rejoin as history. Nodes resend `node_status` only when it changes, so without the MediaMTX API the age on a live tile counts from the node's claim rather than from a frame.
 
 Top-level `armed` is the authoritative session arm authorization, initially false and updated only through `RelaySession.update_control_projection(armed=...)` after the planner/arbiter accepts that control-state change. It is not inferred from aircraft flight-state strings. Join and rejoin leave it unchanged; a new session after process restart begins disarmed. Per-aircraft physical armed/disarmed evidence remains an explicit autonomy enrichment used by graceful-removal safety.
 
@@ -250,6 +259,11 @@ refreshes its deadman only after the signature, session, drone id, current conne
 current roster version, timestamp freshness, and sequence all validate. Commands, state,
 membership, acknowledgements, parseable telemetry, and fan-out echoes are deliberately not
 liveness evidence.
+
+The aircraft frame above is exact. Only a host-configured ground node receives the
+additional signed `issued_at`, `expires_at`, `hold_after_ms`, and `failsafe_after_ms`
+fields. The bridge CI job feeds an actual relay heartbeat to the Kotlin phone parser
+and verifies its signature through `tools.check_phone_control_heartbeat`.
 
 ### Command frame (relay to node)
 

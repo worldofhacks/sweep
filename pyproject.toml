@@ -1,7 +1,7 @@
 [project]
 name = "sweep"
 version = "0.0.1"
-description = "One person creates AI-generated room worlds and commands four indoor DJI Mini 3 drones through a live shared intent engine."
+description = "A modular operator platform for heterogeneous aerial drones, ground robots, cameras, and sensors through shared live telemetry and intent controls."
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "av>=15,<17",
@@ -17,6 +17,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "jsonschema>=4.19,<5",
   "pytest>=9,<10",
   "ruff>=0.16,<0.17",
 ]
@@ -30,6 +31,7 @@ pythonpath = ["."]
 testpaths = [
   "tests",
   "relay",
+  "spatial",
   "planner",
   "arbiter",
   "adapters",

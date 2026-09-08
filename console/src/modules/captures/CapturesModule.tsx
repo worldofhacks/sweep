@@ -9,7 +9,7 @@ import {
   type CatalogLink,
 } from '../../catalog/derive'
 import type { CaptureRecord } from '../../catalog/types'
-import { formatDroneId } from '../../control/state'
+import { deviceLabeller, type DeviceLabeller } from '../../control/state'
 import { Pane } from '../../shell/Pane'
 import { formatTime } from '../../shell/format'
 import { noteFromError, type CatalogNoteState } from '../catalog-notes'
@@ -41,7 +41,7 @@ export function CapturesModule({ controller, catalog }: ModuleProps) {
   }
 
   return (
-    <Pane title="Capture library" note="Captured media by room, capture, aircraft and time.">
+    <Pane title="Capture library" note="Captured media by room, capture, device and time.">
       <LinkNotice link={link} label="Capture library connection" />
       <CatalogNote label="Capture library notice" note={note} />
       {captures === null ? (
@@ -54,6 +54,7 @@ export function CapturesModule({ controller, catalog }: ModuleProps) {
           link={link}
           client={catalog.client}
           onRun={run}
+          label={deviceLabeller(controller.state.aircraft)}
         />
       )}
     </Pane>
@@ -67,6 +68,7 @@ function CaptureCatalog({
   link,
   client,
   onRun,
+  label,
 }: {
   captures: CaptureRecord[]
   filterId: string
@@ -74,8 +76,9 @@ function CaptureCatalog({
   link: CatalogLink
   client: CatalogClient
   onRun: (action: () => Promise<string>) => void
+  label: DeviceLabeller
 }) {
-  const filters = captureFilters(captures)
+  const filters = captureFilters(captures, label)
   const active = filters.find((filter) => filter.id === filterId) ?? filters[0]
   const visible = captures.filter(active.test)
   const projects = groupCapturesByProject(visible)
@@ -110,6 +113,7 @@ function CaptureCatalog({
                   link={link}
                   client={client}
                   onRun={onRun}
+                  label={label}
                 />
               ))}
             </div>
@@ -125,11 +129,13 @@ function CaptureItem({
   link,
   client,
   onRun,
+  label,
 }: {
   capture: CaptureRecord
   link: CatalogLink
   client: CatalogClient
   onRun: (action: () => Promise<string>) => void
+  label: DeviceLabeller
 }) {
   const blocked = link.up ? undefined : `The console connection is ${link.status}. Nothing can be sent.`
   return (
@@ -139,7 +145,7 @@ function CaptureItem({
         <div className="cap-item-copy">
           <p className="cap-id">{capture.capture_id}</p>
           <p className="cap-meta">
-            {capture.room_id} · {formatDroneId(capture.drone_id)} · {formatTime(capture.captured_at)}
+            {capture.room_id} · {label(capture.drone_id)} · {formatTime(capture.captured_at)}
           </p>
           <p className="cap-pattern">
             <span className="mono">{capture.pattern}</span>

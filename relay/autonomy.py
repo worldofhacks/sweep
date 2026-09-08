@@ -28,13 +28,17 @@ import os
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, fields, is_dataclass, replace
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
+from enum import Enum
 from typing import get_origin, get_type_hints
 
 from fastapi import FastAPI
 
 from adapters.dispatch import AdapterDispatcher
 from adapters.dji_mini3.remote import CommandRequest, NodeLink
+from adapters.ohmni.dispatcher import GroundCommandDispatcher
 from adapters.sim.camera import SimCameraConfig
 from arbiter.safety import SafetyArbiter, SafetyConfig
 from planner.controller import AutonomyController, RelayExecution
@@ -43,19 +47,30 @@ from planner.models import (
     ExecutionResult,
     FleetSnapshot,
     FlightState,
+    LandingRecoveryEvidence,
     LifecycleStatus,
+    LocalHeightEvidence,
+    Plan,
+    PreparedExecution,
     Refusal,
     RefusalReason,
     RelayAircraftSafetyEnrichment,
     RelaySnapshotEnrichment,
 )
+from planner.navigation_deployment import NavigationDeployment, load_navigation_deployment
+from planner.navigation_runtime import navigation_capability_profile
 from planner.planner import DeterministicPlanner, PlanningConfig
 from planner.roster import authorize_graceful_removal
 from relay.app import RelayRuntime, TranscriptServiceFactory, create_app
 from relay.bridge import RelayNodeLink, build_dispatcher
-from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.capabilities import (
+    C1_CAPABILITY_PROFILE,
+    SURVEY_ADDITIONAL_INTENT_NAMES,
+    CapabilityProfile,
+    with_ground_capabilities,
+)
 from relay.contracts import AdapterAcknowledgement as WireAcknowledgement
-from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord
+from relay.contracts import CapabilitiesFrame, CaptureReadinessFrame, MediaFileRecord, NodeType
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
 from relay.control_localization import (
     ClockMapping,
@@ -63,8 +78,15 @@ from relay.control_localization import (
     ControlLocalizationProjector,
 )
 from relay.intent_v1 import IntentName, IntentV1
+from relay.navigation_wire import NavigationWirePublisher
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
+from relay.supervised_vertical import (
+    SUPERVISED_VERTICAL_PROFILE,
+    SupervisedVerticalArbiter,
+    SupervisedVerticalConfig,
+    SupervisedVerticalPlanner,
+)
 
 LIFECYCLE_SOURCE = "autonomy"
 PREEMPTED_BY_ESTOP = "preempted_by_estop"
@@ -80,6 +102,7 @@ HOLD_PREEMPTS = frozenset(
         IntentName.SWEEP,
         IntentName.COME_HOME,
         IntentName.CAPTURE_ROOM,
+        IntentName.GROUND_VELOCITY,
     }
 )
 """Operator motion and camera plans a hold cancels; a running safety plan finishes first."""
@@ -114,19 +137,57 @@ class PlanPreempted(BaseException):
 
 @dataclass(frozen=True, slots=True)
 class AutonomyConfig:
-    """Planner, arbiter, and sim camera values; none of them has a deployment default."""
+    """One explicit world policy or the separate supervised vertical policy."""
 
-    planning: PlanningConfig
-    safety: SafetyConfig
+    planning: PlanningConfig | None = None
+    safety: SafetyConfig | None = None
+    supervised_vertical: SupervisedVerticalConfig | None = None
     sim_camera: SimCameraConfig | None = None
     control_localization_projector: ControlLocalizationProjector | None = None
+    navigation: NavigationDeployment | None = None
+
+    def __post_init__(self) -> None:
+        world = self.planning is not None or self.safety is not None
+        if world == (self.supervised_vertical is not None):
+            raise ValueError("configure either planning+safety or supervised_vertical")
+        if world and (self.planning is None or self.safety is None):
+            raise ValueError("world policy requires both planning and safety")
+        if self.supervised_vertical is not None and (
+            self.control_localization_projector is not None or self.navigation is not None
+        ):
+            raise ValueError("supervised_vertical does not accept world localization or navigation")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> AutonomyConfig:
-        """Load exact deployment contracts; localization requires measured pins and bounds."""
+        """Load one deployment policy and reject a mixed world/vertical configuration."""
         values = os.environ if environ is None else environ
         camera_raw = values.get("SWEEP_SIM_CAMERA_JSON", "")
         localization_raw = values.get("SWEEP_CONTROL_LOCALIZATION_JSON", "")
+        navigation_path = values.get("SWEEP_NAVIGATION_CONFIG", "")
+        vertical_raw = values.get("SWEEP_SUPERVISED_VERTICAL_JSON", "")
+        if vertical_raw:
+            if any(
+                (
+                    values.get("SWEEP_PLANNING_JSON", ""),
+                    values.get("SWEEP_SAFETY_JSON", ""),
+                    localization_raw,
+                    navigation_path,
+                )
+            ):
+                raise SettingsError(
+                    "SWEEP_SUPERVISED_VERTICAL_JSON cannot be combined with "
+                    "world planning, safety, localization, or navigation"
+                )
+            return cls(
+                supervised_vertical=_config_from_json(
+                    SupervisedVerticalConfig, vertical_raw, "SWEEP_SUPERVISED_VERTICAL_JSON"
+                ),
+                sim_camera=(
+                    None
+                    if not camera_raw
+                    else _config_from_json(SimCameraConfig, camera_raw, "SWEEP_SIM_CAMERA_JSON")
+                ),
+            )
         return cls(
             planning=_config_from_json(
                 PlanningConfig, values.get("SWEEP_PLANNING_JSON", ""), "SWEEP_PLANNING_JSON"
@@ -146,6 +207,7 @@ class AutonomyConfig:
                     localization_raw, "SWEEP_CONTROL_LOCALIZATION_JSON"
                 )
             ),
+            navigation=None if not navigation_path else load_navigation_deployment(navigation_path),
         )
 
 
@@ -155,6 +217,7 @@ def relay_snapshot(
     operator_last_seen_ms: int | None,
     estop_requested: bool = False,
     capture_readiness: ReadinessSource | None = None,
+    landing_recovery: Callable[[int, int], LandingRecoveryEvidence | None] | None = None,
 ) -> FleetSnapshot:
     """Project one relay ``state`` event into the autonomy snapshot.
 
@@ -198,11 +261,21 @@ def relay_snapshot(
     if not isinstance(drones_raw, list):
         raise ValueError("relay state requires a drones list")
     drones: list[Mapping[str, object]] = []
+    ground_ids: list[int] = []
     enrichment: dict[int, RelayAircraftSafetyEnrichment] = {}
     fleet_observation_complete = True
     for drone in drones_raw:
         if not isinstance(drone, Mapping):
             raise ValueError("relay drone entries must be mappings")
+        node_type = drone.get("node_type", "aircraft")
+        if node_type not in ("aircraft", "ground"):
+            raise ValueError("relay node type is unknown")
+        if node_type == "ground":
+            drone_id = drone.get("drone_id")
+            if not isinstance(drone_id, int) or isinstance(drone_id, bool) or drone_id <= 0:
+                raise ValueError("relay drone entries require a positive drone_id")
+            ground_ids.append(drone_id)
+            continue
         drone_id = drone.get("drone_id")
         if not isinstance(drone_id, int) or isinstance(drone_id, bool) or drone_id <= 0:
             raise ValueError("relay drone entries require a positive drone_id")
@@ -234,10 +307,17 @@ def relay_snapshot(
             ),
             active_task_id=None,
             position_loss_since_ms=None,
+            local_height=_local_height_evidence(drone.get("node_status")),
+            readiness_reasons=_readiness_reasons(drone.get("readiness_reasons")),
+            landing_recovery=(
+                None
+                if landing_recovery is None
+                else landing_recovery(drone_id, drone.get("connection_epoch"))
+            ),
         )
         drones.append(drone)
     snapshot = FleetSnapshot.from_relay_state(
-        {**state, "drones": drones},
+        {**state, "drones": drones, "ground_ids": tuple(ground_ids)},
         enrichment=RelaySnapshotEnrichment(
             operator_present=operator_last_seen_ms is not None,
             operator_last_seen_ms=0 if operator_last_seen_ms is None else operator_last_seen_ms,
@@ -248,6 +328,45 @@ def relay_snapshot(
     if estop_requested and not snapshot.estop_active:
         snapshot = replace(snapshot, estop_active=True)
     return snapshot
+
+
+def _readiness_reasons(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(
+        not isinstance(reason, str) or not reason for reason in value
+    ):
+        raise ValueError("relay readiness reasons must be non-empty strings")
+    return tuple(value)
+
+
+def _local_height_evidence(node_status: object) -> LocalHeightEvidence | None:
+    if not isinstance(node_status, Mapping):
+        return None
+    raw = node_status.get("local_height")
+    if not isinstance(raw, Mapping):
+        return None
+    z_m = raw.get("z_m")
+    source = raw.get("source")
+    age_ms = raw.get("age_ms")
+    reported_at_ms = raw.get("reported_at_ms")
+    if (
+        isinstance(z_m, bool)
+        or not isinstance(z_m, int | float)
+        or isinstance(source, bool)
+        or not isinstance(source, str)
+        or not isinstance(age_ms, int)
+        or isinstance(age_ms, bool)
+        or not isinstance(reported_at_ms, int)
+        or isinstance(reported_at_ms, bool)
+        or age_ms < 0
+        or reported_at_ms < age_ms
+    ):
+        return None
+    try:
+        return LocalHeightEvidence(
+            z_m=float(z_m), observed_at_ms=reported_at_ms - age_ms, source=source
+        )
+    except ValueError:
+        return None
 
 
 def control_projection(intent_name: IntentName, result: ExecutionResult) -> dict[str, object]:
@@ -442,11 +561,40 @@ class AutonomySession:
         self.session_id = session_id
         self._composition = composition
         self.capability_profile = composition.capability_profile
-        self.planner = DeterministicPlanner(
-            composition.config.planning,
-            self.capability_profile,
+        navigation = composition.config.navigation
+        navigation_runtime = (
+            None
+            if navigation is None
+            else navigation.for_session(
+                session_id,
+                lambda drone_id: composition.runtime.sessions[session_id].control_pose(drone_id),
+                composition.config.control_localization_projector,
+            )
         )
-        self.arbiter = SafetyArbiter(composition.config.safety)
+        self.navigation_wire = (
+            NavigationWirePublisher(
+                navigation_runtime,
+                navigation.wire_profiles,
+                session=session_id,
+                signing_key=composition.runtime.settings.adapter_keys.get,
+                event_ids=composition.runtime.event_ids,
+                clock=composition.runtime.clock,
+            )
+            if navigation_runtime is not None and navigation.approval.mode == "flight"
+            else None
+        )
+        if composition.config.supervised_vertical is not None:
+            self.planner = SupervisedVerticalPlanner(composition.config.supervised_vertical)
+            self.arbiter = SupervisedVerticalArbiter(composition.config.supervised_vertical)
+        else:
+            assert composition.config.planning is not None
+            assert composition.config.safety is not None
+            self.planner = DeterministicPlanner(
+                composition.config.planning,
+                self.capability_profile,
+                navigation_runtime=navigation_runtime,
+            )
+            self.arbiter = SafetyArbiter(composition.config.safety)
         self._lock = threading.Lock()
         self._operator_last_seen_ms: int | None = None
         self._stop_requested = False
@@ -503,11 +651,36 @@ class AutonomySession:
         with self._lock:
             operator_last_seen_ms = self._operator_last_seen_ms
             estop_requested = self._stop_requested
+        runtime = self._composition.runtime_if_bound()
+        session = None if runtime is None else runtime.sessions.get(self.session_id)
+        policy = self._composition.config.supervised_vertical or self._composition.config.safety
+
+        def recovery(drone_id: int, epoch: int) -> LandingRecoveryEvidence | None:
+            if session is None or policy is None:
+                return None
+            current = session.registry.current_node_status_with_receipt(drone_id)
+            if current is None:
+                return None
+            status, received_at = current
+            now_ms = state.get("t")
+            if (
+                type(now_ms) is not int
+                or not 0 <= now_ms - received_at <= policy.max_link_age_ms
+                or status.connection_epoch != epoch
+                or status.control_authority is not False
+                or status.virtual_stick_enabled is not False
+                or status.watchdog_state.value != "nominal"
+                or status.authority_change_reason != "virtual_stick_dropped"
+            ):
+                return None
+            return LandingRecoveryEvidence(received_at, "virtual_stick_dropped")
+
         return relay_snapshot(
             state,
             operator_last_seen_ms=operator_last_seen_ms,
             estop_requested=estop_requested,
             capture_readiness=capture_readiness,
+            landing_recovery=recovery,
         )
 
     def close(self, timeout_s: float) -> None:
@@ -594,6 +767,8 @@ class AutonomySession:
         if not victims or session is None:
             return
         for victim in victims:
+            if self.navigation_wire is not None:
+                self.navigation_wire.retire_intent(victim.intent.intent_id)
             try:
                 event = session.record_lifecycle(
                     intent_id=victim.intent.intent_id,
@@ -661,19 +836,130 @@ class AutonomySession:
             return _PreemptibleLink(link, job, session)
 
         try:
-            snapshot = current()
-            dispatcher = build_dispatcher(
-                runtime,
-                self.session_id,
-                snapshot,
-                arbiter=self.arbiter,
-                sim_camera_config=self._composition.config.sim_camera,
-                link_wrapper=gate,
-            )
-            controller = AutonomyController(
-                planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
-            )
-            result = controller.execute(intent, snapshot, current_snapshot=current)
+            if intent.name is IntentName.GROUND_VELOCITY:
+                link = gate(
+                    RelayNodeLink(
+                        runtime,
+                        self.session_id,
+                        delivery_timeout_ms=runtime.settings.command_ttl_ms,
+                    )
+                )
+                result = GroundCommandDispatcher(
+                    link,
+                    acknowledgement_timeout_ms=runtime.settings.command_ttl_ms,
+                    command_deadline_ms=runtime.settings.command_deadline_ms,
+                ).dispatch(intent, session.current_state())
+                dispatcher = None
+            elif intent.name is IntentName.COME_HOME and _ground_return_selected(
+                intent, session.current_state()
+            ):
+                link = gate(
+                    RelayNodeLink(
+                        runtime,
+                        self.session_id,
+                        delivery_timeout_ms=runtime.settings.command_ttl_ms,
+                    )
+                )
+                result = GroundCommandDispatcher(
+                    link,
+                    acknowledgement_timeout_ms=runtime.settings.command_ttl_ms,
+                    command_deadline_ms=runtime.settings.command_deadline_ms,
+                ).dispatch_return(
+                    intent,
+                    session.current_state(),
+                    return_id=runtime.settings.ground_return_id,
+                )
+                dispatcher = None
+            else:
+                snapshot = current()
+                if intent.name in {IntentName.HOLD, IntentName.ESTOP}:
+                    ground_dispatcher = None
+                    ground_state = session.current_state()
+                    if _ground_stop_targets(intent, ground_state):
+                        link = gate(
+                            RelayNodeLink(
+                                runtime,
+                                self.session_id,
+                                delivery_timeout_ms=runtime.settings.command_ttl_ms,
+                            )
+                        )
+                        ground_dispatcher = GroundCommandDispatcher(
+                            link,
+                            acknowledgement_timeout_ms=runtime.settings.command_ttl_ms,
+                            command_deadline_ms=runtime.settings.command_deadline_ms,
+                        )
+                    air_intent, air_snapshot = _air_only_stop(intent, snapshot)
+                    dispatch_aircraft = bool(air_snapshot.aircraft) and (
+                        intent.name is IntentName.ESTOP or bool(air_intent.selection)
+                    )
+                    if dispatch_aircraft:
+                        dispatcher = build_dispatcher(
+                            runtime,
+                            self.session_id,
+                            air_snapshot,
+                            arbiter=self.arbiter,
+                            sim_camera_config=self._composition.config.sim_camera,
+                            link_wrapper=gate,
+                            navigation_publisher=self.navigation_wire,
+                        )
+                        controller = AutonomyController(
+                            planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
+                        )
+                    else:
+                        dispatcher = None
+                    if ground_dispatcher is not None and dispatch_aircraft:
+                        with ThreadPoolExecutor(max_workers=2) as workers:
+                            ground_future = workers.submit(
+                                ground_dispatcher.dispatch_stop, intent, ground_state
+                            )
+                            air_future = workers.submit(
+                                controller.execute,
+                                air_intent,
+                                air_snapshot,
+                                current_snapshot=lambda: _air_only_stop(intent, current())[1],
+                            )
+                            ground_result = ground_future.result()
+                            air_result = air_future.result()
+                    elif ground_dispatcher is not None:
+                        ground_result = ground_dispatcher.dispatch_stop(intent, ground_state)
+                        air_result = None
+                    elif dispatch_aircraft:
+                        ground_result = None
+                        air_result = controller.execute(
+                            air_intent,
+                            air_snapshot,
+                            current_snapshot=lambda: _air_only_stop(intent, current())[1],
+                        )
+                    else:
+                        ground_result = air_result = None
+                    result = _aggregate_stop_results(intent, snapshot, ground_result, air_result)
+                else:
+                    dispatcher = build_dispatcher(
+                        runtime,
+                        self.session_id,
+                        snapshot,
+                        arbiter=self.arbiter,
+                        sim_camera_config=self._composition.config.sim_camera,
+                        link_wrapper=gate,
+                        navigation_publisher=self.navigation_wire,
+                    )
+                    controller = AutonomyController(
+                        planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
+                    )
+                    prepared = controller.prepare(intent, snapshot, current_snapshot=current)
+                    if isinstance(prepared, PreparedExecution):
+                        scope = (
+                            self.navigation_wire.command_scope(prepared.plan, current)
+                            if self.navigation_wire is not None
+                            and prepared.plan.navigation is not None
+                            else nullcontext()
+                        )
+                        with scope:
+                            result = controller.dispatch_prepared(
+                                prepared, current_snapshot=current
+                            )
+                    else:
+                        result = prepared
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             return
@@ -686,6 +972,8 @@ class AutonomySession:
             result = _composition_failure(intent, session, error)
         with self._lock:
             if result.status is LifecycleStatus.EXECUTING:
+                if dispatcher is None:
+                    raise RuntimeError("ground dispatcher returned a nonterminal command result")
                 self._awaiting[intent.intent_id] = _AwaitingExecution(
                     job=job,
                     session=session,
@@ -776,14 +1064,20 @@ class AutonomySession:
 
         try:
             assert owner.pending.plan is not None
-            return owner.dispatcher.resume_after_completion(
-                owner.pending.plan,
-                owner.pending,
-                token.acknowledgement,
-                owner.snapshot,
-                current_snapshot=current,
-                owner_still_valid=lambda: self._owns_resume(token),
+            scope = (
+                self.navigation_wire.command_scope(owner.pending.plan, current)
+                if self.navigation_wire is not None and owner.pending.plan.navigation is not None
+                else nullcontext()
             )
+            with scope:
+                return owner.dispatcher.resume_after_completion(
+                    owner.pending.plan,
+                    owner.pending,
+                    token.acknowledgement,
+                    owner.snapshot,
+                    current_snapshot=current,
+                    owner_still_valid=lambda: self._owns_resume(token),
+                )
         except Exception as error:
             return _resume_failure(token, error)
 
@@ -879,14 +1173,110 @@ class AutonomySession:
         guarded()
 
 
+class SurveyIntentRouter:
+    """Combines pilot-assisted ground recording with the existing autonomous intent sink."""
+
+    def __init__(self, autonomy: AutonomySession, session: RelaySession) -> None:
+        from relay.survey_area import SurveyAreaLifecycle, SurveyCandidateRegistry
+
+        self.autonomy = autonomy
+        self.capability_profile = autonomy.capability_profile
+        self.survey = SurveyAreaLifecycle(
+            session, SurveyCandidateRegistry(session.audit_log.root / "survey_candidates")
+        )
+
+    def __call__(self, intent: IntentV1, state: dict[str, object]) -> object:
+        if intent.name is IntentName.SURVEY_AREA:
+            return self.survey.start(intent)
+        return self.autonomy(intent, state)
+
+    def survey_lifecycle(self, request: object) -> list[dict[str, object]]:
+        from relay.survey_area import SurveyLifecycleRequest
+
+        if not isinstance(request, SurveyLifecycleRequest):
+            raise ValueError("survey lifecycle request is invalid")
+        return self.survey.process(request)
+
+    def accepted_observation(self, observation: object) -> list[dict[str, object]]:
+        from relay.observations import Observation
+
+        return (
+            []
+            if not isinstance(observation, Observation)
+            else self.survey.accepted_observation(observation)
+        )
+
+    def adapter_disconnected(
+        self, *, drone_id: int, connection_epoch: int, relay_state: dict[str, object]
+    ) -> list[dict[str, object]]:
+        events: list[dict[str, object]] = []
+        underlying = getattr(self.autonomy, "adapter_disconnected", None)
+        if callable(underlying):
+            events.extend(
+                underlying(
+                    drone_id=drone_id,
+                    connection_epoch=connection_epoch,
+                    relay_state=relay_state,
+                )
+            )
+        events.extend(
+            self.survey.adapter_disconnected(drone_id=drone_id, connection_epoch=connection_epoch)
+        )
+        return events
+
+    def periodic_events(self, state: object) -> list[dict[str, object]]:
+        events: list[dict[str, object]] = []
+        underlying = getattr(self.autonomy, "periodic_events", None)
+        if callable(underlying):
+            events.extend(underlying(state))
+        events.extend(self.survey.periodic_events())
+        return events
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.autonomy, name)
+
+
 class AutonomyComposition:
     """Per-session autonomy workers behind ``create_app``'s sink and leave factories."""
 
     def __init__(
-        self, config: AutonomyConfig, capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE
+        self,
+        config: AutonomyConfig,
+        capability_profile: CapabilityProfile = C1_CAPABILITY_PROFILE,
+        *,
+        node_types: Mapping[int, NodeType] | None = None,
+        ground_return_id: str | None = None,
     ) -> None:
         self.config = config
-        self.capability_profile = config.planning.effective_capability_profile(capability_profile)
+        if config.supervised_vertical is not None:
+            profile = SUPERVISED_VERTICAL_PROFILE
+        else:
+            assert config.planning is not None
+            profile = config.planning.effective_capability_profile(capability_profile)
+            if node_types is not None and any(
+                node_type is NodeType.GROUND for node_type in node_types.values()
+            ):
+                profile = with_ground_capabilities(profile)
+                profile = CapabilityProfile(
+                    profile.name, profile.enabled_intent_names | SURVEY_ADDITIONAL_INTENT_NAMES
+                )
+            if config.navigation is not None:
+                profile = navigation_capability_profile(profile, config.navigation.config)
+        if (
+            config.supervised_vertical is not None
+            and node_types is not None
+            and any(node_type is NodeType.GROUND for node_type in node_types.values())
+        ):
+            # Ground pulses/approved return use their independent local guards.
+            # This grants no aircraft translation or world navigation policy.
+            profile = with_ground_capabilities(profile)
+            if ground_return_id:
+                profile = CapabilityProfile(
+                    profile.name,
+                    profile.enabled_intent_names | {IntentName.COME_HOME},
+                    requires_home_pose=profile.requires_home_pose,
+                )
+        self.capability_profile = profile
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
         self._lock = threading.Lock()
@@ -916,7 +1306,7 @@ class AutonomyComposition:
         return self._runtime_source()
 
     def intent_sink_factory(self, session: RelaySession) -> IntentSink:
-        return self.session(session.session_id)
+        return SurveyIntentRouter(self.session(session.session_id), session)
 
     def leave_authorizer_factory(self, session_id: str) -> LeaveAuthorizer:
         return self.session(session_id).authorize_leave
@@ -928,6 +1318,39 @@ class AutonomyComposition:
                 session = AutonomySession(self, session_id)
                 self._sessions[session_id] = session
             return session
+
+    def navigation_events(
+        self, session_id: str, events: list[dict[str, object]]
+    ) -> list[dict[str, object]]:
+        with self._lock:
+            owner = self._sessions.get(session_id)
+        publisher = None if owner is None else owner.navigation_wire
+        if publisher is None:
+            return []
+        session = self.runtime.sessions.get(session_id)
+        if session is None:
+            return []
+        output = []
+        for event in events:
+            if event.get("type") == "control_pose":
+                drone_id = event.get("drone_id")
+                if type(drone_id) is int:
+                    pose = session.control_pose(drone_id)
+                    if pose is not None:
+                        try:
+                            output.extend(publisher.update(pose))
+                        except ValueError:
+                            _LOGGER.warning(
+                                "navigation tracking evidence refused for aircraft %s", drone_id
+                            )
+            elif event.get("status") in {"completed", "failed", "refused", "invalidated"}:
+                command_id = event.get("command_id")
+                intent_id = event.get("intent_id")
+                if isinstance(command_id, str):
+                    publisher.retire(command_id)
+                elif isinstance(intent_id, str):
+                    publisher.retire_intent(intent_id)
+        return output
 
     def close(self, *, timeout_s: float = 5.0) -> None:
         with self._lock:
@@ -952,11 +1375,41 @@ def create_autonomy_app(
     """
     if settings.adapter_backend is AdapterBackend.SIM and config.sim_camera is None:
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
-    composition = AutonomyComposition(config, settings.capability_profile)
+    if config.navigation is not None:
+        config.navigation.validate_projector(config.control_localization_projector)
+    composition = AutonomyComposition(
+        config,
+        settings.capability_profile,
+        node_types=settings.node_types,
+        ground_return_id=settings.ground_return_id,
+    )
     control_localization_factory = (
         None
         if config.control_localization_projector is None
         else lambda _session_id: config.control_localization_projector
+    )
+    from relay.platform import PlatformServices
+
+    def configuration_value(value):
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, frozenset | set):
+            return sorted(value)
+        raise TypeError("Unsupported authoritative motion configuration value")
+
+    motion_configuration = json.loads(
+        json.dumps(
+            {
+                "planning": None if config.planning is None else asdict(config.planning),
+                "safety": None if config.safety is None else asdict(config.safety),
+                "supervised_vertical": (
+                    None
+                    if config.supervised_vertical is None
+                    else asdict(config.supervised_vertical)
+                ),
+            },
+            default=configuration_value,
+        )
     )
     app = create_app(
         settings,
@@ -967,9 +1420,127 @@ def create_autonomy_app(
         leave_authorizer_factory=composition.leave_authorizer_factory,
         control_localization_factory=control_localization_factory,
         transcript_service_factory=transcript_service_factory,
+        navigation_events=composition.navigation_events,
+        platform_services_factory=lambda runtime: PlatformServices(
+            runtime,
+            motion_configuration=motion_configuration,
+        ),
     )
     composition.bind(app)
     return app, composition
+
+
+def _ground_return_selected(intent: IntentV1, state: Mapping[str, object]) -> bool:
+    if len(intent.selection) != 1:
+        return False
+    drones = state.get("drones", ())
+    return isinstance(drones, (list, tuple)) and any(
+        isinstance(drone, Mapping)
+        and drone.get("drone_id") == intent.selection[0]
+        and drone.get("node_type") == "ground"
+        for drone in drones
+    )
+
+
+def _ground_stop_targets(intent: IntentV1, state: Mapping[str, object]) -> bool:
+    if intent.name not in {IntentName.HOLD, IntentName.ESTOP}:
+        return False
+    drones = state.get("drones")
+    if not isinstance(drones, list):
+        return False
+    selected = set(intent.selection)
+    return any(
+        isinstance(drone, Mapping)
+        and drone.get("node_type") == "ground"
+        and isinstance(drone.get("drone_id"), int)
+        and not isinstance(drone.get("drone_id"), bool)
+        and (intent.name is IntentName.ESTOP or drone["drone_id"] in selected)
+        for drone in drones
+    )
+
+
+def _air_only_stop(intent: IntentV1, snapshot: FleetSnapshot) -> tuple[IntentV1, FleetSnapshot]:
+    """Keep ground IDs out of the aircraft planner's selection projection."""
+    selection = tuple(drone_id for drone_id in intent.selection if drone_id in snapshot.aircraft)
+    return replace(intent, selection=selection), replace(snapshot, selection=selection)
+
+
+def _aggregate_stop_results(
+    intent: IntentV1,
+    snapshot: FleetSnapshot,
+    ground: ExecutionResult | None,
+    aircraft: ExecutionResult | None,
+) -> ExecutionResult:
+    if ground is None and aircraft is not None:
+        return aircraft
+    if aircraft is None and ground is not None:
+        return ground
+    if ground is None or aircraft is None:
+        return ExecutionResult(
+            intent_id=intent.intent_id,
+            roster_version=snapshot.roster_version,
+            status=LifecycleStatus.REFUSED,
+            refusal=Refusal(
+                intent_id=intent.intent_id,
+                roster_version=snapshot.roster_version,
+                drone_id=None,
+                connection_epoch=None,
+                reason=RefusalReason.INVALID_SELECTION,
+                detail="the stop has no dispatchable targets",
+            ),
+        )
+
+    plans = tuple(result.plan for result in (ground, aircraft) if result.plan is not None)
+    commands = tuple(command for plan in plans for command in plan.commands)
+    plan = Plan(
+        plan_id=f"plan:{intent.intent_id}:mixed-stop",
+        intent_id=intent.intent_id,
+        intent_name=intent.name,
+        roster_version=snapshot.roster_version,
+        selection=intent.selection,
+        confirmed=True,
+        commands=commands,
+        hold_scope=next((item.hold_scope for item in plans if item.hold_scope is not None), None),
+    )
+    acknowledgements = tuple(
+        acknowledgement
+        for result in (ground, aircraft)
+        for acknowledgement in result.acknowledgements
+    )
+    failed = next(
+        (result for result in (ground, aircraft) if result.status is not LifecycleStatus.COMPLETED),
+        None,
+    )
+    if failed is None:
+        return ExecutionResult(
+            intent_id=intent.intent_id,
+            roster_version=snapshot.roster_version,
+            status=LifecycleStatus.COMPLETED,
+            plan=plan,
+            acknowledgements=acknowledgements,
+        )
+    refusal = failed.refusal or Refusal(
+        intent_id=intent.intent_id,
+        roster_version=snapshot.roster_version,
+        drone_id=None,
+        connection_epoch=None,
+        reason=RefusalReason.ADAPTER_FAILURE,
+        detail="a stop target did not complete",
+        status=LifecycleStatus.FAILED,
+    )
+    return ExecutionResult(
+        intent_id=intent.intent_id,
+        roster_version=snapshot.roster_version,
+        status=LifecycleStatus.FAILED,
+        plan=plan,
+        acknowledgements=acknowledgements,
+        refusal=refusal,
+        degraded_aircraft=tuple(
+            sorted(
+                {drone_id for result in (ground, aircraft) for drone_id in result.degraded_aircraft}
+            )
+        ),
+    )
 
 
 def _composition_failure(

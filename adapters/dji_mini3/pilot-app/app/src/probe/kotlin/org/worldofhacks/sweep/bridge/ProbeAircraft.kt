@@ -1,5 +1,8 @@
 package org.worldofhacks.sweep.bridge
 
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import dji.sdk.keyvalue.key.AirLinkKey
 import dji.sdk.keyvalue.key.BatteryKey
 import dji.sdk.keyvalue.key.DJIKey
@@ -10,10 +13,14 @@ import dji.sdk.keyvalue.key.KeyTools
 import dji.sdk.keyvalue.key.RemoteControllerKey
 import dji.sdk.keyvalue.value.common.Attitude
 import dji.sdk.keyvalue.value.common.ComponentIndexType
+import dji.sdk.keyvalue.value.common.EmptyMsg
+import dji.sdk.keyvalue.value.gimbal.GimbalAngleRotation
+import dji.sdk.keyvalue.value.gimbal.GimbalAngleRotationMode
 import dji.sdk.keyvalue.value.common.LocationCoordinate3D
 import dji.sdk.keyvalue.value.common.Velocity3D
 import dji.sdk.keyvalue.value.flightcontroller.FlightMode
 import dji.v5.common.callback.CommonCallbacks
+import dji.v5.common.error.IDJIError
 import dji.v5.manager.KeyManager
 import kotlin.math.abs
 import kotlin.math.cos
@@ -28,10 +35,15 @@ import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
 import org.worldofhacks.sweep.bridge.node.AircraftSource
 import org.worldofhacks.sweep.bridge.node.CommandExecutor
 import org.worldofhacks.sweep.bridge.node.CommandReport
+import org.worldofhacks.sweep.bridge.node.AttitudeSample
+import org.worldofhacks.sweep.bridge.node.CaptureAlignmentCollector
 import org.worldofhacks.sweep.bridge.node.FlightStates
+import org.worldofhacks.sweep.bridge.node.GimbalPitchOperationCoordinator
+import org.worldofhacks.sweep.bridge.node.LocalHeightMeasurement
 import org.worldofhacks.sweep.bridge.node.TelemetryKeyLedger
 import org.worldofhacks.sweep.bridge.node.TelemetryKeyStatus
 import org.worldofhacks.sweep.bridge.session.AircraftIdentity
+import org.worldofhacks.sweep.bridge.session.GimbalPitchState
 
 /**
  * The probe flavor's aircraft: DJI `KeyManager` listeners assembled into the Telemetry v1
@@ -72,8 +84,10 @@ internal class ProbeAircraft(
     /** Bench log hook: one call per key and listener event (`attached`, `product_connected`, `first_value`). */
     private val record: (key: String, event: String, status: TelemetryKeyStatus) -> Unit = { _, _, _ -> },
     private val rawRecorder: SensorRawRecorder = SensorRawRecorder.NONE,
+    private val captureAlignment: CaptureAlignmentCollector? = null,
 ) : AircraftSource, CommandExecutor {
     private val lock = Any()
+    private val connectionTransitions = AircraftConnectionTransitions()
 
     /** The one holder every listener is registered with; `cancelListen(holder)` removes them all. */
     private val holder = Any()
@@ -85,6 +99,7 @@ internal class ProbeAircraft(
     private var velocity: Velocity3D? = null
     private var attitude: Attitude? = null
     private var altitude: Double? = null
+    private var altitudeReceivedAtMonotonicMs: Long? = null
     private var ultrasonicHeightDm: Int? = null
     private var flightMode: FlightMode? = null
     private var motorsOn: Boolean? = null
@@ -95,6 +110,35 @@ internal class ProbeAircraft(
     private var signalQuality: Int? = null
     private var virtualStickEnabled = false
     private var authorityLostReason: String? = null
+    private val altitudePollHandler = Handler(Looper.getMainLooper())
+    private val gimbalPitchHandler = Handler(Looper.getMainLooper())
+    private val gimbalPitchCoordinator = GimbalPitchOperationCoordinator<CommandReport?>()
+    private val gimbalPitchReportLock = Any()
+    private val gimbalPitchDeadlines = HashMap<Long, Runnable>()
+    private val _gimbalPitch = MutableStateFlow(GimbalPitchState())
+    val gimbalPitch: StateFlow<GimbalPitchState> = _gimbalPitch.asStateFlow()
+    private val gimbalRotateKey by lazy {
+        KeyTools.createKey(GimbalKey.KeyRotateByAngle, ComponentIndexType.LEFT_OR_MAIN)
+    }
+    private val altitudeHardwareKey: DJIKey<Double> by lazy { KeyTools.createKey(FlightControllerKey.KeyAltitude) }
+    private val altitudePoller = AltitudeHardwarePoller(
+        scheduler = AltitudePollScheduler { delayMs, action ->
+            altitudePollHandler.postDelayed(action, delayMs)
+        },
+        query = AltitudeHardwareQuery { callback ->
+            KeyManager.getInstance().getValue(
+                altitudeHardwareKey,
+                object : CommonCallbacks.CompletionCallbackWithParam<Double> {
+                    override fun onSuccess(value: Double?) = callback.onSuccess(value)
+
+                    override fun onFailure(error: IDJIError) = callback.onFailure()
+                },
+            )
+        },
+        monotonicNowMs = SystemClock::elapsedRealtime,
+        onSample = ::receivedHardwareAltitude,
+        guard = lock,
+    )
     private var hardware = HardwareProfile(
         aircraftModel = HardwareProfile.UNREPORTED,
         aircraftFirmware = HardwareProfile.UNREPORTED,
@@ -109,14 +153,25 @@ internal class ProbeAircraft(
     private val bindings: List<Binding<*>> = listOf(
         Binding("KeyConnection", FlightControllerKey.KeyConnection) { connected ->
             aircraftConnected = connected
-            if (!connected) origin = null
+            altitudePoller.connectionChanged(connected)
+            if (!connected) {
+                origin = null
+                altitude = null
+                altitudeReceivedAtMonotonicMs = null
+            }
         },
         Binding("KeyRcConnection", RemoteControllerKey.KeyConnection, ComponentIndexType.LEFT_OR_MAIN) { rcConnected = it },
         Binding("KeyAircraftLocation3D", FlightControllerKey.KeyAircraftLocation3D) { location = it },
         Binding("KeyAircraftVelocity", FlightControllerKey.KeyAircraftVelocity) { velocity = it },
+        Binding("KeyIsVisionSensorUsed", FlightControllerKey.KeyIsVisionSensorUsed) { },
+        Binding("KeyVisionPositioningLevel", FlightControllerKey.KeyVisionPositioningLevel) { },
+        Binding("KeyFusionPositioningLevel", FlightControllerKey.KeyFusionPositioningLevel) { },
+        Binding("KeyPositioningDataSource", FlightControllerKey.KeyPositioningDataSource) { },
         Binding("KeyAircraftAttitude", FlightControllerKey.KeyAircraftAttitude) { attitude = it },
         Binding("KeyGimbalAttitude", GimbalKey.KeyGimbalAttitude, ComponentIndexType.LEFT_OR_MAIN) { },
-        Binding("KeyAltitude", FlightControllerKey.KeyAltitude) { altitude = it },
+        Binding("KeyAltitude", FlightControllerKey.KeyAltitude) { value ->
+            value.takeIf { it.isFinite() }?.let { altitude = it }
+        },
         Binding("KeyUltrasonicHeight", FlightControllerKey.KeyUltrasonicHeight) { ultrasonicHeightDm = it },
         Binding("KeyFlightMode", FlightControllerKey.KeyFlightMode) { flightMode = it },
         Binding("KeyAreMotorsOn", FlightControllerKey.KeyAreMotorsOn) { motorsOn = it },
@@ -137,6 +192,9 @@ internal class ProbeAircraft(
     @Volatile
     var onProductConnected: (() -> Unit)? = null
 
+    @Volatile
+    var onAircraftConnectionChanged: ((Boolean) -> Unit)? = null
+
     /**
      * Registers every telemetry listener, whatever `isKeySupported` says at the moment (the
      * SDK is registered, the aircraft usually not yet connected); safe to call again, a key
@@ -154,6 +212,7 @@ internal class ProbeAircraft(
             Triple(first, names.map(byName::getValue), ledger.snapshot())
         }
         registered.forEach { it.listen(manager) }
+        altitudePoller.attach()
         if (registered.isNotEmpty()) {
             log(
                 "Telemetry keys",
@@ -167,14 +226,16 @@ internal class ProbeAircraft(
     }
 
     fun detach() {
-        synchronized(lock) { if (!attached) return }
+        synchronized(lock) {
+            if (!attached) return
+            attached = false
+        }
+        failActiveGimbalPitch("gimbal disconnected")
+        altitudePoller.detach()
         // The same holder every listener was registered with: MSDK v5 removes them by holder,
         // so the next attach() starts from none and cannot stack a second listener on a key.
         KeyManager.getInstance().cancelListen(holder)
-        synchronized(lock) {
-            attached = false
-            ledger.detach()
-        }
+        synchronized(lock) { ledger.detach() }
     }
 
     /**
@@ -188,14 +249,19 @@ internal class ProbeAircraft(
         val answers = if (connected) bindings.associate { it.name to it.supported(manager) } else emptyMap()
         val (registered, statuses) = synchronized(lock) {
             aircraftConnected = connected
+            altitudePoller.connectionChanged(connected)
             if (!connected) {
                 rcConnected = false
+                connectionTransitions.reset()
                 origin = null
+                altitude = null
+                altitudeReceivedAtMonotonicMs = null
             }
             val names = if (connected) ledger.productConnected { answers.getValue(it) } else emptyList()
             Pair(names.map(byName::getValue), ledger.snapshot())
         }
         registered.forEach { it.listen(manager) }
+        if (!connected) failActiveGimbalPitch("gimbal disconnected")
         if (connected) {
             val late = if (registered.isEmpty()) "all listeners were registered before the aircraft connected" else "${registered.size} listeners registered only now"
             log("Telemetry keys", "product connected; isKeySupported now: ${support(statuses) { it.supportedAtConnect }}; $late.")
@@ -226,14 +292,165 @@ internal class ProbeAircraft(
     }
 
     override fun execute(command: CommandFrame, report: CommandReport) {
-        when (command.args) {
+        when (val args = command.args) {
             CommandArgs.CameraCapabilities -> {
                 report.executing("capabilities frame sent by the link")
                 report.completed("probed camera capabilities reported")
             }
+            is CommandArgs.SetGimbalPitch -> requestGimbalPitch(args.pitchMdeg / 1_000.0, report)
             is CommandArgs.Takeoff, is CommandArgs.Goto, is CommandArgs.RotateTo, CommandArgs.Hover, CommandArgs.Land, CommandArgs.Estop ->
                 report.failed("control_loop_unavailable", "flight commands are routed to the Virtual Stick loop; this executor never drives motion")
             else -> report.failed("unsupported", "the camera and media path lands with Phase G")
+        }
+    }
+
+    fun requestLocalGimbalPitch(targetDegrees: Double) = requestGimbalPitch(targetDegrees, null)
+
+    private fun requestGimbalPitch(targetDegrees: Double, report: CommandReport?) {
+        synchronized(gimbalPitchReportLock) {
+            requestGimbalPitchSerialized(targetDegrees, report)
+        }
+    }
+
+    private fun requestGimbalPitchSerialized(targetDegrees: Double, report: CommandReport?) {
+        if (!targetDegrees.isFinite() || targetDegrees !in MIN_GIMBAL_PITCH_DEGREES..MAX_GIMBAL_PITCH_DEGREES) {
+            failGimbalPitch(report, targetDegrees, "software safety clamp permits $MIN_GIMBAL_PITCH_DEGREES° through $MAX_GIMBAL_PITCH_DEGREES°")
+            return
+        }
+        if (!synchronized(lock) { attached && aircraftConnected }) {
+            failGimbalPitch(report, targetDegrees, "gimbal is disconnected")
+            return
+        }
+        val manager = KeyManager.getInstance()
+        if (!runCatching { manager.isKeySupported(gimbalRotateKey) }.getOrDefault(false)) {
+            failGimbalPitch(report, targetDegrees, "gimbal rotation is unavailable for the connected product")
+            return
+        }
+        val start = synchronized(lock) {
+            when {
+                !attached || !aircraftConnected -> GimbalPitchStart.Unavailable
+                else -> when (val begun = gimbalPitchCoordinator.begin(targetDegrees, SystemClock.elapsedRealtime(), report)) {
+                    GimbalPitchOperationCoordinator.Start.Busy -> GimbalPitchStart.Busy
+                    is GimbalPitchOperationCoordinator.Start.Begun -> {
+                        _gimbalPitch.value = GimbalPitchState(true, targetDegrees, "Request sent. Waiting for DJI acceptance.")
+                        GimbalPitchStart.Begun(begun.active)
+                    }
+                }
+            }
+        }
+        val active = when (start) {
+            GimbalPitchStart.Busy -> {
+                report?.failed("gimbal_pitch_busy", "another gimbal pitch request is awaiting confirmation")
+                return
+            }
+            GimbalPitchStart.Unavailable -> {
+                failGimbalPitch(report, targetDegrees, "gimbal is disconnected")
+                return
+            }
+            is GimbalPitchStart.Begun -> start.active
+        }
+        report?.executing("absolute gimbal pitch request sent; awaiting DJI acceptance")
+        val dispatchFailure = synchronized(lock) {
+            if (!attached || !aircraftConnected || !gimbalPitchCoordinator.isActive(active.request.id)) {
+                "gimbal disconnected"
+            } else {
+                try {
+                    manager.performAction(
+                        gimbalRotateKey,
+                        GimbalAngleRotation().apply {
+                            mode = GimbalAngleRotationMode.ABSOLUTE_ANGLE
+                            pitch = targetDegrees
+                            pitchIgnored = false
+                            rollIgnored = true
+                            yawIgnored = true
+                            duration = GIMBAL_ROTATION_DURATION_SECONDS
+                            timeout = GIMBAL_ACTION_TIMEOUT_MS.toInt()
+                        },
+                        object : CommonCallbacks.CompletionCallbackWithParam<EmptyMsg> {
+                            override fun onSuccess(value: EmptyMsg?) {
+                                processGimbalPitchUpdate { gimbalPitchCoordinator.accepted(active.request.id, SystemClock.elapsedRealtime()) }
+                            }
+
+                            override fun onFailure(error: IDJIError) {
+                                processGimbalPitchUpdate { gimbalPitchCoordinator.rejected(active.request.id, describeGimbalError(error)) }
+                            }
+                        },
+                    )
+                    null
+                } catch (error: Exception) {
+                    error.message ?: error.javaClass.simpleName
+                }
+            }
+        }
+        if (dispatchFailure != null) {
+            processGimbalPitchUpdate { gimbalPitchCoordinator.rejected(active.request.id, dispatchFailure) }
+            return
+        }
+        val deadline = Runnable {
+            processGimbalPitchUpdate { gimbalPitchCoordinator.expired(active.request.id, SystemClock.elapsedRealtime()) }
+        }
+        val scheduled = synchronized(lock) {
+            if (gimbalPitchCoordinator.isActive(active.request.id)) {
+                gimbalPitchDeadlines[active.request.id] = deadline
+                true
+            } else {
+                false
+            }
+        }
+        if (scheduled) {
+            val remainingMs = (active.request.deadlineMonotonicMs - SystemClock.elapsedRealtime()).coerceAtLeast(0)
+            gimbalPitchHandler.postDelayed(deadline, remainingMs)
+        }
+    }
+
+    private fun describeGimbalError(error: IDJIError): String =
+        "${error.errorType()} ${error.errorCode()} ${error.description().orEmpty()}".trim()
+
+    private fun failGimbalPitch(report: CommandReport?, targetDegrees: Double, detail: String) {
+        synchronized(lock) {
+            if (gimbalPitchCoordinator.activeId() == null) {
+                _gimbalPitch.value = GimbalPitchState(false, targetDegrees.takeIf { it.isFinite() }, detail)
+            }
+        }
+        report?.failed("gimbal_pitch_unavailable", detail)
+    }
+
+    private fun failActiveGimbalPitch(detail: String) {
+        processGimbalPitchUpdate {
+            gimbalPitchCoordinator.activeId()?.let { gimbalPitchCoordinator.rejected(it, detail) }
+                ?: GimbalPitchOperationCoordinator.Update.Ignored
+        }
+    }
+
+    private fun processGimbalPitchUpdate(
+        update: () -> GimbalPitchOperationCoordinator.Update<CommandReport?>,
+    ) {
+        synchronized(gimbalPitchReportLock) {
+            val effect = synchronized(lock) {
+                when (val result = update()) {
+                    GimbalPitchOperationCoordinator.Update.Ignored -> null
+                    is GimbalPitchOperationCoordinator.Update.Accepted -> {
+                        _gimbalPitch.value = GimbalPitchState(true, result.active.request.targetDegrees, "DJI accepted the request. Waiting for gimbal attitude.")
+                        GimbalPitchReportEffect(result.active.operation, "DJI accepted rotation; awaiting a fresh gimbal-attitude confirmation", GimbalPitchReportState.EXECUTING)
+                    }
+                    is GimbalPitchOperationCoordinator.Update.Completed -> {
+                        gimbalPitchDeadlines.remove(result.active.request.id)?.let(gimbalPitchHandler::removeCallbacks)
+                        val detail = "Gimbal pitch confirmed at ${"%.1f".format(result.observedDegrees)}°."
+                        _gimbalPitch.value = GimbalPitchState(false, result.active.request.targetDegrees, detail)
+                        GimbalPitchReportEffect(result.active.operation, detail, GimbalPitchReportState.COMPLETED)
+                    }
+                    is GimbalPitchOperationCoordinator.Update.Failed -> {
+                        gimbalPitchDeadlines.remove(result.active.request.id)?.let(gimbalPitchHandler::removeCallbacks)
+                        _gimbalPitch.value = GimbalPitchState(false, result.active.request.targetDegrees, result.reason)
+                        GimbalPitchReportEffect(result.active.operation, result.reason, GimbalPitchReportState.FAILED)
+                    }
+                }
+            } ?: return
+            when (effect.state) {
+                GimbalPitchReportState.EXECUTING -> effect.report?.executing(effect.detail)
+                GimbalPitchReportState.COMPLETED -> effect.report?.completed(effect.detail)
+                GimbalPitchReportState.FAILED -> effect.report?.failed("gimbal_pitch_unconfirmed", effect.detail)
+            }
         }
     }
 
@@ -261,17 +478,30 @@ internal class ProbeAircraft(
 
     private fun <T : Any> received(binding: Binding<T>, value: T) {
         val now = System.currentTimeMillis()
-        val (first, sinceAttachMs) = synchronized(lock) {
+        val (first, sinceAttachMs, aircraftConnectionChanged) = synchronized(lock) {
+            if (binding.name == "KeyAltitude" && (value as? Double)?.isFinite() == true) {
+                altitudePoller.listenerSampleReceived()
+            }
             rates.tick(binding.name, now)
             val status = if (ledger.value(binding.name, now)) ledger.status(binding.name) else null
             binding.accept(value)
-            Pair(status, ledger.attachedAtMs?.let { now - it })
+            if (binding.name == "KeyAltitude") {
+                altitudeReceivedAtMonotonicMs = (value as? Double)
+                    ?.takeIf { height -> height.isFinite() }
+                    ?.let { SystemClock.elapsedRealtime() }
+            }
+            Triple(
+                status,
+                ledger.attachedAtMs?.let { now - it },
+                if (binding.name == "KeyConnection") connectionTransitions.changed(value as Boolean) else null,
+            )
         }
         if (first != null) {
             log("Telemetry key", "${binding.name} first value" + (sinceAttachMs?.let { " $it ms after its listener was registered" } ?: ""))
             record(binding.name, "first_value", first)
         }
         when (binding.name) {
+            "KeyConnection" -> if (value as? Boolean == false) failActiveGimbalPitch("gimbal disconnected")
             "KeyAircraftVelocity" -> (value as? Velocity3D)?.let { velocity ->
                 rawRecorder.recordVelocityNedMps(velocity.x, velocity.y, velocity.z)
             }
@@ -279,10 +509,23 @@ internal class ProbeAircraft(
             "KeyUltrasonicHeight" -> (value as? Int)?.let(rawRecorder::recordUltrasonicHeightDm)
             "KeyAircraftAttitude" -> (value as? Attitude)?.let { attitude ->
                 rawRecorder.recordAircraftAttitudeDegrees(attitude.yaw, attitude.pitch, attitude.roll)
+                captureAlignment?.recordBodyAttitude(AttitudeSample(attitude.yaw, attitude.pitch, attitude.roll, SystemClock.elapsedRealtime()))
             }
             "KeyGimbalAttitude" -> (value as? Attitude)?.let { attitude ->
+                val receivedAt = SystemClock.elapsedRealtime()
                 rawRecorder.recordGimbalAttitudeDegrees(attitude.yaw, attitude.pitch, attitude.roll)
+                captureAlignment?.recordGimbal(AttitudeSample(attitude.yaw, attitude.pitch, attitude.roll, receivedAt))
+                processGimbalPitchUpdate { gimbalPitchCoordinator.observed(attitude.pitch, receivedAt) }
             }
+        }
+        aircraftConnectionChanged?.let { onAircraftConnectionChanged?.invoke(it) }
+        publish()
+    }
+
+    private fun receivedHardwareAltitude(value: Double, receivedAtMonotonicMs: Long) {
+        synchronized(lock) {
+            altitude = value
+            altitudeReceivedAtMonotonicMs = receivedAtMonotonicMs
         }
         publish()
     }
@@ -340,6 +583,9 @@ internal class ProbeAircraft(
             yawDeg = yaw,
             virtualStickEnabled = virtualStickEnabled,
             authorityLostReason = authorityLostReason,
+            localHeight = altitude?.let { height ->
+                altitudeReceivedAtMonotonicMs?.let { receivedAtMs -> LocalHeightMeasurement(height, receivedAtMs) }
+            },
         )
     }
 
@@ -377,10 +623,38 @@ internal class ProbeAircraft(
         }
     }
 
+    private sealed interface GimbalPitchStart {
+        data class Begun(val active: GimbalPitchOperationCoordinator.Active<CommandReport?>) : GimbalPitchStart
+        data object Busy : GimbalPitchStart
+        data object Unavailable : GimbalPitchStart
+    }
+
+    private data class GimbalPitchReportEffect(
+        val report: CommandReport?,
+        val detail: String,
+        val state: GimbalPitchReportState,
+    )
+
+    private enum class GimbalPitchReportState { EXECUTING, COMPLETED, FAILED }
+
     private companion object {
+        const val MIN_GIMBAL_PITCH_DEGREES = -90.0
+        const val MAX_GIMBAL_PITCH_DEGREES = 0.0
+        const val GIMBAL_ROTATION_DURATION_SECONDS = 2.0
+        const val GIMBAL_ACTION_TIMEOUT_MS = 2_000L
         const val HOVER_SPEED_M_S = 0.2
         const val PROVISIONAL_FIX_QUALITY = 0.5
         const val METRES_PER_DEGREE_LATITUDE = 110_574.0
         const val METRES_PER_DEGREE_LONGITUDE = 111_320.0
+    }
+}
+
+internal class AircraftConnectionTransitions {
+    private var connected = false
+
+    fun changed(next: Boolean): Boolean? = if (next == connected) null else next.also { connected = it }
+
+    fun reset() {
+        connected = false
     }
 }

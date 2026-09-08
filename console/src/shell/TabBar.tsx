@@ -7,7 +7,6 @@ export function TabBar({ modules, active, onSelect }: ModuleNavProps) {
         const current = module.id === active
         const classes = ['sh-tabbar-item']
         if (current) classes.push('is-current')
-        if (module.id === 'reference') classes.push('is-reference')
         return (
           <button
             key={module.id}

@@ -1062,3 +1062,14 @@ def test_preview_overlay_pin_is_order_independent_and_content_sensitive(
 
     assert ordered.navigation_pin == reversed_order.navigation_pin
     assert ordered.navigation_pin != changed.navigation_pin
+
+
+def test_navigation_contracts_route_five_aircraft_with_five_frozen_slots():
+    drones = tuple(drone(index, 0.5 + (index - 1) * 1.5, 4.5) for index in range(1, 6))
+    slots = tuple(arrival(f"atrium-{index}", 0.5 + (index - 1) * 1.5, 1.5) for index in range(1, 6))
+
+    result = NavigationPlanner().plan(request(*drones), artifact(slots=slots))
+
+    assert isinstance(result, NavigationPlan)
+    assert result.execution_order == (1, 2, 3, 4, 5)
+    assert len(result.routes) == 5

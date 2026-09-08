@@ -28,9 +28,11 @@ from relay.auth import (
     sign_event,
 )
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
+from relay.contracts import NodeType
 from relay.control_localization import ControlLocalizationProjector
 from relay.intent_v1 import REGISTERED_SOURCES
 from relay.media import MediaEvidence, MediaMonitor, MediaMtxClient
+from relay.platform import PlatformServices, install_platform_routes
 from relay.session import (
     Clock,
     ControlPoseSigningKey,
@@ -39,11 +41,12 @@ from relay.session import (
     LeaveAuthorizer,
     RelaySession,
 )
-from relay.settings import RelaySettings, console_origins_from_env
+from relay.settings import AdapterBackend, RelaySettings, console_origins_from_env
 from relay.voice import MAX_AUDIO_BYTES, MAX_AUDIO_DURATION_MS, TranscriptService, VoiceOutcome
 
 IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
+NavigationEvents = Callable[[str, list[dict[str, object]]], list[dict[str, object]]]
 _LOGGER = logging.getLogger(__name__)
 ShutdownCallback = Callable[[], None]
 _OUTBOUND_LIMIT = 128
@@ -69,8 +72,10 @@ def default_media_monitor(settings: RelaySettings, clock: Clock) -> MediaMonitor
     return MediaMonitor(
         client,
         clock=clock,
+        drone_ids=tuple(sorted(settings.adapter_keys)),
         poll_interval_ms=settings.media_poll_interval_ms,
         stale_after_ms=settings.media_stale_after_ms,
+        cameras=settings.configured_cameras(),
     )
 
 
@@ -166,9 +171,11 @@ class RelayRuntime:
         control_localization_factory: ControlLocalizationFactory | None = None,
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         media_monitor: MediaMonitor | None = None,
+        navigation_events: NavigationEvents | None = None,
     ) -> None:
         self.settings = settings
         self.media_monitor = media_monitor
+        self.navigation_events = navigation_events
         self.credential_resolver = credential_resolver or settings.credential_resolver()
         self.clock = clock or _epoch_ms
         self.event_ids = event_ids or (lambda: str(uuid.uuid4()))
@@ -189,6 +196,7 @@ class RelayRuntime:
             else control_pose_signing_key
         )
         self.sessions: dict[str, RelaySession] = {}
+        self.platform_services: PlatformServices | None = None
         self._subscriptions: dict[str, dict[str, _Subscription]] = {}
         self._adapter_connections: dict[tuple[str, int], str] = {}
         self._localization_connections: dict[tuple[str, int], str] = {}
@@ -239,6 +247,17 @@ class RelayRuntime:
                     control_localization_projector=projector,
                     control_pose_signing_key=self.control_pose_signing_key,
                     media_evidence=self.media_evidence,
+                    node_types=self.settings.node_types,
+                    device_units=self.settings.device_units,
+                    media_streams=self.settings.media_streams,
+                    media_cameras=self.settings.configured_cameras(),
+                    camera_evidence=self.camera_evidence,
+                    aircraft_limit=(
+                        self.settings.physical_aircraft_limit
+                        if self.settings.adapter_backend is AdapterBackend.REMOTE
+                        else self.settings.sim_aircraft_count
+                    ),
+                    observation_configuration=self.settings.observation_configuration,
                 )
                 if self.intent_sink_factory is not None:
                     session.intent_sink = self.intent_sink_factory(session)
@@ -250,6 +269,11 @@ class RelayRuntime:
         if self.media_monitor is None:
             return None
         return self.media_monitor.evidence(drone_id, now_ms)
+
+    def camera_evidence(self, device_id: int, camera_id: str, now_ms: int) -> MediaEvidence | None:
+        if self.media_monitor is None:
+            return None
+        return self.media_monitor.camera_evidence(device_id, camera_id, now_ms)
 
     def replay(self, session_id: str, *, after_sequence: int = 0) -> dict[str, object]:
         """Read active or persisted history without reopening mutable live state."""
@@ -660,6 +684,12 @@ class RelayRuntime:
         deferred_deliveries: list[asyncio.Future[bool]] | None = None,
     ) -> bool:
         """Queue an event batch atomically with respect to subscription activation."""
+        if self.navigation_events is not None:
+            events = [*events, *self.navigation_events(session_id, events)]
+        if self.platform_services is not None:
+            for event in events:
+                if event.get("type") == "state":
+                    await asyncio.to_thread(self.platform_services.observe_state, session_id, event)
         deliveries: list[asyncio.Future[bool]] = []
         async with self._connection_lock:
             subscriptions = tuple(self._subscriptions.get(session_id, {}).values())
@@ -667,9 +697,23 @@ class RelayRuntime:
                 if subscription.sender_failed.is_set():
                     continue
                 for event in events:
-                    if event.get("type") == "control_pose" and (
+                    if (
+                        event.get("type") == "observation"
+                        and subscription.principal.source != "console"
+                        and not (
+                            subscription.principal.source == "localization"
+                            and subscription.principal.drone_id == event.get("device_id")
+                        )
+                    ):
+                        continue
+                    if event.get("type") in {
+                        "control_pose",
+                        "navigation_pose",
+                        "navigation_route_authorization",
+                    } and (
                         subscription.principal.source != "adapter"
-                        or subscription.principal.drone_id != event.get("drone_id")
+                        or subscription.principal.drone_id
+                        != event.get("device_id", event.get("drone_id"))
                     ):
                         continue
                     roster_version = event.get("roster_version")
@@ -760,9 +804,10 @@ class RelayRuntime:
                     sequence = (
                         self._control_heartbeat_sequence.get(subscription.connection_id, 0) + 1
                     )
+                    issued_at = self.clock()
                     unsigned: dict[str, object] = {
                         "v": 1,
-                        "t": self.clock(),
+                        "t": issued_at,
                         "type": "control_heartbeat",
                         "event_id": self.event_ids(),
                         "session": session_id,
@@ -772,6 +817,13 @@ class RelayRuntime:
                         "roster_version": roster_version,
                         "seq": sequence,
                     }
+                    if self.settings.node_types.get(principal.drone_id) == NodeType.GROUND:
+                        unsigned.update(
+                            issued_at=issued_at,
+                            expires_at=issued_at + self.settings.node_watchdog_failsafe_ms,
+                            hold_after_ms=self.settings.node_watchdog_hold_ms,
+                            failsafe_after_ms=self.settings.node_watchdog_failsafe_ms,
+                        )
                     event = {
                         **unsigned,
                         "signature": sign_event(unsigned, principal.signing_key),
@@ -860,6 +912,33 @@ class RelayRuntime:
         if (
             principal.source == "adapter"
             and principal.drone_id is not None
+            and isinstance(frame, Mapping)
+            and frame.get("type") == "observation"
+            and not any(event.get("type") == "refusal" for event in events)
+        ):
+            accepted = getattr(session.intent_sink, "accepted_observation", None)
+            if callable(accepted):
+                try:
+                    observation = next(
+                        (event for event in events if event.get("type") == "observation"), None
+                    )
+                    if observation is not None:
+                        from relay.observations import Observation
+
+                        events.extend(accepted(Observation.parse(observation)))
+                except AuditLogError:
+                    raise
+                except Exception:
+                    events.append(
+                        session.protocol_refusal(
+                            reason="safety_runtime_error",
+                            detail="the configured survey runtime failed closed",
+                        )
+                    )
+        if (
+            principal.source == "adapter"
+            and principal.drone_id is not None
+            and not (isinstance(frame, Mapping) and frame.get("type") == "observation")
             and not any(event.get("type") == "refusal" for event in events)
         ):
             events.extend(self.adapter_activity(session, drone_id=principal.drone_id))
@@ -903,6 +982,8 @@ def create_app(
     transcript_service_factory: TranscriptServiceFactory | None = None,
     shutdown_callback: ShutdownCallback | None = None,
     media_monitor_factory: MediaMonitorFactory | None = None,
+    navigation_events: NavigationEvents | None = None,
+    platform_services_factory: Callable[[RelayRuntime], PlatformServices] | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -923,20 +1004,31 @@ def create_app(
             control_localization_factory=control_localization_factory,
             control_pose_signing_key=control_pose_signing_key,
             media_monitor=build_monitor(active_settings, active_clock),
+            navigation_events=navigation_events,
         )
         application.state.relay_runtime = runtime
-        application.state.transcript_service = (
-            TranscriptService()
-            if transcript_service_factory is None
-            else transcript_service_factory(runtime)
-        )
-        await runtime.start()
+        platform = None
         try:
+            platform = (platform_services_factory or PlatformServices)(runtime)
+            runtime.platform_services = platform
+            application.state.platform_services = platform
+            application.state.transcript_service = (
+                TranscriptService()
+                if transcript_service_factory is None
+                else transcript_service_factory(runtime)
+            )
+            await runtime.start()
             yield
         finally:
-            await runtime.stop()
-            if shutdown_callback is not None:
-                shutdown_callback()
+            try:
+                await runtime.stop()
+            finally:
+                try:
+                    if platform is not None:
+                        platform.close()
+                finally:
+                    if shutdown_callback is not None:
+                        shutdown_callback()
 
     application = FastAPI(title="Sweep relay", version="1", lifespan=lifespan)
     application.add_middleware(
@@ -1082,6 +1174,8 @@ def create_app(
         if expected is None or supplied is None or not hmac.compare_digest(supplied, expected):
             raise HTTPException(status_code=401, detail="authentication required")
         return runtime
+
+    install_platform_routes(application, authorized_runtime)
 
     @application.get("/metrics")
     def metrics(authorization: str | None = Header(default=None)) -> dict[str, object]:
@@ -1285,8 +1379,43 @@ async def _send_outbound(websocket: WebSocket, subscription: _Subscription) -> N
             _resolve_delivery(outbound, sent)
 
 
+async def _receive_frame(websocket: WebSocket) -> object:
+    encoded = await websocket.receive_text()
+    if len(encoded) > 1_048_576:
+        raise json.JSONDecodeError("frame exceeds 1 MiB", "", 0)
+
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise json.JSONDecodeError("duplicate JSON key", "", 0)
+            result[key] = value
+        return result
+
+    try:
+        byte_length = len(encoded.encode("utf-8"))
+        if byte_length > 1_048_576:
+            raise json.JSONDecodeError("frame exceeds 1 MiB", "", 0)
+        frame = json.loads(encoded, object_pairs_hook=unique)
+        pending = [(frame, 0)]
+        while pending:
+            value, depth = pending.pop()
+            if depth > 32:
+                raise json.JSONDecodeError("JSON nesting exceeds 32 levels", "", 0)
+            if isinstance(value, dict):
+                pending.extend((child, depth + 1) for child in value.values())
+            elif isinstance(value, list):
+                pending.extend((child, depth + 1) for child in value)
+        if isinstance(frame, Mapping) and frame.get("type") == "observation":
+            if byte_length > 65_536:
+                raise json.JSONDecodeError("observation exceeds 64 KiB", "", 0)
+        return frame
+    except (ValueError, RecursionError) as error:
+        raise json.JSONDecodeError("invalid JSON encoding or depth", "", 0) from error
+
+
 async def _receive_or_sender_failure(websocket: WebSocket, sender: asyncio.Task[None]) -> object:
-    receive = asyncio.create_task(websocket.receive_json())
+    receive = asyncio.create_task(_receive_frame(websocket))
     try:
         done, _ = await asyncio.wait({receive, sender}, return_when=asyncio.FIRST_COMPLETED)
         if sender in done:

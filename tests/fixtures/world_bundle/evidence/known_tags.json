@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "frame": "world",
+  "map": {
+    "map_id": "level-1-fixture",
+    "map_version": "world-fixture-v2",
+    "physical_datum": "tag_0_center"
+  },
+  "provenance": {
+    "name": "synthetic-tape-fixture",
+    "sha256": "1e59d228b9a62c0e585160bdd50f71e189b4339b0dc3d35f347f7a190193d3fc"
+  },
+  "tags": [
+    {
+      "tag_id": 0,
+      "xy_m": [
+        0,
+        0
+      ]
+    },
+    {
+      "tag_id": 1,
+      "xy_m": [
+        2,
+        0
+      ]
+    },
+    {
+      "tag_id": 2,
+      "xy_m": [
+        0,
+        2
+      ]
+    }
+  ]
+}

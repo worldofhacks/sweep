@@ -10,6 +10,13 @@ import {
   controlReducer,
   createInitialControlState,
   createRequestRecord,
+  deviceClassFromCapabilities,
+  deviceLabeller,
+  deviceNoun,
+  formatDeviceId,
+  formatDroneId,
+  rosterNoun,
+  selectionNoun,
   type ControlState,
 } from './state'
 
@@ -19,6 +26,8 @@ const t = 1_756_700_000_000
 function drone(overrides: Partial<RelayAircraftState> = {}): RelayAircraftState {
   return {
     drone_id: 1,
+    device_class: 'aircraft',
+    unit: overrides.drone_id ?? 1,
     connection_epoch: 1,
     membership: 'ready',
     readiness_reasons: [],
@@ -108,6 +117,32 @@ function withPendingCapture(): ControlState {
 }
 
 describe('control reducer fleet lifecycle', () => {
+  test.each([{ cameras: [] }, { cameras: [
+    { camera_id: 'front', label: 'Front', stream: 'robot-front', status: 'live' as const, last_frame_at: t },
+    { camera_id: 'rear', label: 'Rear', stream: 'robot-rear', status: 'offline' as const, last_frame_at: t - 6000 },
+  ] }])('preserves explicit camera configuration through membership transitions: %j', ({ cameras }) => {
+    const configured = drone({ cameras, video: { status: 'live', last_frame_at: t } })
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event', event: stateEvent('configured', 1, [configured], [1]),
+    })
+    const event: Extract<RelayServerEvent, { type: 'membership' }> = {
+      v: 1, t: t + 2, type: 'membership', event_id: 'changed', session, roster_version: 2,
+      action: 'readiness', drone_id: 1, connection_epoch: 1, membership: 'ready',
+      readiness_reasons: [], adapter_id: 'adapter-1', capabilities: ['flight'],
+      provenance: 'adapter_signature', reason: null,
+    }
+    state = controlReducer(state, { type: 'relay_event', event })
+    expect(state.aircraft[1].cameras).toEqual(cameras)
+    state = controlReducer(state, { type: 'relay_event', event: {
+      ...event, t: t + 3, event_id: 'rejoined', roster_version: 3,
+      action: 'join', connection_epoch: 2, membership: 'registered',
+    } })
+    expect(state.aircraft[1].cameras).toEqual(cameras.map((camera) => ({
+      ...camera, status: 'unreported', last_frame_at: null,
+    })))
+    expect(state.aircraft[1].video).toBeUndefined()
+  })
+
   test('keeps the formation and spacing the relay reports, and nothing before the first frame', () => {
     const initial = createInitialControlState(session, t)
     expect(initial.formation).toBeNull()
@@ -943,5 +978,139 @@ describe('request lifecycle', () => {
       t: t + 50,
     })
     expect(retry.args).toEqual(original.args)
+  })
+})
+
+describe('device labels and nouns', () => {
+  test('labels by class and unit, and formatDroneId stays the aircraft alias', () => {
+    expect(formatDeviceId({ device_class: 'aircraft', unit: 1 })).toBe('D-01')
+    expect(formatDeviceId({ device_class: 'ground_vehicle', unit: 3 })).toBe('G-03')
+    expect(formatDeviceId({ device_class: 'aircraft', unit: 12 })).toBe('D-12')
+    expect(formatDroneId(4)).toBe('D-04')
+    expect(deviceNoun('aircraft')).toBe('aircraft')
+    expect(deviceNoun('ground_vehicle')).toBe('robot')
+  })
+
+  test('the roster labeller names known devices by unit and unknown ids by drone id', () => {
+    const robot = drone({ drone_id: 11, device_class: 'ground_vehicle', unit: 1 })
+    const label = deviceLabeller({ 1: drone(), 11: robot })
+    expect(label(1)).toBe('D-01')
+    expect(label(11)).toBe('G-01')
+    expect(label(7)).toBe('D-07')
+    expect(rosterNoun([drone(), robot])).toBe('device')
+    expect(rosterNoun([robot])).toBe('robot')
+    expect(rosterNoun([])).toBe('device')
+    expect(selectionNoun({ 1: drone(), 11: robot }, [11])).toBe('robot')
+    expect(selectionNoun({ 1: drone(), 11: robot }, [1, 11])).toBe('device')
+  })
+
+  test('a join derives its class from the class capability, exactly once', () => {
+    expect(deviceClassFromCapabilities(['flight'])).toBe('aircraft')
+    expect(deviceClassFromCapabilities(['class:ground_vehicle', 'ground_drive'])).toBe('ground_vehicle')
+    expect(deviceClassFromCapabilities(['class:aircraft', 'flight'])).toBe('aircraft')
+    expect(deviceClassFromCapabilities(['class:boat'])).toBe('aircraft')
+    expect(deviceClassFromCapabilities(['class:ground_vehicle', 'class:aircraft'])).toBe('aircraft')
+  })
+
+  test('a ground vehicle join projects its class, keeps its unit across a rejoin, and labels its notice', () => {
+    const join = (epoch: number, eventId: string): RelayServerEvent => ({
+      v: 1,
+      t: t + epoch,
+      type: 'membership',
+      event_id: eventId,
+      session,
+      roster_version: epoch,
+      action: 'join',
+      drone_id: 11,
+      connection_epoch: epoch,
+      membership: 'registered',
+      readiness_reasons: ['readiness_not_declared'],
+      adapter_id: 'ohmni-01',
+      capabilities: ['class:ground_vehicle', 'ground_drive', 'lidar'],
+      provenance: 'adapter_signature',
+      reason: null,
+    })
+    let state = controlReducer(createInitialControlState(session, t), { type: 'relay_event', event: join(1, 'join-1') })
+    expect(state.aircraft[11]).toMatchObject({ device_class: 'ground_vehicle', unit: 11 })
+
+    const robot = drone({ drone_id: 11, device_class: 'ground_vehicle', unit: 1, connection_epoch: 1 })
+    state = controlReducer(state, { type: 'relay_event', event: stateEvent('state-robot', 1, [robot], []) })
+    expect(state.aircraft[11]).toMatchObject({ device_class: 'ground_vehicle', unit: 1 })
+
+    state = controlReducer(state, { type: 'relay_event', event: join(2, 'join-2') })
+    expect(state.aircraft[11]).toMatchObject({ device_class: 'ground_vehicle', unit: 1, connection_epoch: 2 })
+    expect(state.notices[0]).toMatchObject({ title: 'G-01 rejoined' })
+  })
+
+  test('a safety action on a robot is titled and labelled as a robot', () => {
+    const robot = drone({ drone_id: 11, device_class: 'ground_vehicle', unit: 2 })
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event',
+      event: stateEvent('state-safety', 1, [robot], []),
+    })
+    state = controlReducer(state, {
+      type: 'relay_event',
+      event: {
+        v: 1,
+        t: t + 5,
+        type: 'safety_action',
+        event_id: 'safety-robot',
+        session,
+        drone_id: 11,
+        connection_epoch: 1,
+        reason: 'link_loss',
+        action: 'hold',
+        loss_behavior: 'hold',
+      },
+    })
+    expect(state.notices[0]).toMatchObject({
+      level: 'danger',
+      title: 'Robot hold',
+      detail: 'G-02 applied hold after link_loss.',
+    })
+  })
+})
+
+describe('sensor events in the reducer', () => {
+  const scan = (eventId: string, at: number, epoch = 1): RelayServerEvent => ({
+    v: 1,
+    t: at,
+    type: 'sensor',
+    event_id: eventId,
+    session,
+    drone_id: 11,
+    connection_epoch: epoch,
+    kind: 'lidar_scan',
+    pose: { x: 0, y: 0, yaw_deg: 0 },
+    angle_min_deg: 0,
+    angle_increment_deg: 2,
+    range_min_m: 0.15,
+    range_max_m: 12,
+    ranges_cm: Array.from({ length: 180 }, () => 100),
+  })
+
+  test('records only the last scan time, for the device at its current epoch', () => {
+    const robot = drone({ drone_id: 11, device_class: 'ground_vehicle', unit: 1, connection_epoch: 1 })
+    let state = controlReducer(createInitialControlState(session, t), {
+      type: 'relay_event',
+      event: stateEvent('state-scan', 1, [robot], []),
+    })
+    expect(state.aircraft[11].sensor).toBeUndefined()
+
+    state = controlReducer(state, { type: 'relay_event', event: scan('scan-1', t + 10) })
+    expect(state.aircraft[11].sensor).toEqual({ kind: 'lidar_scan', last_scan_at: t + 10 })
+
+    const older = controlReducer(state, { type: 'relay_event', event: scan('scan-0', t + 5) })
+    expect(older.aircraft[11].sensor).toEqual({ kind: 'lidar_scan', last_scan_at: t + 10 })
+
+    const wrongEpoch = controlReducer(state, { type: 'relay_event', event: scan('scan-2', t + 20, 2) })
+    expect(wrongEpoch.aircraft[11].sensor).toEqual({ kind: 'lidar_scan', last_scan_at: t + 10 })
+
+    const unknown = controlReducer(state, {
+      type: 'relay_event',
+      event: { ...scan('scan-3', t + 30), drone_id: 99 } as RelayServerEvent,
+    })
+    expect(unknown.aircraft).toEqual(state.aircraft)
+    expect(unknown.seenEventIds).toContain('scan-3')
   })
 })

@@ -20,6 +20,7 @@ from relay.app import RelayRuntime, create_app
 from relay.audit import AuditLogError, SessionAuditLog
 from relay.auth import AuthenticationError, Principal, verify_event_signature
 from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile, IntentName
+from relay.contracts import NodeType
 from relay.media import MediaMonitor, MediaPathObservation
 from relay.session import CapabilityBoundIntentSink, Clock, IntentSink, RelaySession
 from relay.settings import RelaySettings
@@ -178,6 +179,43 @@ def test_control_heartbeat_is_signed_routed_current_and_not_audited(
     assert after_first == before
     assert after_readiness > after_first
     assert after_second == after_readiness
+
+
+def test_ground_control_heartbeat_retains_explicit_lease_bounds(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+) -> None:
+    settings = replace(
+        app_settings, adapter_keys={11: ADAPTER_KEY}, node_types={11: NodeType.GROUND}
+    )
+
+    async def receive_heartbeat() -> dict[str, object]:
+        runtime = RelayRuntime(settings, clock=clock, event_ids=event_ids)
+        session = runtime.session(SESSION)
+        principal = Principal(source="adapter", drone_id=11, signing_key=ADAPTER_KEY)
+        subscription = await runtime.subscribe(SESSION, principal)
+        session.process_membership(
+            membership_payload(
+                action="join",
+                event_id="ground-heartbeat",
+                drone_id=11,
+                node_type="ground",
+                capabilities=["ground_drive"],
+            ),
+            principal,
+        )
+        await runtime._publish_control_heartbeats(SESSION, session)
+        return subscription.queue.get_nowait().event
+
+    heartbeat = asyncio.run(receive_heartbeat())
+    assert heartbeat["drone_id"] == 11
+    assert heartbeat["issued_at"] == heartbeat["t"]
+    assert heartbeat["expires_at"] == heartbeat["t"] + settings.node_watchdog_failsafe_ms
+    assert heartbeat["hold_after_ms"] == settings.node_watchdog_hold_ms
+    assert heartbeat["failsafe_after_ms"] == settings.node_watchdog_failsafe_ms
+    unsigned = {key: value for key, value in heartbeat.items() if key != "signature"}
+    assert verify_event_signature(unsigned, str(heartbeat["signature"]), ADAPTER_KEY)
 
 
 def test_control_heartbeat_cadence_stays_inside_a_short_hold_window(
@@ -479,6 +517,10 @@ def test_delayed_initial_delivery_cannot_put_a_new_snapshot_before_old_backlog(
                     }
                 await asyncio.sleep(0.01)
                 raise WebSocketDisconnect(code=1000)
+
+            async def receive_text(self) -> str:
+                await self.receive_json()
+                raise AssertionError("expected disconnect")
 
             async def send_json(self, data: dict[str, object]) -> None:
                 self.sent.append(data)
@@ -1267,6 +1309,10 @@ def test_same_session_recovery_does_not_block_websocket_event_loop(
                 }
             raise WebSocketDisconnect(code=1000)
 
+        async def receive_text(self) -> str:
+            await self.receive_json()
+            raise AssertionError("expected disconnect")
+
         async def send_json(self, _data: dict[str, object]) -> None:
             return None
 
@@ -1648,10 +1694,12 @@ class _ScriptedMediaClient:
 
     def __init__(self) -> None:
         self.online: set[str] = set()
+        self.paths: list[str] = []
         self.bytes = 0
         self.closed = False
 
     async def read_path(self, name: str) -> MediaPathObservation | None:
+        self.paths.append(name)
         if name not in self.online:
             return None
         self.bytes += 1
@@ -1661,7 +1709,68 @@ class _ScriptedMediaClient:
         self.closed = True
 
 
-def test_state_video_follows_mediamtx_while_it_answers_and_the_node_claim_after(
+def test_default_media_monitor_projects_configured_canonical_paths(
+    app_settings: RelaySettings,
+    clock: MutableClock,
+    event_ids: EventIds,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_eleven = b"adapter-eleven-key-is-at-least-32"
+    key_twelve = b"adapter-twelve-key-is-at-least-32"
+    media_client = _ScriptedMediaClient()
+    media_client.online.update({"drone11", "drone12"})
+    monkeypatch.setattr(app_module, "MediaMtxClient", lambda *args, **kwargs: media_client)
+    settings = replace(
+        app_settings,
+        adapter_keys={
+            11: key_eleven,
+            12: key_twelve,
+        },
+        media_api_url="http://127.0.0.1:9997",
+        media_api_password="media-api-password",
+        media_poll_interval_ms=10,
+        media_stale_after_ms=100,
+    )
+    app = create_app(settings, clock=clock, event_ids=event_ids)
+
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{SESSION}") as console:
+            _authenticate_console(console)
+            with client.websocket_connect(f"/ws/{SESSION}") as adapter:
+                adapter.send_json(
+                    {
+                        "v": 1,
+                        "type": "auth",
+                        "source": "adapter",
+                        "drone_id": 11,
+                        "token": key_eleven.decode(),
+                    }
+                )
+                adapter.receive_json()
+                adapter.receive_json()
+                adapter.send_json(
+                    membership_payload(
+                        action="join", event_id="join-11", drone_id=11, key=key_eleven
+                    )
+                )
+                adapter.send_json(
+                    node_status_payload(
+                        event_id="status-11", drone_id=11, video_publish_state="stopped"
+                    )
+                )
+                for _ in range(60):
+                    state = _receive_type(console, "state")
+                    drones = state["drones"]
+                    if drones and drones[0]["video"]["status"] == "live":
+                        break
+                else:
+                    raise AssertionError("MediaMTX video did not project as live")
+
+    assert set(media_client.paths) == {"drone11", "drone12"}
+    assert media_client.closed is True
+
+
+def test_state_video_follows_mediamtx_progress_without_dating_frames_from_node_claims(
     app_settings: RelaySettings, clock: MutableClock, event_ids: EventIds
 ) -> None:
     media_client = _ScriptedMediaClient()
@@ -1714,6 +1823,6 @@ def test_state_video_follows_mediamtx_while_it_answers_and_the_node_claim_after(
                     )
                 )
                 still_offline = state_with_video(console, "offline")
-                assert still_offline["last_frame_at"] == clock() + 1
+                assert still_offline["last_frame_at"] == clock()
 
     assert monitors and media_client.closed is True

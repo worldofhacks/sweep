@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from concurrent.futures import TimeoutError as DeliveryTimeout
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from adapters.dispatch import AdapterDispatcher
 from adapters.dji_mini3.remote import CommandRequest, NodeLink, RemoteBridgeAdapter
@@ -13,11 +14,14 @@ from adapters.protocols import AdapterError, CameraCapture, SwarmAdapter
 from adapters.sim.camera import SimCamera, SimCameraConfig
 from adapters.sim.flight import SimFlightAdapter
 from arbiter.safety import SafetyArbiter
-from planner.models import FleetSnapshot
+from planner.models import CommandOperation, FleetSnapshot
 from relay.app import RelayRuntime
 from relay.contracts import AdapterAcknowledgement, CapabilitiesFrame, MediaFileRecord
 from relay.session import RelaySession
 from relay.settings import AdapterBackend
+
+if TYPE_CHECKING:
+    from relay.navigation_wire import NavigationWirePublisher
 
 
 class RelayNodeLink:
@@ -29,7 +33,14 @@ class RelayNodeLink:
     ``await_acknowledgement`` block the calling thread and refuse the loop thread.
     """
 
-    def __init__(self, runtime: RelayRuntime, session_id: str, *, delivery_timeout_ms: int) -> None:
+    def __init__(
+        self,
+        runtime: RelayRuntime,
+        session_id: str,
+        *,
+        delivery_timeout_ms: int,
+        navigation_publisher: NavigationWirePublisher | None = None,
+    ) -> None:
         session = runtime.sessions.get(session_id)
         if session is None:
             raise ValueError(f"session {session_id!r} is not active on this relay")
@@ -43,12 +54,14 @@ class RelayNodeLink:
         self._session_id = session_id
         self._session: RelaySession = session
         self._delivery_timeout_s = delivery_timeout_ms / 1000
+        self._navigation_publisher = navigation_publisher
 
     def connection_epoch(self, drone_id: int) -> int | None:
         return self._session.registry.connection_epoch(drone_id)
 
     def send(self, request: CommandRequest) -> None:
         loop = self._worker_loop()
+        navigation_frames: list[dict[str, object]] = []
         key = self._runtime.credential_resolver.resolve("adapter", request.drone_id)
         if key is None:
             raise AdapterError(
@@ -56,6 +69,27 @@ class RelayNodeLink:
             )
         if not self._runtime.node_connected(self._session_id, request.drone_id):
             raise AdapterError(f"aircraft {request.drone_id} has no authenticated node socket")
+        if self._navigation_publisher is not None:
+            self._navigation_publisher.retire_other_epochs(
+                request.drone_id, request.connection_epoch
+            )
+            if request.operation in {
+                CommandOperation.HOVER,
+                CommandOperation.LAND,
+                CommandOperation.ESTOP,
+            }:
+                self._navigation_publisher.retire_epoch(request.drone_id, request.connection_epoch)
+            try:
+                navigation_frames = self._navigation_publisher.prepare_request(request)
+            except ValueError as error:
+                raise AdapterError(str(error)) from error
+            for navigation_frame in navigation_frames:
+                if not self._deliver(loop, request.drone_id, navigation_frame):
+                    self._navigation_publisher.retire(request.command_id)
+                    raise AdapterError(
+                        "navigation evidence for command "
+                        f"{request.command_id} could not be delivered"
+                    )
         try:
             frame = self._session.issue_command(
                 command_id=request.command_id,
@@ -68,27 +102,50 @@ class RelayNodeLink:
                 signing_key=key,
             )
         except ValueError as error:
+            if self._navigation_publisher is not None:
+                self._navigation_publisher.retire(request.command_id)
             raise AdapterError(str(error)) from error
-        future = asyncio.run_coroutine_threadsafe(
-            self._runtime.deliver_to_node(self._session_id, request.drone_id, frame), loop
-        )
-        try:
-            delivered = future.result(timeout=self._delivery_timeout_s)
-        except DeliveryTimeout:
-            future.cancel()
-            delivered = False
-        if not delivered:
+        if not self._deliver(loop, request.drone_id, frame):
             self._session.discard_command_waiter(request.command_id)
+            if self._navigation_publisher is not None:
+                self._navigation_publisher.retire(request.command_id)
             raise AdapterError(
                 f"command {request.command_id} could not be delivered to aircraft "
                 f"{request.drone_id}"
             )
+        if navigation_frames and self._navigation_publisher is not None:
+            try:
+                self._navigation_publisher.activate(request.command_id)
+            except ValueError as error:
+                self._session.discard_command_waiter(request.command_id)
+                raise AdapterError(str(error)) from error
+
+    def _deliver(
+        self, loop: asyncio.AbstractEventLoop, drone_id: int, frame: dict[str, object]
+    ) -> bool:
+        future = asyncio.run_coroutine_threadsafe(
+            self._runtime.deliver_to_node(self._session_id, drone_id, frame), loop
+        )
+        try:
+            return bool(future.result(timeout=self._delivery_timeout_s))
+        except DeliveryTimeout:
+            future.cancel()
+            return False
 
     def await_acknowledgement(
         self, command_id: str, *, timeout_ms: int
     ) -> AdapterAcknowledgement | None:
         self._worker_loop()
-        return self._session.await_command_acknowledgement(command_id, timeout_ms=timeout_ms)
+        acknowledgement = self._session.await_command_acknowledgement(
+            command_id, timeout_ms=timeout_ms
+        )
+        if (
+            acknowledgement is not None
+            and acknowledgement.status.value in {"completed", "failed", "invalidated", "refused"}
+            and self._navigation_publisher is not None
+        ):
+            self._navigation_publisher.retire(command_id)
+        return acknowledgement
 
     def camera_capabilities(self, drone_id: int) -> CapabilitiesFrame | None:
         return self._session.registry.camera_capabilities(drone_id)
@@ -123,6 +180,7 @@ def build_adapters(
     *,
     sim_camera_config: SimCameraConfig | None = None,
     link_wrapper: LinkWrapper | None = None,
+    navigation_publisher: NavigationWirePublisher | None = None,
 ) -> AdapterPair:
     """Construct the adapters ``SWEEP_ADAPTER_BACKEND`` selects for one session.
 
@@ -150,7 +208,12 @@ def build_adapters(
         )
         return AdapterPair(flight=flight, camera=camera)
     if backend is AdapterBackend.REMOTE:
-        node_link = RelayNodeLink(runtime, session_id, delivery_timeout_ms=settings.command_ttl_ms)
+        node_link = RelayNodeLink(
+            runtime,
+            session_id,
+            delivery_timeout_ms=settings.command_ttl_ms,
+            navigation_publisher=navigation_publisher,
+        )
         link: NodeLink = node_link if link_wrapper is None else link_wrapper(node_link)
         remote = RemoteBridgeAdapter.from_snapshot(
             link,
@@ -170,6 +233,7 @@ def build_dispatcher(
     arbiter: SafetyArbiter,
     sim_camera_config: SimCameraConfig | None = None,
     link_wrapper: LinkWrapper | None = None,
+    navigation_publisher: NavigationWirePublisher | None = None,
 ) -> AdapterDispatcher:
     """Construct a session's ``AdapterDispatcher`` on the configured backend."""
     adapters = build_adapters(
@@ -178,6 +242,7 @@ def build_dispatcher(
         snapshot,
         sim_camera_config=sim_camera_config,
         link_wrapper=link_wrapper,
+        navigation_publisher=navigation_publisher,
     )
     return AdapterDispatcher(flight=adapters.flight, camera=adapters.camera, arbiter=arbiter)
 

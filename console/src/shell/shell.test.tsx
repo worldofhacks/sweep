@@ -95,9 +95,10 @@ describe('persistent shell', () => {
       'Speech',
       'Captures',
       'Worlds',
-      'Reference',
+      'Devices',
+      'Map',
     ])
-    expect(within(screen.getByRole('navigation', { name: 'Primary' })).getAllByRole('button')).toHaveLength(7)
+    expect(within(screen.getByRole('navigation', { name: 'Primary' })).getAllByRole('button')).toHaveLength(8)
   })
 
   test('pending confirmation: the dock shows the plan with its Intent v1 JSON expanded by default', async () => {
@@ -154,11 +155,11 @@ describe('persistent shell', () => {
     await draftCapture(user)
 
     await openModule(user, 'Live')
-    expect(screen.getByRole('region', { name: 'Wall of 4' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'All devices' })).toBeInTheDocument()
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
     expect(within(dock).getByText(/"intent_id": "survives-switch"/)).toBeInTheDocument()
 
-    await openModule(user, 'Reference')
+    await openModule(user, 'Devices')
     await openModule(user, 'Control')
     expect(screen.getByRole('region', { name: 'Pending confirmation' })).toBeInTheDocument()
 
@@ -198,7 +199,7 @@ describe('persistent shell', () => {
     const links = within(screen.getByRole('list', { name: 'Connections' }))
     expect(links.getByTitle('Relay (console)')).toHaveTextContent(/^relay\s*disconnected$/)
     expect(links.getByTitle('Keyboard stop')).toHaveTextContent(/^keys\s*disconnected$/)
-    expect(screen.getByText('no aircraft reported')).toBeInTheDocument()
+    expect(screen.getByText('no devices reported')).toBeInTheDocument()
     expect(screen.getByText('0 of 0 ready')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Session detail' }))
@@ -288,26 +289,18 @@ describe('persistent shell', () => {
     expect(tags.getByText('Stop clear')).toBeInTheDocument()
   })
 
-  test('the Reference module shows its section tabs and an honest empty state', async () => {
+  test('Devices keeps real health and configuration without a reference gallery', async () => {
     const clients = fixtureClients()
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} />)
     await screen.findByText(/Development fixture active/i)
-
-    await openModule(user, 'Reference')
-    const tabs = within(screen.getByRole('group', { name: 'Reference sections' }))
-    expect(tabs.getAllByRole('button').map((button) => button.textContent)).toEqual([
-      'Mission',
-      'Health',
-      'Config',
-      'Ledger',
-      'Map',
-      'States',
-    ])
+    expect(modulesRail().queryByRole('button', { name: 'Reference' })).not.toBeInTheDocument()
+    await openModule(user, 'Devices')
+    const tabs = within(screen.getByRole('group', { name: 'Device sections' }))
+    expect(tabs.getAllByRole('button').map((button) => button.textContent)).toEqual(['Registry', 'Health', 'Config'])
     await user.click(tabs.getByRole('button', { name: 'Health' }))
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Reference')
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Devices')
     expect(screen.getByText(/Connectivity and health — Nodes, services, metrics/)).toBeInTheDocument()
-    const empty = screen.getByText(/does not report shared-service status/)
-    expect(empty.closest('[role="status"]')).toHaveTextContent('Nothing to show')
+    expect(screen.getByText(/does not report shared-service status/).closest('[role="status"]')).toHaveTextContent('Nothing to show')
   })
 })

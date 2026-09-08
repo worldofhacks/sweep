@@ -181,7 +181,7 @@ private class JsonParser(private val text: String) {
             if (peek() != ':') fail("expected ':' after key")
             index++
             skipWhitespace()
-            fields[key] = parseValue()
+            if (fields.put(key, parseValue()) != null) fail("duplicate object key $key")
             skipWhitespace()
             when (peek()) {
                 ',' -> index++

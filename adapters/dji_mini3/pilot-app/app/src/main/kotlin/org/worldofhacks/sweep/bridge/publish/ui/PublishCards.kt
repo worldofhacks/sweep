@@ -31,11 +31,6 @@ import org.worldofhacks.sweep.bridge.publish.WhipEndpoint
 /** The Phase F publisher for the Setup and Connectivity cards; `MainActivity` provides it. */
 val LocalPublisher = staticCompositionLocalOf<Publisher> { error("LocalPublisher is not provided") }
 
-/**
- * The ground-station fields on the Setup card (Phase F): host (blank means the relay host),
- * MediaMTX WebRTC port, and the auto-start switch. Values save as they change; nothing here
- * is a secret.
- */
 @Composable
 fun PublishSetupFields(relayUrl: String) {
     val publisher = LocalPublisher.current
@@ -51,8 +46,8 @@ fun PublishSetupFields(relayUrl: String) {
                 host = it
                 publisher.saveGroundStation(it, port.trim().toIntOrNull())
             },
-            label = { Text("Ground station (MediaMTX) host") },
-            placeholder = { Text(derivedHost.ifBlank { "relay host" }) },
+            label = { Text("Ground station host or HTTPS origin") },
+            placeholder = { Text(derivedHost.ifBlank { "relay host or https://media.example" }) },
             singleLine = true,
             modifier = Modifier.weight(2f),
         )
@@ -62,7 +57,7 @@ fun PublishSetupFields(relayUrl: String) {
                 port = it
                 publisher.saveGroundStation(host, it.trim().toIntOrNull())
             },
-            label = { Text("WebRTC port") },
+            label = { Text("WebRTC port (443 for HTTPS)") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.weight(1f),

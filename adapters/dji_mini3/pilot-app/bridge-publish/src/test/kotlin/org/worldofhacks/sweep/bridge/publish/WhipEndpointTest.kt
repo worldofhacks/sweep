@@ -18,7 +18,33 @@ class WhipEndpointTest {
     fun `an explicit ground host and port override the relay host`() {
         assertEquals("http://ground:9000/drone4/whip", WhipEndpoint.whipUrl("ws://10.10.1.60:8000", " ground ", 9000, 4))
         assertEquals("http://[fe80::1]:8889/drone1/whip", WhipEndpoint.whipUrl("ws://[fe80::2]:8000", "fe80::1", 8889, 1))
+        assertEquals("http://[fe80::1]:8889/drone1/whip", WhipEndpoint.whipUrl("ws://[fe80::2]:8000", "[fe80::1]", 8889, 1))
         assertEquals("http://[fe80::2]:8889/drone1/whip", WhipEndpoint.whipUrl("ws://[fe80::2]:8000", null, 8889, 1))
+    }
+
+    @Test
+    fun `an explicit HTTPS origin keeps TLS while port stays a separate setup field`() {
+        assertEquals(
+            "https://sweep.hollowatlas.xyz:443/drone1/whip",
+            WhipEndpoint.whipUrl("wss://relay.local/ws", "https://sweep.hollowatlas.xyz", 443, 1),
+        )
+        assertEquals(
+            "https://[fd7a:115c:a1e0::1]:443/drone2/whep",
+            WhipEndpoint.whepUrl("wss://relay.local/ws", "https://[fd7a:115c:a1e0::1]", 443, 2),
+        )
+        for (invalid in listOf(
+            "http://ground.example",
+            "https://user@ground.example",
+            "https://ground.example:8443",
+            "https://ground.example/path",
+            "https://ground.example?query",
+            "ground.example/path",
+            "ground.example:8443",
+        )) {
+            assertThrows(IllegalArgumentException::class.java) {
+                WhipEndpoint.whipUrl("wss://relay.local/ws", invalid, 443, 1)
+            }
+        }
     }
 
     @Test

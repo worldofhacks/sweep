@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "frame": "odom",
+  "scope": {
+    "session": "world-fixture-session",
+    "device_id": 9,
+    "connection_epoch": 3,
+    "source_id": "ohmni-lidar"
+  },
+  "provenance": {
+    "name": "synthetic-scan-fixture",
+    "sha256": "b7aa0b78bb35d0c6c6bbbf162053ab344750940479c819e267237a67abd77091"
+  },
+  "tags": [
+    {
+      "tag_id": 0,
+      "xy_m": [
+        2,
+        1
+      ]
+    },
+    {
+      "tag_id": 1,
+      "xy_m": [
+        2,
+        -1
+      ]
+    },
+    {
+      "tag_id": 2,
+      "xy_m": [
+        4,
+        1
+      ]
+    }
+  ]
+}

@@ -123,4 +123,85 @@ data class FlightConfig(
     /** PRD 5.5: network stop holds, then lands if the stop stays asserted this long. */
     val estopLandAfterMs: Long = 5_000,
     val defaultStickHz: Int = FlightSettings.DEFAULT_STICK_HZ,
+    val navigation: NavigationConfig? = null,
+    val supervisedVertical: SupervisedVerticalConfig? = null,
 )
+
+/** The narrow local-height takeoff profile; it does not authorize horizontal navigation. */
+data class SupervisedVerticalConfig(
+    val maximumHeightAgeMs: Long = 500,
+    val hardCeilingM: Double = 2.5908,
+    val targetToleranceM: Double = 0.05,
+    val targetSettleMs: Long = 500,
+    val approachGainPerS: Double = 1.0,
+) {
+    init {
+        require(maximumHeightAgeMs > 0) { "maximum height age must be positive" }
+        require(hardCeilingM.isFinite() && hardCeilingM > 0) { "hard ceiling must be positive and finite" }
+        require(targetToleranceM.isFinite() && targetToleranceM > 0 && targetToleranceM < hardCeilingM) {
+            "target tolerance must be positive and below the hard ceiling"
+        }
+        require(targetSettleMs >= 0) { "target settle time must be non-negative" }
+        require(approachGainPerS.isFinite() && approachGainPerS > 0) { "approach gain must be positive and finite" }
+    }
+}
+
+data class NavigationConfig(
+    val navigationConfigId: String,
+    val navigationConfigSha256: String,
+    val mapVersion: String,
+    val mapSha256: String,
+    val geometrySha256: String,
+    val cameraCalibrationSha256: String,
+    val bodyExtrinsicsSha256: String,
+    val worldTransformSha256: String,
+    val controlSourceIds: List<String>,
+    val clockLeaseId: String,
+    val clockLeaseExpiresAtMs: Long,
+    val poseFreshnessMs: Long,
+    val authorizationLifetimeMs: Long,
+    val lossLandAfterMs: Long,
+    val arrivalHorizontalToleranceM: Double,
+    val arrivalVerticalToleranceM: Double,
+    val maxPositionUncertaintyM: Double,
+) {
+    init {
+        require(navigationConfigId.isNotBlank() && mapVersion.isNotBlank() && clockLeaseId.isNotBlank() && clockLeaseExpiresAtMs > 0) {
+            "navigation identities and clock lease must be pinned"
+        }
+        require(hashes().all { it.length == 64 && it.all { char -> char in '0'..'9' || char in 'a'..'f' } }) {
+            "navigation evidence hashes must be lowercase SHA-256"
+        }
+        require(controlSourceIds.isNotEmpty() && controlSourceIds == controlSourceIds.distinct().sorted()) {
+            "navigation control source identities must be sorted and unique"
+        }
+        require(poseFreshnessMs > 0 && authorizationLifetimeMs > 0 && lossLandAfterMs > 0) {
+            "navigation timing bounds are invalid"
+        }
+        require(
+            listOf(arrivalHorizontalToleranceM, arrivalVerticalToleranceM, maxPositionUncertaintyM)
+                .all { it.isFinite() && it > 0 },
+        ) {
+            "navigation measured limits are invalid"
+        }
+    }
+
+    fun hashes(): List<String> = listOf(
+        navigationConfigSha256, mapSha256, geometrySha256, cameraCalibrationSha256,
+        bodyExtrinsicsSha256, worldTransformSha256,
+    )
+
+    fun isWithinArrival(
+        horizontalDistanceM: Double,
+        verticalDistanceM: Double,
+        positionUncertaintyM: Double,
+    ): Boolean =
+        horizontalDistanceM.isFinite() &&
+            verticalDistanceM.isFinite() &&
+            positionUncertaintyM.isFinite() &&
+            horizontalDistanceM >= 0 &&
+            positionUncertaintyM >= 0 &&
+            positionUncertaintyM <= maxPositionUncertaintyM &&
+            horizontalDistanceM + positionUncertaintyM <= arrivalHorizontalToleranceM &&
+            abs(verticalDistanceM) + positionUncertaintyM <= arrivalVerticalToleranceM
+}

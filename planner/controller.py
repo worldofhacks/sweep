@@ -751,6 +751,7 @@ class PreparedExecutionRouter:
                 if (
                     session is not None
                     and prepared.plan.intent_name is not IntentName.ESTOP
+                    and prepared.plan.navigation is None
                     and terminal_ack.status is LifecycleStatus.COMPLETED
                     and prepared.plan.commands
                     and terminal_ack.command_id == prepared.plan.commands[-1].command_id
@@ -1267,6 +1268,7 @@ class AutonomyController:
         self.planner = planner
         self.arbiter = arbiter
         self.dispatcher = dispatcher
+        self.dispatcher.navigation_runtime = self.planner.navigation_runtime
         self.dispatcher.current_altitude_grounding = lambda: (
             self.planner.config.altitude_grounding()
         )
@@ -1402,6 +1404,8 @@ class AutonomyController:
     ) -> PositioningLossResult:
         provider = current_snapshot or (lambda: snapshot)
         current = provider()
+        if not self.arbiter.requires_world_positioning:
+            return PositioningLossResult(False, None, None)
         affected = tuple(
             aircraft
             for aircraft in current.aircraft.values()

@@ -1,6 +1,12 @@
 # docs
 
-Maintained throughout M0 through M4.
+Sweep is a modular platform for aerial drones and ground robots in one console.
+
+- [Unified fleet control](unified-fleet-control.md): current integrated software, policy requirements and hardware qualification limits.
+- [September 7 integration reconciliation](integration-reconciliation-2026-09-07.md): preserved branches, remaining migration work and the software/hardware completion boundary.
+- [Modular fleet integration](modular-fleet.md): stable identities, camera and sensor inventory, and additive provisioning.
+- [Laptop console](laptop-console.md): one operator URL and explicit runtime/build identity.
+- [Map and navigation integration](platform-integration.md): authenticated map authoring and qualified destination review.
 
 - `prd.md`: the PRD, architecture, capability areas, and delivery milestones (source of truth).
 - `mvp-plan.md`: the dependency-mapped work breakdown for the MVP.
@@ -12,5 +18,6 @@ Maintained throughout M0 through M4.
 - `../RESEARCH/DJI_MINI_3_INDOOR_AUTOPILOT_2026_09_02.md`: documented Mini 3 telemetry, bundled flight behavior, and the additional software and sensing required for indoor autonomy.
 - `../RESEARCH/DJI_MINI_3_CAPTURE_GUIDANCE_DISPLAY_2026_09_02.md`: the Android pilot guidance, laptop display modules, capture-quality gates, and measured-FOV capture rule.
 - `decisions/`: decision records (scaffold choices, the architecture review).
+- `ohmni-encoder-sampler-evidence.md`: measured serial encoder-pair loss and the qualified sampler required before ground motion.
 
 Arriving in later milestones: build guide (hardware bring-up, positioning calibration), the intent contract as generated schema docs, the demo script, and session reports from hardware runs.

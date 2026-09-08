@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from relay.capabilities import C2_CAPABILITY_PROFILE
+from relay.capabilities import (
+    C1_CAPABILITY_PROFILE,
+    C2_CAPABILITY_PROFILE,
+    CapabilityProfile,
+    IntentName,
+)
 from relay.contracts import Membership, parse_membership_request, parse_telemetry
 from relay.state import FleetRegistry, RegistryError
+from relay.supervised_vertical import SUPERVISED_VERTICAL_PROFILE
 from relay.tests.conftest import SESSION, membership_payload, telemetry_payload
 
 
@@ -34,17 +40,48 @@ def test_registry_accepts_four_stable_ids_and_rejects_a_fifth() -> None:
     assert error.value.code == "fleet_capacity"
 
 
-def test_c2_simulator_registry_accepts_six_stable_ids_and_rejects_a_seventh() -> None:
+def test_c2_simulator_registry_accepts_thirty_two_stable_ids_and_rejects_another() -> None:
     registry = FleetRegistry(
         telemetry_freshness_ms=1_000,
         capability_profile=C2_CAPABILITY_PROFILE,
     )
-    for drone_id in range(1, 7):
+    for drone_id in range(1, 33):
         _join(registry, drone_id, f"join-{drone_id}")
 
-    assert registry.roster_version == 6
+    assert registry.roster_version == 32
     with pytest.raises(RegistryError) as error:
-        _join(registry, 7, "join-7")
+        _join(registry, 33, "join-33")
+    assert error.value.code == "fleet_capacity"
+
+
+def test_configured_registry_capacity_accepts_and_bounds_the_deployment() -> None:
+    registry = FleetRegistry(telemetry_freshness_ms=1_000, aircraft_limit=5)
+
+    for drone_id in range(1, 6):
+        _join(registry, drone_id, f"join-{drone_id}")
+
+    with pytest.raises(RegistryError) as error:
+        _join(registry, 6, "join-6")
+    assert error.value.code == "fleet_capacity"
+
+
+@pytest.mark.parametrize("limit", [0, 33, True])
+def test_registry_capacity_must_be_bounded_integer(limit: int) -> None:
+    with pytest.raises(ValueError, match="aircraft_limit"):
+        FleetRegistry(telemetry_freshness_ms=1_000, aircraft_limit=limit)
+
+
+def test_explicit_physical_capacity_overrides_mapped_line_capability() -> None:
+    mapped_line = CapabilityProfile(
+        "mapped-line", C1_CAPABILITY_PROFILE.enabled_intent_names | {IntentName.FORMATION_SET}
+    )
+    registry = FleetRegistry(
+        telemetry_freshness_ms=1_000, capability_profile=mapped_line, aircraft_limit=1
+    )
+
+    _join(registry, 1, "join-1")
+    with pytest.raises(RegistryError) as error:
+        _join(registry, 2, "join-2")
     assert error.value.code == "fleet_capacity"
 
 
@@ -128,6 +165,56 @@ def test_all_readiness_gates_must_pass_before_aircraft_is_selectable() -> None:
         "takeoff",
         "translate",
     ]
+
+
+def test_supervised_vertical_keeps_home_unconfirmed_but_requires_every_other_gate() -> None:
+    registry = FleetRegistry(
+        telemetry_freshness_ms=1_000,
+        capability_profile=SUPERVISED_VERTICAL_PROFILE,
+    )
+    _join(registry, 1, "join-vertical")
+    telemetry = parse_telemetry(telemetry_payload(event_id="telemetry-vertical"))
+    registry.apply_telemetry(telemetry, transition_event_id="unused")
+
+    ready = membership_payload(action="readiness", event_id="ready-vertical")
+    ready["home_pose_confirmed"] = False
+    from relay.auth import sign_event
+    from relay.tests.conftest import ADAPTER_KEY
+
+    ready["signature"] = sign_event(
+        {key: value for key, value in ready.items() if key != "signature"}, ADAPTER_KEY
+    )
+    transition = registry.apply_readiness(parse_membership_request(ready))
+    state = registry.state_event(session=SESSION, t=telemetry.t, event_id="state-vertical")
+
+    assert transition.membership is Membership.READY
+    assert transition.readiness_reasons == ()
+    assert state["drones"][0]["selectable"] is True
+    assert state["drones"][0]["home_pose"] is None
+
+    for field, reason in (
+        ("control_authority", "control_authority_missing"),
+        ("rc_safety_operator_present", "rc_safety_operator_missing"),
+    ):
+        blocked = FleetRegistry(
+            telemetry_freshness_ms=1_000,
+            capability_profile=SUPERVISED_VERTICAL_PROFILE,
+        )
+        _join(blocked, 1, f"join-{field}")
+        blocked.apply_telemetry(
+            parse_telemetry(telemetry_payload(event_id=f"telemetry-{field}")),
+            transition_event_id="unused",
+        )
+        readiness = membership_payload(action="readiness", event_id=f"ready-{field}")
+        readiness["home_pose_confirmed"] = False
+        readiness[field] = False
+        readiness["signature"] = sign_event(
+            {key: value for key, value in readiness.items() if key != "signature"}, ADAPTER_KEY
+        )
+        blocked_transition = blocked.apply_readiness(parse_membership_request(readiness))
+
+        assert blocked_transition.membership is Membership.DEGRADED
+        assert blocked_transition.readiness_reasons == (reason,)
 
 
 def test_readiness_reports_each_failed_declared_gate() -> None:
@@ -412,6 +499,7 @@ def test_state_v1_console_projection_has_frozen_compatibility_keys() -> None:
     }
     assert set(drone) == {
         "drone_id",
+        "node_type",
         "connection_epoch",
         "membership",
         "readiness_reasons",

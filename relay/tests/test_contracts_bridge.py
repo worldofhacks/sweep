@@ -60,6 +60,23 @@ def test_command_signature_round_trips_through_relay_auth_canonical_json() -> No
     )
 
 
+def test_goto_accepts_only_a_canonical_optional_navigation_route_id() -> None:
+    raw = command_payload(
+        event_id="command-navigation-route",
+        args={
+            "x_mm": 1_000,
+            "y_mm": -400,
+            "z_mm": 1_000,
+            "speed_mm_s": 500,
+            "navigation_route_id": "frozen-route-1",
+        },
+    )
+
+    frame = parse_command(raw)
+
+    assert frame.args["navigation_route_id"] == "frozen-route-1"
+
+
 def test_command_event_builder_produces_a_frame_the_parser_and_node_accept() -> None:
     event = command_event(
         t=1_756_700_000_000,
@@ -386,7 +403,22 @@ def test_node_status_frame_reports_watchdog_and_phone_health() -> None:
     assert frame.to_event() == raw
     payload = frame.state_payload()
     assert payload["type"] == "node_status"
+    assert payload["local_height"] is None
     assert "event_id" not in payload
+
+
+def test_node_status_local_height_is_an_optional_object_not_null() -> None:
+    raw = node_status_payload(
+        event_id="status-height",
+        local_height={"z_m": 0.4, "source": "flight_controller_altitude", "age_ms": 12},
+    )
+
+    frame = parse_node_status(raw)
+
+    assert frame.local_height is not None
+    assert frame.local_height.z_m == 0.4
+    with pytest.raises(ContractError, match="local_height must be an object"):
+        parse_node_status(node_status_payload(event_id="status-height-null", local_height=None))
 
 
 @pytest.mark.parametrize(
@@ -422,3 +454,30 @@ def test_node_acknowledgement_reasons_are_machine_readable_wire_values() -> None
             )
         )
         assert acknowledgement.reason == reason.value
+
+
+def test_signed_takeoff_height_policy_is_preserved_and_cannot_be_tampered() -> None:
+    args = {"z_mm": 1800, "maximum_height_mm": 2000, "max_local_height_age_ms": 200}
+    raw = command_payload(event_id="bounded-takeoff", operation="takeoff", args=args)
+    frame = parse_command(raw)
+    assert dict(frame.args) == args
+    assert verify_event_signature(frame.unsigned_event(), frame.signature, ADAPTER_KEY)
+    tampered = parse_command({**raw, "args": {**args, "maximum_height_mm": 2100}})
+    assert not verify_event_signature(tampered.unsigned_event(), tampered.signature, ADAPTER_KEY)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"z_mm": 1800, "maximum_height_mm": 2000},
+        {"z_mm": 1800, "max_local_height_age_ms": 200},
+        {"z_mm": 1800, "maximum_height_mm": 1700, "max_local_height_age_ms": 200},
+        {"z_mm": 1800, "maximum_height_mm": 2591, "max_local_height_age_ms": 200},
+        {"z_mm": 1800, "maximum_height_mm": 2000, "max_local_height_age_ms": 501},
+        {"z_mm": 1800, "maximum_height_mm": 2000, "max_local_height_age_ms": 0},
+        {"z_mm": 1800, "maximum_height_mm": True, "max_local_height_age_ms": 200},
+    ],
+)
+def test_takeoff_rejects_partial_or_unbounded_height_policy(args) -> None:
+    with pytest.raises(ContractError):
+        parse_command(command_payload(event_id="bad-policy", operation="takeoff", args=args))

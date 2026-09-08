@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import Lock, RLock
 
+from media.streams import MAX_CAMERAS_PER_DEVICE, CameraStream
 from planner.models import CommandOperation
 from relay.audit import LIVE_REPLAY_TIMEOUT_SECONDS, AuditLogError, SessionAuditLog
 from relay.auth import Principal, sign_event, verify_event_signature
@@ -28,9 +29,11 @@ from relay.contracts import (
     LifecycleStatus,
     MediaFileFrame,
     MediaFileRecord,
+    Membership,
     MembershipAction,
     MembershipRequest,
     NodeStatusFrame,
+    NodeType,
     acknowledgement_event,
     command_event,
     parse_adapter_acknowledgement,
@@ -60,9 +63,12 @@ from relay.intent_v1 import (
     RejectedIntent,
     validate_intent,
 )
-from relay.media import MediaEvidenceProvider
+from relay.media import CameraEvidenceProvider, MediaEvidenceProvider, project_camera_video
+from relay.observation_ingress import ObservationConfiguration, ObservationIngress
+from relay.observations import ObservationError, ObservationSubmission
 from relay.state import (
     MAX_MEMBERSHIP_HISTORY_LIMIT,
+    MAX_PHYSICAL_GROUND,
     MAX_SIMULATED_AIRCRAFT,
     FleetRegistry,
     MembershipTransition,
@@ -292,10 +298,21 @@ class RelaySession:
         control_pose_signing_key: ControlPoseSigningKey | None = None,
         relay_clock_id: str = "unix_epoch_ms",
         media_evidence: MediaEvidenceProvider | None = None,
+        node_types: Mapping[int, NodeType] | None = None,
+        device_units: Mapping[int, int] | None = None,
+        media_streams: Mapping[int, str] | None = None,
+        media_cameras: Mapping[int, tuple[CameraStream, ...]] | None = None,
+        camera_evidence: CameraEvidenceProvider | None = None,
+        observation_configuration: ObservationConfiguration | None = None,
+        aircraft_limit: int | None = None,
     ) -> None:
         if audit_log.session != session_id:
             raise ValueError("audit log belongs to another session")
         self.session_id = session_identifier(session_id)
+        self._device_units = dict(device_units or {})
+        self._media_streams = dict(media_streams or {})
+        self._media_cameras = dict(media_cameras or {})
+        self._camera_evidence = camera_evidence
         self.audit_log = audit_log
         self.limits = limits
         self.clock = clock or _epoch_ms
@@ -309,6 +326,13 @@ class RelaySession:
         self.control_localization_projector = control_localization_projector
         self.control_pose_signing_key = control_pose_signing_key
         self.relay_clock_id = relay_clock_id
+        self.observation_ingress = (
+            None
+            if observation_configuration is None
+            else ObservationIngress(
+                observation_configuration, self.session_id, limits.future_clock_skew_ms
+            )
+        )
         self._capability_profile = capability_profile
         self._intent_sink: IntentSink | None = None
         self.intent_sink = intent_sink
@@ -320,6 +344,8 @@ class RelaySession:
             capability_profile=capability_profile,
             media_evidence=media_evidence,
             membership_history_limit=limits.state_membership_history,
+            node_types=node_types,
+            aircraft_limit=aircraft_limit,
         )
         self._audit_sampling = _AuditSampling()
         # Values are the last instant when the exact signed event could still pass
@@ -390,9 +416,15 @@ class RelaySession:
         frame_type = raw.get("type") if isinstance(raw, Mapping) else None
         if principal.source == "localization" and frame_type == "control_localization":
             return self.process_control_localization(raw, principal)
+        if principal.source == "console" and frame_type == "survey_lifecycle":
+            return self.process_survey_lifecycle(raw, principal)
+        if principal.source in {"adapter", "localization"} and frame_type == "observation":
+            return self.process_observation(raw, principal)
         if principal.source in REGISTERED_SOURCES and frame_type == "intent":
             return self.process_intent(raw, principal)
         if principal.source == "adapter":
+            if frame_type == "observation":
+                return self.process_observation(raw, principal)
             if frame_type == "membership":
                 return self.process_membership(raw, principal)
             if frame_type == "telemetry":
@@ -412,6 +444,49 @@ class RelaySession:
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
             return self._protocol_refusal(reason=reason, detail=detail, now=self.clock())
+
+    def on_audit_rollback(self, undo: Callable[[], None]) -> bool:
+        """Register an in-memory or filesystem undo for the current relay operation."""
+        if not callable(undo):
+            raise ValueError("rollback hook must be callable")
+        if self._audit_undo is None:
+            return False
+        self._audit_undo.append(undo)
+        return True
+
+    def process_survey_lifecycle(
+        self, raw: object, principal: Principal
+    ) -> list[dict[str, object]]:
+        """Route a console-authenticated complete/cancel request to the active survey owner."""
+        from relay.survey_area import SurveyLifecycleError, SurveyLifecycleRequest
+
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            if principal.source != "console" or principal.drone_id is not None:
+                return [
+                    self._protocol_refusal(
+                        reason="source_not_allowed",
+                        detail="survey lifecycle requests require the authenticated console",
+                        now=now,
+                    )
+                ]
+            try:
+                request = SurveyLifecycleRequest.parse(raw)
+                if request.session != self.session_id:
+                    raise SurveyLifecycleError(
+                        "session_mismatch", "survey lifecycle session is not current"
+                    )
+                self._claim_transport_event(request.event_id, request.t, principal, now)
+                handler = getattr(self.intent_sink, "survey_lifecycle", None)
+                if not callable(handler):
+                    raise SurveyLifecycleError(
+                        "survey_not_configured", "survey lifecycle is unavailable"
+                    )
+                self._append_audit({**request.to_event(), "source": principal.source})
+                return handler(request)
+            except (SurveyLifecycleError, ContractError) as error:
+                return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
 
     def process_intent(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
@@ -515,6 +590,33 @@ class RelaySession:
                             normalized=intent,
                         )
                     ]
+
+            if (
+                intent.name is IntentName.GROUND_VELOCITY
+                and not self.registry.selection_includes_ground(intent.selection)
+            ):
+                return [
+                    self._refuse_intent(
+                        raw,
+                        reason="ground_target_required",
+                        detail="ground velocity requires a selected ground node",
+                        now=now,
+                        normalized=intent,
+                    )
+                ]
+
+            if intent.name not in _GROUND_SAFE_INTENTS and self.registry.selection_includes_ground(
+                intent.selection
+            ):
+                return [
+                    self._refuse_intent(
+                        raw,
+                        reason="ground_intent_not_supported",
+                        detail="this intent cannot target a ground node",
+                        now=now,
+                        normalized=intent,
+                    )
+                ]
 
             if self.intent_sink is None:
                 return [
@@ -769,6 +871,12 @@ class RelaySession:
                             spacing=sink_result.spacing_update,
                         )
                     )
+                survey_result = (
+                    sink_result.result
+                    if sink_result.source == "survey_area"
+                    and sink_result.status is LifecycleStatus.EXECUTING
+                    else None
+                )
                 events.append(
                     self.record_lifecycle(
                         intent_id=pending.intent.intent_id,
@@ -776,6 +884,13 @@ class RelaySession:
                         source=sink_result.source,
                         reason=sink_result.reason,
                         detail=sink_result.detail,
+                        drone_id=(
+                            pending.intent.selection[0] if survey_result is not None else None
+                        ),
+                        connection_epoch=(
+                            survey_result["connection_epoch"] if survey_result is not None else None
+                        ),
+                        result=survey_result,
                     )
                 )
         pending.events = events
@@ -812,8 +927,8 @@ class RelaySession:
         return event
 
     def process_membership(self, raw: object, principal: Principal) -> list[dict[str, object]]:
-        now = self.clock()
         with self._lock, self._audit_operation():
+            now = self.clock()
             self._ensure_mutation_usable()
             if principal.source != "adapter" or principal.drone_id is None:
                 return [
@@ -837,7 +952,7 @@ class RelaySession:
                         "invalid_signature", "membership signature was not accepted"
                     )
                 self._claim_transport_event(request.event_id, request.t, principal, now)
-                transition = self._apply_membership(request)
+                transition = self._apply_membership(request, received_at=now)
             except (ContractError, RegistryError) as error:
                 return [
                     self._protocol_refusal(
@@ -849,6 +964,59 @@ class RelaySession:
                     )
                 ]
             return self._record_transition_and_state(transition, now=now)
+
+    def process_observation(self, raw: object, principal: Principal) -> list[dict[str, object]]:
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            now = self.clock()
+            try:
+                if (
+                    principal.source not in {"adapter", "localization"}
+                    or principal.drone_id is None
+                ):
+                    raise ObservationError(
+                        "source_not_allowed", "observations require a device-bound producer"
+                    )
+                submission = ObservationSubmission.parse(raw)
+                self._check_adapter_binding(submission.device_id, principal)
+                if submission.session != self.session_id:
+                    raise ObservationError("session_mismatch", "observation session is not current")
+                self.registry.check_current(submission.device_id, submission.connection_epoch)
+                if submission.node_type != self.registry.node_type(submission.device_id).value:
+                    raise ObservationError(
+                        "source_binding_mismatch", "observation node type differs from membership"
+                    )
+                if self.observation_ingress is None:
+                    raise ObservationError(
+                        "source_not_configured", "observation ingress is disabled"
+                    )
+                observation = self.observation_ingress.accept(
+                    submission, now=now, producer_role=principal.source
+                )
+                if (
+                    submission.node_type == NodeType.GROUND.value
+                    and submission.payload["kind"] == "pose"
+                ):
+                    if submission.confidence > 0:
+                        self.registry.apply_ground_pose_observation(
+                            drone_id=submission.device_id,
+                            connection_epoch=submission.connection_epoch,
+                            event_id=submission.event_id,
+                            session=submission.session,
+                            source_id=submission.source_id,
+                            frame=submission.frame,
+                            t=observation.t_ingest,
+                        )
+                    else:
+                        self.registry.clear_ground_pose_observation(
+                            drone_id=submission.device_id,
+                            connection_epoch=submission.connection_epoch,
+                        )
+                event = observation.to_mapping()
+            except (ObservationError, ContractError, RegistryError) as error:
+                return [self._protocol_refusal(reason=error.code, detail=error.detail, now=now)]
+            self._append_audit(event)
+            return [event]
 
     def process_telemetry(self, raw: object, principal: Principal) -> list[dict[str, object]]:
         now = self.clock()
@@ -865,6 +1033,11 @@ class RelaySession:
             try:
                 telemetry = parse_telemetry(raw)
                 self._check_adapter_binding(telemetry.drone, principal)
+                if self.registry.node_type(telemetry.drone) is NodeType.GROUND:
+                    raise ContractError(
+                        "ground_telemetry_requires_observation",
+                        "ground telemetry requires a framed observation",
+                    )
                 if telemetry.session != self.session_id:
                     raise ContractError(
                         "session_mismatch", "telemetry session does not match the WebSocket path"
@@ -1169,7 +1342,7 @@ class RelaySession:
                 if isinstance(frame, CapabilitiesFrame):
                     self.registry.apply_capabilities(frame)
                 elif isinstance(frame, NodeStatusFrame):
-                    self.registry.apply_node_status(frame)
+                    self.registry.apply_node_status(frame, received_at=now)
                 elif isinstance(frame, MediaFileFrame):
                     self._remember_media(frame.file)
                     self._retain_media(frame.file)
@@ -1223,8 +1396,8 @@ class RelaySession:
         acknowledgements correlate; a terminal intent cannot receive new commands.
         The audit record omits the signature; the returned frame carries it.
         """
-        now = self.clock()
         with self._lock, self._audit_operation():
+            now = self.clock()
             self._ensure_mutation_usable()
             self._prune_command_ledger(now)
             registered = self._issued_commands.get(command_id)
@@ -1247,6 +1420,10 @@ class RelaySession:
                     "command ledger is full of commands still awaiting a bounded terminal result"
                 )
             self.registry.check_current(drone_id, connection_epoch)
+            if operation in {CommandOperation.GROUND_VELOCITY, CommandOperation.GROUND_RETURN}:
+                # Revalidate at the actual signing boundary. A state sampled by
+                # the dispatcher cannot keep stale or withdrawn pose authority alive.
+                self.registry.check_ground_release(drone_id, connection_epoch, now_ms=now)
             entry = self._intents.get(intent_id)
             if entry is not None and entry.status in _TERMINAL_STATUSES:
                 raise ValueError("intent is terminal and cannot receive new commands")
@@ -1478,6 +1655,7 @@ class RelaySession:
         connection_epoch: int | None = None,
         reason: str | None = None,
         detail: str | None = None,
+        result: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         """Wire a planner/arbiter-owned lifecycle result without importing its types."""
         if status is LifecycleStatus.REFUSED:
@@ -1509,6 +1687,7 @@ class RelaySession:
                 connection_epoch=connection_epoch,
                 reason=reason,
                 detail=detail,
+                result=result,
             )
             self._remember_intent(intent_id)
             self._transition_intent(entry, status)
@@ -1749,7 +1928,7 @@ class RelaySession:
         now = self.clock()
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
-            possible_ids = [self.event_ids() for _ in range(self.registry.aircraft_limit)]
+            possible_ids = [self.event_ids() for _ in range(self.registry.node_capacity)]
             transitions = self.registry.expire_stale_telemetry(now_ms=now, event_ids=possible_ids)
             events: list[dict[str, object]] = []
             for transition in transitions:
@@ -1861,11 +2040,13 @@ class RelaySession:
             self._ensure_projection_usable()
             return {**self._metrics, "roster_version": self.registry.roster_version}
 
-    def _apply_membership(self, request: MembershipRequest) -> MembershipTransition:
+    def _apply_membership(
+        self, request: MembershipRequest, *, received_at: int
+    ) -> MembershipTransition:
         if request.action is MembershipAction.JOIN:
             return self.registry.apply_join(request)
         if request.action is MembershipAction.READINESS:
-            return self.registry.apply_readiness(request)
+            return self.registry.apply_readiness(request, received_at=received_at)
         if request.action is MembershipAction.GRACEFUL_LEAVE:
             assert request.connection_epoch is not None
             if self.leave_authorizer is None:
@@ -2412,14 +2593,63 @@ class RelaySession:
             raise AuditLogError("relay session is unusable after an audit failure")
 
     def _state_event(self, now: int) -> dict[str, object]:
-        return self.registry.state_event(
+        state = self.registry.state_event(
             session=self.session_id,
             t=now,
             event_id=self.event_ids(),
         )
+        for device in state["drones"]:
+            if device["drone_id"] in self._device_units:
+                device["unit"] = self._device_units[device["drone_id"]]
+                device["device_class"] = (
+                    "ground_vehicle" if device.get("node_type") == "ground" else "aircraft"
+                )
+            device_id = device["drone_id"]
+            if device_id in self._media_cameras:
+                context = self.registry.media_context(device_id)
+                epoch_started_at = now if context is None else context[0]
+                device["cameras"] = [
+                    {
+                        **camera.to_dict(),
+                        **project_camera_video(
+                            membership=Membership(device["membership"]),
+                            epoch_started_at=epoch_started_at,
+                            now_ms=now,
+                            evidence=None
+                            if self._camera_evidence is None
+                            else self._camera_evidence(device_id, camera.camera_id, now),
+                        ),
+                    }
+                    for camera in self._media_cameras[device_id]
+                ]
+                device["video"] = (
+                    {key: device["cameras"][0][key] for key in ("status", "last_frame_at")}
+                    if device["cameras"]
+                    else {"status": "unreported", "last_frame_at": None}
+                )
+            elif device_id in self._media_streams:
+                device["cameras"] = [
+                    {
+                        "camera_id": "primary",
+                        "label": "Primary camera",
+                        "stream": self._media_streams[device["drone_id"]],
+                        **device["video"],
+                    }
+                ]
+        return state
 
 
 _VOLATILE_STATE_KEYS = frozenset({"t", "event_id", "state_sequence"})
+_GROUND_SAFE_INTENTS = frozenset(
+    {
+        IntentName.SELECT,
+        IntentName.HOLD,
+        IntentName.ESTOP,
+        IntentName.SURVEY_AREA,
+        IntentName.GROUND_VELOCITY,
+        IntentName.COME_HOME,
+    }
+)
 # These two planner-owned objects share the per-aircraft projection budget. Four
 # maximum aircraft plus both maximum control objects still fit one 1 MiB record.
 MAX_MATERIAL_CONTROL_PROJECTION_BYTES = 128 * 1024
@@ -2437,6 +2667,7 @@ _MATERIAL_STATE_PASSTHROUGH_KEYS = frozenset(
         "mode",
         "capability_profile",
         "enabled_intent_names",
+        "requires_home_pose",
         "invalidated_intent_ids",
         "invalidation_reason",
         "prior_roster_version",
@@ -2446,6 +2677,7 @@ _MATERIAL_STATE_PASSTHROUGH_KEYS = frozenset(
 _DRONE_STATE_KEYS = frozenset(
     {
         "drone_id",
+        "node_type",
         "connection_epoch",
         "membership",
         "readiness_reasons",
@@ -2515,6 +2747,7 @@ _DRONE_REPORT_FIELDS = {
             "video_publish_state",
             "phone_battery_percent",
             "phone_thermal_state",
+            "local_height",
         }
     ),
     "video": frozenset({"status", "last_frame_at"}),
@@ -2576,8 +2809,8 @@ def _material_state_projection(state: Mapping[str, object]) -> str:
 
 
 def _material_drones_projection(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list) or len(value) > MAX_SIMULATED_AIRCRAFT:
-        raise AuditLogError("state drones require a bounded aircraft list")
+    if not isinstance(value, list) or len(value) > MAX_SIMULATED_AIRCRAFT + MAX_PHYSICAL_GROUND:
+        raise AuditLogError("state drones require a bounded mixed-node list")
     if not all(isinstance(drone, Mapping) for drone in value):
         raise AuditLogError("state drones must contain objects")
     return [_material_drone_projection(drone) for drone in value]
@@ -2642,8 +2875,26 @@ def _bounded_control_projection_snapshot(value: object, field: str) -> object:
 
 
 def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]:
-    missing = _DRONE_STATE_KEYS - set(drone)
-    unknown = set(drone) - _DRONE_STATE_KEYS
+    expected = _DRONE_STATE_KEYS
+    if "unit" in drone or "device_class" in drone:
+        expected = expected | {"unit", "device_class"}
+    if "cameras" in drone:
+        expected = expected | {"cameras"}
+        cameras = drone["cameras"]
+        if (
+            not isinstance(cameras, list)
+            or len(cameras) > MAX_CAMERAS_PER_DEVICE
+            or any(
+                not isinstance(camera, Mapping)
+                or set(camera) != {"camera_id", "label", "stream", "status", "last_frame_at"}
+                for camera in cameras
+            )
+        ):
+            raise AuditLogError("configured cameras must match the bounded media projection")
+    if drone.get("node_type") == "ground":
+        expected = expected | {"ground_readiness"}
+    missing = expected - set(drone)
+    unknown = set(drone) - expected
     if missing or unknown:
         detail = []
         if missing:
@@ -2670,7 +2921,17 @@ def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]
         not isinstance(home_pose, Mapping) or set(home_pose) != {"x", "y", "z"}
     ):
         raise AuditLogError("drone home_pose fields do not match the bounded projection")
-    projection = {key: drone[key] for key in _DRONE_STATE_KEYS - _VOLATILE_DRONE_KEYS}
+    ground_readiness = drone.get("ground_readiness")
+    if ground_readiness is not None and (
+        not isinstance(ground_readiness, Mapping)
+        or set(ground_readiness) != {"source_id"}
+        or (
+            ground_readiness["source_id"] is not None
+            and not isinstance(ground_readiness["source_id"], str)
+        )
+    ):
+        raise AuditLogError("drone ground_readiness fields do not match the bounded projection")
+    projection = {key: drone[key] for key in expected - _VOLATILE_DRONE_KEYS}
     for report, timestamp in _TIMESTAMPED_DRONE_REPORTS.items():
         value = projection.get(report)
         if value is None and report != "video":
@@ -2678,6 +2939,17 @@ def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]
         if not isinstance(value, Mapping) or set(value) != _DRONE_REPORT_FIELDS[report]:
             raise AuditLogError(f"drone {report} fields do not match the bounded projection")
         projection[report] = {key: item for key, item in value.items() if key != timestamp}
+    node_status = projection.get("node_status")
+    if node_status is not None:
+        assert isinstance(node_status, Mapping)
+        local_height = node_status["local_height"]
+        if local_height is not None and (
+            not isinstance(local_height, Mapping)
+            or set(local_height) != {"z_m", "source", "age_ms", "reported_at_ms"}
+        ):
+            raise AuditLogError(
+                "drone node_status local_height fields do not match the bounded projection"
+            )
     camera = projection.get("camera_capabilities")
     if camera is not None:
         assert isinstance(camera, Mapping)

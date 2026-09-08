@@ -1,8 +1,11 @@
+import type { NavigationClient } from '../navigation'
+import type { MapAuthoringClient } from './map/authoring/client'
 import type { ComponentType } from 'react'
 import type { CatalogController } from '../catalog/use-catalog'
 import type { useControlConsole } from '../control/use-control-console'
 import type { GestureProducerDependencies } from '../gesture/use-gesture-producer'
 import type { MediaRuntime } from '../media/runtime'
+import type { MapEndpoint } from '../relay/map-endpoint'
 import type { TranscriptClient } from '../voice/client'
 import type { UsePushToTalkOptions } from '../voice/use-push-to-talk'
 
@@ -16,7 +19,8 @@ export type ModuleId =
   | 'speech'
   | 'captures'
   | 'worlds'
-  | 'reference'
+  | 'devices'
+  | 'map'
 
 /** Browser seams for the push-to-talk recorder; tests inject fakes. */
 export type VoiceDependencies = Pick<
@@ -29,6 +33,10 @@ export type VoiceDependencies = Pick<
  * transcript client means the relay has no transcription endpoint here.
  */
 export interface ModuleServices {
+  /** Accepted-map review port; absent until a real provider is connected. */
+  navigation?: NavigationClient
+  /** Explicit saved-map integration; absent backend actions remain unavailable. */
+  mapAuthoring?: MapAuthoringClient
   transcript?: TranscriptClient
   gesture?: GestureProducerDependencies
   voice?: VoiceDependencies
@@ -45,6 +53,10 @@ export interface ModuleProps {
   services: ModuleServices
   /** Playback runtime; absent until the media bootstrap provides a configuration. */
   media?: MediaRuntime
+  /** Relay WebSocket base URL from the bootstrap; absent in the fixture and without a bootstrap. */
+  relayBaseUrl?: string
+  /** The session's occupancy map behind the relay bearer; absent means the map cannot be read. */
+  mapEndpoint?: MapEndpoint
 }
 
 export interface ModuleDefinition {

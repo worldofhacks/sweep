@@ -1,6 +1,13 @@
+import { groundControlBlockedReason } from '../../control/ground'
 import { useEffect, useReducer, useState } from 'react'
 import './speech.css'
-import { formatDroneId, isTerminalRequest, type ControlState, type RequestRecord } from '../../control/state'
+import {
+  deviceLabeller,
+  isTerminalRequest,
+  type ControlState,
+  type DeviceLabeller,
+  type RequestRecord,
+} from '../../control/state'
 import type { DroneId, VoicePlan, VoicePlanStep } from '../../relay/contract'
 import { isValidRoomId } from '../../control/intent'
 import { Pane, type PaneTab } from '../../shell/Pane'
@@ -188,7 +195,8 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
         ? prepareCapture(compiled.args.room_id, 'console', compiled.args.pattern)
         : compiled.intent === 'hold'
           ? prepareHold('console')
-          : prepareSelect(compiled.args.ids, 'console')
+          : compiled.intent === 'select' ? prepareSelect(compiled.args.ids, 'console')
+            : controller.prepareIntent({ name: compiled.intent, args: compiled.args }, 'console')
     setSpeech((previous) => ({
       ...previous,
       draftedIntentId: intent?.intent_id ?? previous.draftedIntentId,
@@ -244,7 +252,7 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
   return (
     <Pane
       title="Speech to intents"
-      note="An utterance compiles to intents, the arbiter validates, you confirm. Never a command straight to an aircraft."
+      note="An utterance compiles to intents, the arbiter validates, you confirm. Never a command straight to a device."
       tabs={PANES}
       activeTab={pane}
       onTabChange={(id) => setPane(id as SpeechPane)}
@@ -339,6 +347,7 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
                 now={now()}
                 blocked={stageBlocked}
                 onStage={stageStep}
+                label={deviceLabeller(state.aircraft)}
               />
             )}
             {compiled && (
@@ -523,6 +532,7 @@ function stageBlockedReason(
     return `${step.name} is not enabled by the relay capability profile.`
   }
   const notReady = (id: DroneId) => !isReady(state.aircraft[id])
+  const label = deviceLabeller(state.aircraft)
   if (step.name === 'select') {
     const rawIds = step.args.ids
     const ids = Array.isArray(rawIds)
@@ -534,7 +544,7 @@ function stageBlockedReason(
       return 'The compiled selection is malformed; say it again.'
     }
     const stale = ids.find(notReady)
-    if (stale !== undefined) return `${formatDroneId(stale)} is no longer ready.`
+    if (stale !== undefined) return `${label(stale)} is no longer ready.`
     return null
   }
   if (['arm', 'land_all'].includes(step.name)) return null
@@ -542,11 +552,11 @@ function stageBlockedReason(
     step.selection.length === state.selection.length && step.selection.every((id) => state.selection.includes(id))
   if (!sameSelection) {
     return `The selection changed since the plan compiled (step targets ${
-      step.selection.map(formatDroneId).join(', ') || 'none'
-    }, selection is ${state.selection.map(formatDroneId).join(', ') || 'empty'}); say it again.`
+      step.selection.map(label).join(', ') || 'none'
+    }, selection is ${state.selection.map(label).join(', ') || 'empty'}); say it again.`
   }
   const stale = state.selection.find(notReady)
-  if (stale !== undefined) return `${formatDroneId(stale)} is not ready or selectable.`
+  if (stale !== undefined) return `${label(stale)} is not ready or selectable.`
   if (step.name === 'capture_room') {
     const room = typeof step.args.room_id === 'string' ? step.args.room_id : ''
     if (!isValidRoomId(room)) return `Room ${room || roomId || '(none)'} is not a valid room identifier.`
@@ -554,7 +564,7 @@ function stageBlockedReason(
     const selected = state.aircraft[state.selection[0]]
     const pattern = String(step.args.pattern)
     if (!selected.camera_patterns.includes(pattern)) {
-      return `${formatDroneId(selected.drone_id)} does not report ${pattern}; the console will not substitute a pattern.`
+      return `${label(selected.drone_id)} does not report ${pattern}; the console will not substitute a pattern.`
     }
   }
   return null
@@ -567,6 +577,7 @@ function RelayPlanCard({
   now,
   blocked,
   onStage,
+  label,
 }: {
   relay: RelayPlanState
   view: RelayPlanView
@@ -574,6 +585,7 @@ function RelayPlanCard({
   now: number
   blocked: string | null
   onStage: () => void
+  label: DeviceLabeller
 }) {
   const { plan } = relay
   const remainingMs = view.deadline === null ? null : Math.max(0, view.deadline - now)
@@ -609,7 +621,7 @@ function RelayPlanCard({
                   <span className="is-index">{step.index + 1}</span>
                   <span className="is-name">{step.name}</span>
                   <span className="is-targets">
-                    {step.selection.length ? step.selection.map(formatDroneId).join(', ') : 'whole roster'}
+                    {step.selection.length ? step.selection.map(label).join(', ') : 'whole roster'}
                   </span>
                   <span className="is-args">{JSON.stringify(step.args)}</span>
                   {step.confirm_required ? (
@@ -711,6 +723,8 @@ function planTone(kind: VoicePlan['kind']): 'compiled' | 'ambiguous' | 'refused'
 function compileContext(state: ControlState, roomId: string): CompileContext {
   return {
     roomId: roomId.trim(),
+    selection: state.selection,
+    selectedGroundIds: state.selection.filter((id) => state.aircraft[id]?.node_type === 'ground'),
     pattern: state.capturePattern,
     readyIds: sortedAircraft(state.aircraft)
       .filter(isReady)
@@ -791,9 +805,10 @@ function emissionBlockedReason(
   }
   if (state.estop) return 'The network stop is active. Requests are refused until the relay reports it clear.'
   const notReady = (id: number) => !isReady(state.aircraft[id])
+  const label = deviceLabeller(state.aircraft)
   if (compiled.intent === 'select') {
     const stale = compiled.args.ids.find(notReady)
-    if (stale !== undefined) return `${formatDroneId(stale)} is no longer ready.`
+    if (stale !== undefined) return `${label(stale)} is no longer ready.`
     if (
       compiled.args.ids.length === state.selection.length &&
       compiled.args.ids.every((id) => state.selection.includes(id))
@@ -804,13 +819,14 @@ function emissionBlockedReason(
   }
   if (state.selection.length === 0) return 'Select at least one ready aircraft.'
   const stale = state.selection.find(notReady)
-  if (stale !== undefined) return `${formatDroneId(stale)} is not ready or selectable.`
+  if (stale !== undefined) return `${label(stale)} is not ready or selectable.`
   if (compiled.intent === 'hold') return null
+  if (compiled.intent === 'ground_velocity' || compiled.intent === 'come_home') return groundControlBlockedReason(state, compiled.intent)
   if (!compiled.args.room_id) return 'Enter a room identifier.'
   if (state.selection.length !== 1) return 'Select exactly one ready aircraft for capture_room.'
   const selected = state.aircraft[state.selection[0]]
   if (!selected.camera_patterns.includes(compiled.args.pattern)) {
-    return `${formatDroneId(selected.drone_id)} does not report ${compiled.args.pattern}; the console will not substitute a pattern.`
+    return `${label(selected.drone_id)} does not report ${compiled.args.pattern}; the console will not substitute a pattern.`
   }
   return null
 }

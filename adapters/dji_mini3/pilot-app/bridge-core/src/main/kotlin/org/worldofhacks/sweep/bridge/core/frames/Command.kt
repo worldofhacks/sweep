@@ -1,6 +1,7 @@
 package org.worldofhacks.sweep.bridge.core.frames
 
 import org.worldofhacks.sweep.bridge.core.json.Json
+import org.worldofhacks.sweep.bridge.core.json.JsonInt
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonString
 import org.worldofhacks.sweep.bridge.core.signing.Signing
@@ -36,14 +37,31 @@ sealed interface CommandArgs {
 
     fun toJson(): JsonObject
 
-    data class Takeoff(val zMm: Long) : CommandArgs {
+    data class Takeoff(
+        val zMm: Long,
+        val maximumHeightMm: Long? = null,
+        val maxLocalHeightAgeMs: Long? = null,
+    ) : CommandArgs {
         override val operation get() = CommandOperation.TAKEOFF
-        override fun toJson() = Json.json("z_mm" to zMm)
+        override fun toJson() = Json.json("z_mm" to zMm).let { original ->
+            var result = original
+            maximumHeightMm?.let { result = result.with("maximum_height_mm", JsonInt(it)) }
+            maxLocalHeightAgeMs?.let { result = result.with("max_local_height_age_ms", JsonInt(it)) }
+            result
+        }
     }
 
-    data class Goto(val xMm: Long, val yMm: Long, val zMm: Long, val speedMmS: Long) : CommandArgs {
+    data class Goto(
+        val xMm: Long,
+        val yMm: Long,
+        val zMm: Long,
+        val speedMmS: Long,
+        val navigationRouteId: String? = null,
+    ) : CommandArgs {
         override val operation get() = CommandOperation.GOTO
-        override fun toJson() = Json.json("x_mm" to xMm, "y_mm" to yMm, "z_mm" to zMm, "speed_mm_s" to speedMmS)
+        override fun toJson() = Json.json("x_mm" to xMm, "y_mm" to yMm, "z_mm" to zMm, "speed_mm_s" to speedMmS).let {
+            if (navigationRouteId == null) it else it.with("navigation_route_id", JsonString(navigationRouteId))
+        }
     }
 
     data class RotateTo(val yawMdeg: Long, val speedMdegS: Long) : CommandArgs {
@@ -98,6 +116,7 @@ sealed interface CommandArgs {
 
     companion object {
         private const val CODE = "invalid_command"
+        private const val NAVIGATION_ROUTE_ID_MAX_LENGTH = 128
 
         fun parse(operation: CommandOperation, args: JsonObject): CommandArgs {
             val expected = when (operation) {
@@ -111,15 +130,40 @@ sealed interface CommandArgs {
                 CommandOperation.CAMERA_CAPABILITIES, CommandOperation.CAMERA_READY,
                 -> emptySet()
             }
-            if (args.keys != expected) {
+            val navigationGoto = operation == CommandOperation.GOTO && args.keys == expected + "navigation_route_id"
+            val supervisedTakeoff = operation == CommandOperation.TAKEOFF &&
+                args.keys == expected + setOf("maximum_height_mm", "max_local_height_age_ms")
+            if (args.keys != expected && !navigationGoto && !supervisedTakeoff) {
                 throw ContractError(CODE, "${operation.wire} arguments do not match the v1 contract")
             }
             fun integer(field: String) = Fields.integer(args[field], field, CODE)
             fun positive(field: String) = Fields.positiveInt(args[field], field, CODE)
             fun id(field: String) = Fields.nonEmptyString(args[field], field, CODE)
             return when (operation) {
-                CommandOperation.TAKEOFF -> Takeoff(integer("z_mm"))
-                CommandOperation.GOTO -> Goto(integer("x_mm"), integer("y_mm"), integer("z_mm"), positive("speed_mm_s"))
+                CommandOperation.TAKEOFF -> {
+                    val height = integer("z_mm")
+                    if (!supervisedTakeoff) Takeoff(height) else {
+                        val ceiling = positive("maximum_height_mm")
+                        val age = positive("max_local_height_age_ms")
+                        if (height <= 0 || height > ceiling || ceiling > 2590 || age > 500) {
+                            throw ContractError(CODE, "takeoff supervised height policy is outside supported bounds")
+                        }
+                        Takeoff(height, ceiling, age)
+                    }
+                }
+                CommandOperation.GOTO -> Goto(
+                    integer("x_mm"),
+                    integer("y_mm"),
+                    integer("z_mm"),
+                    positive("speed_mm_s"),
+                    args["navigation_route_id"]?.let {
+                        val routeId = Fields.nonEmptyString(it, "navigation_route_id", CODE)
+                        if (!Fields.isCanonicalPrintable(routeId, NAVIGATION_ROUTE_ID_MAX_LENGTH)) {
+                            throw ContractError(CODE, "navigation_route_id must be a canonical identifier")
+                        }
+                        routeId
+                    },
+                )
                 CommandOperation.ROTATE_TO -> RotateTo(integer("yaw_mdeg"), positive("speed_mdeg_s"))
                 CommandOperation.HOVER -> Hover
                 CommandOperation.LAND -> Land

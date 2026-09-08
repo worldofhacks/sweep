@@ -61,9 +61,7 @@ def build_transcript_service(
             )
             return TranscriptService(transcription=transcription)
         transport = AnthropicTransport(api_key=api_key)
-    capability_profile = config.planning.effective_capability_profile(
-        runtime.settings.capability_profile
-    )
+    capability_profile = runtime.capability_profile
     qualified_voice_intents = _qualified_voice_intents(values, capability_profile)
     if not qualified_voice_intents:
         _LOGGER.warning(
@@ -73,9 +71,13 @@ def build_transcript_service(
     compiler = RelayTranscriptCompiler(
         sessions=runtime.sessions.get,
         transport=transport,
-        translation_policy=TranslationPolicy(
-            frame=config.planning.translation_frame,
-            step_m=config.planning.translation_step_m,
+        translation_policy=(
+            TranslationPolicy(
+                frame=config.planning.translation_frame,
+                step_m=config.planning.translation_step_m,
+            )
+            if config.planning is not None
+            else None
         ),
         capability_profile=capability_profile,
         qualified_voice_intents=qualified_voice_intents,

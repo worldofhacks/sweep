@@ -1,14 +1,15 @@
 import { FleetContext } from './FleetContext'
 import { CapturesModule } from './captures/CapturesModule'
 import { ControlModule } from './control/ControlModule'
+import { DevicesModule } from './devices/DevicesModule'
 import { GestureModule } from './gesture/GestureModule'
 import { LiveModule } from './live/LiveModule'
-import { ReferenceModule } from './reference/ReferenceModule'
+import { MapModule } from './map/MapModule'
 import { SpeechModule } from './speech/SpeechModule'
 import { WorldsModule } from './worlds/WorldsModule'
 import type { ModuleDefinition, ModuleId } from './types'
 
-/** Navigation order from the design: Control, Live, Gesture, Speech, Captures, Worlds, Reference. */
+/** Navigation order: Control, Live, Gesture, Speech, Captures, Worlds, Devices, Map. */
 export const MODULES: readonly ModuleDefinition[] = [
   {
     id: 'control',
@@ -38,7 +39,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     id: 'speech',
     label: 'Speech',
     title: 'Speech to intents',
-    note: 'An utterance compiles to intents, the arbiter validates, you confirm. Never a command straight to an aircraft.',
+    note: 'An utterance compiles to intents, the arbiter validates, you confirm. Never a command straight to a device.',
     component: SpeechModule,
     context: FleetContext,
   },
@@ -46,7 +47,7 @@ export const MODULES: readonly ModuleDefinition[] = [
     id: 'captures',
     label: 'Captures',
     title: 'Capture library',
-    note: 'Captured media by room, capture, aircraft and time.',
+    note: 'Captured media by room, capture, device and time.',
     component: CapturesModule,
     context: FleetContext,
   },
@@ -59,11 +60,19 @@ export const MODULES: readonly ModuleDefinition[] = [
     context: FleetContext,
   },
   {
-    id: 'reference',
-    label: 'Reference',
-    title: 'Reference',
-    note: 'Mission, health, configuration, ledger, map, and the states gallery.',
-    component: ReferenceModule,
+    id: 'devices',
+    label: 'Devices',
+    title: 'Devices',
+    note: 'Every device the relay reports, its class and feeds, and the configuration a node needs to join.',
+    component: DevicesModule,
+    context: FleetContext,
+  },
+  {
+    id: 'map',
+    label: 'Map',
+    title: 'Fleet map',
+    note: 'Reported device positions, LiDAR returns, and the relay occupancy map.',
+    component: MapModule,
     context: FleetContext,
   },
 ]

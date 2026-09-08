@@ -50,6 +50,7 @@ import org.worldofhacks.sweep.bridge.BridgeNode
 import org.worldofhacks.sweep.bridge.SetupSummary
 import org.worldofhacks.sweep.bridge.core.localization.LocalizationPinsJson
 import org.worldofhacks.sweep.bridge.flight.FlightCards
+import org.worldofhacks.sweep.bridge.flight.GimbalPitchCard
 import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
 import org.worldofhacks.sweep.bridge.node.CommandRecord
 import org.worldofhacks.sweep.bridge.node.FlightStates
@@ -60,6 +61,7 @@ import org.worldofhacks.sweep.bridge.publish.ui.PublishRow
 import org.worldofhacks.sweep.bridge.publish.ui.PublishSetupFields
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 import org.worldofhacks.sweep.bridge.session.ExportResult
+import org.worldofhacks.sweep.bridge.session.GimbalPitchControls
 import org.worldofhacks.sweep.bridge.session.RawEvidenceSession
 import org.worldofhacks.sweep.bridge.session.SessionState
 import org.worldofhacks.sweep.bridge.session.SimulationControls
@@ -129,6 +131,7 @@ fun SessionScreen(node: BridgeNode, session: AircraftSession, variant: String, s
             item { ReadinessCard(link, node) }
             item { NodeStatusCard(link, aircraft, now) }
             item { FlightCards(session) } // Phase E: flight loop and #85 probe cards
+            (session as? GimbalPitchControls)?.let { controls -> item { GimbalPitchCard(controls) } }
             item { CommandsCard(link.commands, now) }
             item { StatusCard(sdk) }
             item { IdentityCard(sdk) }
@@ -205,7 +208,7 @@ private fun SetupCard(
         !setup.loaded -> "Loading the encrypted setup"
         !(relayUrl.startsWith("ws://") || relayUrl.startsWith("wss://")) -> "Relay URL must start with ws:// or wss://"
         session.isBlank() -> "Session id is required"
-        droneNumber == null || droneNumber !in 1..4 -> "Aircraft number must be 1 to 4"
+        droneNumber == null || droneNumber <= 0 -> "Aircraft number must be a positive integer"
         !tokenReady -> "Enter the node token once"
         else -> null
     }

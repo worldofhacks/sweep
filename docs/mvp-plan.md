@@ -1,5 +1,11 @@
 # Sweep MVP delivery plan
 
+Current platform scope: one console for an additive fleet of aerial drones and ground robots,
+with explicit onboard camera/sensor inventory and real live data only. See the
+[modular fleet contract](modular-fleet.md) and its current implementation/qualification boundaries.
+Model-specific milestones and recorded tests below retain their original evidence scope.
+
+
 This plan turns the PRD into issue-ready work without creating a second delivery taxonomy. M0 through M4 are the canonical milestones. M1 proves button-driven room capture through one Mini 3 and Marble while gesture work proceeds against the same frozen input contracts. The transcript-to-plan compiler begins against two-drone sim and relay state; push-to-talk capture may begin after M1.E. M2 scales real hardware control to four Mini 3 nodes with live session membership. Real known-map autonomous indoor traversal becomes ready after M2.0. The lanes converge for the composed walkthrough and recorded demo.
 
 The MVP targets a live technical demonstration. Production governance and operations move to F.6. All hardware-safety gates remain in the active milestones.

@@ -1,8 +1,10 @@
+import { deviceLabeller } from '../../control/state'
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import './gesture.css'
 import { drawLandmarkOverlay } from '../../gesture/overlay'
 import {
   NEVER_GESTURE_EMITTABLE,
+  type GestureProfile,
   type GestureCategory,
   type GesturePair,
 } from '../../gesture/policy'
@@ -15,6 +17,9 @@ import { Pane, type PaneTab } from '../../shell/Pane'
 import { formatTime, humanizeCode, shortId } from '../../shell/format'
 import type { ModuleProps } from '../types'
 import { TargetStrip } from './TargetStrip'
+import { flightActionLabel } from '../../gesture/flight'
+import { describeGestureAction } from '../../gesture/policy'
+import { FlightControls } from './FlightControls'
 
 type GesturePane = 'camera' | 'vocab'
 
@@ -57,10 +62,23 @@ interface ReadoutState {
  * an accepted gesture drafts a preview with source webcam, and thumb gestures
  * confirm or cancel that preview. Every state that emits nothing is shown.
  */
-export function GestureModule({ controller, now, roomId, services }: ModuleProps) {
+export function GestureModule(props: ModuleProps) {
+  const [profile, setProfile] = useState<GestureProfile>('capture')
+  const changeProfile = (next: GestureProfile) => {
+    if (next === profile) return
+    if (props.controller.pendingRequest) props.controller.cancelRequest(props.controller.pendingRequest.intent.intent_id)
+    setProfile(next)
+  }
+  return <GestureWorkspace key={profile} {...props} profile={profile} changeProfile={changeProfile} />
+}
+
+function GestureWorkspace({ controller, now, roomId, services, profile, changeProfile }: ModuleProps & {
+  profile: GestureProfile
+  changeProfile(profile: GestureProfile): void
+}) {
   const [pane, setPane] = useState<GesturePane>('camera')
   const { view, pairs, videoRef, bindVideo, enable, disable, selectDevice, downloadRecording, clearRecording } =
-    useGestureProducer({ control: controller, roomId, dependencies: services.gesture })
+    useGestureProducer({ control: controller, roomId, dependencies: services.gesture, profile })
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const readout = useReadout(view, now)
 
@@ -78,6 +96,19 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
       tabsLabel="Gesture panes"
     >
       <TargetStrip controller={controller} />
+      <fieldset className="gs-profile">
+        <legend>Gesture profile</legend>
+        <label><input type="radio" name="gesture-profile" checked={profile === 'capture'} onChange={() => changeProfile('capture')} /> Capture / HOLD (default)</label>
+        <label><input type="radio" name="gesture-profile" checked={profile === 'flight'} onChange={() => changeProfile('flight')} /> Flight (opt in)</label>
+        <label><input type="radio" name="gesture-profile" checked={profile === 'ground'} onChange={() => changeProfile('ground')} /> Ground pulses (opt in)</label>
+        <label><input type="radio" name="gesture-profile" checked={profile === 'fleet'} onChange={() => changeProfile('fleet')} /> Fleet motion (opt in)</label>
+        <label><input type="radio" name="gesture-profile" checked={profile === 'swarm'} onChange={() => changeProfile('swarm')} /> Swarm formations (opt in)</label>
+        <p>Switching profile stops tracking, cancels the pending preview and starts a new recording. Download the current recording first if needed.</p>
+      </fieldset>
+      {profile === 'ground' && <p className="gs-safety-note">One selected ground robot. Point up drafts a forward pulse (80 mm/s); victory drafts left yaw and I love you drafts right yaw (350 mrad/s), each for 250 ms. Open palm drafts HOLD. Thumb up confirms only a gesture preview. These requested parameters do not guarantee distance or angle; local motion checks still apply.</p>}
+      {profile === 'fleet' && <p className="gs-safety-note">One step per translation using the relay-configured frame. Ground nodes using signed local observations require the Ground pulses profile. Point up: north. Victory: east. Closed fist: south. I love you: west. Open palm: hold. Use manual controls for arming and flight actions.</p>}
+      {profile === 'swarm' && <p className="gs-safety-note">Victory drafts the next coordinated formation; open palm drafts hold. Formation availability follows the relay capability profile. Formations require an aircraft-only selection. Use Ground pulses for robot motion.</p>}
+      {profile === 'flight' && <FlightControls controller={controller} />}
       {pane === 'camera' ? (
         <div data-two="1" className="gs-two">
           <div className="gs-column">
@@ -112,15 +143,15 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
               </button>
               <span className="gs-hint">
                 {view.status === 'tracking'
-                  ? 'Score must reach 0.80 and the pose must hold for its dwell window.'
+                  ? 'Use the pose threshold below with 80% strong frames through its full dwell window.'
                   : 'Off by default. Enabling the camera never bypasses confirmation, the arbiter or the physical RC.'}
               </span>
             </div>
             <TrackingStatus view={view} connection={controller.state.webcamConnection} />
             <Meters view={view} />
             <p className="gs-safety-note">
-              estop, arm, takeoff and free-flight motion are never gesture-emittable. The network stop stays
-              on its own keyboard connection, and the physical RC pilot stays primary.
+              {profile === 'capture' ? 'Capture / HOLD only. Choose a motion profile explicitly to use motion gestures.' : 'Gestures draft previews; a pose never sends a motion command by itself.'}{' '}
+              The network stop stays on its own keyboard connection, and the physical RC pilot stays primary.
             </p>
           </div>
 
@@ -128,12 +159,12 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
             <p className="gs-eyebrow is-first">Gesture-to-intent pairs</p>
             <div className="gs-pairs">
               {pairs.map((pair) => (
-                <PairRow key={pair.gesture} pair={pair} view={view} />
+                <PairRow key={pair.gesture} pair={pair} view={view} label={deviceLabeller(controller.state.aircraft)} />
               ))}
             </div>
             <NeverEmittable />
             <p className="gs-eyebrow">Candidate intent preview</p>
-            <CandidatePreview controller={controller} view={view} />
+            <CandidatePreview controller={controller} view={view} profile={profile} />
             <p className="gs-eyebrow">Readout</p>
             <div className="gs-recording">
               <span>
@@ -174,7 +205,7 @@ export function GestureModule({ controller, now, roomId, services }: ModuleProps
         <div data-two="1" className="gs-two">
           <div className="gs-column">
             <p className="gs-intro">
-              The four MediaPipe poses this console maps. A pose needs a classifier score of 0.80 and its full
+              The {pairs.length} MediaPipe poses this profile maps. Each pose uses the score threshold shown below, an 80% strong-frame consensus and its full
               dwell window; confirm and cancel use the shorter 400 ms window so an operator can answer a preview
               quickly.
             </p>
@@ -292,6 +323,7 @@ function Meters({ view }: { view: GestureProducerView }) {
               : '—'
         }
       />
+      {'frames' in view.outcome && <p className="gs-consensus" aria-label="Gesture frame consensus">{view.outcome.strongFrames} / {view.outcome.frames} strong frames · 80% required</p>}
       <div className="gs-outcome">
         <span>{humanizeCode(view.phase)}</span>
         {view.frame?.hands[0] && <span className="mono">{view.frame.hands[0].rawCategory ?? 'No gesture'}</span>}
@@ -319,7 +351,9 @@ function Meter({ label, value, text }: { label: string; value: number; text: str
   )
 }
 
-function PairRow({ pair, view }: { pair: GesturePair; view: GestureProducerView }) {
+function PairRow({ pair, view, label }: { pair: GesturePair; view: GestureProducerView; label: (id: number) => string }) {
+  const readiness = view.actionReadiness.find((item) => item.pair === pair)
+  const targets = readiness?.scope === 'session' ? 'session (no motor targets)' : readiness?.targets.map(label).join(', ') || 'no targets'
   const active = 'pair' in view.outcome && view.outcome.pair.gesture === pair.gesture
   const pct =
     active && view.outcome.kind === 'candidate'
@@ -334,6 +368,9 @@ function PairRow({ pair, view }: { pair: GesturePair; view: GestureProducerView 
       <span className="gs-pair-name">{gestureName(pair.gesture)}</span>
       <span className="gs-pair-status">{pairStatus(pair)}</span>
       <span className="gs-pair-dwell">{dwellLabel(pair)}</span>
+      <span className={readiness?.blockedReason ? 'gs-pair-readiness gs-pair-blocked' : 'gs-pair-readiness'}>
+        {readiness?.blockedReason ? `Unavailable: ${readiness.blockedReason}` : `Ready to ${describeGestureAction(pair.action)} for ${targets}.`}
+      </span>
     </div>
   )
 }
@@ -356,9 +393,11 @@ function NeverEmittable() {
 function CandidatePreview({
   controller,
   view,
+  profile,
 }: {
   controller: ModuleProps['controller']
   view: GestureProducerView
+  profile: GestureProfile
 }) {
   const pending = controller.pendingRequest
   const gesturePreview = pending?.intent.source === 'webcam' ? pending : null
@@ -374,13 +413,16 @@ function CandidatePreview({
             {gesturePreview.plan?.title}. Thumb up confirms and sends through the webcam source; thumb down
             cancels. Nothing is sent until confirmed.
           </p>
+          <p>Targets: {gesturePreview.intent.selection.map(deviceLabeller(controller.state.aircraft)).join(', ') || 'session (no motor targets)'}.</p>
         </>
       ) : (
         <>
           <strong>No gesture-drafted preview</strong>
           <p>
-            Hold an open palm to draft capture_room or a closed fist to draft hold. The draft appears in the
-            dock and here; it is never sent without confirmation.
+            {profile === 'capture'
+              ? 'Hold an open palm to draft capture_room or a closed fist to draft hold.'
+              : 'Use the gesture guide to draft an action for the selected devices.'}{' '}
+            The draft appears in the dock and here; it is never sent without confirmation.
           </p>
         </>
       )}
@@ -449,7 +491,7 @@ function notableEntry(outcome: GestureProducerView['outcome']): Omit<ReadoutEntr
     case 'low_confidence':
       return {
         label: 'low confidence',
-        text: `${gestureName(outcome.pair.gesture)} scored ${Math.round(outcome.score * 100)}%; the threshold is ${Math.round(outcome.pair.minScore * 100)}%. Nothing was emitted.`,
+        text: `${gestureName(outcome.pair.gesture)} scored ${Math.round(outcome.score * 100)}%; the threshold is ${Math.round(outcome.pair.minScore * 100)}%. ${outcome.strongFrames}/${outcome.frames} strong frames. Nothing was emitted.`,
         blocked: true,
       }
     case 'dwell_timeout':
@@ -461,7 +503,9 @@ function notableEntry(outcome: GestureProducerView['outcome']): Omit<ReadoutEntr
     case 'duplicate_suppressed':
       return {
         label: 'duplicate suppressed',
-        text: `${gestureName(outcome.pair.gesture)} repeated before the hand returned to neutral. Nothing was emitted.`,
+        text: outcome.category === outcome.pair.gesture
+          ? `${gestureName(outcome.category)} repeated before the hand returned to neutral. Nothing was emitted.`
+          : `${gestureName(outcome.category)} requires a neutral release after ${gestureName(outcome.pair.gesture)}. Nothing was emitted.`,
         blocked: true,
       }
     case 'unmapped':
@@ -526,6 +570,9 @@ function describeNotable(outcome: GestureProducerView['outcome']): string {
 }
 
 function pairStatus(pair: GesturePair): string {
+  if (pair.action.kind === 'draft' && pair.action.name !== 'capture_room' && pair.action.name !== 'hold') {
+    return `previews ${pair.action.name === 'translate' || pair.action.name === 'formation_next' || pair.action.name === 'ground_velocity' ? describeGestureAction(pair.action) : flightActionLabel(pair.action)}`
+  }
   if (pair.action.kind === 'draft') return `emits ${pair.action.name} as a preview`
   return pair.action.kind === 'confirm' ? 'confirms the pending preview' : 'cancels the pending preview'
 }
@@ -536,6 +583,7 @@ function dwellLabel(pair: GesturePair): string {
 
 /** "Open_Palm" reads as "Open palm", the way the design names poses. */
 function gestureName(category: GestureCategory): string {
+  if (category === 'ILoveYou') return 'I love you'
   const words = category.replaceAll('_', ' ')
   return words.charAt(0).toUpperCase() + words.slice(1).toLowerCase()
 }

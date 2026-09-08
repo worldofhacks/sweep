@@ -2,6 +2,7 @@ package org.worldofhacks.sweep.bridge.node
 
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import java.io.File
 import kotlin.math.abs
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -13,10 +14,12 @@ import org.worldofhacks.sweep.bridge.core.frames.AcknowledgementFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
 import org.worldofhacks.sweep.bridge.core.frames.NodeStatusFrame
+import org.worldofhacks.sweep.bridge.core.frames.ObservationSubmission
 import org.worldofhacks.sweep.bridge.core.frames.PhoneThermalState
 import org.worldofhacks.sweep.bridge.core.frames.TelemetryFrame
 import org.worldofhacks.sweep.bridge.core.frames.VideoPublishState
 import org.worldofhacks.sweep.bridge.core.json.JsonBool
+import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonInt
 import org.worldofhacks.sweep.bridge.core.json.JsonNull
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
@@ -62,10 +65,40 @@ class RelayLinkTest {
         aircraft: FakeAircraft,
         readiness: ReadinessInput = ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true),
         token: String = String(key, Charsets.UTF_8),
-    ): RelayLink = RelayLink(config(stub, token), aircraft, aircraft, phone, timing = timing, log = { logs += it }).also {
+        localizationPins: LocalizationPins? = null,
+        navigationAdmission: NavigationAdmissionConfig? = null,
+    ): RelayLink = RelayLink(
+        config(stub, token, localizationPins),
+        aircraft,
+        aircraft,
+        phone,
+        timing = timing,
+        log = { logs += it },
+        navigationAdmission = navigationAdmission,
+    ).also {
         it.setReadiness(readiness)
         it.start()
     }
+
+    private fun navigationAdmission() = NavigationAdmissionConfig(
+        navigationConfigId = "navigation-a",
+        navigationConfigSha256 = NAV_HASH,
+        mapVersion = "map-v1",
+        mapSha256 = NAV_HASH,
+        geometrySha256 = NAV_HASH,
+        cameraCalibrationSha256 = NAV_HASH,
+        bodyExtrinsicsSha256 = NAV_HASH,
+        worldTransformSha256 = NAV_HASH,
+        controlSourceIds = listOf("tag-source"),
+        clockLeaseId = "lease-1",
+        clockLeaseExpiresAtMs = Long.MAX_VALUE,
+        maxAuthorizationLifetimeMs = 1_000,
+        approvedEvidenceFiles = listOf(File.createTempFile("approved-navigation", ".evidence").apply {
+            writeText("operator-approved evidence")
+            deleteOnExit()
+        }),
+        enabled = true,
+    )
 
     private fun await(what: String, timeoutMs: Long = 5_000, predicate: () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -87,6 +120,35 @@ class RelayLinkTest {
 
     private fun StubRelay.acks(commandId: String): List<String> =
         frames("acknowledgement") { it.str("command_id") == commandId }.map { it.str("status") }
+
+    @Test
+    fun `configured telemetry reaches the socket as a source scoped observation without capture time`() {
+        StubRelay(key).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            val configured = config(stub).copy(observationSource = ObservationSourceConfig("dji-telemetry", "dji_enu", "phone_snapshot_wall_ms"))
+            RelayLink(configured, aircraft, aircraft, phone, timing = timing).use { link ->
+                link.start()
+                val wire = stub.awaitFrame("observation")
+                val parsed = ObservationSubmission.parse(wire).toEvent()
+                assertEquals(wire, parsed)
+                assertEquals(JsonString("aircraft"), parsed["node_type"])
+                assertEquals(JsonString("dji_enu"), parsed["frame"])
+                assertEquals(JsonString("dji-telemetry"), parsed["source_id"])
+                assertEquals(JsonNull, parsed["t_capture"])
+                assertEquals(JsonNull, parsed["clock_mapping_id"])
+                assertFalse("t_ingest" in parsed.keys)
+                val payload = parsed["payload"] as JsonObject
+                assertEquals(JsonString("telemetry"), payload["kind"])
+                assertEquals(JsonString("dji_enu"), (payload["velocity"] as JsonObject)["frame"])
+                assertEquals(1, stub.frames("auth").size)
+                assertTrue(stub.frames("telemetry").isNotEmpty())
+                File("build/interop/phone-observation.json").apply {
+                    parentFile.mkdirs()
+                    writeText(Json.canonical(wire))
+                }
+            }
+        }
+    }
 
     /**
      * The link's clock, frozen until the test steps it: the watchdog and admission read it,
@@ -142,6 +204,7 @@ class RelayLinkTest {
                 assertEquals("nominal", status.body.watchdogState.wire)
                 assertEquals("stopped", status.body.videoPublishState.wire)
                 assertEquals(81, status.body.phoneBatteryPercent)
+                assertNull(status.body.localHeight)
 
                 val state = link.state.value
                 assertEquals(RelayConnection.CONNECTED, state.connection)
@@ -158,6 +221,61 @@ class RelayLinkTest {
                 assertTrue(stamps.zipWithNext().all { (earlier, later) -> earlier <= later }, "timestamps regress: $stamps")
                 val ids = stub.frames.drop(1).map { it.str("event_id") }
                 assertEquals(ids.size, ids.toSet().size, "event ids repeat")
+            }
+        }
+    }
+
+    @Test
+    fun `node status reports the age of a received flight controller altitude`() {
+        StubRelay(key).use { stub ->
+            val clock = SteppedClock(1_000)
+            val aircraft = FakeAircraft(connected = true)
+            aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 1.8, receivedAtMonotonicMs = 930)) }
+            RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, monotonicNowMs = clock::nowMs, timing = timing).use { link ->
+                link.start()
+                val status = NodeStatusFrame.parse(stub.awaitFrame("node_status"))
+
+                assertEquals(1.8, status.body.localHeight?.zM)
+                assertEquals("flight_controller_altitude", status.body.localHeight?.source?.wire)
+                assertEquals(70, status.body.localHeight?.ageMs)
+            }
+        }
+    }
+
+    @Test
+    fun `node status omits a future or stale local height receipt`() {
+        listOf(399L, 1_001L).forEach { receivedAtMs ->
+            StubRelay(key).use { stub ->
+                val clock = SteppedClock(1_000)
+                val aircraft = FakeAircraft(connected = true)
+                aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 0.0, receivedAtMonotonicMs = receivedAtMs)) }
+                RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, monotonicNowMs = clock::nowMs, timing = timing).use { link ->
+                    link.start()
+                    assertNull(NodeStatusFrame.parse(stub.awaitFrame("node_status")).body.localHeight)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `node status publishes an identical local height when its receipt is newer`() {
+        StubRelay(key).use { stub ->
+            val clock = SteppedClock(1_000)
+            val aircraft = FakeAircraft(connected = true)
+            aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 0.0, receivedAtMonotonicMs = 900)) }
+            RelayLink(config(stub), aircraft, aircraft, phone, clock = clock, monotonicNowMs = clock::nowMs, timing = timing).use { link ->
+                link.start()
+                val initial = NodeStatusFrame.parse(stub.awaitFrame("node_status"))
+                assertEquals(100, initial.body.localHeight?.ageMs)
+                val initialCount = stub.frames("node_status").size
+
+                aircraft.update { it.copy(localHeight = LocalHeightMeasurement(zM = 0.0, receivedAtMonotonicMs = 1_900)) }
+                clock.advance(1_000)
+
+                val statuses = stub.awaitFrames("node_status", initialCount + 1)
+                val refreshed = NodeStatusFrame.parse(statuses.last())
+                assertEquals(0.0, refreshed.body.localHeight?.zM)
+                assertEquals(100, refreshed.body.localHeight?.ageMs)
             }
         }
     }
@@ -221,6 +339,89 @@ class RelayLinkTest {
                 // A command issued on the relay clock is fresh even though the phone clock trails it.
                 val command = stub.issueCommand(CommandArgs.Hover)
                 stub.awaitAck(command.commandId, "completed")
+            }
+        }
+    }
+
+    @Test
+    fun `route-bearing goto is refused while navigation setup remains disabled`() {
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            link(stub, aircraft).use { link ->
+                await("ready") { link.state.value.membership == "ready" }
+                stub.sendNavigationAuthorization()
+                stub.sendNavigationPose()
+                val command = stub.issueCommand(
+                    CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-1"),
+                    commandId = "route-command-1",
+                )
+
+                val refusal = stub.awaitAck(command.commandId, "failed")
+                assertEquals("navigation_not_authorized", refusal.str("reason"))
+                assertNull(link.state.value.navigationAuthorization)
+                assertEquals(0.0, aircraft.snapshot.value.x)
+            }
+        }
+    }
+
+    @Test
+    fun `signed pinned route evidence admits only its exact goto`() {
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
+            val navigation = navigationAdmission()
+            link(stub, aircraft, localizationPins = pins, navigationAdmission = navigation).use { link ->
+                await("ready") { link.state.value.membership == "ready" }
+                stub.sendNavigationAuthorization(signingKey = "wrong-key".toByteArray())
+                await("forged authorization drop") { logs.any { it.contains("navigation route authorization") } }
+                assertNull(link.state.value.navigationAuthorization)
+
+                stub.sendNavigationAuthorization()
+                await("route authorization") { link.state.value.navigationAuthorization?.routeId == "route-1" }
+                stub.sendNavigationPose()
+                await("route pose") { link.state.value.navigationPose?.status?.name == "READY" }
+
+                val wrongTarget = stub.issueCommand(
+                    CommandArgs.Goto(900, 0, 1_000, 300, navigationRouteId = "route-1"),
+                    commandId = "route-command-1",
+                )
+                assertEquals("navigation_not_authorized", stub.awaitAck(wrongTarget.commandId, "failed").str("reason"))
+
+                stub.sendNavigationAuthorization(commandId = "route-command-2", routeId = "route-2")
+                await("replacement route authorization") { link.state.value.navigationAuthorization?.routeId == "route-2" }
+                stub.sendNavigationPose(commandId = "route-command-2", routeId = "route-2")
+                await("replacement route pose") { link.state.value.navigationPose?.routeId == "route-2" }
+                val exact = stub.issueCommand(
+                    CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-2"),
+                    commandId = "route-command-2",
+                )
+                stub.awaitAck(exact.commandId, "completed")
+                assertEquals(1.0, aircraft.snapshot.value.x)
+            }
+        }
+    }
+
+    @Test
+    fun `authority loss clears route evidence before its goto can execute`() {
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val aircraft = FakeAircraft(connected = true)
+            val pins = LocalizationPins("map-a", "geometry-a", "camera-a", "body-a")
+            val navigation = navigationAdmission()
+            link(stub, aircraft, localizationPins = pins, navigationAdmission = navigation).use { link ->
+                await("joined") { link.state.value.joined }
+                stub.sendNavigationAuthorization()
+                await("route authorization") { link.state.value.navigationAuthorization != null }
+                stub.sendNavigationPose()
+                await("route pose") { link.state.value.navigationPose?.status?.name == "READY" }
+                aircraft.setConnected(aircraft = false)
+                await("route evidence cleared") { link.state.value.navigationAuthorization == null }
+
+                val command = stub.issueCommand(
+                    CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-1"),
+                    commandId = "route-command-1",
+                )
+                assertEquals("authority_lost", stub.awaitAck(command.commandId, "failed").str("reason"))
+                assertEquals(0.0, aircraft.snapshot.value.x)
             }
         }
     }
@@ -798,4 +999,8 @@ class RelayLinkTest {
             }
         }
     }
+    private companion object {
+        const val NAV_HASH = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+
 }

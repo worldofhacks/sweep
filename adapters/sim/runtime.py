@@ -35,7 +35,6 @@ from relay.capabilities import C1_CAPABILITY_PROFILE, CapabilityProfile
 from relay.intent_v1 import IntentName
 from relay.session import Clock, EventIdFactory, RelaySession
 from relay.settings import CapabilityRelease, RelaySettings
-from relay.state import aircraft_limit_for_profile
 
 
 class SimBridgeFactory:
@@ -457,17 +456,13 @@ def create_m14_sim_app(
     starting = initial_snapshot or _initial_snapshot(
         now, active_settings.effective_sim_aircraft_count
     )
-    profile_limit = aircraft_limit_for_profile(active_settings.capability_profile)
-    if len(starting.aircraft) > profile_limit:
-        raise ValueError(
-            f"the {active_settings.capability_release.value.upper()} simulator supports at most "
-            f"{profile_limit} aircraft"
-        )
+    if len(starting.aircraft) > active_settings.effective_sim_aircraft_count:
+        raise ValueError("the simulator initial snapshot exceeds SWEEP_SIM_AIRCRAFT_COUNT")
     if (
         active_settings.capability_profile.supports(IntentName.FORMATION_SET)
-        and not 4 <= len(starting.aircraft) <= 6
+        and not 4 <= len(starting.aircraft) <= 32
     ):
-        raise ValueError("the C2 simulator requires an initial fleet of 4 through 6 aircraft")
+        raise ValueError("the C2 simulator requires an initial fleet of 4 through 32 aircraft")
     safety = replace(
         _safety_config(),
         max_link_age_ms=active_settings.telemetry_freshness_ms,
@@ -549,8 +544,8 @@ class _LocalWatchdog:
 
 
 def _initial_snapshot(now_ms: int, count: int = 2) -> FleetSnapshot:
-    if type(count) is not int or not 1 <= count <= 6:
-        raise ValueError("simulator aircraft count must be an integer from 1 through 6")
+    if type(count) is not int or not 1 <= count <= 32:
+        raise ValueError("simulator aircraft count must be an integer from 1 through 32")
     aircraft = {
         drone_id: AircraftState(
             drone_id=drone_id,

@@ -1,5 +1,6 @@
 # MediaMTX configuration for Sweep (PRD section 5.7).
-# Streams are named by drone id, f"drone{id}": publish to rtsp://<ground-station>:8554/drone1 ... drone6.
+# Legacy paths are drone1..drone4 and ground1..ground4. Additional cameras use
+# explicitly configured stream names; media/configure.py adds their permissions.
 # The console plays them over WebRTC (WHEP) at http://<ground-station>:8889/<name>/whep
 # and over HLS at http://<ground-station>:8888/<name>/index.m3u8 (the bare /<name>/ URL is the built-in player).
 # Every parameter not listed here keeps the MediaMTX default.
@@ -21,16 +22,16 @@ moq: no
 
 # Recording is switched on in M3: pathDefaults.record plus a mounted recordings volume.
 
-# Control API for the relay's per-aircraft video projection (relay/README.md, state
-# fan-out `video`). The relay reads /v3/paths/get/drone{n}. docker-compose.yml publishes
+# Control API for the relay's per-camera video projection (relay/README.md, state
+# fan-out `cameras`). The relay reads each configured stream path. Compose publishes
 # this listener on the ground station's loopback only, never on the LAN, and the
 # sweep-api account below is the only principal allowed to call it.
 api: yes
 apiAddress: :9997
 
 # Locked by default. docker-compose.yml replaces only these password hashes when the
-# operator supplies the six media credentials in .env. Each aircraft may publish only
-# its own path; the console reader may read/play back only drone1..drone4; the relay's
+# operator supplies media credentials in .env. Each publisher may publish only
+# its own path; the console reader may read/play back only the listed streams; the relay's
 # API reader may only call the control API. There is no anonymous user, so a missing
 # environment value fails closed instead of opening the LAN.
 authMethod: internal
@@ -59,13 +60,34 @@ authInternalUsers:
     pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
     permissions:
       - action: read
-        path: ~^drone[1-4]$
+        path: ~^(drone[1-4]|ground[1-4])$
       - action: playback
-        path: ~^drone[1-4]$
+        path: ~^(drone[1-4]|ground[1-4])$
   - user: sweep-api
     pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
     permissions:
       - action: api
+  # Keep these positions stable: Compose overrides credentials by account index.
+  - user: ground1
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: publish
+        path: ground1
+  - user: ground2
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: publish
+        path: ground2
+  - user: ground3
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: publish
+        path: ground3
+  - user: ground4
+    pass: sha256:aacd03b07c2bf6584162876d3591c9be0b9c5e7023c2a2e989fb51774e4afa76
+    permissions:
+      - action: publish
+        path: ground4
 
 paths:
   all_others:

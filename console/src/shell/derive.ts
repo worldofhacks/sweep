@@ -1,10 +1,12 @@
+import { motionObservationCurrent, observationCurrent } from '../control/observation'
 import type {
   ConnectionStatus,
   ControlState,
+  DeviceLabeller,
   OperatorNotice,
   RequestRecord,
 } from '../control/state'
-import { formatDroneId } from '../control/state'
+import { deviceLabeller, formatDroneId, pluralNoun, rosterNoun } from '../control/state'
 import type { DroneId, RelayAircraftState } from '../relay/contract'
 import { formatTime } from './format'
 
@@ -61,7 +63,7 @@ export function deriveStop(state: ControlState, times: StopTimes, now: number): 
   ) {
     reason = `Stop cleared, seen ${formatTime(times.seenClearedAt)}, reported by the relay.`
   } else {
-    reason = 'Sends estop to every aircraft in the roster.'
+    reason = `Sends estop to every ${rosterNoun(sortedAircraft(state.aircraft))} in the roster.`
   }
   return { title, sub, active, disabled: !up, reason }
 }
@@ -93,11 +95,14 @@ export function sortedAircraft(aircraft: ControlState['aircraft']): RelayAircraf
 }
 
 export function isReady(drone: RelayAircraftState | undefined): boolean {
-  return Boolean(drone && drone.membership === 'ready' && drone.selectable)
+  return Boolean(drone && motionObservationCurrent(drone) && drone.membership === 'ready' && drone.selectable)
 }
 
-export function deriveSelectionLabel(selection: DroneId[]): string {
-  return selection.length ? selection.map(formatDroneId).join('  ') : 'none selected'
+export function deriveSelectionLabel(
+  selection: DroneId[],
+  label: DeviceLabeller = formatDroneId,
+): string {
+  return selection.length ? selection.map(label).join('  ') : 'none selected'
 }
 
 export function deriveReadyCount(aircraft: ControlState['aircraft']): string {
@@ -111,17 +116,39 @@ export interface RcLine {
   danger: boolean
 }
 
+/**
+ * Authority and safety-operator words per class. For an aircraft the operator
+ * is the RC pilot beside it; for a ground vehicle it is the spotter with the
+ * robot's screen stop in reach. Missing permission does not prove a takeover.
+ */
+export function authorityWords(drone: RelayAircraftState): {
+  authority: string
+  /** The registry card's word for the person beside the device. */
+  operator: string
+  /** The header line's shorter word. */
+  operatorShort: string
+} {
+  const ground = drone.device_class === 'ground_vehicle'
+  return {
+    authority: !observationCurrent(drone) ? 'Current control unknown' : drone.control_authority ? 'Sweep' : 'Sweep control not granted',
+    operator: `${observationCurrent(drone) ? '' : 'Last reported '}${ground ? 'Spotter' : 'RC safety operator'}`,
+    operatorShort: ground ? 'Spotter' : 'RC operator',
+  }
+}
+
 export function deriveRcLine(state: ControlState): RcLine {
   const fleet = sortedAircraft(state.aircraft)
+  const label = deviceLabeller(state.aircraft)
   const ids = state.selection.length ? state.selection : fleet.slice(0, 1).map((d) => d.drone_id)
-  if (ids.length === 0) return { text: 'no aircraft reported', danger: false }
+  if (ids.length === 0) return { text: `no ${pluralNoun(rosterNoun(fleet))} reported`, danger: false }
   const text = ids
     .map((id) => {
       const drone = state.aircraft[id]
-      if (!drone) return `${formatDroneId(id)} unreported`
-      const authority = drone.control_authority ? 'Sweep' : 'RC takeover'
+      if (!drone) return `${label(id)} unreported`
+      if (!observationCurrent(drone)) return `${label(id)} ${drone.membership === 'disconnected' ? 'offline' : 'current state unknown'}`
+      const words = authorityWords(drone)
       const rc = drone.rc_safety_operator_present ? 'present' : 'absent'
-      return `${formatDroneId(id)} ${authority} · RC operator ${rc}`
+      return `${label(id)} ${words.authority} · ${words.operatorShort} ${rc}`
     })
     .join('   ')
   const danger = state.selection.some((id) => {
@@ -205,8 +232,9 @@ export function deriveInvalidation(
   }
 }
 
-export function membershipTone(membership: RelayAircraftState['membership']): Tone {
-  if (membership === 'ready') return 'ok'
+export function membershipTone(membership: RelayAircraftState['membership'], positionQuality?: number | null): Tone {
+  // Membership alone does not establish position quality or motion admission.
+  if (membership === 'ready') return positionQuality === 0 ? 'warn' : 'ok'
   if (membership === 'degraded' || membership === 'leaving') return 'warn'
   if (membership === 'disconnected') return 'danger'
   return 'ink'

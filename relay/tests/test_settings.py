@@ -113,10 +113,10 @@ def test_invalid_security_or_freshness_configuration_fails(name: str, value: str
         RelaySettings.from_env(environment)
 
 
-def test_bridge_settings_default_to_sim_and_relay_distributed_thresholds() -> None:
+def test_environment_defaults_to_real_remote_backend_and_distributed_thresholds() -> None:
     settings = RelaySettings.from_env({"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode()})
 
-    assert settings.adapter_backend is AdapterBackend.SIM
+    assert settings.adapter_backend is AdapterBackend.REMOTE
     assert settings.capability_release is CapabilityRelease.C1
     assert settings.capability_profile is C1_CAPABILITY_PROFILE
     assert settings.effective_sim_aircraft_count == 2
@@ -135,7 +135,11 @@ def test_bridge_settings_default_to_sim_and_relay_distributed_thresholds() -> No
 
 def test_sim_c2_release_is_an_explicit_opt_in() -> None:
     settings = RelaySettings.from_env(
-        {"SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(), "SWEEP_CAPABILITY_RELEASE": "c2"}
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_ADAPTER_BACKEND": "sim",
+            "SWEEP_CAPABILITY_RELEASE": "c2",
+        }
     )
 
     assert settings.adapter_backend is AdapterBackend.SIM
@@ -144,11 +148,12 @@ def test_sim_c2_release_is_an_explicit_opt_in() -> None:
     assert settings.effective_sim_aircraft_count == 4
 
 
-@pytest.mark.parametrize("count", [4, 5, 6])
+@pytest.mark.parametrize("count", [4, 5, 6, 32])
 def test_sim_c2_aircraft_count_is_explicitly_bounded(count: int) -> None:
     settings = RelaySettings.from_env(
         {
             "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_ADAPTER_BACKEND": "sim",
             "SWEEP_CAPABILITY_RELEASE": "c2",
             "SWEEP_SIM_AIRCRAFT_COUNT": str(count),
         }
@@ -157,27 +162,51 @@ def test_sim_c2_aircraft_count_is_explicitly_bounded(count: int) -> None:
     assert settings.effective_sim_aircraft_count == count
 
 
-@pytest.mark.parametrize("count", ["0", "3", "7", "four"])
-def test_sim_c2_rejects_aircraft_counts_outside_four_through_six(count: str) -> None:
+@pytest.mark.parametrize("count", ["0", "3", "33", "four"])
+def test_sim_c2_rejects_aircraft_counts_outside_four_through_thirty_two(count: str) -> None:
     with pytest.raises(SettingsError):
         RelaySettings.from_env(
             {
                 "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+                "SWEEP_ADAPTER_BACKEND": "sim",
                 "SWEEP_CAPABILITY_RELEASE": "c2",
                 "SWEEP_SIM_AIRCRAFT_COUNT": count,
             }
         )
 
 
-@pytest.mark.parametrize("count", [5, 6])
-def test_sim_c1_rejects_counts_above_its_four_aircraft_registry_limit(count: int) -> None:
-    with pytest.raises(SettingsError, match="C1 simulator supports at most 4 aircraft"):
-        RelaySettings.from_env(
-            {
-                "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
-                "SWEEP_SIM_AIRCRAFT_COUNT": str(count),
-            }
-        )
+@pytest.mark.parametrize("count", [5, 6, 32])
+def test_sim_c1_accepts_the_configured_fleet_capacity(count: int) -> None:
+    settings = RelaySettings.from_env(
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_ADAPTER_BACKEND": "sim",
+            "SWEEP_SIM_AIRCRAFT_COUNT": str(count),
+        }
+    )
+
+    assert settings.effective_sim_aircraft_count == count
+
+
+def test_physical_aircraft_capacity_is_explicit_and_bounded() -> None:
+    settings = RelaySettings.from_env(
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_ADAPTER_BACKEND": "remote",
+            "SWEEP_PHYSICAL_AIRCRAFT_LIMIT": "1",
+        }
+    )
+
+    assert settings.physical_aircraft_limit == 1
+
+    for limit in ("0", "33", "five"):
+        with pytest.raises(SettingsError, match="SWEEP_PHYSICAL_AIRCRAFT_LIMIT"):
+            RelaySettings.from_env(
+                {
+                    "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+                    "SWEEP_PHYSICAL_AIRCRAFT_LIMIT": limit,
+                }
+            )
 
 
 def test_remote_backend_and_thresholds_come_from_the_environment() -> None:

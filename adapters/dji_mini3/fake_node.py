@@ -65,6 +65,8 @@ class FakeNodeConfig:
     silent_operations: tuple[str, ...] = ()
     slow_operations: tuple[str, ...] = ()
     slow_ack_delay_s: float = 0.0
+    local_height_source: bool = True
+    home_pose_confirmed: bool = True
 
     def __post_init__(self) -> None:
         if self.drone_id <= 0:
@@ -233,6 +235,7 @@ class FakeNode:
             await asyncio.sleep(interval)
             if self._connection_epoch is not None:
                 self._enqueue(self._telemetry_frame())
+                self._enqueue(self._node_status_frame())
 
     def _handle_membership(self, frame: dict[str, object]) -> None:
         epoch = frame.get("connection_epoch")
@@ -248,7 +251,7 @@ class FakeNode:
             self._signed_membership(
                 "readiness",
                 connection_epoch=epoch,
-                home_pose_confirmed=True,
+                home_pose_confirmed=self.config.home_pose_confirmed,
                 control_authority=True,
                 rc_safety_operator_present=True,
             )
@@ -472,7 +475,7 @@ class FakeNode:
         }
 
     def _node_status_frame(self) -> dict[str, object]:
-        return {
+        frame = {
             **self._envelope("node_status"),
             "drone_id": self.config.drone_id,
             "connection_epoch": self._connection_epoch,
@@ -484,6 +487,13 @@ class FakeNode:
             "phone_battery_percent": 81,
             "phone_thermal_state": "none",
         }
+        if self.config.local_height_source:
+            frame["local_height"] = {
+                "z_m": self._aircraft.z,
+                "source": "flight_controller_altitude",
+                "age_ms": 0,
+            }
+        return frame
 
     def _capture_readiness_frame(self) -> dict[str, object]:
         return {

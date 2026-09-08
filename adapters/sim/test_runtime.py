@@ -49,6 +49,14 @@ def _terminal(socket: WebSocketTestSession, intent_id: str) -> dict[str, object]
     raise AssertionError(f"no autonomy terminal result for {intent_id}")
 
 
+def test_simulator_snapshot_supports_thirty_two_aircraft() -> None:
+    snapshot = _initial_snapshot(1_000, 32)
+
+    assert tuple(snapshot.aircraft) == tuple(range(1, 33))
+    with pytest.raises(ValueError, match="1 through 32"):
+        _initial_snapshot(1_000, 33)
+
+
 def test_m14_sim_arbiter_uses_configured_relay_freshness(tmp_path) -> None:
     app = create_m14_sim_app(
         RelaySettings(
@@ -85,31 +93,34 @@ def test_m14_sim_app_threads_the_explicit_c2_profile(tmp_path) -> None:
         assert app.state.sim_bridge_factory.bridges["sim-c2"].capability_profile is profile
 
 
-def test_c1_four_aircraft_simulator_fully_joins_the_registry(tmp_path: Path) -> None:
+@pytest.mark.parametrize("aircraft_count", (4, 5))
+def test_c1_configured_aircraft_simulator_fully_joins_the_registry(
+    tmp_path: Path, aircraft_count: int
+) -> None:
     keys = {
-        drone_id: f"c1-four-aircraft-{drone_id}-credential".encode().ljust(32, b"x")
-        for drone_id in range(1, 5)
+        drone_id: f"c1-{aircraft_count}-aircraft-{drone_id}-credential".encode().ljust(32, b"x")
+        for drone_id in range(1, aircraft_count + 1)
     }
     settings = RelaySettings(
-        relay_token=b"c1-four-aircraft-relay-credential",
+        relay_token=b"c1-configured-aircraft-relay-credential",
         adapter_keys=keys,
         log_dir=tmp_path,
-        sim_aircraft_count=4,
+        sim_aircraft_count=aircraft_count,
     )
     app = create_m14_sim_app(settings)
 
     with TestClient(app):
-        state = app.state.relay_runtime.session("sim-c1-four").current_state()
+        state = app.state.relay_runtime.session(f"sim-c1-{aircraft_count}").current_state()
 
-    assert [drone["drone_id"] for drone in state["drones"]] == [1, 2, 3, 4]
+    assert [drone["drone_id"] for drone in state["drones"]] == list(range(1, aircraft_count + 1))
     assert all(drone["membership"] == "ready" for drone in state["drones"])
 
 
-def test_c1_rejects_an_oversized_custom_initial_snapshot(tmp_path: Path) -> None:
-    settings = RelaySettings(relay_token=b"r" * 32, log_dir=tmp_path)
+def test_simulator_rejects_a_custom_snapshot_above_its_configured_count(tmp_path: Path) -> None:
+    settings = RelaySettings(relay_token=b"r" * 32, log_dir=tmp_path, sim_aircraft_count=5)
 
-    with pytest.raises(ValueError, match="C1 simulator supports at most 4 aircraft"):
-        create_m14_sim_app(settings, initial_snapshot=_initial_snapshot(1_000, 5))
+    with pytest.raises(ValueError, match="SWEEP_SIM_AIRCRAFT_COUNT"):
+        create_m14_sim_app(settings, initial_snapshot=_initial_snapshot(1_000, 6))
 
 
 def test_failed_initial_join_closes_ingress_without_registering_partial_session(

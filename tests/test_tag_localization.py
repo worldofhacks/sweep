@@ -9,6 +9,7 @@ import pytest
 
 from perception.position_replay import PositionReplay
 from perception.tag_localization import TagLocalizer
+from tests.test_world_bundle import reseal
 from tools.map_validate import seal_manifest
 
 K = np.array([[900.0, 0, 640], [0, 900, 360], [0, 0, 1]])
@@ -299,3 +300,63 @@ def test_hashed_calibration_snapshot_is_parsed_if_path_changes(tmp_path, monkeyp
     assert replaced
     assert localizer.K[0, 0] == 900
     assert json.loads(calibration_path.read_text())["camera_matrix"][0][0] == 1100
+
+
+def world_config(config, tmp_path, *, verified=True):
+    bundle = tmp_path / "world"
+    shutil.copytree(Path(__file__).parent / "fixtures/world_bundle", bundle)
+    path = bundle / "tags.yaml"
+    document = json.loads(path.read_text())
+    document["tags"][0]["size_m"] = 0.3
+    if not verified:
+        document["tags"][0].update(verified_for_flight=False, tape_verification=None)
+    path.write_text(json.dumps(document))
+    manifest = reseal(bundle)
+    return config | {
+        "bundle": str(bundle),
+        "accepted_versions": {manifest["bundle_version"]: manifest["content_sha256"]},
+    }
+
+
+def test_world_bundle_tape_verified_tag_pixels_recover_explicit_world_pose(tmp_path):
+    _, image, camera, extrinsic, config = scene(tmp_path, count=1)
+    config = world_config(config, tmp_path)
+    localizer = TagLocalizer(**config)
+    result = localizer.estimate(image, 1, 1.1, 1.2)
+    assert result["accepted"], result
+    np.testing.assert_allclose(result["T_world_camera"], camera, atol=0.025)
+    np.testing.assert_allclose(
+        result["T_world_body"], camera @ np.linalg.inv(extrinsic), atol=0.025
+    )
+    assert result["pose_frame"] == {
+        "name": "world",
+        "bundle_version": "world-fixture-v2",
+        "content_sha256": next(iter(config["accepted_versions"].values())),
+        "map_id": "level-1-fixture",
+        "physical_datum": "tag_0_center",
+        "axis_convention": "right_handed_z_up",
+    }
+    assert "T_map_body" not in result
+    assert result["flight_approved"] is False
+
+
+def test_approving_world_bundle_does_not_admit_unverified_tag_pixels(tmp_path):
+    _, image, _, _, config = scene(tmp_path, count=1)
+    localizer = TagLocalizer(**world_config(config, tmp_path, verified=False))
+    result = localizer.estimate(image, 1, 1.1, 1.2)
+    assert result["reason"] == "unverified_world_tag"
+    assert result["tag_ids"] == [0]
+    assert result["accepted"] is False
+    assert "T_world_body" not in result
+
+
+def test_world_localizer_requires_exact_approved_content(tmp_path):
+    _, _, _, _, config = scene(tmp_path, count=1)
+    config = world_config(config, tmp_path)
+    path = Path(config["bundle"]) / "tags.yaml"
+    document = json.loads(path.read_text())
+    document["tags"][0]["size_m"] = 0.4
+    path.write_text(json.dumps(document))
+    reseal(path.parent)
+    with pytest.raises(ValueError, match="accepted version content hash mismatch"):
+        TagLocalizer(**config)

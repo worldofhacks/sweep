@@ -1,0 +1,293 @@
+{
+  "schema_version": 1,
+  "worksheet_kind": "ohmni-measurement-worksheet",
+  "map": {
+    "map_id": "lab-a",
+    "map_version": "worksheet-fixture-v1",
+    "physical_datum": "tag_0_center",
+    "axes": {
+      "x": "toward_elevator",
+      "y": "toward_street_wall",
+      "z": "up"
+    },
+    "provenance": {
+      "name": "operator-sheet-17",
+      "captured_at": "2026-09-07T00:00:00Z"
+    }
+  },
+  "floor": {
+    "id": "level_1",
+    "site_datum": "building-entrance-benchmark",
+    "elevation_from_site_datum": {
+      "feet": 12,
+      "inches": 0
+    }
+  },
+  "tag_black_size": {
+    "feet": 0,
+    "inches": 6.2992125984
+  },
+  "grid": {
+    "tag_ids": [
+      [
+        0,
+        1,
+        4,
+        5
+      ],
+      [
+        2,
+        3,
+        6,
+        7
+      ],
+      [
+        8,
+        9,
+        10,
+        11
+      ]
+    ],
+    "top_left_black_corner_xy": {
+      "x": {
+        "feet": 10,
+        "inches": 0
+      },
+      "y": {
+        "feet": 20,
+        "inches": 0
+      }
+    },
+    "across_axis": "+x",
+    "down_axis": "+y",
+    "center_spacing_across": {
+      "feet": 6,
+      "inches": 6.7401574803
+    },
+    "center_spacing_down": {
+      "feet": 6,
+      "inches": 6.7401574803
+    }
+  },
+  "moved_tags": [
+    {
+      "tag_id": 3,
+      "dx": {
+        "feet": 0,
+        "inches": 1
+      },
+      "dy": {
+        "feet": 0,
+        "inches": 0
+      }
+    }
+  ],
+  "wall_tags": [
+    {
+      "id": 12,
+      "center_xy": {
+        "x": {
+          "feet": 3,
+          "inches": 0
+        },
+        "y": {
+          "feet": 1,
+          "inches": 0
+        }
+      },
+      "center_height_above_floor": {
+        "feet": 4,
+        "inches": 0
+      },
+      "wall_normal": "-y"
+    }
+  ],
+  "independent_tape_checks": [
+    {
+      "name": "near",
+      "tag_ids": [
+        0,
+        1
+      ],
+      "measured_distance": {
+        "feet": 6,
+        "inches": 6.7401574803
+      },
+      "maximum_error": {
+        "feet": 0,
+        "inches": 1
+      }
+    },
+    {
+      "name": "left",
+      "tag_ids": [
+        0,
+        2
+      ],
+      "measured_distance": {
+        "feet": 6,
+        "inches": 6.7401574803
+      },
+      "maximum_error": {
+        "feet": 0,
+        "inches": 1
+      }
+    },
+    {
+      "name": "diagonal",
+      "tag_ids": [
+        0,
+        3
+      ],
+      "measured_distance": {
+        "feet": 9,
+        "inches": 3.2
+      },
+      "maximum_error": {
+        "feet": 0,
+        "inches": 1
+      }
+    }
+  ],
+  "registration_tie_ids": [
+    0,
+    1,
+    2
+  ],
+  "floor_zone": {
+    "id": "lobby",
+    "polygon_xy": [
+      {
+        "x": {
+          "feet": 0,
+          "inches": 10,
+          "sign": -1
+        },
+        "y": {
+          "feet": 0,
+          "inches": 10,
+          "sign": -1
+        }
+      },
+      {
+        "x": {
+          "feet": 40,
+          "inches": 0
+        },
+        "y": {
+          "feet": 0,
+          "inches": 10,
+          "sign": -1
+        }
+      },
+      {
+        "x": {
+          "feet": 40,
+          "inches": 0
+        },
+        "y": {
+          "feet": 40,
+          "inches": 0
+        }
+      },
+      {
+        "x": {
+          "feet": 0,
+          "inches": 10,
+          "sign": -1
+        },
+        "y": {
+          "feet": 40,
+          "inches": 0
+        }
+      }
+    ],
+    "z_min": {
+      "feet": 0,
+      "inches": 0
+    },
+    "z_max": {
+      "feet": 10,
+      "inches": 0
+    }
+  },
+  "authored_hazards": [
+    {
+      "id": "table",
+      "polygon_xy": [
+        {
+          "x": {
+            "feet": 3,
+            "inches": 0
+          },
+          "y": {
+            "feet": 3,
+            "inches": 0
+          }
+        },
+        {
+          "x": {
+            "feet": 5,
+            "inches": 0
+          },
+          "y": {
+            "feet": 3,
+            "inches": 0
+          }
+        },
+        {
+          "x": {
+            "feet": 5,
+            "inches": 0
+          },
+          "y": {
+            "feet": 5,
+            "inches": 0
+          }
+        },
+        {
+          "x": {
+            "feet": 3,
+            "inches": 0
+          },
+          "y": {
+            "feet": 5,
+            "inches": 0
+          }
+        }
+      ],
+      "z_min": {
+        "feet": 0,
+        "inches": 0
+      },
+      "z_max": {
+        "feet": 3,
+        "inches": 0
+      }
+    }
+  ],
+  "connector_lines": [
+    {
+      "id": "hall",
+      "direction_axis": "+x",
+      "near_wall": {
+        "parallel_axis": "+x",
+        "offset": {
+          "feet": 1,
+          "inches": 0
+        }
+      },
+      "far_wall": {
+        "parallel_axis": "-x",
+        "offset": {
+          "feet": 5,
+          "inches": 0
+        }
+      },
+      "end_ties": {
+        "start_tag_id": 0,
+        "end_tag_id": 1
+      }
+    }
+  ]
+}
