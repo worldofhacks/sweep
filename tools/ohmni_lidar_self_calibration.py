@@ -40,8 +40,13 @@ MAX_OFFSET_UNCERTAINTY_DEG = 5.0
 MAX_MOUNT_UNCERTAINTY_M = 0.05
 MAX_FITTED_MOUNT_RADIUS_M = 0.5
 MAX_JOINT_COMPETING_BASINS = 4
+MAX_JOINT_REFINEMENT_SEEDS = 5
+JOINT_SEED_SEPARATION_DEG = 2.0
 JOINT_BASIN_SEPARATION_DEG = 10.0
 RESIDUAL_RETAINED_FRACTION = 0.8
+MIN_VISIBLE_DIRECTION_POINTS = 80
+MIN_VISIBLE_DIRECTION_FRACTION = 0.5
+VISIBILITY_RANGE_SLACK_M = 0.05
 OFFSET_UNCERTAINTY_METHOD = "local_curvature_ratio"
 MIN_GEOMETRY_RANK = 0.03
 MAX_INPUT_BYTES = 8 * 1024 * 1024
@@ -555,6 +560,65 @@ def _nearest_segment_squared(
     return np.concatenate(results)
 
 
+def _ray_segment_visibility(points: np.ndarray, target: _ScanGeometry) -> np.ndarray:
+    if not len(points) or not len(target.points):
+        return np.zeros(len(points), dtype=bool)
+    point_angles = np.mod(np.arctan2(points[:, 1], points[:, 0]), 2 * math.pi)
+    target_angles = np.mod(np.arctan2(target.points[:, 1], target.points[:, 0]), 2 * math.pi)
+    angular_distance = np.abs(
+        (point_angles[:, None] - target_angles[None, :] + math.pi) % (2 * math.pi) - math.pi
+    )
+    nearest_ray = np.argmin(angular_distance, axis=1)
+    nearest_angle = angular_distance[np.arange(len(points)), nearest_ray]
+    supported = nearest_angle <= math.radians(MAX_LOCAL_ANGLE_GAP_DEG)
+    source_ranges = np.hypot(points[:, 0], points[:, 1])
+    target_ranges = np.hypot(target.points[:, 0], target.points[:, 1])[nearest_ray]
+    if not len(target.segment_starts):
+        slack = VISIBILITY_RANGE_SLACK_M + source_ranges * np.sin(nearest_angle)
+        return supported & (target_ranges >= source_ranges - slack)
+    direction = target.segment_ends - target.segment_starts
+    denominator = (
+        points[:, None, 0] * direction[None, :, 1] - points[:, None, 1] * direction[None, :, 0]
+    )
+    numerator = (
+        target.segment_starts[None, :, 0] * direction[None, :, 1]
+        - target.segment_starts[None, :, 1] * direction[None, :, 0]
+    )
+    segment_numerator = (
+        target.segment_starts[None, :, 0] * points[:, None, 1]
+        - target.segment_starts[None, :, 1] * points[:, None, 0]
+    )
+    segment_fraction = np.divide(
+        segment_numerator,
+        denominator,
+        out=np.full_like(denominator, np.inf),
+        where=np.abs(denominator) > 1e-12,
+    )
+    ray_fraction = np.divide(
+        numerator,
+        denominator,
+        out=np.full_like(denominator, np.inf),
+        where=np.abs(denominator) > 1e-12,
+    )
+    intersections = (
+        (np.abs(denominator) > 1e-12)
+        & (ray_fraction > 0.0)
+        & (segment_fraction >= 0.0)
+        & (segment_fraction <= 1.0)
+    )
+    nearest = np.min(np.where(intersections, ray_fraction, np.inf), axis=1)
+    occlusion_range = np.where(np.isfinite(nearest), nearest * source_ranges, target_ranges)
+    slack = VISIBILITY_RANGE_SLACK_M + source_ranges * np.sin(nearest_angle)
+    return supported & (occlusion_range >= source_ranges - slack)
+
+
+def _trimmed_mean_squared(distances: np.ndarray) -> float:
+    if not len(distances):
+        return math.inf
+    keep = max(1, int(len(distances) * RESIDUAL_RETAINED_FRACTION))
+    return float(np.mean(np.partition(distances, keep - 1)[:keep]))
+
+
 def _robust_mean_squared(source: _ScanGeometry, target: _ScanGeometry) -> float:
     if source.surface_supported and target.surface_supported:
         distances = np.concatenate(
@@ -570,8 +634,7 @@ def _robust_mean_squared(source: _ScanGeometry, target: _ScanGeometry) -> float:
                 _nearest_squared(target.points, source.points),
             )
         )
-    keep = max(1, int(len(distances) * RESIDUAL_RETAINED_FRACTION))
-    return float(np.mean(np.partition(distances, keep - 1)[:keep]))
+    return _trimmed_mean_squared(distances)
 
 
 def _score_offset(
@@ -581,6 +644,8 @@ def _score_offset(
     mount: Sequence[float],
     sign: int,
     offset_deg: float,
+    *,
+    visibility_aware: bool = False,
 ) -> float:
     scores = []
     for stage, raw_geometry in stages:
@@ -592,8 +657,71 @@ def _score_offset(
             offset_deg,  # type: ignore[arg-type]
         )
         transformed = _transformed_geometry(raw_geometry, rotation, translation)
-        scores.append(_robust_mean_squared(transformed, baseline))
+        if not (visibility_aware and baseline.surface_supported and raw_geometry.surface_supported):
+            scores.append(_robust_mean_squared(transformed, baseline))
+            continue
+        stage_to_baseline = _ray_segment_visibility(transformed.points, baseline)
+        baseline_in_stage = (baseline.points - translation) @ rotation
+        baseline_to_stage = _ray_segment_visibility(baseline_in_stage, raw_geometry)
+        if not np.any(stage_to_baseline) or not np.any(baseline_to_stage):
+            scores.append(math.inf)
+            continue
+        distances = np.concatenate(
+            (
+                _nearest_segment_squared(
+                    transformed.points[stage_to_baseline],
+                    baseline.segment_starts,
+                    baseline.segment_ends,
+                ),
+                _nearest_segment_squared(
+                    baseline.points[baseline_to_stage],
+                    transformed.segment_starts,
+                    transformed.segment_ends,
+                ),
+            )
+        )
+        scores.append(_trimmed_mean_squared(distances))
     return float(np.mean(scores))
+
+
+def _visibility_support(
+    baseline: _ScanGeometry,
+    baseline_pose: Mapping[str, float],
+    stages: Sequence[tuple[str, Mapping[str, object], _ScanGeometry]],
+    mount: Sequence[float],
+    sign: int,
+    offset_deg: float,
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for name, stage, geometry in stages:
+        rotation, translation = predicted_raw_transform(
+            baseline_pose,
+            stage["pose"],
+            mount,
+            sign,
+            offset_deg,  # type: ignore[arg-type]
+        )
+        if not (baseline.surface_supported and geometry.surface_supported):
+            result[name] = {"available": False}
+            continue
+        stage_to_baseline = _ray_segment_visibility(
+            _transformed_geometry(geometry, rotation, translation).points, baseline
+        )
+        baseline_to_stage = _ray_segment_visibility(
+            (baseline.points - translation) @ rotation, geometry
+        )
+        result[name] = {
+            "available": True,
+            "stage_to_baseline": {
+                "visible_points": int(np.count_nonzero(stage_to_baseline)),
+                "visible_fraction": float(np.mean(stage_to_baseline)),
+            },
+            "baseline_to_stage": {
+                "visible_points": int(np.count_nonzero(baseline_to_stage)),
+                "visible_fraction": float(np.mean(baseline_to_stage)),
+            },
+        }
+    return result
 
 
 def _coarse_geometry(geometry: _ScanGeometry) -> _ScanGeometry:
@@ -673,100 +801,22 @@ def _joint_coarse_seed(
     return sign, offset, mount
 
 
-def _refine_joint_mount(
-    baseline: _ScanGeometry,
-    baseline_pose: Mapping[str, float],
-    stages: Sequence[tuple[Mapping[str, object], _ScanGeometry]],
-    sign: int,
-    offset_deg: float,
-    declared_mount: Sequence[float],
-) -> tuple[float, float, np.ndarray]:
-    def score(parameters: np.ndarray) -> float:
-        return _score_offset(
-            baseline,
-            baseline_pose,
-            stages,
-            parameters[1:],
-            sign,
-            float(parameters[0]),
-        )
-
-    _require(
-        np.linalg.norm(declared_mount) <= MAX_FITTED_MOUNT_RADIUS_M,
-        "joint mount seed exceeds the fitted mount radius",
-    )
-    starts = (np.array((offset_deg, *declared_mount), dtype=float),)
-    best_parameters: np.ndarray | None = None
-    best_score = math.inf
-    for initial in starts:
-        parameters = initial.copy()
-        for offset_step, mount_step in ((2.0, 0.1), (0.5, 0.025), (0.1, 0.005)):
-            for _ in range(4):
-                candidates = [parameters]
-                for index, step in enumerate((offset_step, mount_step, mount_step)):
-                    for direction in (-1.0, 1.0):
-                        candidate = parameters.copy()
-                        candidate[index] += direction * step
-                        if np.linalg.norm(candidate[1:]) <= MAX_FITTED_MOUNT_RADIUS_M:
-                            candidates.append(candidate)
-                score_and_candidate = min(
-                    ((score(candidate), candidate) for candidate in candidates),
-                    key=lambda item: item[0],
-                )
-                if score_and_candidate[0] >= score(parameters) - 1e-12:
-                    break
-                parameters = score_and_candidate[1]
-        final_score = score(parameters)
-        if final_score < best_score:
-            best_score, best_parameters = final_score, parameters
-    assert best_parameters is not None
-    return best_score, float(best_parameters[0]), best_parameters[1:]
-
-
-def _joint_mount_metrics(
-    score: Callable[[np.ndarray], float], parameters: np.ndarray, fit_score: float
-) -> dict[str, object]:
-    steps = np.array((0.25, 0.005, 0.005))
-    hessian = np.empty((3, 3), dtype=float)
-    center = score(parameters)
-    for row in range(3):
-        for column in range(3):
-            if row == column:
-                plus = parameters.copy()
-                minus = parameters.copy()
-                plus[row] += steps[row]
-                minus[row] -= steps[row]
-                hessian[row, row] = (score(plus) + score(minus) - 2 * center) / steps[row] ** 2
-            else:
-                first = parameters.copy()
-                second = parameters.copy()
-                third = parameters.copy()
-                fourth = parameters.copy()
-                first[row] += steps[row]
-                first[column] += steps[column]
-                second[row] += steps[row]
-                second[column] -= steps[column]
-                third[row] -= steps[row]
-                third[column] += steps[column]
-                fourth[row] -= steps[row]
-                fourth[column] -= steps[column]
-                hessian[row, column] = (
-                    score(first) - score(second) - score(third) + score(fourth)
-                ) / (4 * steps[row] * steps[column])
-    scale = np.diag((10.0, 0.1, 0.1))
-    scaled_hessian = scale @ hessian @ scale
-    eigenvalues = np.linalg.eigvalsh(scaled_hessian)
-    covariance = max(fit_score, 1e-12) * np.linalg.pinv(hessian, rcond=1e-5)
-    uncertainty = np.sqrt(np.maximum(np.diag(covariance), 0.0))
-    return {
-        "joint_hessian_eigenvalues": [float(value) for value in eigenvalues],
-        "joint_parameter_uncertainty": {
-            "offset_deg": float(uncertainty[0]),
-            "mount_x_m": float(uncertainty[1]),
-            "mount_y_m": float(uncertainty[2]),
-        },
-        "joint_identifiable": bool(eigenvalues[0] > max(eigenvalues[-1], 1e-12) * 1e-5),
-    }
+def _joint_refinement_seeds(
+    coarse: Sequence[tuple[float, int, float, np.ndarray]],
+) -> list[tuple[float, int, float, np.ndarray]]:
+    selected = [next(item for item in coarse if item[1] == sign) for sign in (-1, 1)]
+    for item in coarse:
+        if len(selected) >= MAX_JOINT_REFINEMENT_SEEDS:
+            break
+        if any(
+            item[1] == existing[1]
+            and _offset_distance(item[2], existing[2]) <= JOINT_SEED_SEPARATION_DEG
+            and np.linalg.norm(item[3] - existing[3]) <= 0.05
+            for existing in selected
+        ):
+            continue
+        selected.append(item)
+    return selected
 
 
 def _joint_competing_scores(
@@ -776,6 +826,8 @@ def _joint_competing_scores(
     coarse: Sequence[tuple[float, int, float, np.ndarray]],
     winning_sign: int,
     winning_offset: float,
+    *,
+    visibility_aware: bool = False,
 ) -> list[tuple[float, int, float, np.ndarray]]:
     selected: list[tuple[float, int, float, np.ndarray]] = []
 
@@ -813,7 +865,15 @@ def _joint_competing_scores(
             continue
         selected.append(seed)
     refined = [
-        _refine_joint_mount(baseline, baseline_pose, stages, sign, offset, mount)
+        _refine_joint_mount(
+            baseline,
+            baseline_pose,
+            stages,
+            sign,
+            offset,
+            mount,
+            visibility_aware=visibility_aware,
+        )
         for _, sign, offset, mount in selected
     ]
     alternatives = [
@@ -826,6 +886,115 @@ def _joint_competing_scores(
         alternatives,
         key=lambda item: (item[0], item[1], item[2], float(item[3][0]), float(item[3][1])),
     )
+
+
+def _refine_joint_mount(
+    baseline: _ScanGeometry,
+    baseline_pose: Mapping[str, float],
+    stages: Sequence[tuple[Mapping[str, object], _ScanGeometry]],
+    sign: int,
+    offset_deg: float,
+    declared_mount: Sequence[float],
+    *,
+    visibility_aware: bool = False,
+) -> tuple[float, float, np.ndarray]:
+    def score(parameters: np.ndarray) -> float:
+        return _score_offset(
+            baseline,
+            baseline_pose,
+            stages,
+            parameters[1:],
+            sign,
+            float(parameters[0]),
+            visibility_aware=visibility_aware,
+        )
+
+    _require(
+        np.linalg.norm(declared_mount) <= MAX_FITTED_MOUNT_RADIUS_M,
+        "joint mount seed exceeds the fitted mount radius",
+    )
+    starts = (np.array((offset_deg, *declared_mount), dtype=float),)
+    best_parameters: np.ndarray | None = None
+    best_score = math.inf
+    for initial in starts:
+        parameters = initial.copy()
+        for offset_step, mount_step in ((2.0, 0.1), (0.5, 0.025), (0.1, 0.005)):
+            for _ in range(4):
+                candidates = [parameters]
+                for index, step in enumerate((offset_step, mount_step, mount_step)):
+                    for direction in (-1.0, 1.0):
+                        candidate = parameters.copy()
+                        candidate[index] += direction * step
+                        if np.linalg.norm(candidate[1:]) <= MAX_FITTED_MOUNT_RADIUS_M:
+                            candidates.append(candidate)
+                score_and_candidate = min(
+                    ((score(candidate), candidate) for candidate in candidates),
+                    key=lambda item: item[0],
+                )
+                if score_and_candidate[0] >= score(parameters) - 1e-12:
+                    break
+                parameters = score_and_candidate[1]
+        final_score = score(parameters)
+        if final_score < best_score:
+            best_score, best_parameters = final_score, parameters
+    if best_parameters is None:
+        return math.inf, offset_deg, np.asarray(declared_mount, dtype=float)
+    return best_score, float(best_parameters[0]), best_parameters[1:]
+
+
+def _joint_mount_metrics(
+    score: Callable[[np.ndarray], float], parameters: np.ndarray, fit_score: float
+) -> dict[str, object]:
+    steps = np.array((0.25, 0.005, 0.005))
+    hessian = np.empty((3, 3), dtype=float)
+    center = score(parameters)
+    for row in range(3):
+        for column in range(3):
+            if row == column:
+                plus = parameters.copy()
+                minus = parameters.copy()
+                plus[row] += steps[row]
+                minus[row] -= steps[row]
+                hessian[row, row] = (score(plus) + score(minus) - 2 * center) / steps[row] ** 2
+            else:
+                first = parameters.copy()
+                second = parameters.copy()
+                third = parameters.copy()
+                fourth = parameters.copy()
+                first[row] += steps[row]
+                first[column] += steps[column]
+                second[row] += steps[row]
+                second[column] -= steps[column]
+                third[row] -= steps[row]
+                third[column] += steps[column]
+                fourth[row] -= steps[row]
+                fourth[column] -= steps[column]
+                hessian[row, column] = (
+                    score(first) - score(second) - score(third) + score(fourth)
+                ) / (4 * steps[row] * steps[column])
+    if not np.all(np.isfinite(hessian)):
+        raise ValueError("joint visibility curvature is unavailable")
+    scale = np.diag((10.0, 0.1, 0.1))
+    scaled_hessian = scale @ hessian @ scale
+    eigenvalues = np.linalg.eigvalsh(scaled_hessian)
+    covariance = max(fit_score, 1e-12) * np.linalg.pinv(hessian, rcond=1e-5)
+    uncertainty = np.sqrt(np.maximum(np.diag(covariance), 0.0))
+    return {
+        "joint_hessian_eigenvalues": [float(value) for value in eigenvalues],
+        "joint_parameter_uncertainty": {
+            "offset_deg": float(uncertainty[0]),
+            "mount_x_m": float(uncertainty[1]),
+            "mount_y_m": float(uncertainty[2]),
+        },
+        "joint_identifiable": bool(eigenvalues[0] > max(eigenvalues[-1], 1e-12) * 1e-5),
+    }
+
+
+def _visibility_refusal(initial_metrics: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "refusal_reasons": ["visibility_overlap_insufficient"],
+        "metrics": {"registration_skipped": True, **initial_metrics},
+    }
 
 
 def _geometry_rank(points: np.ndarray) -> tuple[float, list[float], list[float]]:
@@ -957,54 +1126,53 @@ def _candidate(
     held_out_stages = [
         (stage, changed_held_out[name]) for name, stage in zip(changed_names, changed, strict=True)
     ]
-    coarse_step = 4.0 if "after_cross_forward" in stages else 1.0
-    coarse = _coarse_offset_scores(
-        baseline_fit,
-        baseline["pose"],  # type: ignore[arg-type]
-        fit_stages,
-        mount_xy,
-        coarse_step,
-    )
-    best_coarse = coarse[0]
-    refined: list[tuple[float, int, float]] = []
-    for offset in np.arange(
-        best_coarse[2] - coarse_step, best_coarse[2] + coarse_step + 0.0001, 0.1
-    ):
-        refined.append(
-            (
-                _score_offset(
-                    baseline_fit,
-                    baseline["pose"],  # type: ignore[arg-type]
-                    fit_stages,
-                    mount_xy,
-                    best_coarse[1],
-                    float(offset),
-                ),
-                best_coarse[1],
-                float(offset),
-            )
-        )
-    refined.sort()
-    fit_score, sign, offset = refined[0]
+    visibility_aware = "after_cross_forward" in stages
     fitted_mount = np.asarray(mount_xy, dtype=float)
     joint_metrics: dict[str, object] = {}
     joint_coarse: list[tuple[float, int, float, np.ndarray]] = []
-    if "after_cross_forward" in stages:
+    joint_refined: list[tuple[float, int, float, np.ndarray]] = []
+    if visibility_aware:
         joint_coarse = _joint_coarse_scores(
             baseline_fit,
             baseline["pose"],  # type: ignore[arg-type]
             fit_stages,
             mount_xy,
         )
-        _, sign, offset, initial_mount = joint_coarse[0]
-        fit_score, offset, fitted_mount = _refine_joint_mount(
+        joint_refined = sorted(
+            (
+                (score, sign, offset, fitted_mount)
+                for _, sign, coarse_offset, initial_mount in _joint_refinement_seeds(joint_coarse)
+                for score, offset, fitted_mount in [
+                    _refine_joint_mount(
+                        baseline_fit,
+                        baseline["pose"],  # type: ignore[arg-type]
+                        fit_stages,
+                        sign,
+                        coarse_offset,
+                        initial_mount,
+                        visibility_aware=True,
+                    )
+                ]
+            ),
+            key=lambda item: (item[0], item[1], item[2], float(item[3][0]), float(item[3][1])),
+        )
+        provisional = joint_refined[0]
+        distant_refined = _joint_competing_scores(
             baseline_fit,
             baseline["pose"],  # type: ignore[arg-type]
             fit_stages,
-            sign,
-            offset,
-            initial_mount,
+            joint_coarse,
+            provisional[1],
+            provisional[2],
+            visibility_aware=True,
         )
+        joint_refined = sorted(
+            [*joint_refined, *distant_refined],
+            key=lambda item: (item[0], item[1], item[2], float(item[3][0]), float(item[3][1])),
+        )
+        fit_score, sign, offset, fitted_mount = joint_refined[0]
+        if not math.isfinite(fit_score):
+            return _visibility_refusal(initial_metrics)
 
         def joint_score(parameters: np.ndarray) -> float:
             return _score_offset(
@@ -1014,11 +1182,43 @@ def _candidate(
                 parameters[1:],
                 sign,
                 float(parameters[0]),
+                visibility_aware=True,
             )
 
-        joint_metrics = _joint_mount_metrics(
-            joint_score, np.array((offset, *fitted_mount), dtype=float), fit_score
+        try:
+            joint_metrics = _joint_mount_metrics(
+                joint_score, np.array((offset, *fitted_mount), dtype=float), fit_score
+            )
+        except ValueError:
+            return _visibility_refusal(initial_metrics)
+    else:
+        coarse_step = 1.0
+        coarse = _coarse_offset_scores(
+            baseline_fit,
+            baseline["pose"],  # type: ignore[arg-type]
+            fit_stages,
+            mount_xy,
+            coarse_step,
         )
+        best_coarse = coarse[0]
+        refined = [
+            (
+                _score_offset(
+                    baseline_fit,
+                    baseline["pose"],  # type: ignore[arg-type]
+                    fit_stages,
+                    mount_xy,
+                    best_coarse[1],
+                    float(candidate_offset),
+                ),
+                best_coarse[1],
+                float(candidate_offset),
+            )
+            for candidate_offset in np.arange(
+                best_coarse[2] - coarse_step, best_coarse[2] + coarse_step + 0.0001, 0.1
+            )
+        ]
+        fit_score, sign, offset = min(refined)
     held_out_score = _score_offset(
         baseline_held_out,
         baseline["pose"],  # type: ignore[arg-type]
@@ -1026,7 +1226,10 @@ def _candidate(
         fitted_mount,
         sign,
         offset,
+        visibility_aware=visibility_aware,
     )
+    if not math.isfinite(held_out_score):
+        return _visibility_refusal(initial_metrics)
     best_rms = math.sqrt(fit_score)
     held_out_rms = math.sqrt(held_out_score)
     step = 0.25
@@ -1038,20 +1241,20 @@ def _candidate(
             fitted_mount,
             sign,
             offset + delta,
+            visibility_aware=visibility_aware,
         )
         for delta in (-step, step)
     ]
+    if not all(math.isfinite(value) for value in nearby):
+        return _visibility_refusal(initial_metrics)
     curvature = max((nearby[0] + nearby[1] - 2.0 * fit_score) / (step * step), 1e-12)
     uncertainty = math.sqrt(max(fit_score, 1e-12) / curvature)
     if joint_coarse:
-        competing_scores = _joint_competing_scores(
-            baseline_fit,
-            baseline["pose"],  # type: ignore[arg-type]
-            fit_stages,
-            joint_coarse,
-            sign,
-            offset,
-        )
+        competing_scores = [
+            item
+            for item in joint_refined
+            if item[1] != sign or _offset_distance(item[2], offset) > JOINT_BASIN_SEPARATION_DEG
+        ]
         if competing_scores:
             competing = competing_scores[0]
         else:
@@ -1089,6 +1292,7 @@ def _candidate(
                     fitted_mount,
                     sign,
                     candidate_offset,
+                    visibility_aware=visibility_aware,
                 ),
                 candidate_offset,
             )
@@ -1104,6 +1308,47 @@ def _candidate(
         > 3.0
     ):
         refusals.append("per_stage_offset_disagreement")
+    visibility_support: dict[str, object] = {}
+    if visibility_aware:
+        visibility_support = {
+            "fit": _visibility_support(
+                baseline_fit,
+                baseline["pose"],  # type: ignore[arg-type]
+                [
+                    (name, stage, changed_fit[name])
+                    for name, stage in zip(changed_names, changed, strict=True)
+                ],
+                fitted_mount,
+                sign,
+                offset,
+            ),
+            "held_out": _visibility_support(
+                baseline_held_out,
+                baseline["pose"],  # type: ignore[arg-type]
+                [
+                    (name, stage, changed_held_out[name])
+                    for name, stage in zip(changed_names, changed, strict=True)
+                ],
+                fitted_mount,
+                sign,
+                offset,
+            ),
+        }
+        for split in visibility_support.values():
+            assert isinstance(split, Mapping)
+            for stage_support in split.values():
+                assert isinstance(stage_support, Mapping)
+                if not stage_support["available"]:
+                    refusals.append("visibility_overlap_unavailable")
+                    continue
+                for direction in ("stage_to_baseline", "baseline_to_stage"):
+                    support = stage_support[direction]
+                    assert isinstance(support, Mapping)
+                    if (
+                        int(support["visible_points"]) < MIN_VISIBLE_DIRECTION_POINTS
+                        or float(support["visible_fraction"]) < MIN_VISIBLE_DIRECTION_FRACTION
+                    ):
+                        refusals.append("visibility_overlap_insufficient")
     candidate: dict[str, object] = {"offset_deg": _normalized_offset(offset), "angle_sign": sign}
     if joint_metrics:
         mount_uncertainty = joint_metrics["joint_parameter_uncertainty"]
@@ -1145,6 +1390,7 @@ def _candidate(
         "offset_uncertainty_deg": uncertainty,
         "offset_uncertainty_method": OFFSET_UNCERTAINTY_METHOD,
         "residual_retained_fraction": RESIDUAL_RETAINED_FRACTION,
+        "visibility_support": visibility_support,
         **joint_metrics,
     }
     if joint_coarse:
