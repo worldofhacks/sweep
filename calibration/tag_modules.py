@@ -12,6 +12,7 @@ from perception.tag_localization import tag_corners
 _CELLS = 8
 _CANONICAL_SIZE = 800
 _MINIMUM_PATTERN_MATCH = 0.95
+_MAXIMUM_OUTER_REFINEMENT_PX = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,10 +39,13 @@ def extract_module_corners(
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
     if not 0 <= identifier < dictionary.bytesList.shape[0]:
         raise ValueError("invalid tag36h11 identifier")
+    observed_outer = _refine_outer_corners(gray, outer_corners)
+    if observed_outer is None:
+        return None
     source = np.float32(
         [[0, 0], [_CANONICAL_SIZE, 0], [_CANONICAL_SIZE, _CANONICAL_SIZE], [0, _CANONICAL_SIZE]]
     )
-    homography = cv2.getPerspectiveTransform(source, outer_corners.astype(np.float32))
+    homography = cv2.getPerspectiveTransform(source, observed_outer)
     warped = cv2.warpPerspective(
         gray, homography, (_CANONICAL_SIZE, _CANONICAL_SIZE), flags=cv2.WARP_INVERSE_MAP
     )
@@ -51,9 +55,9 @@ def extract_module_corners(
     if pattern_match < _MINIMUM_PATTERN_MATCH:
         return None
 
-    module_px = min(
-        np.linalg.norm(outer_corners - np.roll(outer_corners, 1, axis=0), axis=1)
-    ) / _CELLS
+    module_px = (
+        min(np.linalg.norm(observed_outer - np.roll(observed_outer, 1, axis=0), axis=1)) / _CELLS
+    )
     candidates = cv2.goodFeaturesToTrack(
         gray, maxCorners=4096, qualityLevel=0.0001, minDistance=1, blockSize=3
     )
@@ -83,10 +87,27 @@ def extract_module_corners(
         return None
     return ModuleCorners(
         object_points=np.vstack([tag_corners(tag_size_m), np.asarray(object_points)]).astype(float),
-        image_points=np.vstack([outer_corners, np.asarray(observed)]).astype(float),
+        image_points=np.vstack([observed_outer, np.asarray(observed)]).astype(float),
         internal_count=len(observed),
         pattern_match=pattern_match,
     )
+
+
+def _refine_outer_corners(gray: np.ndarray, corners: np.ndarray) -> np.ndarray | None:
+    try:
+        refined = cv2.cornerSubPix(
+            gray,
+            corners.astype(np.float32).reshape(4, 1, 2).copy(),
+            (3, 3),
+            (-1, -1),
+            (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 40, 0.005),
+        ).reshape(4, 2)
+    except cv2.error:
+        return None
+    max_shift = np.max(np.linalg.norm(refined - corners, axis=1))
+    if not np.isfinite(refined).all() or max_shift > _MAXIMUM_OUTER_REFINEMENT_PX:
+        return None
+    return refined
 
 
 def _cells(image: np.ndarray) -> np.ndarray:

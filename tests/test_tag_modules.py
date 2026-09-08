@@ -35,3 +35,21 @@ def test_module_intersections_are_observed_features_not_homography_points(monkey
 def test_module_intersections_reject_a_tag_with_wrong_payload() -> None:
     image, corners = _render(0)
     assert extract_module_corners(image, 1, corners, 0.199898) is None
+
+
+def test_module_outer_corners_are_refined_from_raster_pixels() -> None:
+    image, corners = _render(0)
+
+    result = extract_module_corners(image, 0, corners, 0.199898)
+
+    assert result is not None
+    shifts = np.linalg.norm(result.image_points[:4] - corners, axis=1)
+    assert np.max(shifts) > 0.1
+    assert np.max(shifts) <= 2.0
+
+
+def test_module_rejects_an_unbounded_outer_corner_refinement(monkeypatch) -> None:
+    image, corners = _render(0)
+    monkeypatch.setattr(cv2, "cornerSubPix", lambda *_args: corners.reshape(4, 1, 2) + 3)
+
+    assert extract_module_corners(image, 0, corners, 0.199898) is None

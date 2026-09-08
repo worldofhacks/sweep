@@ -12,6 +12,7 @@ from calibration.tag_intrinsics import (
     calibrate_tag_candidate,
     export_tag_calibration,
 )
+from calibration.tag_modules import ModuleCorners
 from perception.camera_tags import CameraTagDetector
 from perception.tag_localization import tag_corners
 
@@ -53,8 +54,7 @@ def _evidence(path: Path, rotations: list[np.ndarray]) -> None:
 def test_tag_candidate_recovers_varied_square_intrinsics(tmp_path: Path) -> None:
     evidence = tmp_path / "corners.json"
     rotations = [
-        np.array([0.35 * np.sin(index), 0.35 * np.cos(index), 0.1 * index])
-        for index in range(25)
+        np.array([0.35 * np.sin(index), 0.35 * np.cos(index), 0.1 * index]) for index in range(25)
     ]
     _evidence(evidence, rotations)
 
@@ -78,6 +78,25 @@ def test_tag_candidate_rejects_parallel_square_views(tmp_path: Path) -> None:
 
     assert result["status"] == "rejected"
     assert "square homographies are insufficiently varied" in result["rejection_reasons"]
+
+
+def test_tag_candidate_samples_the_full_capture_window(tmp_path: Path) -> None:
+    evidence = tmp_path / "corners.json"
+    _evidence(
+        evidence,
+        [
+            np.array([0.35 * np.sin(index), 0.35 * np.cos(index), 0.1 * index])
+            for index in range(31)
+        ],
+    )
+
+    result = calibrate_tag_candidate(
+        TagCandidateRequest(evidence=evidence, tag_size_m=0.199898, pipeline=_pipeline())
+    )
+
+    assert result["selected_observation_count"] == 30
+    assert result["selection"]["frames"][0] == 0
+    assert result["selection"]["frames"][-1] == 300
 
 
 def test_tag_candidate_refuses_single_square_fisheye_fit(tmp_path: Path) -> None:
@@ -109,6 +128,96 @@ def test_tag_candidate_refuses_single_square_fisheye_fit(tmp_path: Path) -> None
                 frames_dir=tmp_path,
             )
         )
+
+
+def test_fisheye_candidate_prevalidates_smaller_module_view_before_selection(
+    tmp_path: Path, monkeypatch
+) -> None:
+    evidence = tmp_path / "corners.json"
+    _evidence(
+        evidence,
+        [
+            np.array([0.35 * np.sin(index), 0.35 * np.cos(index), 0.1 * index])
+            for index in range(25)
+        ],
+    )
+    document = json.loads(evidence.read_text())
+    for frame in document["frames"]:
+        large = np.asarray(frame["corners_px"][0], dtype=float)
+        center = np.mean(large, axis=0)
+        frame["tag_ids"] = [13, 14]
+        frame["corners_px"] = [(center + 1.2 * (large - center)).tolist(), large.tolist()]
+    evidence.write_text(json.dumps(document))
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    for frame in document["frames"]:
+        image = np.full((720, 1280, 3), 255, np.uint8)
+        assert cv2.imwrite(str(frames / f"frame-{frame['frame_index']:06}.png"), image)
+
+    def modules(_image, identifier, corners, tag_size_m):
+        if identifier == 13:
+            return None
+        objects = np.vstack([tag_corners(tag_size_m), [[0.0, 0.0, 0.0], [0.03, 0.0, 0.0]]])
+        pixels = np.vstack([corners, np.mean(corners, axis=0), np.mean(corners[[0, 1]], axis=0)])
+        return ModuleCorners(objects, pixels, internal_count=2, pattern_match=1.0)
+
+    monkeypatch.setattr("calibration.tag_intrinsics.extract_module_corners", modules)
+    result = calibrate_tag_candidate(
+        TagCandidateRequest(
+            evidence=evidence,
+            tag_size_m=0.199898,
+            pipeline=_pipeline(),
+            model="fisheye",
+            frames_dir=frames,
+        )
+    )
+
+    assert result["selected_observation_count"] == 25
+    assert result["selection"]["tag_ids"] == [14] * 25
+    assert (
+        "fewer than 25 frames have six validated observed tag corners"
+        not in result["rejection_reasons"]
+    )
+
+
+def test_fisheye_candidate_uses_smaller_valid_tag_from_rendered_raster(tmp_path: Path) -> None:
+    evidence = tmp_path / "corners.json"
+    rotations = [
+        np.array([0.18 * np.sin(index), 0.18 * np.cos(index), 0.04 * index]) for index in range(25)
+    ]
+    _evidence(evidence, rotations)
+    document = json.loads(evidence.read_text())
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+    marker = cv2.aruco.generateImageMarker(dictionary, 14, 800)
+    source = np.float32([[0, 0], [800, 0], [800, 800], [0, 800]])
+    for frame in document["frames"]:
+        valid = np.asarray(frame["corners_px"][0], dtype=np.float32)
+        center = np.mean(valid, axis=0)
+        invalid = center + 1.2 * (valid - center)
+        frame["tag_ids"] = [13, 14]
+        frame["corners_px"] = [invalid.tolist(), valid.tolist()]
+        image = np.full((720, 1280), 255, np.uint8)
+        transform = cv2.getPerspectiveTransform(source, valid)
+        image = cv2.warpPerspective(
+            marker, transform, (1280, 720), dst=image, borderMode=cv2.BORDER_TRANSPARENT
+        )
+        assert cv2.imwrite(str(frames / f"frame-{frame['frame_index']:06}.png"), image)
+    evidence.write_text(json.dumps(document))
+
+    result = calibrate_tag_candidate(
+        TagCandidateRequest(
+            evidence=evidence,
+            tag_size_m=0.199898,
+            pipeline=_pipeline(),
+            model="fisheye",
+            frames_dir=frames,
+        )
+    )
+
+    assert result["selected_observation_count"] == 25
+    assert result["selection"]["tag_ids"] == [14] * 25
 
 
 def test_fisheye_heldout_reprojection_calls_opencv_and_rejects_perturbed_corners() -> None:
@@ -146,8 +255,7 @@ def test_fisheye_heldout_reprojection_calls_opencv_and_rejects_perturbed_corners
 def test_exported_apriltag_pinhole_calibration_loads_and_detects(tmp_path: Path) -> None:
     evidence = tmp_path / "corners.json"
     rotations = [
-        np.array([0.35 * np.sin(index), 0.35 * np.cos(index), 0.1 * index])
-        for index in range(25)
+        np.array([0.35 * np.sin(index), 0.35 * np.cos(index), 0.1 * index]) for index in range(25)
     ]
     _evidence(evidence, rotations)
     frames = tmp_path / "frames"

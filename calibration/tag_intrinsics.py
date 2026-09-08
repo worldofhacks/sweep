@@ -20,7 +20,7 @@ from calibration.intrinsics import (
     _pipeline,
     _pose_constraint_ratio,
 )
-from calibration.tag_modules import extract_module_corners
+from calibration.tag_modules import ModuleCorners, extract_module_corners
 from perception.tag_localization import tag_corners
 
 _MINIMUM_VIEWS = 20
@@ -30,6 +30,8 @@ _MAXIMUM_FISHEYE_HELDOUT_RMS_PX = 0.5
 _MAXIMUM_FISHEYE_FOCAL_DRIFT = 0.05
 _MAXIMUM_FISHEYE_PRINCIPAL_DRIFT = 0.02
 _MAXIMUM_FISHEYE_DISTORTION_DRIFT = 0.2
+_GRID_COLUMNS = 4
+_GRID_ROWS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,9 +95,7 @@ def export_tag_calibration(
             "family": "tag36h11",
             "black_square_edge_m": request.tag_size_m,
             "validated_feature_kind": (
-                "outer_corners_plus_module_intersections"
-                if model == "fisheye"
-                else "outer_corners"
+                "outer_corners_plus_module_intersections" if model == "fisheye" else "outer_corners"
             ),
         },
         "image_size_px": candidate["image_size_px"],
@@ -145,6 +145,19 @@ def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
     if pipeline["resolution_px"] != list(image_size):
         raise ValueError("pipeline resolution_px does not match tag evidence")
     selected = _select(observations, request.minimum_frame_gap, request.maximum_views)
+    module_views: list[tuple[int, int, float, ModuleCorners]] | None = None
+    if request.model == "fisheye" and request.frames_dir is not None:
+        module_views = _select_module_views(
+            _module_candidates(observations, request.frames_dir, request.tag_size_m, image_size),
+            request.minimum_frame_gap,
+            request.maximum_views,
+            image_size,
+        )
+        selected = [
+            (index, identifier, module.image_points[:4])
+            for index, identifier, _, module in module_views
+        ]
+    minimum_views = _MINIMUM_FISHEYE_VIEWS if request.model == "fisheye" else _MINIMUM_VIEWS
     report: dict[str, object] = {
         "kind": "apriltag_intrinsics_candidate",
         "status": "rejected",
@@ -155,7 +168,7 @@ def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
         "model": request.model,
         "raw_observation_count": len(observations),
         "selected_observation_count": len(selected),
-        "minimum_selected_observation_count": _MINIMUM_VIEWS,
+        "minimum_selected_observation_count": minimum_views,
         "minimum_shortest_edge_px": _MINIMUM_EDGE_PX,
         "selection": {
             "minimum_frame_gap": request.minimum_frame_gap,
@@ -166,8 +179,12 @@ def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
         "rejection_reasons": [],
     }
     reasons: list[str] = report["rejection_reasons"]  # type: ignore[assignment]
-    if len(selected) < _MINIMUM_VIEWS:
-        reasons.append("fewer than 20 separated raw four-corner observations")
+    if len(selected) < minimum_views:
+        reasons.append(
+            "fewer than 25 frames have six validated observed tag corners"
+            if request.model == "fisheye"
+            else "fewer than 20 separated raw four-corner observations"
+        )
         return report
 
     image_points = [pixels.astype(np.float32) for _, _, pixels in selected]
@@ -187,12 +204,13 @@ def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
         if request.frames_dir is None:
             reasons.append("fisheye fitting requires --frames-dir with the raw images")
             return report
-        module_views = _module_views(selected, request.frames_dir, request.tag_size_m, image_size)
-        if len(module_views) < _MINIMUM_FISHEYE_VIEWS:
-            reasons.append("fewer than 25 frames have six validated observed tag corners")
-            return report
-        objects = [view[0].reshape(-1, 1, 3).astype(np.float64) for view in module_views]
-        pixels = [view[1].reshape(-1, 1, 2).astype(np.float64) for view in module_views]
+        assert module_views is not None
+        objects = [
+            view[3].object_points.reshape(-1, 1, 3).astype(np.float64) for view in module_views
+        ]
+        pixels = [
+            view[3].image_points.reshape(-1, 1, 2).astype(np.float64) for view in module_views
+        ]
         try:
             rms, camera_matrix, distortion = _fit_fisheye(objects, pixels, image_size)
             train_indices = [index for index in range(len(objects)) if index % 5]
@@ -320,31 +338,75 @@ def _observations(
 def _select(
     observations: list[tuple[int, int, np.ndarray]], minimum_frame_gap: int, maximum_views: int
 ) -> list[tuple[int, int, np.ndarray]]:
-    selected: list[tuple[int, int, np.ndarray]] = []
+    eligible: list[tuple[int, int, np.ndarray]] = []
     for item in observations:
-        if len(selected) == maximum_views:
-            break
-        if all(abs(item[0] - prior[0]) >= minimum_frame_gap for prior in selected):
-            selected.append(item)
-    return selected
+        if all(abs(item[0] - prior[0]) >= minimum_frame_gap for prior in eligible):
+            eligible.append(item)
+    return _temporal_sample(eligible, maximum_views)
 
 
-def _module_views(
-    selected: list[tuple[int, int, np.ndarray]], frames_dir: Path, tag_size_m: float,
+def _module_candidates(
+    observations: list[tuple[int, int, np.ndarray]],
+    frames_dir: Path,
+    tag_size_m: float,
     image_size: tuple[int, int],
-) -> list[tuple[np.ndarray, np.ndarray]]:
+) -> list[tuple[int, int, float, ModuleCorners]]:
     if not frames_dir.is_dir():
         raise ValueError("frames directory does not exist")
-    views = []
-    for index, identifier, corners in selected:
+    candidates = []
+    for index, identifier, corners in observations:
         path = frames_dir / f"frame-{index:06}.png"
         image = cv2.imread(str(path))
         if image is None or (image.shape[1], image.shape[0]) != image_size:
             raise ValueError(f"missing or mismatched frame image: {path}")
         module = extract_module_corners(image, identifier, corners, tag_size_m)
         if module is not None:
-            views.append((module.object_points, module.image_points))
-    return views
+            edge = float(np.min(np.linalg.norm(corners - np.roll(corners, 1, axis=0), axis=1)))
+            candidates.append((index, identifier, edge, module))
+    return candidates
+
+
+def _select_module_views(
+    candidates: list[tuple[int, int, float, ModuleCorners]],
+    minimum_frame_gap: int,
+    maximum_views: int,
+    image_size: tuple[int, int],
+) -> list[tuple[int, int, float, ModuleCorners]]:
+    by_frame: dict[int, list[tuple[int, int, float, ModuleCorners]]] = {}
+    for candidate in candidates:
+        by_frame.setdefault(candidate[0], []).append(candidate)
+    covered = np.zeros((_GRID_ROWS, _GRID_COLUMNS), dtype=int)
+    eligible = []
+    for index, views in sorted(by_frame.items()):
+        if not all(abs(index - prior[0]) >= minimum_frame_gap for prior in eligible):
+            continue
+        view = min(
+            views,
+            key=lambda item: (
+                covered[_grid_cell(item[3].image_points[:4], image_size)],
+                -item[3].internal_count,
+                -item[3].pattern_match,
+                -item[2],
+                item[1],
+            ),
+        )
+        covered[_grid_cell(view[3].image_points[:4], image_size)] += 1
+        eligible.append(view)
+    return _temporal_sample(eligible, maximum_views)
+
+
+def _temporal_sample[T](items: list[T], maximum_views: int) -> list[T]:
+    if len(items) <= maximum_views:
+        return items
+    indices = np.linspace(0, len(items) - 1, maximum_views, dtype=int)
+    return [items[index] for index in indices]
+
+
+def _grid_cell(points: np.ndarray, image_size: tuple[int, int]) -> tuple[int, int]:
+    center = np.mean(points, axis=0)
+    column = min(_GRID_COLUMNS - 1, max(0, int(center[0] * _GRID_COLUMNS / image_size[0])))
+    row = min(_GRID_ROWS - 1, max(0, int(center[1] * _GRID_ROWS / image_size[1])))
+    return row, column
 
 
 def _fit_fisheye(
