@@ -1,0 +1,19 @@
+.mv-capture { padding: 18px 0; border-bottom: 1px solid var(--color-border-secondary); }
+.mv-capture h3 { margin: 0; font-size: var(--text-18); }
+.mv-capture p, .mv-capture figcaption { color: var(--color-ink-2); }
+.mv-stops { display: grid; gap: 10px; padding-left: 22px; }
+.mv-stops li { padding-left: 4px; }
+.mv-stops label { display: inline-flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-right: 10px; }
+.mv-capture button, .mv-capture select { min-height: var(--min-h-38); padding: 7px 10px; border: 1px solid var(--color-border-input); background: var(--color-surface); color: var(--color-ink); }
+.mv-capture button { cursor: pointer; }
+.mv-capture button:disabled { color: var(--color-ink-3); cursor: not-allowed; }
+.mv-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.mv-review { margin-top: 16px; }
+.mv-review figure { margin: 0; }
+.mv-review svg { width: 100%; max-height: 300px; border: 1px solid var(--color-border-secondary); }
+.mv-review polyline { fill: none; stroke: var(--color-ink); stroke-width: 2; }
+.mv-review circle, .mv-review text { fill: var(--color-ink); }
+.mv-review ol { display: grid; gap: 8px; list-style: none; padding: 0; }
+.mv-review li span { display: block; color: var(--color-ink-2); font-variant-numeric: tabular-nums; }
+.mv-review details { margin: 12px 0; }
+.mv-review td { font-variant-numeric: tabular-nums; }

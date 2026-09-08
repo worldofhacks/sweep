@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { MultiviewCapture } from './MultiviewCapture'
 import type { CatalogClient } from '../../catalog/client'
 import {
   captureFilters,
@@ -18,7 +19,7 @@ import { CatalogNote, LinkNotice } from '../catalog-shared'
 import { EmptyModule } from '../shared'
 import type { ModuleProps } from '../types'
 
-export function CapturesModule({ controller, catalog }: ModuleProps) {
+export function CapturesModule({ controller, catalog, services, now }: ModuleProps) {
   const [filterId, setFilterId] = useState('all')
   const [note, setNote] = useState<CatalogNoteState | null>(null)
   const relayCaptures = controller.state.captures
@@ -45,6 +46,7 @@ export function CapturesModule({ controller, catalog }: ModuleProps) {
 
   return (
     <Pane title="Capture library" note="Captured media by room, capture, device and time.">
+      <MultiviewCapture controller={controller} services={services} now={now} />
       <LinkNotice link={link} label="Capture library connection" />
       <CatalogNote label="Capture library notice" note={note} />
       {open.length > 0 && <OpenCaptures captures={open} label={deviceLabeller(controller.state.aircraft)} />}

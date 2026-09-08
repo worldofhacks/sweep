@@ -1,4 +1,5 @@
 import type { NavigationClient } from '../navigation'
+import type { MultiviewClient } from '../relay/multiview'
 import type { SearchClient } from '../search/client'
 import type { MapAuthoringClient } from './map/authoring/client'
 import type { ComponentType } from 'react'
@@ -38,6 +39,7 @@ export interface ModuleServices {
   /** Accepted-map review port; absent until a real provider is connected. */
   navigation?: NavigationClient
   search?: SearchClient
+  multiview?: MultiviewClient
   /** Explicit saved-map integration; absent backend actions remain unavailable. */
   mapAuthoring?: MapAuthoringClient
   transcript?: TranscriptClient

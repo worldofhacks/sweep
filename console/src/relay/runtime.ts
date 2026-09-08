@@ -5,6 +5,8 @@ import {
 } from '../media/runtime-config'
 import { HttpTranscriptClient, type TranscriptClient } from '../voice/client'
 import { relayMapEndpoint, type MapEndpoint } from './map-endpoint'
+import { HttpMultiviewClient, type MultiviewClient } from './multiview'
+import { PlatformHttp } from '../platform/http'
 import { PlatformRuntime } from '../platform/runtime'
 import { HttpSearchClient, type SearchClient } from '../search/client'
 
@@ -37,6 +39,7 @@ export interface ConsoleRuntime {
   baseUrl: string | null
   platform: PlatformRuntime | null
   searchClient: SearchClient | null
+  multiviewClient: MultiviewClient | null
 }
 
 declare global {
@@ -67,6 +70,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       baseUrl: null,
       platform: null,
       searchClient: null,
+      multiviewClient: null,
     }
   }
 
@@ -75,6 +79,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
     baseUrl: config.baseUrl,
     platform: new PlatformRuntime(config),
     searchClient: new HttpSearchClient(config),
+    multiviewClient: new HttpMultiviewClient(new PlatformHttp(config)),
     client: new WebSocketRelayClient({
       baseUrl: config.baseUrl,
       sessionId: config.sessionId,

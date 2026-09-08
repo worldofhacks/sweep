@@ -100,7 +100,7 @@ function sortedIdentities(value: unknown): boolean {
   return true
 }
 
-function execution(value: unknown): value is NavigationExecutionEvidence {
+export function isNavigationExecution(value: unknown): value is NavigationExecutionEvidence {
   return exact(value, ['planHash', 'mapPin', 'geometryPin', 'navigationPin', 'approvalId', 'configurationSha256', 'permissionZoneIds']) &&
     typeof value.planHash === 'string' && /^[a-f0-9]{64}$/.test(value.planHash) &&
     pin(value.mapPin) && pin(value.geometryPin) && pin(value.navigationPin) && identity(value.approvalId) &&
@@ -150,7 +150,7 @@ function point(value: unknown): value is Record<string, unknown> {
       typeof value[key] === 'number' && Number.isFinite(value[key]) && Math.abs(value[key] as number) <= MAX_NAVIGATION_COORDINATE_M)
 }
 
-function route(value: unknown): value is Record<string, unknown> {
+export function isNavigationRoute(value: unknown): value is Record<string, unknown> {
   return exact(value, ['target', 'waypoints', 'arrivalSlot', 'holdBehavior']) && target(value.target) &&
     list(value.waypoints, MAX_NAVIGATION_WAYPOINTS, point, 2) &&
     exact(value.arrivalSlot, ['slotId', 'zoneId', 'position']) && identity(value.arrivalSlot.slotId) &&
@@ -198,9 +198,9 @@ export function parseNavigationPreview(raw: unknown): NavigationPreview | null {
       !identity(raw.previewId) || !text(raw.session, 512) || !identity(raw.intentId) ||
       !integer(raw.rosterVersion) || !targets(raw.selected) || !destination(raw.destination) || !map(raw.map) ||
       !identity(raw.catalogVersion) || !identity(raw.configVersion) || !motion(raw.motionConfig) ||
-      !list(raw.routes, MAX_NAVIGATION_TARGETS, route) || !list(raw.outcomes, MAX_NAVIGATION_TARGETS, outcome, 1) ||
+      !list(raw.routes, MAX_NAVIGATION_TARGETS, isNavigationRoute) || !list(raw.outcomes, MAX_NAVIGATION_TARGETS, outcome, 1) ||
       !window(raw) || typeof raw.dispatchEligible !== 'boolean' ||
-      (raw.dispatchEligible ? !execution(raw.execution) : Object.hasOwn(raw, 'execution'))) return null
+      (raw.dispatchEligible ? !isNavigationExecution(raw.execution) : Object.hasOwn(raw, 'execution'))) return null
     const preview = raw as unknown as NavigationPreview
     const selected = new Map(preview.selected.map((item) => [item.id, item]))
     if (preview.outcomes.length !== selected.size || new Set(preview.outcomes.map((item) => item.target.id)).size !== selected.size ||
