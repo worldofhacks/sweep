@@ -237,7 +237,7 @@ def _rehearsal_deployment(
     document = json.loads(base.path.read_text())
     tuning_path = directory / document["wire_navigation_files"]["1"]
     tuning = json.loads(tuning_path.read_text())
-    tuning["limits"]["tracking_timeout_ms"] = 12_000
+    tuning["limits"]["tracking_timeout_ms"] = 60_000
     encoded_tuning = json.dumps(tuning, sort_keys=True, separators=(",", ":")).encode()
     tuning_path.write_bytes(encoded_tuning)
     tuning_digest = sha256(encoded_tuning).hexdigest()
@@ -256,8 +256,8 @@ def _rehearsal_deployment(
         drone_id: replace(
             profile,
             clock_lease_expires_at_ms=now_ms + lifetime_ms,
-            max_authorization_lifetime_ms=12_000,
-            tracking_timeout_ms=12_000,
+            max_authorization_lifetime_ms=60_000,
+            tracking_timeout_ms=60_000,
             navigation_config_sha256=tuning_digest,
         )
         for drone_id, profile in base.wire_profiles.items()
@@ -265,7 +265,8 @@ def _rehearsal_deployment(
     config = replace(
         base.config,
         frames=frames,
-        segment_timeout_ms=12_000,
+        speed_m_s=0.04,
+        segment_timeout_ms=60_000,
         wire_config_sha256=next(iter(wire_config_digest_candidates(profiles))),
     )
     world_path = directory / "world-localization.json"
@@ -459,7 +460,7 @@ class MovingControlPosePublisher:
                         signing_key=self.token,
                     )
                     await websocket.send(json.dumps(frame))
-                    await asyncio.sleep(0.02)
+                    await asyncio.sleep(0.1)
             finally:
                 reader.cancel()
                 with suppress(asyncio.CancelledError):
@@ -543,12 +544,12 @@ class LoopbackDemoRehearsal:
         self._write_bootstrap(relay_token, adapter_token, localization_token)
         search, search_detection = synthetic_lobby_search_configuration(deployment)
         config = AutonomyConfig(
-            planning=replace(planning_config(), flight_speed_m_s=0.2),
+            planning=replace(planning_config(), flight_speed_m_s=0.04),
             safety=replace(
                 safety_config(),
                 geofence=Geofence(-100.0, 100.0, -100.0, 100.0, -100.0, 100.0),
                 ceiling_m=50.0,
-                operator_timeout_ms=45_000,
+                operator_timeout_ms=120_000,
             ),
             control_localization_projector=projector,
             navigation=deployment,

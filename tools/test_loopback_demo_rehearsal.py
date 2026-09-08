@@ -151,11 +151,14 @@ def test_rehearsal_deployment_reloads_a_signed_fresh_session(tmp_path) -> None:
     deployment.validate_projector(projector)
     assert pins.clock_mapping.relay_reference_ms == now
     assert deployment.wire_profiles[1].clock_lease_expires_at_ms == now + 60_000
-    assert deployment.config.segment_timeout_ms == 12_000
+    assert deployment.config.speed_m_s == 0.04
+    assert deployment.config.position_tolerance_m == 0.005
+    assert deployment.config.segment_timeout_ms == 60_000
     profile = deployment.wire_profiles[1]
-    assert profile.max_authorization_lifetime_ms == profile.tracking_timeout_ms == 12_000
+    assert profile.max_authorization_lifetime_ms == profile.tracking_timeout_ms == 60_000
     tuning = deployment.path.parent / "device-1-navigation.json"
     assert sha256(tuning.read_bytes()).hexdigest() == profile.navigation_config_sha256
+    assert json.loads(tuning.read_bytes())["limits"]["tracking_timeout_ms"] == 60_000
     artifact = deployment.artifact()
     assert [zone.zone_id for zone in artifact.zones] == ["demo-east", "demo-west", "lobby"]
     assert {
@@ -212,6 +215,8 @@ def test_loopback_rehearsal_publishes_a_fresh_signed_pose_and_private_bootstrap(
         assert state["drones"][0]["telemetry"]["state"] == "hovering"
 
         runtime = rehearsal._composition.runtime
+        assert rehearsal._composition.config.planning.flight_speed_m_s == 0.04
+        assert rehearsal._composition.config.safety.operator_timeout_ms == 120_000
         autonomy = rehearsal._composition.session(rehearsal.session_id)
         assert rehearsal._app is not None
         approved = rehearsal._app.state.platform_services.maps.approved_bundle(rehearsal.session_id)
@@ -304,7 +309,7 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
             return status if status["status"] in {"completed", "failed"} else None
 
         try:
-            status = _wait_for(terminal_status, timeout_s=45)
+            status = _wait_for(terminal_status, timeout_s=120)
         except AssertionError as error:
             raise AssertionError(last_status) from error
         if status["status"] != "completed":
@@ -369,7 +374,7 @@ def test_loopback_rehearsal_completes_an_empty_aircraft_survey(tmp_path) -> None
                 if (payload := search.status_payload(intent_id))["state"] == "covered"
                 else None
             ),
-            timeout_s=45,
+            timeout_s=120,
         )
         assert status["mode"] == "survey"
         assert status["candidates"] == []
