@@ -109,6 +109,7 @@ class FakeNode:
         self._media: dict[str, dict[str, object]] = {}
         self._navigation_route: dict[str, object] | None = None
         self._navigation_pose: dict[str, object] | None = None
+        self._pending_goto_completion: CommandFrame | None = None
         self._outbound: asyncio.Queue[dict[str, object]] | None = None
         self._stop: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -277,6 +278,19 @@ class FakeNode:
             self._navigation_route = frame
         elif frame.get("status") == "ready":
             self._navigation_pose = frame
+            pending = self._pending_goto_completion
+            if pending is not None and self._navigation_pose_matches_aircraft(frame):
+                self._pending_goto_completion = None
+                self._enqueue(self._acknowledgement(pending, "completed"))
+
+    def _navigation_pose_matches_aircraft(self, frame: dict[str, object]) -> bool:
+        coordinates = (frame.get("x_mm"), frame.get("y_mm"), frame.get("z_mm"))
+        expected = tuple(round(value * 1_000) for value in (
+            self._aircraft.x,
+            self._aircraft.y,
+            self._aircraft.z,
+        ))
+        return coordinates == expected
 
     def _handle_command(self, raw: dict[str, object]) -> None:
         try:
@@ -309,6 +323,11 @@ class FakeNode:
 
     def _finish_command(self, frame: CommandFrame) -> None:
         status, reason, detail = self._execute(frame)
+        if status == "completed" and frame.operation is CommandOperation.GOTO:
+            self._enqueue(self._telemetry_frame())
+            self._enqueue(self._node_status_frame())
+            self._pending_goto_completion = frame
+            return
         self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
 
     def _admission_refusal(

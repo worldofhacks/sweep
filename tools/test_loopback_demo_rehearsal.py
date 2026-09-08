@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import time
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+from websockets.sync.client import connect
 
 from tools.loopback_demo_rehearsal import (
     LoopbackDemoRehearsal,
@@ -10,6 +13,63 @@ from tools.loopback_demo_rehearsal import (
     epoch_ms,
 )
 from tools.loopback_search_fixture import SYNTHETIC_SOURCE_ID
+
+
+def _http_json(url: str, token: str, payload: object | None = None) -> dict[str, object]:
+    body = None if payload is None else json.dumps(payload).encode()
+    request = Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            **({"Content-Type": "application/json"} if body is not None else {}),
+        },
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            return json.loads(response.read())
+    except HTTPError as error:
+        raise AssertionError(error.read().decode()) from error
+
+
+def _wait_for(predicate, *, timeout_s: float = 15.0):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        time.sleep(0.05)
+    raise AssertionError("condition did not become true")
+
+
+def _select_aircraft(rehearsal: LoopbackDemoRehearsal, token: str) -> None:
+    with connect(f"{rehearsal.relay_url}/ws/{rehearsal.session_id}") as socket:
+        socket.send(json.dumps({"v": 1, "type": "auth", "source": "console", "token": token}))
+        assert json.loads(socket.recv())["type"] == "auth.accepted"
+        assert json.loads(socket.recv())["type"] == "state"
+        socket.send(
+            json.dumps(
+                {
+                    "v": 1,
+                    "t": epoch_ms(),
+                    "type": "intent",
+                    "intent_id": "loopback-select",
+                    "retry_of": None,
+                    "source": "console",
+                    "session": rehearsal.session_id,
+                    "name": "select",
+                    "args": {"ids": [1]},
+                    "selection": [],
+                    "mode": "indoor",
+                    "confirm": False,
+                }
+            )
+        )
+        for _ in range(32):
+            event = json.loads(socket.recv())
+            if event.get("intent_id") == "loopback-select" and event.get("source") == "autonomy":
+                return
+        raise AssertionError("selection did not complete")
 
 
 def test_rehearsal_deployment_reloads_a_signed_fresh_session(tmp_path) -> None:
@@ -104,3 +164,72 @@ def test_loopback_rehearsal_publishes_a_fresh_signed_pose_and_private_bootstrap(
         relay_state = runtime.sessions[rehearsal.session_id].current_state()
         assert "test:synthetic" in relay_state["drones"][0]["adapter_capabilities"]
     assert not bootstrap.exists()
+
+
+def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_path) -> None:
+    bootstrap = tmp_path / "bootstrap.json"
+    with LoopbackDemoRehearsal(
+        start_console=False,
+        bootstrap_path=bootstrap,
+        console_port=47768,
+    ) as rehearsal:
+        credentials = json.loads(bootstrap.read_text())["relay"]
+        base = f"http://127.0.0.1:{rehearsal.relay_port}/api/sessions/{rehearsal.session_id}"
+        _select_aircraft(rehearsal, credentials["token"])
+        def ready_pose() -> bool:
+            pose = rehearsal._composition.runtime.sessions[rehearsal.session_id].control_pose(1)
+            return pose is not None and epoch_ms() - pose.fix_time_ms >= 2
+
+        _wait_for(ready_pose, timeout_s=3)
+        selected = [{"id": 1, "deviceClass": "aircraft", "epoch": 1}]
+        preview = _http_json(
+            f"{base}/multiview/preview",
+            credentials["token"],
+            {
+                "intentId": "loopback-multiview",
+                "selected": selected,
+                "viewpoints": [
+                    {
+                        "viewpointId": "west",
+                        "zoneId": "demo-west",
+                        "captureId": "loopback-west",
+                    },
+                    {
+                        "viewpointId": "east",
+                        "zoneId": "demo-east",
+                        "captureId": "loopback-east",
+                    },
+                ],
+            },
+        )
+        accepted = _http_json(
+            f"{base}/multiview/confirm",
+            credentials["token"],
+            {key: preview[key] for key in ("previewId", "intentId", "previewHash")},
+        )
+        workflow_id = accepted["workflowId"]
+        assert isinstance(workflow_id, str)
+
+        last_status: dict[str, object] | None = None
+
+        def terminal_status() -> dict[str, object] | None:
+            nonlocal last_status
+            status = _http_json(f"{base}/multiview/{workflow_id}", credentials["token"])
+            last_status = status
+            return status if status["status"] in {"completed", "failed"} else None
+
+        try:
+            status = _wait_for(terminal_status, timeout_s=15)
+        except AssertionError as error:
+            raise AssertionError(last_status) from error
+        assert status["status"] == "completed", status["views"]
+        assert [view["state"] for view in status["views"]] == ["completed", "completed"]
+        captures = rehearsal._composition.runtime.sessions[rehearsal.session_id].current_state()[
+            "captures"
+        ]
+        completed = {item["capture_id"]: item for item in captures if item["status"] == "completed"}
+        assert set(completed) >= {"loopback-west", "loopback-east"}
+        assert all(
+            item["files"] and {file["retrieval_status"] for file in item["files"]} == {"completed"}
+            for item in (completed["loopback-west"], completed["loopback-east"])
+        )

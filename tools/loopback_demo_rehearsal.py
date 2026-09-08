@@ -343,7 +343,7 @@ class MovingControlPosePublisher:
         session_id: str,
         token: bytes,
         pins: ControlLocalizationPins,
-        position: Callable[[], tuple[float, float, float]],
+        position: Callable[[], tuple[float, float, float] | None],
     ) -> None:
         self.relay_url = relay_url
         self.session_id = session_id
@@ -401,7 +401,11 @@ class MovingControlPosePublisher:
             while not self._stop.is_set():
                 sequence += 1
                 current_s = time.time() - 0.01
-                x_m, y_m, z_m = self.position()
+                position = self.position()
+                if position is None:
+                    await asyncio.sleep(0.05)
+                    continue
+                x_m, y_m, z_m = position
                 wire = ControlLocalizationWire(
                     drone_id=1,
                     connection_epoch=1,
@@ -568,11 +572,18 @@ class LoopbackDemoRehearsal:
         self._pose_publisher.start()
         self._started = True
 
-    def _node_position(self) -> tuple[float, float, float]:
-        if self._node is None:
-            raise RehearsalError("the FakeNode is unavailable")
-        aircraft = self._node._aircraft
-        return aircraft.x, aircraft.y, aircraft.z
+    def _node_position(self) -> tuple[float, float, float] | None:
+        state = self._composition.runtime.sessions[self.session_id].current_state()
+        drone = next(
+            (item for item in state["drones"] if item.get("drone_id") == 1),
+            None,
+        )
+        telemetry = None if drone is None else drone.get("telemetry")
+        if not isinstance(telemetry, dict) or any(
+            not isinstance(telemetry.get(axis), (int, float)) for axis in ("x", "y", "z")
+        ):
+            return None
+        return float(telemetry["x"]), float(telemetry["y"]), float(telemetry["z"])
 
     def stop(self) -> None:
         if self._pose_publisher is not None:
