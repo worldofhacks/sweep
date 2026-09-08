@@ -4,6 +4,7 @@ import pytest
 
 from relay.capabilities import IntentName
 from relay.multiview import MultiviewService
+from relay.navigation_service import NavigationError
 
 
 class _Navigation:
@@ -194,8 +195,6 @@ def test_multiview_confirmation_refuses_an_expired_parent_review() -> None:
         },
     )
     navigation.now = 10_100
-
-    from relay.navigation_service import NavigationError
 
     with pytest.raises(NavigationError, match="no longer current") as error:
         service.confirm(
