@@ -548,6 +548,7 @@ class LoopbackDemoRehearsal:
                 safety_config(),
                 geofence=Geofence(-100.0, 100.0, -100.0, 100.0, -100.0, 100.0),
                 ceiling_m=50.0,
+                operator_timeout_ms=45_000,
             ),
             control_localization_projector=projector,
             navigation=deployment,

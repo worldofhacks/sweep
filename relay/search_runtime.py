@@ -241,6 +241,10 @@ class SearchRuntime:
         with self._lock:
             return self._mission(intent_id).expires_at_ms
 
+    def frozen_plan(self, intent_id: str) -> Plan:
+        with self._lock:
+            return self._mission(intent_id).preview.plan
+
     def revoke_unstarted_previews(self, session_id: str) -> None:
         with self._lock:
             for intent_id, mission in tuple(self._missions.items()):

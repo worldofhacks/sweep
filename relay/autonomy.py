@@ -1576,12 +1576,20 @@ class AutonomySession:
                                     ),
                                 )
                             else:
-                                result = search.execute(
-                                    intent.intent_id,
-                                    dispatcher,
-                                    snapshot,
-                                    current_snapshot=current,
+                                plan = search.frozen_plan(intent.intent_id)
+                                scope = (
+                                    self.navigation_wire.command_scope(plan, current)
+                                    if self.navigation_wire is not None
+                                    and plan.navigation is not None
+                                    else nullcontext()
                                 )
+                                with scope:
+                                    result = search.execute(
+                                        intent.intent_id,
+                                        dispatcher,
+                                        snapshot,
+                                        current_snapshot=current,
+                                    )
                     else:
                         with self._lock:
                             prepared = self._platform_dispatch.pop(intent.intent_id, None)
