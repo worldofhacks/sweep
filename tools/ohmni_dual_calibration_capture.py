@@ -272,6 +272,7 @@ def _write_manifest(
 ) -> None:
     payload = {
         "schema_version": "ohmni-dual-calibration-capture/v2",
+        "capture_tool_sha256": _capture_tool_sha256(),
         "status": "complete",
         "serial": serial,
         "boot_id": boot,

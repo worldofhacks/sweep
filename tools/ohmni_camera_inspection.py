@@ -204,6 +204,11 @@ class FrameEvidence:
             or manifest.get("inspection_challenge") != challenge.to_mapping()
         ):
             raise InspectionError("camera inspection manifest challenge differs")
+        if (
+            manifest.get("schema_version") != "ohmni-dual-calibration-capture/v2"
+            or manifest.get("capture_tool_sha256") != challenge.capture_tool_sha256
+        ):
+            raise InspectionError("camera inspection capture bundle differs")
         for key in ("image_sha256", "source_sha256", "capture_pipeline_sha256"):
             _hex(frame.get(key), key)
         camera = frame.get("camera")
@@ -227,6 +232,23 @@ class FrameEvidence:
             or pipeline_sha != frame["capture_pipeline_sha256"]
         ):
             raise InspectionError("camera inspection pipeline differs")
+        camera_pipeline = pipeline.get(camera) if isinstance(pipeline, Mapping) else None
+        if not isinstance(camera_pipeline, Mapping):
+            raise InspectionError("camera inspection camera pipeline is missing")
+        calibration = camera_pipeline.get("calibration_pipeline")
+        if (
+            manifest.get("cameras") != pipeline
+            or not isinstance(calibration, Mapping)
+            or not all(
+                isinstance(calibration.get(key), str) and calibration[key].strip()
+                for key in ("camera_identity", "camera_mode", "codec", "android_device_id")
+            )
+            or calibration.get("resolution_px") != camera_pipeline.get("shape_px")
+            or not isinstance(camera_pipeline.get("shape_px"), list)
+            or len(camera_pipeline["shape_px"]) != 2
+            or any(type(value) is not int or value <= 0 for value in camera_pipeline["shape_px"])
+        ):
+            raise InspectionError("camera inspection camera pipeline is invalid")
         image = frame_path.with_name(str(frame.get("image_file", "")))
         raw = frame_path.with_name(str(frame.get("source_file", "")))
         if (
