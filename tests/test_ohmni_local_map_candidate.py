@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tools import ohmni_local_map_candidate
 from tools.ohmni_local_map_candidate import build
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -180,6 +181,11 @@ def test_builds_a_local_occupancy_and_tag_candidate_from_one_accepted_snapshot(
     assert result["candidate_frame"] == "odom"
     assert result["tag_count"] == 1
     assert (output / "occupancy" / "occupancy.png").is_file()
+    assert (output / "inputs" / "lidar-config.json").read_bytes() == config.read_bytes()
+    assert (
+        result["inputs"]["lidar_config"]["sha256"]
+        == hashlib.sha256(config.read_bytes()).hexdigest()
+    )
     tags = json.loads((output / "tag_candidates.json").read_text())
     assert tags["candidate_mode"] == "local_odom"
     assert tags["candidates"][0]["T_odom_tag"][0][3] == pytest.approx(1.5)
@@ -194,6 +200,26 @@ def test_refuses_a_tampered_archive_before_publishing(tmp_path: Path) -> None:
         build(archive, config, "lidar-measured", request, evidence, output)
 
     assert not output.exists()
+
+
+def test_publishes_the_validated_archive_manifest_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, config, request, evidence, output = _write_candidate_inputs(tmp_path)
+    validated = (archive / "manifest.json").read_bytes()
+    original = ohmni_local_map_candidate.build_grid
+
+    def render_then_mutate(*args: object, **kwargs: object) -> dict[str, object]:
+        result = original(*args, **kwargs)  # type: ignore[arg-type]
+        (archive / "manifest.json").write_text('{"changed":true}')
+        return result
+
+    monkeypatch.setattr(ohmni_local_map_candidate, "build_grid", render_then_mutate)
+
+    result = build(archive, config, "lidar-measured", request, evidence, output)
+
+    assert (output / "inputs" / "archive-manifest.json").read_bytes() == validated
+    assert result["archive"]["manifest"]["sha256"] == hashlib.sha256(validated).hexdigest()
 
 
 def test_refuses_a_fusion_scope_from_another_epoch(tmp_path: Path) -> None:

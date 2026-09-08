@@ -98,10 +98,9 @@ def _pin(value: object, name: str) -> dict[str, str]:
     return {"path": pin["path"], "sha256": pin["sha256"]}
 
 
-def _archive(archive: Path) -> tuple[dict[str, object], bytes, list[Observation]]:
-    manifest = _object(
-        _read_regular(archive / "manifest.json", MAX_MANIFEST_BYTES), "archive manifest"
-    )
+def _archive(archive: Path) -> tuple[dict[str, object], bytes, bytes, list[Observation]]:
+    manifest_payload = _read_regular(archive / "manifest.json", MAX_MANIFEST_BYTES)
+    manifest = _object(manifest_payload, "archive manifest")
     if manifest.get("format") != ARCHIVE_FORMAT:
         raise ValueError("unsupported accepted mapper archive format")
     scope = _mapping(manifest.get("scope"), "archive scope")
@@ -180,12 +179,12 @@ def _archive(archive: Path) -> tuple[dict[str, object], bytes, list[Observation]
         events.append(event)
     if observations.get("kinds") != actual_kinds:
         raise ValueError("archive observation kind counts do not match")
-    return manifest, payload, events
+    return manifest, manifest_payload, payload, events
 
 
 def _lidar_config(
     path: Path, mount_id: str, archive: Mapping[str, object]
-) -> tuple[RecordingConfig, GridConfig, dict[str, str]]:
+) -> tuple[RecordingConfig, GridConfig, bytes, dict[str, str]]:
     payload = _read_regular(path, MAX_MANIFEST_BYTES)
     document = _object(payload, "lidar config")
     required = {
@@ -243,7 +242,8 @@ def _lidar_config(
             grid["max_cells"],
             tuple(grid["bounds"]) if grid["bounds"] is not None else None,
         ),
-        {"path": path.name, "sha256": _digest(payload)},
+        payload,
+        {"path": "inputs/lidar-config.json", "sha256": _digest(payload)},
     )
 
 
@@ -271,8 +271,8 @@ def build(
     evidence_root: Path,
     output: Path,
 ) -> dict[str, object]:
-    archive_manifest, archive_observations, events = _archive(archive)
-    recording_config, grid_config, lidar_pin = _lidar_config(
+    archive_manifest, archive_manifest_payload, archive_observations, events = _archive(archive)
+    recording_config, grid_config, lidar_config_payload, lidar_pin = _lidar_config(
         lidar_config, lidar_mount_id, archive_manifest
     )
     request_payload = _read_regular(request_path, MAX_MANIFEST_BYTES)
@@ -313,6 +313,14 @@ def build(
     try:
         snapshots = temporary / "inputs"
         snapshots.mkdir()
+        for name, payload in (
+            ("archive-manifest.json", archive_manifest_payload),
+            ("lidar-config.json", lidar_config_payload),
+        ):
+            with (snapshots / name).open("xb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
         snapshot_observations = snapshots / observation_path
         snapshot_observations.parent.mkdir(parents=True, exist_ok=True)
         with snapshot_observations.open("xb") as stream:
@@ -332,6 +340,8 @@ def build(
         )
         grid = build_grid(temporary / "recording", temporary / "occupancy", grid_config)
         tags = run(snapshots / "request.json", snapshots, temporary / "tag_candidates.json")
+        if grid["grid"]["frame"] != frames["odom"] or tags["candidate_frame"] != frames["odom"]:
+            raise ValueError("generated map artifacts do not match archive odometry frame")
         if not tags["candidates"]:
             raise ValueError("archive cannot produce qualified local tag candidates")
         files = {}
@@ -341,6 +351,8 @@ def build(
             "occupancy/manifest.json",
             "occupancy/occupancy.png",
             "tag_candidates.json",
+            "inputs/archive-manifest.json",
+            "inputs/lidar-config.json",
             str(Path("inputs") / observation_path),
             "inputs/request.json",
             str(Path("inputs") / calibration_pin["path"]),
@@ -356,9 +368,10 @@ def build(
             "candidate_frame": frames["odom"],
             "claim_scope": "Offline local occupancy and tag estimates. This candidate does not approve control, flight, or autonomous movement.",
             "archive": {
-                "manifest_sha256": _digest(
-                    _read_regular(archive / "manifest.json", MAX_MANIFEST_BYTES)
-                ),
+                "manifest": {
+                    "path": "inputs/archive-manifest.json",
+                    "sha256": _digest(archive_manifest_payload),
+                },
                 "observations": observation_pin,
             },
             "inputs": {
