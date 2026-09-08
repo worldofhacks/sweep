@@ -198,12 +198,15 @@ class HostLease:
 
     def diagnostics(self, now: float | None = None) -> dict[str, float | str | None]:
         with self._lock:
-            max_received_gap_s = self._max_received_gap_s
-            if now is not None and self._renewed_at is not None:
-                max_received_gap_s = max(max_received_gap_s, now - self._renewed_at)
+            last_renewal_age_s = (
+                None
+                if now is None or self._renewed_at is None
+                else max(0.0, now - self._renewed_at)
+            )
             return {
                 "termination_reason": self._termination_reason,
-                "max_received_gap_s": max_received_gap_s,
+                "max_received_gap_s": self._max_received_gap_s,
+                "last_renewal_age_s": last_renewal_age_s,
             }
 
 
@@ -238,6 +241,7 @@ class LeaseSocketPump:
             with socket.create_connection(
                 (self.host, self.port), timeout=LEASE_MAX_AGE_S
             ) as connection:
+                connection.settimeout(LEASE_MAX_AGE_S)
                 connection.sendall(self.token.hex().encode() + b"\n")
                 stream = connection.makefile("rb")
                 while not self._stop.is_set():
@@ -255,6 +259,8 @@ class LeaseSocketPump:
                     if not self.lease.renew(sequence, token):
                         termination_reason = "lease_renewal_rejected"
                         return
+        except TimeoutError:
+            termination_reason = "lease_socket_timeout"
         except OSError:
             termination_reason = "lease_socket_error"
         finally:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import socket
+import threading
 
 import pytest
 
-from .calibration import TICKS_PER_MM, CalibrationConfig, HostLease, _Progress
+from .calibration import TICKS_PER_MM, CalibrationConfig, HostLease, LeaseSocketPump, _Progress
 from .device import Config, OhmniDevice
 from .lidar import RawRevolution
 from .odometry import Pose
@@ -170,10 +172,52 @@ def test_lease_diagnostics_retains_the_late_renewal_gap() -> None:
     clock.value += 0.36
     assert not lease.renew(2, token)
 
-    assert lease.diagnostics() == {
+    assert lease.diagnostics(clock()) == {
         "termination_reason": "lease_renewal_rejected",
         "max_received_gap_s": pytest.approx(0.36),
+        "last_renewal_age_s": pytest.approx(0.36),
     }
+
+
+def test_lease_diagnostics_separates_last_renewal_age_from_received_gaps() -> None:
+    clock = Clock()
+    token = b"d" * 32
+    lease = HostLease(token, monotonic=clock)
+    assert lease.renew(1, token)
+    clock.value += 0.2
+
+    assert lease.diagnostics(clock()) == {
+        "termination_reason": None,
+        "max_received_gap_s": 0.0,
+        "last_renewal_age_s": pytest.approx(0.2),
+    }
+
+
+def test_lease_pump_records_a_socket_timeout() -> None:
+    token = b"d" * 32
+    lease = HostLease(token)
+    lost = threading.Event()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+
+        def server() -> None:
+            with listener.accept()[0] as connection:
+                with connection.makefile("rb") as stream:
+                    assert stream.readline(66) == token.hex().encode() + b"\n"
+                connection.sendall(b"1 " + token.hex().encode() + b"\n")
+                assert lost.wait(1.0)
+
+        thread = threading.Thread(target=server)
+        thread.start()
+        pump = LeaseSocketPump("127.0.0.1", listener.getsockname()[1], token, lease, lost.set)
+        pump.start()
+        assert lost.wait(1.0)
+        pump.close()
+        thread.join(1.0)
+
+    assert not thread.is_alive()
+    assert lease.diagnostics()["termination_reason"] == "lease_socket_timeout"
 
 
 def test_opposite_wheel_encoder_deltas_count_as_yaw_and_wheel_travel() -> None:
@@ -456,6 +500,7 @@ def test_runner_preserves_lease_expiry_when_pump_teardown_clears_active_motion(
     assert failure["device_refusal"] is None
     assert failure["lease_diagnostics"]["termination_reason"] == "lease_socket_eof"
     assert failure["lease_diagnostics"]["max_received_gap_s"] == pytest.approx(0.1)
+    assert failure["lease_diagnostics"]["last_renewal_age_s"] is not None
     assert not output.exists()
 
 
