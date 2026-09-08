@@ -2075,7 +2075,10 @@ class AutonomyComposition:
                 command_id = event.get("command_id")
                 intent_id = event.get("intent_id")
                 if isinstance(command_id, str):
-                    if event.get("status") != "completed" or not publisher.retain_arrival(command_id):
+                    if (
+                        event.get("status") != "completed"
+                        or not publisher.retain_arrival(command_id)
+                    ):
                         publisher.retire(command_id)
                 elif isinstance(intent_id, str) and event.get("status") != "completed":
                     publisher.retire_intent(intent_id)
@@ -2281,7 +2284,10 @@ def create_autonomy_app(
         search = composition.session(session_id).search_runtime
         if search is None:
             raise HTTPException(status_code=404, detail="search is unavailable")
-        payload = await request.json()
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=422, detail="a JSON search query is required") from None
         if (
             not isinstance(payload, dict)
             or set(payload) != {"query"}

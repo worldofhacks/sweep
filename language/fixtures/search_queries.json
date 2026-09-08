@@ -9,7 +9,8 @@
     "expected": {
       "status": "resolved",
       "zone_id": "lobby",
-      "target_class": "backpack"
+      "target_class": "backpack",
+      "mode": "search"
     }
   },
   {
@@ -22,7 +23,8 @@
     "expected": {
       "status": "resolved",
       "zone_id": "lobby",
-      "target_class": "suitcase"
+      "target_class": "suitcase",
+      "mode": "search"
     }
   },
   {
@@ -35,7 +37,8 @@
     "expected": {
       "status": "resolved",
       "zone_id": "lobby",
-      "target_class": "bottle"
+      "target_class": "bottle",
+      "mode": "search"
     }
   },
   {
@@ -48,7 +51,8 @@
     "expected": {
       "status": "resolved",
       "zone_id": "lobby",
-      "target_class": "backpack"
+      "target_class": "backpack",
+      "mode": "search"
     }
   },
   {
@@ -61,7 +65,8 @@
     "expected": {
       "status": "resolved",
       "zone_id": "lobby",
-      "target_class": "person"
+      "target_class": "person",
+      "mode": "search"
     }
   },
   {
@@ -74,7 +79,8 @@
     "expected": {
       "status": "resolved",
       "zone_id": "lobby",
-      "target_class": "person"
+      "target_class": "person",
+      "mode": "search"
     }
   },
   {
@@ -87,7 +93,8 @@
     "expected": {
       "status": "resolved",
       "zone_id": "lobby-north",
-      "target_class": "bottle"
+      "target_class": "bottle",
+      "mode": "search"
     }
   },
   {
@@ -99,7 +106,8 @@
     "expected": {
       "status": "resolved",
       "zone_id": "lobby",
-      "target_class": "suitcase"
+      "target_class": "suitcase",
+      "mode": "search"
     }
   },
   {
@@ -112,7 +120,8 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
     }
   },
   {
@@ -125,7 +134,8 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
     }
   },
   {
@@ -138,7 +148,8 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
     }
   },
   {
@@ -151,7 +162,8 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
     }
   },
   {
@@ -164,7 +176,8 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
     }
   },
   {
@@ -177,7 +190,8 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
     }
   },
   {
@@ -190,7 +204,8 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
     }
   },
   {
@@ -203,7 +218,8 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
     }
   },
   {
@@ -216,7 +232,8 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
     }
   },
   {
@@ -229,7 +246,8 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
     }
   },
   {
@@ -242,7 +260,8 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
     }
   },
   {
@@ -255,7 +274,64 @@
     "expected": {
       "status": "clarify",
       "zone_id": null,
-      "target_class": null
+      "target_class": null,
+      "mode": "search"
+    }
+  },
+  {
+    "id": "survey_lobby",
+    "query": "survey the lobby",
+    "zones": [
+      "lobby",
+      "lobby-north"
+    ],
+    "expected": {
+      "status": "resolved",
+      "zone_id": "lobby",
+      "target_class": null,
+      "mode": "survey"
+    }
+  },
+  {
+    "id": "survey_alias",
+    "query": "survey lobby north grid",
+    "zones": [
+      "lobby",
+      "lobby-north"
+    ],
+    "expected": {
+      "status": "resolved",
+      "zone_id": "lobby-north",
+      "target_class": null,
+      "mode": "survey"
+    }
+  },
+  {
+    "id": "survey_unknown",
+    "query": "survey the attic",
+    "zones": [
+      "lobby",
+      "lobby-north"
+    ],
+    "expected": {
+      "status": "clarify",
+      "zone_id": null,
+      "target_class": null,
+      "mode": "search"
+    }
+  },
+  {
+    "id": "survey_multiple",
+    "query": "survey lobby and lobby north",
+    "zones": [
+      "lobby",
+      "lobby-north"
+    ],
+    "expected": {
+      "status": "clarify",
+      "zone_id": null,
+      "target_class": null,
+      "mode": "search"
     }
   }
 ]

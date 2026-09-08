@@ -1,7 +1,7 @@
 .mv-capture { padding: 18px 0; border-bottom: 1px solid var(--color-border-secondary); }
 .mv-capture h3 { margin: 0; font-size: var(--text-18); }
 .mv-capture p, .mv-capture figcaption { color: var(--color-ink-2); }
-.mv-stops { display: grid; gap: 10px; padding-left: 22px; }
+.mv-stops { display: grid; gap: 10px; padding-left: 0; list-style: none; }
 .mv-stops li { padding-left: 4px; }
 .mv-stops label { display: inline-flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-right: 10px; }
 .mv-capture button, .mv-capture select { min-height: var(--min-h-38); padding: 7px 10px; border: 1px solid var(--color-border-input); background: var(--color-surface); color: var(--color-ink); }
