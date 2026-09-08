@@ -686,13 +686,14 @@ def test_map_change_invalidates_a_real_flight_execution_review_before_admission(
     try:
         with TestClient(app):
             session, autonomy = _prepare_session(composition, deployment)
+            flight_execution = _FlightExecutionAdapter(composition)
             navigation = NavigationService(
                 tmp_path / "navigation.sqlite3",
                 clock_ms=clock,
                 approved_bundle=lambda _session: _approved_bundle(deployment),
                 state=lambda _session: session.current_state(),
                 motion_config=lambda _session: {"source": "qualified-flight-deployment"},
-                flight_execution=_FlightExecutionAdapter(composition),
+                flight_execution=flight_execution,
             )
             catalog = navigation.catalog(SESSION)["catalog"]
             preview = navigation.preview(
@@ -710,6 +711,12 @@ def test_map_change_invalidates_a_real_flight_execution_review_before_admission(
                 },
             )
             assert preview["preview"]["dispatchEligible"] is True
+            preview_id = preview["preview"]["previewId"]
+            assert flight_execution.reserve(SESSION, preview["preview"])["status"] == "accepted"
+            assert preview_id in autonomy._platform_navigation_reservations
+            assert flight_execution.discard_reserved(SESSION, preview_id) == {"status": "discarded"}
+            assert preview_id not in autonomy._platform_navigation_reservations
+            assert preview_id not in autonomy._platform_navigation_intents_by_preview
             navigation.invalidate(SESSION)
             confirmation = navigation.confirm(
                 SESSION,

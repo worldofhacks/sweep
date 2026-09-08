@@ -1073,6 +1073,7 @@ class AutonomySession:
         with self._lock:
             self._prune_platform_navigation(runtime.clock())
             retained = self._platform_navigation.pop(preview_id, None)
+            self._platform_navigation_intents_by_preview.pop(preview_id, None)
             prepared = retained[1] if retained is not None else None
             if prepared is None or execution.get("planHash") != content_digest(
                 prepared.plan.to_dict()
@@ -1222,6 +1223,8 @@ class AutonomySession:
         if name in {IntentName.HOLD, IntentName.LAND_ALL, IntentName.ESTOP}:
             with self._lock:
                 self._platform_stop_generation += 1
+                for preview_id in self._platform_navigation_reservations:
+                    self._platform_navigation_intents_by_preview.pop(preview_id, None)
                 self._platform_navigation_reservations.clear()
                 self._platform_dispatch.clear()
             self._composition.report_multiview_lifecycle(
@@ -2046,6 +2049,9 @@ class AutonomyComposition:
         self, session_id: str, preview: Mapping[str, object]
     ) -> dict[str, object]:
         return self.session(session_id).reserve_platform_navigation(preview)
+
+    def discard_reserved_platform_navigation(self, session_id: str, preview_id: str) -> dict[str, object]:
+        return self.session(session_id).discard_reserved_platform_navigation(preview_id)
 
     def dispatch_reserved_platform_navigation(
         self, session_id: str, preview_id: str
