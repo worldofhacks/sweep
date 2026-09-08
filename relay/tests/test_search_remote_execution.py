@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from concurrent.futures import Future
 from dataclasses import replace
+from threading import Thread
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -223,9 +225,29 @@ def test_remote_search_preview_and_confirmed_intent_use_the_signed_control_pose(
                     }
                 )
                 assert adapter.receive_json()["type"] == "auth.accepted"
-                frames = [adapter.receive_json() for _ in range(8)]
-                command = next((frame for frame in frames if frame.get("type") == "command"), None)
-                assert command is not None, frames
+                frames = []
+                command_received: Future[dict] = Future()
+
+                def receive_command() -> None:
+                    try:
+                        while True:
+                            frame = adapter.receive_json()
+                            frames.append(frame)
+                            if (
+                                frame.get("type") == "command"
+                                and frame.get("intent_id") == intent.intent_id
+                            ):
+                                command_received.set_result(frame)
+                                return
+                    except Exception as error:
+                        command_received.set_exception(error)
+
+                Thread(target=receive_command, daemon=True).start()
+                try:
+                    command = command_received.result(timeout=5)
+                except TimeoutError as error:
+                    raise AssertionError(frames) from error
+                assert command["intent_id"] == intent.intent_id
                 factory = autonomy.search_detection
                 assert factory is not None
                 worker = factory._workers[("remote-search", 1)][1]
