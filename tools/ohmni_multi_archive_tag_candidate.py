@@ -392,8 +392,9 @@ def build(
             raise ValueError(
                 "archives must share an exact session, epoch, source, and frame identity"
             )
-        start = _boundary_pose(events, True) if collection_path is None else None
-        if previous is not None and start is not None:
+        start = _boundary_pose(events, True)
+        end = _boundary_pose(events, False)
+        if collection_path is None and previous is not None:
             if (
                 start[0] != previous[0]
                 or start[1] < previous[1]
@@ -407,7 +408,7 @@ def build(
                 raise ValueError("archive pose continuity translation proof failed")
             if _rotation_distance(previous[2], start[2]) > request["maximum_rotation_spread_rad"]:
                 raise ValueError("archive pose continuity rotation proof failed")
-        previous = _boundary_pose(events, False) if collection_path is None else None
+        previous = end
         tags = _shared_tag_ids(events)
         shared |= seen_tags.intersection(tags)
         seen_tags |= tags

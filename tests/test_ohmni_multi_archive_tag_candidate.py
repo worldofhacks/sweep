@@ -188,6 +188,36 @@ def test_declared_pose_handoff_replaces_the_adjacent_gap_requirement(tmp_path: P
     assert tags["unique_observations"]["count"] == len(events)
 
 
+@pytest.mark.parametrize("change", ["clock", "order"])
+def test_collection_rejects_ambiguous_archive_pose_time_order(tmp_path: Path, change: str) -> None:
+    archive, _, request, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
+    events = _events(archive)
+    handoff = events[4]
+    first_events = events[:6]
+    if change == "clock":
+        pose = first_events[1]
+        first_events[1] = Observation(
+            replace(
+                pose.submission,
+                t_capture=replace(pose.submission.t_capture, clock_id="other-clock"),
+                t_source_receipt=replace(pose.submission.t_source_receipt, clock_id="other-clock"),
+            ),
+            pose.t_ingest,
+        )
+    else:
+        first_events[1], first_events[4] = first_events[4], first_events[1]
+    first = _copy_archive(archive, tmp_path / "first", first_events)
+    second = _copy_archive(archive, tmp_path / "second", [handoff, events[6]])
+    collection = _collection(tmp_path / "collection.json", [first, second], handoff)
+    _bind_request_observations(request, first_events + [events[6]])
+    output = tmp_path / "output"
+
+    with pytest.raises(ValueError, match="one capture clock|not monotonic"):
+        build([first, second], request, evidence, output, 0, collection)
+
+    assert not output.exists()
+
+
 def test_build_map_refuses_a_lidar_budget_that_clips_combined_scans(tmp_path: Path) -> None:
     archive, config, request, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
     document = json.loads(config.read_text())
