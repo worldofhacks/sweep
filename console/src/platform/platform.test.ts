@@ -59,6 +59,22 @@ function preview(request = previewRequest(), accepted = catalog()): NavigationPr
   }
 }
 
+function qualifiedPreview(request: NavigationPreviewRequest, accepted = catalog()): NavigationPreview {
+  const target = request.selected[0]
+  const arrival = { xM: 3, yM: 2, zM: 1, floorId: accepted.map.floorId, frame: 'world' as const }
+  return {
+    ...preview(request, accepted),
+    destination: { ...accepted.destinations[0], reachability: 'reachable' },
+    routes: [{ target, waypoints: [{ ...arrival, xM: 0 }, arrival],
+      arrivalSlot: { slotId: 'lobby-slot-1', zoneId: 'lobby', position: arrival }, holdBehavior: 'hover' }],
+    outcomes: [{ target, status: 'planned', code: 'route_qualified', detail: 'Qualified flight route.' }],
+    execution: { planHash: 'd'.repeat(64), mapPin: accepted.map.mapPin,
+      geometryPin: accepted.map.geometryPin, navigationPin: accepted.map.navigationPin,
+      approvalId: accepted.map.approvalId, configurationSha256: 'e'.repeat(64), permissionZoneIds: ['lobby'] },
+    dispatchEligible: true,
+  }
+}
+
 function observation(): WorldPositionObservation {
   return {
     reference: { ...reference }, observationId: 'observation-1', sourceId: 'qualified-test-source', deviceId: 11, connectionEpoch: 2,
@@ -443,6 +459,26 @@ describe('navigation transport evidence lifetime and identity', () => {
     await flush()
     const captured = await client.requestPreview(previewRequest())
     await expect(client.confirmPreview(captured)).rejects.toThrow(/invalid confirmation/)
+    await expect(client.confirmPreview(captured)).rejects.toThrow(/no longer current/)
+    stop()
+  })
+
+  it('accepts a qualified single-aircraft route exactly once', async () => {
+    const accepted = catalog()
+    const request = { ...previewRequest(accepted), selected: [{ id: 1, deviceClass: 'aircraft' as const, epoch: 1 }] }
+    const eligible = qualifiedPreview(request, accepted)
+    const fetcher = vi.fn<PlatformFetch>(async (input) => String(input).endsWith('/catalog')
+      ? json({ status: 'ready', catalog: accepted, serverNowMs: SERVER_NOW })
+      : String(input).endsWith('/preview')
+        ? json({ preview: eligible, previewHash: 'd'.repeat(64), serverNowMs: SERVER_NOW })
+        : json({ previewId: eligible.previewId, intentId: eligible.intentId, status: 'accepted',
+          code: 'navigation_dispatched', detail: 'The exact qualified route was accepted.', dispatchEligible: true }))
+    const client = new HttpNavigationClient(new PlatformHttp(connection, fetcher), () => 10_000)
+    const stop = client.subscribe(() => {})
+    await flush()
+
+    const captured = await client.requestPreview(request)
+    await expect(client.confirmPreview(captured)).resolves.toMatchObject({ status: 'accepted', dispatchEligible: true })
     await expect(client.confirmPreview(captured)).rejects.toThrow(/no longer current/)
     stop()
   })

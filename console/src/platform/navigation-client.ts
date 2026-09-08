@@ -93,7 +93,8 @@ export class HttpNavigationClient implements NavigationClient {
     this.confirmation.delete(preview.previewId)
     const result = await this.http.request('/navigation/confirm', { previewId: preview.previewId, intentId: preview.intentId, previewHash: binding.hash })
     if (!isRecord(result) || result.previewId !== preview.previewId || result.intentId !== preview.intentId
-      || !['refused', 'invalidated'].includes(String(result.status)) || result.dispatchEligible !== false
+      || !['accepted', 'refused', 'invalidated'].includes(String(result.status)) || typeof result.dispatchEligible !== 'boolean'
+      || (result.status === 'accepted') !== (result.dispatchEligible === true)
       || typeof result.code !== 'string' || result.code.length > 128 || typeof result.detail !== 'string' || result.detail.length > 2048) throw new Error('The relay returned an invalid confirmation outcome.')
     return result
   }

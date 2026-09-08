@@ -13,7 +13,6 @@ import type { IntentV1 } from '../relay/contract'
 const UNAVAILABLE = new UnavailableNavigationClient()
 type Review = { client: NavigationClient; contextKey: string; snapshot: NavigationSnapshot }
 
-/** Review evidence only. This port cannot execute, take off, capture, or survey. */
 export function useNavigationReview({ state, client = UNAVAILABLE, dependencies, generationRef, reset, onPreview }: {
   state: ControlState
   client?: NavigationClient

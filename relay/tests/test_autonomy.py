@@ -31,7 +31,12 @@ from relay.capabilities import C2_CAPABILITY_PROFILE
 from relay.contracts import LifecycleStatus as WireLifecycleStatus
 from relay.contracts import NodeType
 from relay.control_frames import sign_localization_frame
-from relay.control_localization import ControlLocalizationWire, to_wire_payload
+from relay.control_localization import (
+    ControlLocalizationPins,
+    ControlLocalizationProjector,
+    ControlLocalizationWire,
+    to_wire_payload,
+)
 from relay.intent_v1 import IntentName, IntentV1, Mode
 from relay.session import RelaySession
 from relay.settings import AdapterBackend, CapabilityRelease, RelaySettings, SettingsError
@@ -216,6 +221,43 @@ def _localization_config(*, measured: bool = True) -> dict[str, object]:
             }
         ],
     }
+
+
+def test_session_uses_the_loaded_localization_relay_clock(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    clock_mapping = mapping(relay_clock_id="flight-relay-clock")
+    projector = ControlLocalizationProjector(
+        {
+            1: ControlLocalizationPins(
+                drone_id=1,
+                map_id="map-id",
+                geometry_id="geometry-id",
+                camera_calibration_id="camera-calibration-id",
+                body_extrinsics_id="body-extrinsics-id",
+                source_ids=("tag-camera", "msdk-velocity", "tof-height"),
+                clock_mapping=clock_mapping,
+            )
+        },
+        relay_clock_id="flight-relay-clock",
+        max_clock_error_ms=5,
+        max_fix_age_ms=500,
+        max_velocity_age_ms=200,
+        max_height_age_ms=200,
+        max_position_uncertainty_p95_m=0.3,
+    )
+    app, composition = create_autonomy_app(
+        _settings(tmp_path),
+        replace(_config(), control_localization_projector=projector),
+        clock=clock,
+        event_ids=event_ids,
+    )
+    try:
+        with TestClient(app):
+            session = app.state.relay_runtime.session(SESSION)
+            assert session.relay_clock_id == "flight-relay-clock"
+    finally:
+        composition.close()
 
 
 def test_explicit_measured_localization_config_reaches_the_composed_relay(

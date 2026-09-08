@@ -16,7 +16,7 @@ and configured media paths. Test devices and sample feeds remain confined to iso
 | Ground return | Execute one externally approved fixed return corridor | Signed route approval, matching session/device/epoch/origin, measured geometry and clearance |
 | Aircraft supervised vertical | Signed bounded takeoff, hold and land | Compatible phone build, current local height, physical RC/operator, authority and explicit vertical policy |
 | World navigation | Existing separate navigation deployment path | Signed deployment, qualified map/world localization and safety configuration |
-| Console map/zone workflow | Authenticated authoring, approval, active map and frozen destination review | Review is not execution; `dispatchEligible` remains false |
+| Console map/zone workflow | Authenticated authoring, approval, active map and frozen destination review | Review remains non-dispatchable unless one aircraft has a route qualified by the loaded flight deployment |
 
 Aircraft timed body-pulse controls from the preserved interface remain unsupported by
 this backend and are visibly disabled. Ground pulses have no reverse or combined

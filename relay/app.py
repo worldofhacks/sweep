@@ -246,6 +246,9 @@ class RelayRuntime:
                     capability_profile=self.capability_profile,
                     control_localization_projector=projector,
                     control_pose_signing_key=self.control_pose_signing_key,
+                    relay_clock_id=(
+                        "unix_epoch_ms" if projector is None else projector.relay_clock_id
+                    ),
                     media_evidence=self.media_evidence,
                     node_types=self.settings.node_types,
                     device_units=self.settings.device_units,

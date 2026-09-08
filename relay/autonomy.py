@@ -57,6 +57,7 @@ from planner.models import (
     RelayAircraftSafetyEnrichment,
     RelaySnapshotEnrichment,
 )
+from planner.navigation_authorization import content_digest
 from planner.navigation_deployment import NavigationDeployment, load_navigation_deployment
 from planner.navigation_runtime import navigation_capability_profile
 from planner.planner import DeterministicPlanner, PlanningConfig
@@ -77,7 +78,7 @@ from relay.control_localization import (
     ControlLocalizationPins,
     ControlLocalizationProjector,
 )
-from relay.intent_v1 import IntentName, IntentV1
+from relay.intent_v1 import IntentName, IntentV1, Mode
 from relay.navigation_wire import NavigationWirePublisher
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
@@ -101,6 +102,7 @@ HOLD_PREEMPTS = frozenset(
         IntentName.SPACING,
         IntentName.SWEEP,
         IntentName.COME_HOME,
+        IntentName.NAVIGATE,
         IntentName.CAPTURE_ROOM,
         IntentName.GROUND_VELOCITY,
     }
@@ -571,6 +573,9 @@ class AutonomySession:
                 composition.config.control_localization_projector,
             )
         )
+        self.navigation_runtime = navigation_runtime
+        self._platform_navigation: dict[str, tuple[int, PreparedExecution]] = {}
+        self._platform_dispatch: dict[str, PreparedExecution] = {}
         self.navigation_wire = (
             NavigationWirePublisher(
                 navigation_runtime,
@@ -683,6 +688,180 @@ class AutonomySession:
             landing_recovery=recovery,
         )
 
+    def preview_platform_navigation(self, preview: Mapping[str, object]) -> dict[str, object]:
+        runtime = self.navigation_runtime
+        if runtime is None or runtime.approval.mode != "flight":
+            raise ValueError("qualified aircraft navigation is unavailable")
+        preview_id = preview.get("previewId")
+        intent_id = preview.get("intentId")
+        expires_at = preview.get("expiresAt")
+        destination = preview.get("destination")
+        selected = preview.get("selected")
+        if (
+            not isinstance(preview_id, str)
+            or not isinstance(intent_id, str)
+            or not isinstance(expires_at, int)
+            or not isinstance(destination, Mapping)
+            or not isinstance(destination.get("zoneId"), str)
+            or not isinstance(selected, list)
+            or len(selected) != 1
+            or not isinstance(selected[0], Mapping)
+            or selected[0].get("deviceClass") != "aircraft"
+            or not isinstance(selected[0].get("id"), int)
+        ):
+            raise ValueError("qualified navigation requires exactly one selected aircraft")
+        session = self._composition.runtime.sessions.get(self.session_id)
+        if session is None:
+            raise ValueError("relay session is unavailable")
+        now = self._composition.runtime.clock()
+        if expires_at <= now:
+            raise ValueError("qualified navigation preview has expired")
+        intent = IntentV1(
+            v=1,
+            t=now,
+            type="intent",
+            intent_id=f"platform:{preview_id}",
+            retry_of=None,
+            source="platform",
+            session=self.session_id,
+            name=IntentName.NAVIGATE,
+            args={"zone_id": destination["zoneId"]},
+            selection=(selected[0]["id"],),
+            mode=Mode.INDOOR,
+            confirm=True,
+        )
+        snapshot = self.snapshot(
+            session.current_state(), capture_readiness=session.capture_readiness
+        )
+        refusal = self.arbiter.check_intent(intent, snapshot)
+        if refusal is not None:
+            raise ValueError(refusal.detail)
+        planned = runtime.prepare(intent, snapshot)
+        if isinstance(planned, Refusal):
+            raise ValueError(planned.detail)
+        refusal = self.arbiter.check_plan(planned, snapshot)
+        if refusal is not None:
+            raise ValueError(refusal.detail)
+        navigation = planned.navigation
+        if navigation is None:
+            raise ValueError("qualified navigation did not produce a route")
+        map_ref = preview.get("map")
+        if not isinstance(map_ref, Mapping) or map_ref.get("mapPin") != {
+            "version": navigation.route.map_pin.version,
+            "contentSha256": navigation.route.map_pin.content_sha256,
+        }:
+            raise ValueError("platform map revision differs from the approved navigation artifact")
+        target = selected[0]
+        routes = []
+        for route in navigation.route.routes:
+            if route.drone.drone_id != target["id"]:
+                raise ValueError("qualified navigation route target differs from the preview")
+
+            def point(pose):
+                return {
+                    "xM": pose.x_m,
+                    "yM": pose.y_m,
+                    "zM": pose.z_m,
+                    "floorId": pose.floor_id,
+                    "frame": "world",
+                }
+
+            points = [point(pose) for pose in route.waypoints]
+            routes.append(
+                {
+                    "target": target,
+                    "waypoints": points,
+                    "arrivalSlot": {
+                        "slotId": route.arrival_slot.slot_id,
+                        "zoneId": route.arrival_slot.zone_id,
+                        "position": points[-1],
+                    },
+                    "holdBehavior": "hover",
+                }
+            )
+        plan_hash = content_digest(planned.to_dict())
+        execution = {
+            "planHash": plan_hash,
+            "mapPin": {
+                "version": navigation.route.map_pin.version,
+                "contentSha256": navigation.route.map_pin.content_sha256,
+            },
+            "geometryPin": {
+                "version": navigation.route.geometry_pin.version,
+                "contentSha256": navigation.route.geometry_pin.content_sha256,
+            },
+            "navigationPin": {
+                "version": navigation.route.navigation_pin.version,
+                "contentSha256": navigation.route.navigation_pin.content_sha256,
+            },
+            "approvalId": navigation.approval_id,
+            "configurationSha256": navigation.configuration_sha256,
+            "permissionZoneIds": sorted(navigation.route.permission.permitted_zone_ids),
+        }
+        with self._lock:
+            self._prune_platform_navigation(now)
+            self._platform_navigation[preview_id] = (
+                expires_at,
+                PreparedExecution(intent, planned, snapshot),
+            )
+        return {
+            "routes": routes,
+            "outcomes": [
+                {
+                    "target": target,
+                    "status": "planned",
+                    "code": "route_qualified",
+                    "detail": "A signed flight deployment qualified this route.",
+                }
+            ],
+            "execution": execution,
+        }
+
+    def confirm_platform_navigation(self, preview: Mapping[str, object]) -> dict[str, object]:
+        preview_id = preview.get("previewId")
+        execution = preview.get("execution")
+        if not isinstance(preview_id, str) or not isinstance(execution, Mapping):
+            raise ValueError("retained navigation preview is invalid")
+        runtime = self._composition.runtime
+        with self._lock:
+            self._prune_platform_navigation(runtime.clock())
+            retained = self._platform_navigation.pop(preview_id, None)
+            prepared = retained[1] if retained is not None else None
+            if prepared is None or execution.get("planHash") != content_digest(
+                prepared.plan.to_dict()
+            ):
+                raise ValueError("retained navigation plan is unavailable")
+            admitted = replace(prepared.intent, t=runtime.clock())
+            prepared = PreparedExecution(admitted, prepared.plan, prepared.snapshot)
+            self._platform_dispatch[admitted.intent_id] = prepared
+        session = runtime.sessions.get(self.session_id)
+        if session is None:
+            with self._lock:
+                self._platform_dispatch.pop(prepared.intent.intent_id, None)
+            raise ValueError("relay session is unavailable")
+        try:
+            self._publish(runtime, lambda: session.admit_platform_navigation(prepared.intent))
+            self._publish(
+                runtime,
+                lambda: session.execute_pending_intent(
+                    prepared.intent.intent_id, defer_resume=True
+                ),
+            )
+        except Exception:
+            with self._lock:
+                self._platform_dispatch.pop(prepared.intent.intent_id, None)
+            raise
+        return {
+            "status": "accepted",
+            "code": "navigation_accepted",
+            "detail": "The frozen qualified aircraft route was accepted for scheduling.",
+        }
+
+    def _prune_platform_navigation(self, now: int) -> None:
+        for preview_id, (expires_at, _) in tuple(self._platform_navigation.items()):
+            if expires_at <= now:
+                self._platform_navigation.pop(preview_id, None)
+
     def close(self, timeout_s: float) -> None:
         for lane in self._lanes:
             with lane.ready:
@@ -785,6 +964,7 @@ class AutonomySession:
             with self._lock:
                 victim.cancelled_by = reason
                 self._awaiting.pop(victim.intent.intent_id, None)
+                self._platform_dispatch.pop(victim.intent.intent_id, None)
             stop.publications.append(event)
 
     def _run(self, lane: _Lane) -> None:
@@ -946,20 +1126,47 @@ class AutonomySession:
                     controller = AutonomyController(
                         planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
                     )
-                    prepared = controller.prepare(intent, snapshot, current_snapshot=current)
-                    if isinstance(prepared, PreparedExecution):
-                        scope = (
-                            self.navigation_wire.command_scope(prepared.plan, current)
-                            if self.navigation_wire is not None
-                            and prepared.plan.navigation is not None
-                            else nullcontext()
-                        )
-                        with scope:
-                            result = controller.dispatch_prepared(
-                                prepared, current_snapshot=current
+                    with self._lock:
+                        prepared = self._platform_dispatch.pop(intent.intent_id, None)
+                    if prepared is not None:
+                        if prepared.intent != intent:
+                            raise RuntimeError(
+                                "platform navigation intent does not match its frozen plan"
                             )
+                        refusal = self.arbiter.check_intent(intent, snapshot)
+                        if refusal is not None:
+                            result = ExecutionResult(
+                                intent_id=intent.intent_id,
+                                roster_version=snapshot.roster_version,
+                                status=LifecycleStatus.REFUSED,
+                                refusal=refusal,
+                            )
+                        else:
+                            scope = (
+                                self.navigation_wire.command_scope(prepared.plan, current)
+                                if self.navigation_wire is not None
+                                and prepared.plan.navigation is not None
+                                else nullcontext()
+                            )
+                            with scope:
+                                result = controller.dispatch_prepared(
+                                    prepared, current_snapshot=current
+                                )
                     else:
-                        result = prepared
+                        prepared = controller.prepare(intent, snapshot, current_snapshot=current)
+                        if isinstance(prepared, PreparedExecution):
+                            scope = (
+                                self.navigation_wire.command_scope(prepared.plan, current)
+                                if self.navigation_wire is not None
+                                and prepared.plan.navigation is not None
+                                else nullcontext()
+                            )
+                            with scope:
+                                result = controller.dispatch_prepared(
+                                    prepared, current_snapshot=current
+                                )
+                        else:
+                            result = prepared
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             return
@@ -1319,6 +1526,16 @@ class AutonomyComposition:
                 self._sessions[session_id] = session
             return session
 
+    def preview_platform_navigation(
+        self, session_id: str, preview: Mapping[str, object]
+    ) -> dict[str, object]:
+        return self.session(session_id).preview_platform_navigation(preview)
+
+    def confirm_platform_navigation(
+        self, session_id: str, preview: Mapping[str, object]
+    ) -> dict[str, object]:
+        return self.session(session_id).confirm_platform_navigation(preview)
+
     def navigation_events(
         self, session_id: str, events: list[dict[str, object]]
     ) -> list[dict[str, object]]:
@@ -1424,6 +1641,11 @@ def create_autonomy_app(
         platform_services_factory=lambda runtime: PlatformServices(
             runtime,
             motion_configuration=motion_configuration,
+            flight_execution=(
+                composition
+                if config.navigation is not None and config.navigation.approval.mode == "flight"
+                else None
+            ),
         ),
     )
     composition.bind(app)

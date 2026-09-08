@@ -677,6 +677,52 @@ class RelaySession:
             self._metrics["acknowledgements"] += 1
             return [event]
 
+    def admit_platform_navigation(self, intent: IntentV1) -> list[dict[str, object]]:
+        now = self.clock()
+        with self._lock, self._audit_operation():
+            self._ensure_mutation_usable()
+            if (
+                not isinstance(intent, IntentV1)
+                or intent.name is not IntentName.NAVIGATE
+                or intent.source != "platform"
+                or intent.session != self.session_id
+                or intent.retry_of is not None
+                or not intent.confirm
+                or not intent.selection
+                or self.registry.selection_includes_ground(intent.selection)
+            ):
+                raise ValueError("platform navigation intent is not admissible")
+            if self.intent_sink is None:
+                raise ValueError("platform navigation requires an autonomy consumer")
+            if self._timestamp_error(intent.t, now, self.limits.intent_max_age_ms) is not None:
+                raise ValueError("platform navigation intent is outside the freshness window")
+            if intent.intent_id in self._intents:
+                raise ValueError("platform navigation intent ID has already been observed")
+            self._remember_intent(intent.intent_id)
+            self._intents[intent.intent_id] = _IntentLedgerEntry(
+                status=LifecycleStatus.ACCEPTED,
+                selection=intent.selection,
+                command_statuses={},
+            )
+            self._log_intent(intent, outcome=LifecycleStatus.ACCEPTED, reason=None, now=now)
+            self._pending_intents[intent.intent_id] = _PendingIntent(intent=intent)
+            event = acknowledgement_event(
+                t=now,
+                event_id=self.event_ids(),
+                session=self.session_id,
+                intent_id=intent.intent_id,
+                status=LifecycleStatus.ACCEPTED,
+                roster_version=self.registry.roster_version,
+                source="platform",
+            )
+            self._append_audit(event)
+            admit = getattr(self.intent_sink, "admit_intent", None)
+            if callable(admit):
+                admit(intent)
+            self._metrics["accepted_intents"] += 1
+            self._metrics["acknowledgements"] += 1
+            return [event]
+
     def execute_pending_intent(
         self, intent_id: str, *, defer_resume: bool = False
     ) -> list[dict[str, object]]:

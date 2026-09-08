@@ -14,6 +14,7 @@ routes, world positions or successful approvals as substitutes for missing data.
 | Map authoring (#248) | Import, edit, validate, save immutable versions, explicitly approve, reload and compare | Saved occupancy image, actual dimensions/resolution/origin, metric world registration, creation evidence, geometry and tag measurements |
 | Active map | Explicitly select an exact approved revision with a durable actor/audit receipt | Current approved revision in the authenticated session |
 | Navigation review (#143) | Resolve names/aliases, clarify ambiguity, capture selection/class/epoch, freeze map/configuration/routes/outcomes, and revalidate a one-shot confirmation | Current approved map, authoritative relay state and the loaded planner/safety configuration |
+| Qualified aircraft dispatch | Generate and retain one flight-deployment route, then dispatch that exact plan once after confirmation | One selected hovering aircraft, matching authoring-map and navigation-artifact pin, measured localization, signed approval and current arbiter checks |
 | Position overlays | Display fresh current-epoch world poses with source/confidence/map associations | Authenticated, host-qualified producer and measured registration |
 | Drive-over recording | Record one selected ground robot's current associated position with a durable tag/actor/source audit | Fresh qualified world pose and an explicit operator association; tape verification remains separate |
 
@@ -47,14 +48,17 @@ matching map labels alone cannot associate evidence with another draft.
 
 ## Explicit downstream boundaries
 
-#143 freezes the shared identity and review contract. #144 consumes it to generate
-clearance-checked aircraft routes; #145 executes frozen aircraft plans with
-segment-by-segment revalidation. #249 supplies ground routes and execution. Their
-qualified route/arbiter integration is not inferred from static map approval or a
-device's class. C1/C2 retain their existing motion capabilities. Current platform
-previews report `dispatchEligible: false`; navigation confirmation returns an
-execution-unavailable result. Reviewing a destination grants no takeoff, capture,
-survey or formation action.
+#143 freezes the shared identity and review contract. When a signed flight deployment
+is loaded, one selected hovering aircraft can receive a clearance-checked route only
+when the active authoring map pin equals the route artifact's map pin. The retained
+preview carries its plan hash, artifact pins, approval, configuration hash and
+permitted zones. Confirmation consumes that preview once, rechecks the frozen inputs,
+then sends the retained plan through the existing planner, arbiter and phone route wire;
+each segment still revalidates. #249 supplies ground routes and execution. Static map
+approval or a device class alone never enables any of those paths. C1/C2 retain their
+existing motion capabilities. Previews without the flight deployment report
+`dispatchEligible: false`; navigation confirmation returns an execution-unavailable
+result. Reviewing a destination grants no takeoff, capture, survey or formation action.
 
 #248's software acceptance uses complete isolated bundle fixtures. A real map can
 replace those inputs through the same editor flow, but test fixtures are never

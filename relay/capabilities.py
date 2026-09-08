@@ -28,6 +28,7 @@ class IntentName(StrEnum):
     SURVEY_AREA = "survey_area"
     MAP_AREA = "map_area"
     GROUND_VELOCITY = "ground_velocity"
+    NAVIGATE = "navigate"
 
 
 @dataclass(frozen=True, slots=True)

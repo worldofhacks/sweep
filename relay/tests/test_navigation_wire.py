@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from adapters.dji_mini3.remote import CommandRequest
-from planner.models import Plan, Position
+from planner.models import Plan, Position, Refusal
 from planner.navigation import preview_evidence
 from planner.navigation_authorization import NavigationApproval, content_digest
 from planner.navigation_runtime import (
@@ -298,6 +298,34 @@ def test_phone_wire_requires_exact_bound_goto_and_flight_approval() -> None:
     wire = _wire_config()
     with pytest.raises(ValueError, match="SHA-256"):
         replace(wire, geometry_sha256="not-a-digest")
+
+
+def test_platform_navigation_binds_the_requested_permitted_destination() -> None:
+    publisher, _, snapshots, _, _ = _publisher()
+    intent = make_intent(
+        IntentName.NAVIGATE,
+        selection=(1,),
+        args={"zone_id": "atrium"},
+        confirm=True,
+    )
+
+    plan = publisher.runtime.prepare(intent, snapshots[0])
+
+    assert isinstance(plan, Plan)
+    assert plan.intent_name is IntentName.NAVIGATE
+    assert plan.navigation is not None
+    assert plan.navigation.route.destination_zone_id == "atrium"
+    assert publisher.runtime.check(plan, plan.commands[0], snapshots[0]) is None
+    refused = publisher.runtime.prepare(
+        make_intent(
+            IntentName.NAVIGATE,
+            selection=(1,),
+            args={"zone_id": "unapproved-zone"},
+            confirm=True,
+        ),
+        snapshots[0],
+    )
+    assert isinstance(refused, Refusal)
 
 
 def test_python_generated_fixture_remains_a_signed_phone_contract() -> None:

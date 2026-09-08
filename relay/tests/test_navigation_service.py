@@ -333,6 +333,122 @@ def test_confirmation_revalidates_and_cannot_grant_a_motion_capability(case):
     )
 
 
+class FlightExecution:
+    def __init__(self):
+        self.preview_calls = []
+        self.confirm_calls = []
+
+    def preview(self, session, preview):
+        self.preview_calls.append((session, copy.deepcopy(preview)))
+        target = preview["selected"][0]
+        arrival = {"xM": 2.0, "yM": 3.0, "zM": 1.5, "floorId": "floor-1", "frame": "world"}
+        return {
+            "routes": [{
+                "target": target,
+                "waypoints": [
+                    {
+                        "xM": 0.0,
+                        "yM": 0.0,
+                        "zM": 1.5,
+                        "floorId": "floor-1",
+                        "frame": "world",
+                    },
+                    arrival,
+                ],
+                "arrivalSlot": {"slotId": "room-a-slot-1", "zoneId": "room-a", "position": arrival},
+                "holdBehavior": "hover",
+            }],
+            "outcomes": [
+                {
+                    "target": target,
+                    "status": "planned",
+                    "code": "route_qualified",
+                    "detail": "Signed deployment route.",
+                }
+            ],
+            "execution": {
+                "planHash": "b" * 64,
+                "mapPin": preview["map"]["mapPin"],
+                "geometryPin": preview["map"]["geometryPin"],
+                "navigationPin": preview["map"]["navigationPin"],
+                "approvalId": preview["map"]["approvalId"],
+                "configurationSha256": "c" * 64,
+                "permissionZoneIds": ["room-a"],
+            },
+        }
+
+    def confirm(self, session, preview):
+        self.confirm_calls.append((session, copy.deepcopy(preview)))
+        return {
+            "status": "accepted",
+            "code": "navigation_dispatched",
+            "detail": "The qualified route was accepted.",
+        }
+
+
+def test_qualified_flight_preview_dispatches_the_exact_retained_route(tmp_path):
+    flight = FlightExecution()
+    case = Case(tmp_path, flight_execution=flight)
+    try:
+        case.state = live_state(("aircraft",))
+        envelope = case.preview()
+        preview = envelope["preview"]
+        assert preview["dispatchEligible"] is True
+        assert preview["destination"]["reachability"] == "reachable"
+        assert preview["execution"]["mapPin"] == preview["map"]["mapPin"]
+
+        result = case.service.confirm("test-session", case.confirmation(envelope))
+
+        assert result == {
+            "status": "accepted",
+            "code": "navigation_dispatched",
+            "detail": "The qualified route was accepted.",
+            "previewId": preview["previewId"],
+            "intentId": preview["intentId"],
+            "dispatchEligible": True,
+        }
+        assert flight.confirm_calls == [("test-session", preview)]
+        repeat = case.service.confirm("test-session", case.confirmation(envelope))
+        assert repeat["code"] == "confirmation_consumed"
+    finally:
+        case.service.close()
+
+
+def test_changed_state_invalidates_qualified_preview_without_dispatch(tmp_path):
+    flight = FlightExecution()
+    case = Case(tmp_path, flight_execution=flight)
+    try:
+        case.state = live_state(("aircraft",))
+        envelope = case.preview()
+        case.state["estop"] = True
+
+        result = case.service.confirm("test-session", case.confirmation(envelope))
+
+        assert result["status"] == "invalidated"
+        assert result["code"] == "frozen_inputs_changed"
+        assert flight.confirm_calls == []
+    finally:
+        case.service.close()
+
+
+@pytest.mark.parametrize("classes", [("ground_vehicle",), ("aircraft", "ground_vehicle")])
+def test_flight_executor_preserves_ground_and_mixed_review_only_previews(tmp_path, classes):
+    flight = FlightExecution()
+    case = Case(tmp_path, flight_execution=flight)
+    try:
+        case.state = live_state(classes)
+
+        preview = case.preview()["preview"]
+
+        assert preview["dispatchEligible"] is False
+        assert "execution" not in preview
+        assert preview["routes"] == []
+        assert flight.preview_calls == []
+        assert flight.confirm_calls == []
+    finally:
+        case.service.close()
+
+
 @pytest.mark.parametrize(
     "change", ["config", "map", "approval", "selection", "capability", "epoch", "pose", "estop"]
 )

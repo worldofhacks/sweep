@@ -17,6 +17,7 @@ MOTION_INTENTS = frozenset(
         IntentName.SPACING,
         IntentName.SWEEP,
         IntentName.COME_HOME,
+        IntentName.NAVIGATE,
         IntentName.LAND,
         IntentName.LAND_ALL,
         IntentName.CAPTURE_ROOM,

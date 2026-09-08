@@ -33,6 +33,7 @@ _CONFIRMED_INTENTS: Final = frozenset(
         IntentName.LAND,
         IntentName.LAND_ALL,
         IntentName.CAPTURE_ROOM,
+        IntentName.NAVIGATE,
         IntentName.SWEEP,
     }
 )
@@ -57,6 +58,7 @@ _ARMED_INTENTS: Final = frozenset(
         IntentName.FORMATION_SET,
         IntentName.SPACING,
         IntentName.COME_HOME,
+        IntentName.NAVIGATE,
         IntentName.SWEEP,
         IntentName.CAPTURE_ROOM,
     }
@@ -1862,6 +1864,7 @@ class SafetyArbiter:
                 IntentName.FORMATION_SET,
                 IntentName.SPACING,
                 IntentName.COME_HOME,
+                IntentName.NAVIGATE,
                 IntentName.SWEEP,
             }
             and aircraft.flight_state not in _STABLE_MOTION_STATES

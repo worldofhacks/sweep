@@ -28,6 +28,23 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAP_OPERATIONS = ("list", "load", "save", "validate", "approve", "compare", "activate")
 
 
+class _FlightExecutionAdapter:
+    def __init__(self, source: object) -> None:
+        self.source = source
+
+    def preview(self, session: str, preview: Mapping[str, object]) -> Mapping[str, object]:
+        handler = getattr(self.source, "preview_platform_navigation", None)
+        if not callable(handler):
+            raise ValueError("qualified aircraft navigation is unavailable")
+        return handler(session, preview)
+
+    def confirm(self, session: str, preview: Mapping[str, object]) -> Mapping[str, object]:
+        handler = getattr(self.source, "confirm_platform_navigation", None)
+        if not callable(handler):
+            raise ValueError("qualified aircraft navigation is unavailable")
+        return handler(session, preview)
+
+
 class PlatformServices:
     def __init__(
         self,
@@ -35,6 +52,7 @@ class PlatformServices:
         *,
         motion_configuration: dict | None = None,
         environment: Mapping[str, str] | None = None,
+        flight_execution: object | None = None,
     ) -> None:
         self.runtime = runtime
         self.failed = False
@@ -50,6 +68,9 @@ class PlatformServices:
                 approved_bundle=self.maps.approved_bundle,
                 state=lambda session: self.session(session).current_state(),
                 motion_config=lambda _session: configuration,
+                flight_execution=(
+                    None if flight_execution is None else _FlightExecutionAdapter(flight_execution)
+                ),
             )
             cleanup.callback(self.navigation.close)
             self.observations = WorldObservationService.from_env(
@@ -188,7 +209,11 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
                 "v": 1,
                 "sessionId": session_id,
                 "mapAuthoring": {"operations": operations},
-                "navigation": {"review": not service.failed, "dispatch": False},
+                "navigation": {
+                    "review": not service.failed,
+                    "dispatch": service.navigation.flight_execution is not None
+                    and not service.failed,
+                },
             },
             headers={"Cache-Control": "no-store"},
         )

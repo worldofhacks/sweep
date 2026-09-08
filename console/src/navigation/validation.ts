@@ -2,7 +2,7 @@ import type { DeviceClass } from '../relay/contract'
 import type {
   NavigationCatalog, NavigationContext, NavigationDestination, NavigationDestinationResolution,
   NavigationPreview, NavigationTarget, NavigationValidity,
-  NavigationConfirmationOutcome,
+  NavigationConfirmationOutcome, NavigationExecutionEvidence,
 } from './types'
 
 export const MAX_NAVIGATION_TARGETS = 64
@@ -48,9 +48,11 @@ export function parseNavigationConfirmation(raw: unknown): NavigationConfirmatio
   if (!boundedJson(raw, 16 * 1024) ||
     !exact(raw, ['previewId', 'intentId', 'status', 'code', 'detail', 'dispatchEligible']) ||
     !identity(raw.previewId) || !identity(raw.intentId) || !identity(raw.code) || !text(raw.detail, 2048) ||
-    (raw.status !== 'refused' && raw.status !== 'invalidated') || raw.dispatchEligible !== false) return null
+    (raw.status !== 'accepted' && raw.status !== 'refused' && raw.status !== 'invalidated') ||
+    typeof raw.dispatchEligible !== 'boolean' ||
+    ((raw.status === 'accepted') !== (raw.dispatchEligible === true))) return null
   return Object.freeze({ previewId: raw.previewId, intentId: raw.intentId, status: raw.status,
-    code: raw.code, detail: raw.detail, dispatchEligible: false })
+    code: raw.code, detail: raw.detail, dispatchEligible: raw.dispatchEligible })
 }
 
 function list(value: unknown, maximum: number, predicate: (item: unknown) => boolean, minimum = 0): value is unknown[] {
@@ -86,6 +88,24 @@ function boundedJson(value: unknown, maxBytes: number, maxDepth = 16, maxItems =
 function pin(value: unknown): boolean {
   return exact(value, ['version', 'contentSha256']) && identity(value.version) &&
     typeof value.contentSha256 === 'string' && /^[a-f0-9]{64}$/.test(value.contentSha256)
+}
+
+function sortedIdentities(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_NAVIGATION_DESTINATIONS) return false
+  let previous = ''
+  for (const item of value) {
+    if (!identity(item) || (previous !== '' && previous >= item)) return false
+    previous = item
+  }
+  return true
+}
+
+function execution(value: unknown): value is NavigationExecutionEvidence {
+  return exact(value, ['planHash', 'mapPin', 'geometryPin', 'navigationPin', 'approvalId', 'configurationSha256', 'permissionZoneIds']) &&
+    typeof value.planHash === 'string' && /^[a-f0-9]{64}$/.test(value.planHash) &&
+    pin(value.mapPin) && pin(value.geometryPin) && pin(value.navigationPin) && identity(value.approvalId) &&
+    typeof value.configurationSha256 === 'string' && /^[a-f0-9]{64}$/.test(value.configurationSha256) &&
+    sortedIdentities(value.permissionZoneIds)
 }
 
 function map(value: unknown): value is Record<string, unknown> {
@@ -173,12 +193,14 @@ export function parseNavigationCatalog(raw: unknown): NavigationCatalog | null {
 export function parseNavigationPreview(raw: unknown): NavigationPreview | null {
   try {
     if (!boundedJson(raw, MAX_NAVIGATION_JSON_BYTES) ||
-      !exact(raw, ['previewId', 'session', 'intentId', 'rosterVersion', 'selected', 'destination', 'map', 'catalogVersion', 'configVersion', 'motionConfig', 'routes', 'outcomes', 'receivedAt', 'expiresAt', 'dispatchEligible']) ||
+      !(exact(raw, ['previewId', 'session', 'intentId', 'rosterVersion', 'selected', 'destination', 'map', 'catalogVersion', 'configVersion', 'motionConfig', 'routes', 'outcomes', 'receivedAt', 'expiresAt', 'dispatchEligible']) ||
+        exact(raw, ['previewId', 'session', 'intentId', 'rosterVersion', 'selected', 'destination', 'map', 'catalogVersion', 'configVersion', 'motionConfig', 'routes', 'outcomes', 'receivedAt', 'expiresAt', 'execution', 'dispatchEligible'])) ||
       !identity(raw.previewId) || !text(raw.session, 512) || !identity(raw.intentId) ||
       !integer(raw.rosterVersion) || !targets(raw.selected) || !destination(raw.destination) || !map(raw.map) ||
       !identity(raw.catalogVersion) || !identity(raw.configVersion) || !motion(raw.motionConfig) ||
       !list(raw.routes, MAX_NAVIGATION_TARGETS, route) || !list(raw.outcomes, MAX_NAVIGATION_TARGETS, outcome, 1) ||
-      !window(raw) || typeof raw.dispatchEligible !== 'boolean') return null
+      !window(raw) || typeof raw.dispatchEligible !== 'boolean' ||
+      (raw.dispatchEligible ? !execution(raw.execution) : Object.hasOwn(raw, 'execution'))) return null
     const preview = raw as unknown as NavigationPreview
     const selected = new Map(preview.selected.map((item) => [item.id, item]))
     if (preview.outcomes.length !== selected.size || new Set(preview.outcomes.map((item) => item.target.id)).size !== selected.size ||
@@ -195,6 +217,11 @@ export function parseNavigationPreview(raw: unknown): NavigationPreview | null {
       item.waypoints.some((position) => position.floorId !== preview.map.floorId)) ||
       (preview.dispatchEligible && (planned.length !== selected.size || preview.destination.excluded ||
         preview.destination.reachability !== 'reachable' || preview.selected.some((item) => !preview.destination.allowedClasses.includes(item.deviceClass))))) return null
+    if (preview.dispatchEligible && (preview.execution === undefined ||
+      !same(preview.execution.mapPin, preview.map.mapPin) ||
+      !preview.execution.permissionZoneIds.includes(preview.destination.zoneId) ||
+      preview.selected.length !== 1 || preview.selected[0].deviceClass !== 'aircraft' ||
+      preview.routes[0]?.holdBehavior !== 'hover')) return null
     return copyFrozen(preview)
   } catch {
     return null
@@ -281,14 +308,17 @@ export function navigationPreviewValidity(
   if (!targets(context.selected) || !same(preview.selected, context.selected)) return fail('selection_changed', 'Selected device IDs, classes, epochs or order changed after preview.')
   if (preview.destination.zoneId !== context.destinationZoneId) return fail('destination_changed', 'The requested destination changed after preview.')
   const destination = catalog.destinations.find((item) => item.zoneId === preview.destination.zoneId)
-  if (!same(preview.destination, destination)) return fail('destination_changed', 'The accepted destination changed after preview.')
+  const qualifiedDestination = preview.dispatchEligible && destination?.reachability === 'unknown'
+    ? { ...destination, reachability: 'reachable' as const }
+    : destination
+  if (!same(preview.destination, qualifiedDestination)) return fail('destination_changed', 'The accepted destination changed after preview.')
   if (preview.catalogVersion !== catalog.catalogVersion) return fail('catalog_changed', 'The destination catalog version changed after preview.')
   if (!same(preview.map, catalog.map)) return fail('map_changed', 'The accepted map, geometry or navigation artifact changed after preview.')
   if (preview.configVersion !== catalog.configVersion || !same(preview.motionConfig, catalog.motionConfig)) return fail('motion_config_changed', 'The authoritative motion configuration changed after preview.')
   if (context.frozenPreview !== undefined && (parseNavigationPreview(context.frozenPreview) === null || !same(preview, context.frozenPreview))) return fail('preview_changed', 'The captured preview, route, arrival slot or hold behavior changed. Request a new preview.')
   if (destination?.excluded) return fail('destination_excluded', 'This destination is excluded from navigation.')
   if (destination?.floorId !== catalog.map.floorId) return fail('wrong_floor', 'This destination is on another floor.')
-  if (destination?.reachability !== 'reachable' && !(context.reviewOnly === true && preview.dispatchEligible === false && destination?.reachability === 'unknown')) return fail('destination_unreachable', 'Destination reachability has not been established for this preview.')
+  if (qualifiedDestination?.reachability !== 'reachable' && !(context.reviewOnly === true && preview.dispatchEligible === false && destination?.reachability === 'unknown')) return fail('destination_unreachable', 'Destination reachability has not been established for this preview.')
   if (preview.selected.some((item) => !destination.allowedClasses.includes(item.deviceClass))) return fail('unsupported_selection', 'This destination does not support every selected device class.')
   if (preview.outcomes.some((item) => item.status === 'refused')) return fail('node_refused', 'At least one selected device was refused by the preview provider.')
   return valid

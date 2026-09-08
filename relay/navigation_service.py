@@ -1,10 +1,7 @@
 """Durable named-destination reviews over approved, versioned map evidence.
 
-This is the #143 contract boundary, not a class route planner or a motion
-capability release. A trusted provider may contribute class-qualified preview
-routes; neither a saved map nor this service grants permission to dispatch them.
-Production defaults have no route provider and return typed per-node refusals.
-All confirmation inputs are pinned to canonical server bytes, never client clocks.
+Production defaults return typed per-node refusals. A flight executor may dispatch
+one retained, qualified aircraft route after confirmation rechecks frozen inputs.
 """
 
 from __future__ import annotations
@@ -247,6 +244,12 @@ def state_projection(raw: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+class FlightNavigationExecution(Protocol):
+    def preview(self, session: str, preview: Mapping[str, object]) -> Mapping[str, object]: ...
+
+    def confirm(self, session: str, preview: Mapping[str, object]) -> Mapping[str, object]: ...
+
+
 class NavigationService:
     @_storage_errors
     def __init__(
@@ -258,11 +261,13 @@ class NavigationService:
         state: Callable[[str], Mapping[str, object]],
         motion_config: Callable[[str], dict[str, object] | None],
         route_preview: RoutePreviewProvider | None = None,
+        flight_execution: FlightNavigationExecution | None = None,
         review_ttl_ms: int = 15_000,
         max_previews: int = 256,
     ) -> None:
         self.clock_ms, self.approved_bundle = clock_ms, approved_bundle
-        self.state, self.motion_config, self.route_preview = state, motion_config, route_preview
+        self.state, self.motion_config = state, motion_config
+        self.route_preview, self.flight_execution = route_preview, flight_execution
         self.review_ttl_ms = _integer(review_ttl_ms, 1, 60_000)
         self.max_previews = _integer(max_previews, 1, 4096)
         self._lock = threading.RLock()
@@ -737,6 +742,28 @@ class NavigationService:
                 "expiresAt": now + self.review_ttl_ms,
                 "dispatchEligible": False,
             }
+            if (
+                self.flight_execution is not None
+                and len(selected) == 1
+                and selected[0]["deviceClass"] == "aircraft"
+            ):
+                try:
+                    execution = _copy(self.flight_execution.preview(session, _copy(preview)))
+                    routes, outcomes, execution = validate_flight_execution_preview(
+                        execution, selected, destination, preview["map"]
+                    )
+                except (ValueError, KeyError, TypeError) as error:
+                    _fail(
+                        "navigation_execution_unavailable",
+                        str(error) or "Qualified aircraft navigation is unavailable.",
+                    )
+                preview.update(
+                    destination={**destination, "reachability": "reachable"},
+                    routes=routes,
+                    outcomes=outcomes,
+                    execution=execution,
+                    dispatchEligible=True,
+                )
             digest = _hash(preview)
             # Re-read every authoritative input after provider work. A late route
             # result cannot become a review for a changed roster/map/configuration.
@@ -853,7 +880,9 @@ class NavigationService:
                 "Class-qualified navigation execution is not enabled.",
             )
             status = "refused"
+            dispatch_eligible = False
             now = self._now()
+            current = False
             if row[7]:
                 code, detail, status = (
                     "confirmation_consumed",
@@ -869,7 +898,8 @@ class NavigationService:
             else:
                 try:
                     context = self._context(session, self._catalog(session, now))
-                    if _hash(context) != row[6]:
+                    current = _hash(context) == row[6]
+                    if not current:
                         code, detail, status = (
                             "frozen_inputs_changed",
                             "Authoritative review inputs changed.",
@@ -881,21 +911,110 @@ class NavigationService:
                         "Authoritative review evidence is unavailable.",
                         "invalidated",
                     )
-            # Every well-bound attempt is one-shot, including refusal. No generic
-            # Intent v1 message, capture job or adapter call is emitted here.
             with self._db:
                 self._db.execute(
                     "UPDATE navigation_previews SET consumed=1 WHERE preview_id=?",
                     (request["previewId"],),
                 )
+            if current and retained.get("dispatchEligible") is True:
+                if self.flight_execution is None:
+                    code, detail = (
+                        "navigation_execution_unavailable",
+                        "Class-qualified navigation execution is not enabled.",
+                    )
+                else:
+                    try:
+                        dispatched = _exact(
+                            _copy(self.flight_execution.confirm(session, _copy(retained))),
+                            {"status", "code", "detail"},
+                        )
+                        if (
+                            dispatched["status"] != "accepted"
+                            or not isinstance(dispatched["code"], str)
+                            or _IDENTITY.fullmatch(dispatched["code"]) is None
+                            or not isinstance(dispatched["detail"], str)
+                        ):
+                            raise ValueError("qualified navigation dispatch response is invalid")
+                        status, code, detail, dispatch_eligible = (
+                            "accepted",
+                            dispatched["code"],
+                            _text(dispatched["detail"], 2048),
+                            True,
+                        )
+                    except (ValueError, KeyError, TypeError) as error:
+                        code, detail = (
+                            "navigation_dispatch_failed",
+                            str(error) or "Qualified navigation dispatch failed.",
+                        )
             return {
                 "status": status,
                 "code": code,
                 "detail": detail,
                 "previewId": request["previewId"],
                 "intentId": request["intentId"],
-                "dispatchEligible": False,
+                "dispatchEligible": dispatch_eligible,
             }
+
+
+def validate_flight_execution_preview(
+    raw: object, selected: list[dict], destination: dict, map_ref: object
+) -> tuple[list, list, dict]:
+    if len(selected) != 1 or selected[0].get("deviceClass") != "aircraft":
+        _fail("planner_contract_invalid", "Qualified aircraft execution requires one aircraft.")
+    result = _exact(_copy(raw), {"routes", "outcomes", "execution"})
+    routes, outcomes = validate_route_preview(
+        {"routes": result["routes"], "outcomes": result["outcomes"]}, selected, destination
+    )
+    execution = _exact(
+        result["execution"],
+        {
+            "planHash",
+            "mapPin",
+            "geometryPin",
+            "navigationPin",
+            "approvalId",
+            "configurationSha256",
+            "permissionZoneIds",
+        },
+    )
+    if (
+        type(execution["planHash"]) is not str
+        or _HASH.fullmatch(execution["planHash"]) is None
+        or type(execution["configurationSha256"]) is not str
+        or _HASH.fullmatch(execution["configurationSha256"]) is None
+        or not isinstance(map_ref, dict)
+        or execution["mapPin"] != map_ref.get("mapPin")
+    ):
+        _fail("planner_contract_invalid", "Qualified execution pins do not bind the approved map.")
+    for name in ("geometryPin", "navigationPin"):
+        value = execution[name]
+        if (
+            type(value) is not dict
+            or set(value) != {"version", "contentSha256"}
+            or not isinstance(value["version"], str)
+            or _IDENTITY.fullmatch(value["version"]) is None
+            or type(value["contentSha256"]) is not str
+            or _HASH.fullmatch(value["contentSha256"]) is None
+        ):
+            _fail("planner_contract_invalid", "Qualified execution pins are invalid.")
+    _identity(execution["approvalId"])
+    permissions = execution["permissionZoneIds"]
+    if (
+        type(permissions) is not list
+        or not permissions
+        or len(permissions) > MAX_DESTINATIONS
+        or permissions != sorted(set(permissions))
+    ):
+        _fail("planner_contract_invalid", "Qualified execution permissions are invalid.")
+    for zone_id in permissions:
+        _identity(zone_id)
+    if destination["zoneId"] not in permissions:
+        _fail("planner_contract_invalid", "Qualified execution does not permit the destination.")
+    if len(routes) != len(selected) or any(outcome["status"] != "planned" for outcome in outcomes):
+        _fail(
+            "planner_contract_invalid", "Qualified aircraft execution requires every target route."
+        )
+    return routes, outcomes, _copy(execution)
 
 
 def validate_route_preview(

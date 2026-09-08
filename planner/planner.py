@@ -42,6 +42,7 @@ SELECTION_TARGETED_INTENTS = frozenset(
         IntentName.ALTITUDE,
         IntentName.HOLD,
         IntentName.COME_HOME,
+        IntentName.NAVIGATE,
         IntentName.LAND,
         IntentName.CAPTURE_ROOM,
         IntentName.FORMATION_NEXT,

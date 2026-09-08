@@ -76,6 +76,17 @@ export interface NavigationNodeOutcome {
   readonly detail: string
 }
 
+/** Pins that bind an eligible preview to the route the relay prepared. */
+export interface NavigationExecutionEvidence {
+  readonly planHash: string
+  readonly mapPin: ArtifactPin
+  readonly geometryPin: ArtifactPin
+  readonly navigationPin: ArtifactPin
+  readonly approvalId: string
+  readonly configurationSha256: string
+  readonly permissionZoneIds: readonly string[]
+}
+
 export interface NavigationPreview {
   readonly previewId: string
   readonly session: string
@@ -91,7 +102,8 @@ export interface NavigationPreview {
   readonly outcomes: readonly NavigationNodeOutcome[]
   readonly receivedAt: number
   readonly expiresAt: number
-  /** Reported evidence only; this frontend contract never grants execution. */
+  /** Present only when the relay prepared an exact, dispatchable aircraft route. */
+  readonly execution?: NavigationExecutionEvidence
   readonly dispatchEligible: boolean
 }
 
@@ -136,14 +148,13 @@ export interface NavigationValidity {
   readonly reason: string
 }
 
-/** A server check of frozen evidence. This contract never reports motion success. */
 export interface NavigationConfirmationOutcome {
   readonly previewId: string
   readonly intentId: string
-  readonly status: 'refused' | 'invalidated'
+  readonly status: 'accepted' | 'refused' | 'invalidated'
   readonly code: string
   readonly detail: string
-  readonly dispatchEligible: false
+  readonly dispatchEligible: boolean
 }
 
 export interface NavigationVerification {

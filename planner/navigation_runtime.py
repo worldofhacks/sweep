@@ -184,7 +184,8 @@ class NavigationExecution:
         specs = self.command_specs()
         epochs = {drone.drone_id: drone.connection_epoch for drone in self.route.selected}
         return (
-            self.intent_name in {IntentName.COME_HOME, IntentName.FORMATION_SET}
+            self.intent_name
+            in {IntentName.COME_HOME, IntentName.FORMATION_SET, IntentName.NAVIGATE}
             and plan.intent_name is self.intent_name
             and plan.formation_update
             == ("line" if self.intent_name is IntentName.FORMATION_SET else None)
@@ -329,7 +330,11 @@ class NavigationRuntime:
         try:
             artifact = self._validate(snapshot)
             destination = self.home_zone_id
-            if intent.name is IntentName.FORMATION_SET and intent.args.get("name") == "line":
+            if intent.name is IntentName.NAVIGATE:
+                destination = intent.args.get("zone_id")
+                if not isinstance(destination, str) or not destination:
+                    raise ValueError("navigation requires a server-selected destination")
+            elif intent.name is IntentName.FORMATION_SET and intent.args.get("name") == "line":
                 destination = self.config.line_zone_id
                 zone = next((zone for zone in artifact.zones if zone.zone_id == destination), None)
                 if zone is None or not _line_slots_match(
@@ -425,7 +430,9 @@ class NavigationRuntime:
             positions = self._positions(snapshot, _tracking_pose)
             route_plan = execution.route
             destination = self.home_zone_id
-            if plan.intent_name is IntentName.FORMATION_SET:
+            if plan.intent_name is IntentName.NAVIGATE:
+                destination = route_plan.destination_zone_id
+            elif plan.intent_name is IntentName.FORMATION_SET:
                 destination = self.config.line_zone_id
                 if not _line_slots_match(
                     route_plan.arrival_slots, len(plan.selection), snapshot.spacing

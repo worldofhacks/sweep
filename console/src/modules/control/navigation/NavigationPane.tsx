@@ -114,18 +114,18 @@ export function NavigationPane({ state, snapshot, now, onPreview, onDestinationC
       <button type="button" className="nv-review" disabled={blocked !== null || result.kind !== 'resolved'} onClick={() => {
         if (blocked === null && result.kind === 'resolved') onPreview(result.destination.zoneId)
       }}>Review destination</button>
-      <p className="nv-note">Navigation execution requires a separately qualified route-execution capability. Reviewing a destination does not send a motion command.</p>
+      <p className="nv-note">Reviewing a destination does not send a motion command. Dispatch is available only when the relay prepares a qualified route.</p>
 
       {showPreview && <NavigationPreviewDetails preview={preview} now={now} />}
       {showPreview && onVerify && <div className="nv-section">
-        <button type="button" className="nv-review" disabled={!canVerify} onClick={onVerify}>Verify frozen review</button>
-        <p className="nv-note">Ask the relay to check this exact review once. This check cannot send a motion command.</p>
+        <button type="button" className="nv-review" disabled={!canVerify} onClick={onVerify}>{preview?.dispatchEligible ? 'Schedule qualified route' : 'Verify frozen review'}</button>
+        <p className="nv-note">{preview?.dispatchEligible ? 'Dispatch sends the exact qualified route once after the relay rechecks it.' : 'Ask the relay to check this exact review once. This check cannot send a motion command.'}</p>
       </div>}
       {verification && verification.status !== 'idle' && <section className="nv-section" aria-label="Frozen review verification" role="status">
         {verification.status === 'verifying' ? <p>Verifying the captured review with the relay…</p>
           : verification.outcome ? <>
-            <p>{verification.outcome.status === 'refused' ? 'Refused' : 'Invalidated'} · {verification.outcome.code}: {verification.outcome.detail}</p>
-            <p className="nv-note">Review {verification.outcome.previewId} · intent {verification.outcome.intentId}. No navigation motion was sent.</p>
+            <p>{verification.outcome.status === 'accepted' ? 'Route accepted for scheduling' : verification.outcome.status === 'refused' ? 'Refused' : 'Invalidated'} · {verification.outcome.code}: {verification.outcome.detail}</p>
+            <p className="nv-note">Review {verification.outcome.previewId} · intent {verification.outcome.intentId}. {verification.outcome.status === 'accepted' ? 'The relay accepted the qualified route for scheduling; adapter lifecycle events report its result.' : 'No navigation motion was sent.'}</p>
           </> : <p>{verification.reason}</p>}
       </section>}
       {preview && !showPreview && <p className="nv-note is-warning" role="status">The previous destination review is no longer current. {previewValidity?.reason ?? 'Review the current destination and selected devices again.'}</p>}

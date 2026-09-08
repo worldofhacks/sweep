@@ -315,10 +315,26 @@ describe('current-context and frozen-preview validity', () => {
     expect(navigationCatalogValidity(catalog(), 'fixture-session', Number.NaN).code).toBe('clock_invalid')
     expect(navigationPreviewValidity(null, catalog(), context()).code).toBe('preview_unavailable')
     expect(navigationPreviewValidity(preview(), null, context()).code).toBe('catalog_unavailable')
-    const advertised = parseNavigationPreview({ ...preview(), dispatchEligible: true })!
-    expect(advertised.dispatchEligible).toBe(true)
-    expect(navigationPreviewValidity(advertised, catalog(), context()).valid).toBe(true)
+    expect(parseNavigationPreview({ ...preview(), dispatchEligible: true })).toBeNull()
     expect(NAVIGATION_CONFIRMATION_UNAVAILABLE).toContain('execution unavailable')
+  })
+
+  it('accepts a dispatchable preview only with route and artifact evidence', () => {
+    const original = preview([selected[0]])
+    const qualified: NavigationPreview = {
+      ...original,
+      dispatchEligible: true,
+      execution: {
+        planHash: 'd'.repeat(64), mapPin: original.map.mapPin,
+        geometryPin: original.map.geometryPin, navigationPin: original.map.navigationPin,
+        approvalId: original.map.approvalId, configurationSha256: 'e'.repeat(64),
+        permissionZoneIds: ['atrium'],
+      },
+    }
+    const parsed = parseNavigationPreview(qualified)
+    expect(parsed).toEqual(qualified)
+    expect(navigationPreviewValidity(parsed, catalog(), { ...context(), selected: [selected[0]] }).valid).toBe(true)
+    expect(parseNavigationPreview({ ...qualified, execution: { ...qualified.execution!, mapPin: original.map.geometryPin } })).toBeNull()
   })
 })
 

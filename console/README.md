@@ -373,7 +373,11 @@ route reachability. This does not widen C1/C2 motion capabilities. The shared In
 `navigate {zone_id}` vocabulary is registered; generic transmission paths, model plans and retries
 cannot bypass its frozen review. No runtime route or device evidence is generated.
 
-Class-qualified route planning and execution remain under #144/#145/#249. Current previews report
+A flight deployment can qualify one selected hovering aircraft when the active authoring map pin
+matches its loaded navigation artifact. That preview carries the exact route, plan hash, map,
+geometry and navigation pins, approval, configuration hash and permitted zones. Dispatch consumes
+the preview once, rechecks all frozen inputs, then sends only that retained route through the
+existing planner, arbiter and phone navigation wire. All other previews report
 `dispatchEligible: false` and confirmation reports execution unavailable. A static authoring map is
 not a generated flight-clearance artifact. Updating the console alone does not update an older
 running relay: an unupgraded relay, missing approved map or missing measured autonomy configuration
