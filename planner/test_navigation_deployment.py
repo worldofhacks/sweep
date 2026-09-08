@@ -122,6 +122,73 @@ def test_file_deployment_loads_real_generated_geometry_and_prepares_route(
     assert plan.commands[-2].parameters["x"] == 2.1
 
 
+def test_signed_deployment_binds_an_explicit_authoring_map_pin(tmp_path, generated_geometry):
+    path = deployment_files(tmp_path, generated_geometry)
+    original = load_navigation_deployment(path)
+    artifact = original.artifact()
+    pin = ArtifactPin("authored-demo-map-v1", "a" * 64)
+    config = replace(original.config, authoring_map_pin=pin)
+    document = json.loads(path.read_text())
+    document["execution"] = asdict(config)
+    path.write_text(json.dumps(document))
+    approval_path = tmp_path / "approval.json"
+    approval = json.loads(approval_path.read_text())
+    unsigned = {key: value for key, value in approval.items() if key != "signature"}
+    unsigned["configuration_sha256"] = navigation_configuration_digest(
+        artifact, config, original.permission, original.home_zone_id
+    )
+    approval_path.write_text(json.dumps({**unsigned, "signature": sign_event(unsigned, KEY)}))
+
+    deployment = load_navigation_deployment(path)
+
+    assert deployment.config.authoring_map_pin == pin
+
+
+@pytest.mark.parametrize(
+    "pin",
+    [
+        {"version": "authored-demo-map-v1"},
+        {"version": "authored-demo-map-v1", "content_sha256": "a" * 64, "extra": True},
+        {"version": "authored-demo-map-v1", "content_sha256": "not-a-digest"},
+    ],
+)
+def test_deployment_rejects_malformed_authoring_map_pin(tmp_path, generated_geometry, pin):
+    path = deployment_files(tmp_path, generated_geometry)
+    document = json.loads(path.read_text())
+    document["execution"]["authoring_map_pin"] = pin
+    path.write_text(json.dumps(document))
+
+    with pytest.raises(ValueError, match="authoring map pin|artifact content_sha256"):
+        load_navigation_deployment(path)
+
+
+def test_tampered_authoring_map_pin_fails_the_signed_deployment_loader(
+    tmp_path, generated_geometry
+):
+    path = deployment_files(tmp_path, generated_geometry)
+    original = load_navigation_deployment(path)
+    artifact = original.artifact()
+    config = replace(
+        original.config,
+        authoring_map_pin=ArtifactPin("authored-demo-map-v1", "a" * 64),
+    )
+    document = json.loads(path.read_text())
+    document["execution"] = asdict(config)
+    path.write_text(json.dumps(document))
+    approval_path = tmp_path / "approval.json"
+    approval = json.loads(approval_path.read_text())
+    unsigned = {key: value for key, value in approval.items() if key != "signature"}
+    unsigned["configuration_sha256"] = navigation_configuration_digest(
+        artifact, config, original.permission, original.home_zone_id
+    )
+    approval_path.write_text(json.dumps({**unsigned, "signature": sign_event(unsigned, KEY)}))
+    document["execution"]["authoring_map_pin"]["content_sha256"] = "b" * 64
+    path.write_text(json.dumps(document))
+
+    with pytest.raises(ValueError, match="approval does not bind"):
+        load_navigation_deployment(path)
+
+
 def test_deployment_binds_a_pinned_tag_and_a_dedicated_marked_return_slot(
     tmp_path, generated_geometry
 ):

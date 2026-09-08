@@ -24,6 +24,7 @@ from planner.models import (
     RefusalReason,
 )
 from planner.navigation import (
+    ArtifactPin,
     DronePose,
     MotionConfig,
     NavigationArtifact,
@@ -179,6 +180,7 @@ class NavigationExecutionConfig:
     formation_bindings: tuple[FormationBinding, ...] = ()
     tag_destinations: tuple[TagDestinationBinding, ...] = ()
     precision_returns: tuple[PrecisionReturnBinding, ...] = ()
+    authoring_map_pin: ArtifactPin | None = None
 
     def __post_init__(self) -> None:
         normalized_text(self.floor_id, "floor_id")
@@ -186,6 +188,10 @@ class NavigationExecutionConfig:
             sha256_digest(self.wire_config_sha256, "wire_config_sha256")
         if self.line_zone_id is not None:
             normalized_text(self.line_zone_id, "line_zone_id")
+        if self.authoring_map_pin is not None and not isinstance(
+            self.authoring_map_pin, ArtifactPin
+        ):
+            raise ValueError("navigation authoring map pin must use ArtifactPin")
         if not isinstance(self.motion, MotionConfig):
             raise ValueError("navigation motion must use MotionConfig")
         for name in ("speed_m_s", "position_tolerance_m", "minimum_position_quality"):
@@ -383,6 +389,8 @@ def navigation_configuration_digest(
         configuration.pop("tag_destinations")
     if not config.precision_returns:
         configuration.pop("precision_returns")
+    if config.authoring_map_pin is None:
+        configuration.pop("authoring_map_pin")
     return content_digest(
         {
             "map": asdict(artifact.map_pin),

@@ -577,6 +577,15 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
             frame["control_pins"] = ControlLocalizationPins(**pin)
         frames.append(NavigationFrame(**frame))
     execution["frames"] = tuple(frames)
+    authoring_map_pin = execution.get("authoring_map_pin")
+    if authoring_map_pin is not None:
+        execution["authoring_map_pin"] = ArtifactPin(
+            **_fields(
+                authoring_map_pin,
+                set(ArtifactPin.__dataclass_fields__),
+                "authoring map pin",
+            )
+        )
     bindings_raw = execution["formation_bindings"]
     if not isinstance(bindings_raw, list):
         raise ValueError("formation bindings must be a list")
