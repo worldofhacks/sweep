@@ -5,7 +5,14 @@ from fastapi.testclient import TestClient
 
 from relay.app import create_app
 from relay.settings import RelaySettings
-from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION, MutableClock
+from relay.tests.conftest import (
+    ADAPTER_KEY,
+    CONSOLE_KEY,
+    SESSION,
+    MutableClock,
+    acknowledgement_payload,
+    membership_payload,
+)
 from tests.world_bundle_fixtures import fixture_world_draft
 
 HEADERS = {"Authorization": f"Bearer {CONSOLE_KEY.decode()}"}
@@ -121,6 +128,38 @@ def test_observation_route_requires_device_bound_credentials(platform_client):
         ).status_code
         == 401
     )
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        membership_payload(action="join", event_id="misrouted-join"),
+        membership_payload(action="graceful_leave", event_id="misrouted-leave"),
+        acknowledgement_payload(event_id="misrouted-ack"),
+    ],
+    ids=["membership", "departure", "acknowledgement"],
+)
+def test_observation_route_does_not_dispatch_non_observation_frames(platform_client, frame):
+    client, service = platform_client
+    session = service.runtime.session(SESSION)
+    before_state = session.current_state()
+    before_audit = session.audit_log.replay()
+
+    response = client.post(
+        f"{BASE}/observations",
+        json=frame,
+        headers={
+            "Authorization": f"Bearer {ADAPTER_KEY.decode()}",
+            "X-Sweep-Source": "adapter",
+            "X-Sweep-Device-Id": "1",
+        },
+    )
+
+    assert response.status_code == 400
+    after_state = session.current_state()
+    assert after_state["drones"] == before_state["drones"]
+    assert after_state["roster_version"] == before_state["roster_version"]
+    assert session.audit_log.replay() == before_audit
 
 
 def test_tracking_failure_retires_reviews_without_losing_saved_revision(

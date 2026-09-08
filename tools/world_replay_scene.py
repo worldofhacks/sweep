@@ -135,7 +135,9 @@ def scene_update(record):
                 "deletions": [{"timestamp": timestamp, "type": 0, "id": entity["id"]}],
             }
         if payload_kind in {"pose", "telemetry", "tag_observation"}:
-            if payload_kind == "pose" and world_registration is not None:
+            if payload_kind == "pose" and world_registration is not None and "pose" in payload:
+                pose, frame = _pose(payload["pose"]), payload["pose"]["parent_frame"]
+            elif payload_kind == "pose" and world_registration is not None:
                 frame = payload["position"]["frame"]
                 pose = {
                     "position": {axis: payload["position"][f"{axis}_m"] for axis in "xyz"},

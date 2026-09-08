@@ -65,7 +65,7 @@ from relay.intent_v1 import (
 )
 from relay.media import CameraEvidenceProvider, MediaEvidenceProvider, project_camera_video
 from relay.observation_ingress import ObservationConfiguration, ObservationIngress
-from relay.observations import ObservationError, ObservationSubmission
+from relay.observations import Observation, ObservationError, ObservationSubmission
 from relay.state import (
     MAX_MEMBERSHIP_HISTORY_LIMIT,
     MAX_PHYSICAL_GROUND,
@@ -1042,6 +1042,8 @@ class RelaySession:
                 if (
                     submission.node_type == NodeType.GROUND.value
                     and submission.payload["kind"] == "pose"
+                    # World localization must not replace the adapter odometry readiness pair.
+                    and principal.source == "adapter"
                 ):
                     if submission.confidence > 0:
                         self.registry.apply_ground_pose_observation(
@@ -1748,12 +1750,12 @@ class RelaySession:
             self._append_audit({**event, "signature_emitted": True})
 
     def record_world_observation(
-        self, raw: Mapping[str, object], registration: Mapping[str, object], manifest: Mapping
+        self, raw: Observation, registration: Mapping[str, object], manifest: Mapping
     ) -> None:
         """Audit host-admitted world observations and their immutable map evidence."""
-        from spatial.observations import Observation
-
-        accepted = Observation.parse(raw).to_dict()
+        if not isinstance(raw, Observation):
+            raise ValueError("world observation audit requires a canonical observation")
+        accepted = raw.to_mapping()
         if accepted["session"] != self.session_id or accepted["frame"] != "world":
             raise ValueError("world observation audit scope differs from the session")
         evidence = json.loads(json.dumps({"registration": registration, "manifest": manifest}))
@@ -1761,7 +1763,7 @@ class RelaySession:
         reference = evidence["registration"]["reference"]
         with self._lock, self._audit_operation():
             self._ensure_mutation_usable()
-            identity = (accepted["drone_id"], accepted["source_id"])
+            identity = (accepted["device_id"], accepted["source_id"])
             if (
                 identity not in self._world_observation_contexts
                 and len(self._world_observation_contexts) >= 128
@@ -1771,7 +1773,7 @@ class RelaySession:
                 "v": 1,
                 "session": self.session_id,
                 "t": accepted["t_ingest"],
-                "drone_id": accepted["drone_id"],
+                "drone_id": accepted["device_id"],
                 "connection_epoch": accepted["connection_epoch"],
                 "node_type": accepted["node_type"],
                 "source_id": accepted["source_id"],

@@ -1,85 +1,93 @@
-"""HTTP observations must belong to the exact saved map being edited."""
+"""World projection pins the exact approved map reference."""
 
-from fastapi.testclient import TestClient
+from pathlib import Path
 
-from relay.platform_observations import WorldObservationService
-from relay.tests.test_platform_api import BASE, HEADERS, SESSION, make_app, post
-from relay.tests.test_platform_observations import Clock, pose, principal, source, state
-from tests.world_bundle_fixtures import fixture_world_draft
+import pytest
+
+from relay.observation_ingress import ObservationConfiguration, ObservationIngress
+from relay.observations import (
+    ClockMapping,
+    FrameDeclaration,
+    FrameRegistry,
+    ObservationSubmission,
+    SourceBinding,
+)
+from relay.platform_observations import WorldObservationError, WorldObservationService
+from relay.tests.test_platform_observations import SESSION, Clock, registration, state, submission
 
 
-def test_public_positions_and_capture_refuse_another_map_with_identical_labels(
-    tmp_path, monkeypatch
-):
-    app = make_app(tmp_path)
-    with TestClient(app) as client:
-        service = app.state.platform_services
-        session = service.runtime.session(SESSION)
-        draft = fixture_world_draft()
-        references = []
-        for _ in range(2):
-            reference = post(client, "save", {"draft": draft, "expectedRevision": None})
-            validation = post(client, "validate", {"reference": reference})
-            post(
-                client,
-                "approve",
-                {"reference": reference, "validationId": validation["validationId"]},
-            )
-            references.append(reference)
-        first, second = references
-        assert first["bundleId"] != second["bundleId"]
-        selected = client.post(
-            f"{BASE}/navigation/select-map", headers=HEADERS, json={"reference": first}
-        )
-        assert selected.status_code == 200, selected.text
-
-        metadata = draft["metadata"]
-        clock = Clock()
-        clock.value = 10_000
-        current = {**state(clock), "session": SESSION}
-        monkeypatch.setattr(session, "current_state", lambda: current)
-        service.observations = WorldObservationService(
-            sources={"world-pose": source()},
-            registrations={
-                "world-pose": {
-                    "reference": first,
-                    "mapVersion": metadata["mapVersion"],
-                    "floorId": metadata["floorId"],
-                    "sourceFrame": metadata["registration"]["sourceFrame"],
-                    "transformId": metadata["registration"]["transformId"],
-                    "qualifiedWorldPose": True,
-                }
-            },
-            approved_bundle=service.navigation.current_approved_bundle,
-            database=tmp_path / "qualified-test-observations.sqlite3",
-            clock=clock,
-        )
-        service.observations.ingest(
-            SESSION, {**pose(clock), "session": SESSION}, principal(), current
-        )
-        position = {
-            "mapVersion": metadata["mapVersion"],
-            "floorId": metadata["floorId"],
-            "reference": first,
-        }
-        record = {**position, "tagId": 7, "deviceId": 11, "connectionEpoch": 1}
-        for operation, payload in (("positions", position), ("record", record)):
-            rejected = client.post(
-                f"{BASE}/maps/{operation}",
-                headers=HEADERS,
-                json={**payload, "reference": second},
-            )
-            assert rejected.status_code == 409, rejected.text
-            assert rejected.json()["code"] == "reference_changed"
-            missing = {key: value for key, value in payload.items() if key != "reference"}
-            assert (
-                client.post(f"{BASE}/maps/{operation}", headers=HEADERS, json=missing).status_code
-                == 400
-            )
-        assert service.observations.audit_records(SESSION) == []
-        projected = post(client, "positions", position)
-        assert projected["reference"] == first
-        assert projected["observations"][0]["reference"] == first
-        receipt = post(client, "record", record)
-        assert receipt["reference"] == first
-        assert service.observations.audit_records(SESSION)[0]["receipt"] == receipt
+def test_public_positions_refuse_another_map_with_identical_labels(tmp_path: Path) -> None:
+    clock = Clock()
+    first = {"bundleId": "first", "revision": "1", "contentHash": "a" * 64}
+    second = {"bundleId": "second", "revision": "1", "contentHash": "a" * 64}
+    bundle = {
+        "reference": first,
+        "approval": {"auditId": "approved", "reference": first},
+        "bundle": {
+            "manifest": {
+                "mapVersion": "map-v1",
+                "floorId": "floor-1",
+                "frame": "world",
+                "units": "m",
+                "registration": {
+                    "sourceFrame": "survey-frame",
+                    "transformId": "measured-transform-1",
+                },
+            }
+        },
+    }
+    service = WorldObservationService(
+        registrations={"world-pose": {**registration(), "reference": first}},
+        approved_bundle=lambda _session: bundle,
+        database=tmp_path / "observations.sqlite3",
+        clock=clock,
+    )
+    ingress = ObservationIngress(
+        ObservationConfiguration(
+            bindings=(
+                SourceBinding(
+                    SESSION,
+                    11,
+                    1,
+                    "world-pose",
+                    "ground",
+                    ("world", "body"),
+                    ("pose",),
+                    "first",
+                    "map-v1",
+                    "datum",
+                    ("native-clock",),
+                    producer_role="localization",
+                ),
+            ),
+            frames=FrameRegistry(
+                (
+                    FrameDeclaration(
+                        "world",
+                        "world",
+                        "right_handed_z_up",
+                        "m",
+                        map_id="first",
+                        map_version="map-v1",
+                        physical_datum="datum",
+                    ),
+                    FrameDeclaration(
+                        "body", "body", "forward_left_up", "m", SESSION, 11, 1, "world-pose"
+                    ),
+                )
+            ),
+            clock_mappings=(
+                ClockMapping("native-clock", "native", "ns", 100, clock(), 1, 1_000_000, 1),
+            ),
+        ),
+        SESSION,
+        1_000,
+    )
+    accepted = ingress.accept(
+        ObservationSubmission.parse(submission()), now=clock(), producer_role="localization"
+    )
+    receipt, capture = ingress.host_times(accepted)
+    service.ingest(SESSION, accepted, receipt_ms=receipt, capture_ms=capture, state=state(clock))
+    request = {"mapVersion": "map-v1", "floorId": "floor-1", "reference": second}
+    with pytest.raises(WorldObservationError, match="active approved revision"):
+        service.positions(SESSION, request, state(clock))

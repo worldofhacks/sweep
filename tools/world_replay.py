@@ -75,49 +75,94 @@ def _world_identity_rule(event_type: str, required: tuple[str, ...]) -> dict[str
     return rule
 
 
-def _world_observation_rule(node_type: str) -> dict[str, object]:
-    return {
-        "if": {
-            "properties": {"type": {"const": "world_observation"}},
-            "required": ["type"],
+def _world_observation_rule(node_type: str, legacy_node_type: str) -> dict[str, object]:
+    canonical = {
+        "type": "object",
+        "required": [
+            "device_id",
+            "node_type",
+            "connection_epoch",
+            "source_id",
+            "frame",
+            "payload",
+            "t_capture",
+            "t_source_receipt",
+            "clock_mapping_id",
+            "t_ingest",
+        ],
+        "properties": {
+            "device_id": {"type": "integer", "minimum": 1},
+            "node_type": {"const": node_type},
+            "connection_epoch": {"type": "integer", "minimum": 1},
+            "source_id": {"type": "string", "minLength": 1},
+            "frame": {"const": "world"},
+            "t_capture": {"type": "object"},
+            "t_source_receipt": {"type": "object"},
+            "clock_mapping_id": {"type": "string", "minLength": 1},
+            "payload": {
+                "type": "object",
+                "required": ["kind", "pose"],
+                "properties": {
+                    "kind": {"const": "pose"},
+                    "pose": {
+                        "type": "object",
+                        "required": [
+                            "parent_frame",
+                            "child_frame",
+                            "x_m",
+                            "y_m",
+                            "z_m",
+                            "qx",
+                            "qy",
+                            "qz",
+                            "qw",
+                        ],
+                        "properties": {"parent_frame": {"const": "world"}},
+                    },
+                },
+            },
         },
+    }
+    legacy = {
+        "type": "object",
+        "required": [
+            "drone_id",
+            "node_type",
+            "connection_epoch",
+            "source_id",
+            "frame",
+            "payload",
+            "t_capture",
+            "t_ingest",
+            "frame_provenance",
+            "authority",
+        ],
+        "properties": {
+            "drone_id": {"type": "integer", "minimum": 1},
+            "node_type": {"const": legacy_node_type},
+            "connection_epoch": {"type": "integer", "minimum": 1},
+            "source_id": {"type": "string", "minLength": 1},
+            "frame": {"const": "world"},
+            "payload": {
+                "type": "object",
+                "required": ["position"],
+                "properties": {
+                    "position": {
+                        "type": "object",
+                        "required": ["x_m", "y_m", "z_m", "frame"],
+                        "properties": {"frame": {"const": "world"}},
+                    }
+                },
+            },
+            "authority": {"const": "diagnostic"},
+        },
+    }
+    return {
+        "if": {"properties": {"type": {"const": "world_observation"}}, "required": ["type"]},
         "then": {
             "required": ["observation", "registration"],
             "properties": {
-                "observation": {
-                    "type": "object",
-                    "required": [
-                        "drone_id",
-                        "node_type",
-                        "connection_epoch",
-                        "source_id",
-                        "frame",
-                        "payload",
-                        "t_capture",
-                        "t_ingest",
-                        "frame_provenance",
-                        "authority",
-                    ],
-                    "properties": {
-                        "drone_id": {"type": "integer", "minimum": 1},
-                        "node_type": {"const": node_type},
-                        "connection_epoch": {"type": "integer", "minimum": 1},
-                        "source_id": {"type": "string"},
-                        "frame": {"const": "world"},
-                        "payload": {
-                            "type": "object",
-                            "required": ["position"],
-                            "properties": {
-                                "position": {
-                                    "type": "object",
-                                    "required": ["x_m", "y_m", "z_m", "frame"],
-                                    "properties": {"frame": {"const": "world"}},
-                                }
-                            },
-                        },
-                        "authority": {"const": "diagnostic"},
-                    },
-                },
+                "observation": {"anyOf": [canonical, legacy]},
                 "registration": {
                     "type": "object",
                     "required": [
@@ -175,9 +220,9 @@ _CHANNEL_RULES: dict[str, tuple[dict[str, object], ...]] = {
             ("navigation_pose",),
             ("device_id", "connection_epoch", "command_id", "route_id", "position_frame"),
         ),
-        _world_observation_rule("aircraft"),
+        _world_observation_rule("aircraft", "aircraft"),
     ),
-    "ground": (_world_observation_rule("ground_vehicle"),),
+    "ground": (_world_observation_rule("ground", "ground_vehicle"),),
     "tags": (_rule(("observation",), ("node_type", "connection_epoch", "frame", "payload")),),
     "observations": (
         _rule(("observation",), ("node_type", "connection_epoch", "frame", "payload")),
@@ -242,7 +287,9 @@ def channel_name(record: dict) -> str:
         observation = event.get("observation")
         if not isinstance(observation, dict):
             return "events"
-        return "ground" if observation.get("node_type") == "ground_vehicle" else "aircraft"
+        return (
+            "ground" if observation.get("node_type") in {"ground", "ground_vehicle"} else "aircraft"
+        )
     if kind == "observation":
         payload_kind = event["payload"]["kind"]
         if payload_kind == "tag_observation":

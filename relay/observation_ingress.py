@@ -156,3 +156,18 @@ class ObservationIngress:
         self._event_ids.add(event_key)
         self._watermarks[key] = (receipt, now)
         return observation
+
+    def host_times(self, observation: Observation) -> tuple[int, int]:
+        """Return host-clock receipt and capture times for an admitted observation."""
+        submission = observation.submission
+        if submission.clock_mapping_id is None or submission.t_capture is None:
+            raise ObservationError(
+                "capture_time_unavailable",
+                "world projection requires a mapped producer capture time",
+            )
+        mapping = self.mappings.get(submission.clock_mapping_id)
+        if mapping is None:
+            raise ObservationError(
+                "unknown_clock_mapping", "observation clock mapping is unavailable"
+            )
+        return mapping.relay_ms(submission.t_source_receipt), mapping.relay_ms(submission.t_capture)

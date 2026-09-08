@@ -129,3 +129,9 @@ observation admission before export. Live tests subscribe over a real socket,
 refuse client publication, record concurrent appends, and keep a healthy viewer
 and audit writer progressing while another viewer stops reading. Hardware demo
 acceptance still requires replaying the retained physical session.
+
+## World observation records
+
+Live world observations use the `relay.observations` v1 envelope. The relay admits the source binding, frame declaration, clock mapping, and epoch before the platform verifies its approved-map registration. Replay keeps the complete admitted envelope, including source timestamps, clock mapping identity, pose quaternion, and payload evidence. Console map positions derive their capture time from the host-pinned clock mapping.
+
+Older `world_observation` audit records remain readable by replay and scene export. They are historical evidence only; the platform API does not accept their short envelope.

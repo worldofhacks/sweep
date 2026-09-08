@@ -35,6 +35,8 @@ from relay.bridge import RelayNodeLink
 from relay.contracts import NodeType
 from relay.ground_navigation_execution import _GroundGuardedLink
 from relay.map_authoring import MapAuthoringStore
+from relay.observation_ingress import ObservationConfiguration
+from relay.observations import ClockMapping, FrameDeclaration, FrameRegistry, SourceBinding
 from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION
 from tests.autonomy_fixtures import planning_config, safety_config
@@ -70,15 +72,6 @@ def ground_platform(tmp_path: Path, monkeypatch, request, world_confidence):
         "SWEEP_WORLD_OBSERVATION_SOURCES",
         json.dumps(
             {
-                "sources": {
-                    device_config.world_pose_source_id: {
-                        "principal_source": "localization",
-                        "drone_id": GROUND_ID,
-                        "node_type": "ground_vehicle",
-                        "frames": [{"id": "world", "kind": "world"}],
-                        "payload_types": ["pose"],
-                    },
-                },
                 "registrations": {
                     device_config.world_pose_source_id: {
                         "reference": reference,
@@ -104,7 +97,61 @@ def ground_platform(tmp_path: Path, monkeypatch, request, world_confidence):
         adapter_backend=AdapterBackend.REMOTE,
         node_watchdog_hold_ms=1000,
         node_watchdog_failsafe_ms=2000,
-        observation_configuration=_observation_configuration(),
+        observation_configuration=ObservationConfiguration(
+            bindings=(
+                *_observation_configuration().bindings,
+                SourceBinding(
+                    SESSION,
+                    GROUND_ID,
+                    1,
+                    device_config.world_pose_source_id,
+                    "ground",
+                    ("world", "body"),
+                    ("pose",),
+                    reference["bundleId"],
+                    deployment.map_version,
+                    f"ground-navigation-{device_config.registration_id}",
+                    ("host-clock",),
+                    producer_role="localization",
+                ),
+            ),
+            frames=FrameRegistry(
+                (
+                    *_observation_configuration().frames.declarations,
+                    FrameDeclaration(
+                        "world",
+                        "world",
+                        "right_handed_z_up",
+                        "m",
+                        map_id=reference["bundleId"],
+                        map_version=deployment.map_version,
+                        physical_datum=f"ground-navigation-{device_config.registration_id}",
+                    ),
+                    FrameDeclaration(
+                        "body",
+                        "body",
+                        "forward_left_up",
+                        "m",
+                        SESSION,
+                        GROUND_ID,
+                        1,
+                        device_config.world_pose_source_id,
+                    ),
+                )
+            ),
+            clock_mappings=(
+                ClockMapping(
+                    "host-clock",
+                    "host",
+                    "ms",
+                    time.time_ns() // 1_000_000,
+                    time.time_ns() // 1_000_000,
+                    1,
+                    1,
+                    100,
+                ),
+            ),
+        ),
     )
     app, composition = create_autonomy_app(
         settings,
@@ -201,25 +248,34 @@ def ground_platform(tmp_path: Path, monkeypatch, request, world_confidence):
                             json={
                                 "v": 1,
                                 "type": "observation",
-                                "t": now,
                                 "event_id": f"world-{uuid4().hex}",
                                 "session": SESSION,
-                                "drone_id": GROUND_ID,
+                                "device_id": GROUND_ID,
                                 "connection_epoch": node.connection_epoch,
                                 "source_id": device_config.world_pose_source_id,
-                                "node_type": "ground_vehicle",
-                                "t_capture": now,
+                                "node_type": "ground",
+                                "t_capture": {"clock_id": "host", "unit": "ms", "value": now},
+                                "t_source_receipt": {
+                                    "clock_id": "host",
+                                    "unit": "ms",
+                                    "value": now,
+                                },
+                                "clock_mapping_id": "host-clock",
                                 "frame": "world",
                                 "confidence": world_confidence[0],
                                 "payload": {
                                     "kind": "pose",
-                                    "position": {
-                                        "frame": "world",
+                                    "pose": {
+                                        "parent_frame": "world",
+                                        "child_frame": "body",
                                         "x_m": status.y + 3.0,
                                         "y_m": 10.0 - status.x,
                                         "z_m": 0.0,
+                                        "qx": 0.0,
+                                        "qy": 0.0,
+                                        "qz": 0.0,
+                                        "qw": 1.0,
                                     },
-                                    "yaw_rad": 0.0,
                                 },
                             },
                         )
