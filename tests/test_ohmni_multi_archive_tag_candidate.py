@@ -69,6 +69,63 @@ def _bind_request_observations(request: Path, events: list[Observation]) -> None
     request.write_text(json.dumps(document))
 
 
+def _collection(path: Path, archives: list[Path], handoff: Observation) -> Path:
+    payloads = [(archive / "observations.jsonl").read_bytes() for archive in archives]
+    raw = b"".join(payloads)
+    unique_events = _events(archives[0]) + _events(archives[1])[1:]
+    unique = b"".join(event.encode() + b"\n" for event in unique_events)
+    captured, received = handoff.submission.t_capture, handoff.submission.t_source_receipt
+    assert captured is not None and received is not None
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "ohmni_continuous_mapper_collection",
+                "archives": [
+                    {
+                        "path": archive.name,
+                        "manifest_sha256": hashlib.sha256(
+                            (archive / "manifest.json").read_bytes()
+                        ).hexdigest(),
+                        "observations_sha256": hashlib.sha256(payload).hexdigest(),
+                    }
+                    for archive, payload in zip(archives, payloads, strict=True)
+                ],
+                "handoffs": [
+                    {
+                        "from_archive": 0,
+                        "to_archive": 1,
+                        "source_id": handoff.submission.source_id,
+                        "event_id": handoff.submission.event_id,
+                        "observation_sha256": hashlib.sha256(handoff.encode()).hexdigest(),
+                        "t_capture": {
+                            "clock_id": captured.clock_id,
+                            "unit": captured.unit,
+                            "value": captured.value,
+                        },
+                        "t_source_receipt": {
+                            "clock_id": received.clock_id,
+                            "unit": received.unit,
+                            "value": received.value,
+                        },
+                    }
+                ],
+                "raw_observations": {
+                    "count": sum(len(_events(archive)) for archive in archives),
+                    "bytes": len(raw),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                },
+                "unique_observations": {
+                    "count": len(unique_events),
+                    "bytes": len(unique),
+                    "sha256": hashlib.sha256(unique).hexdigest(),
+                },
+            }
+        )
+    )
+    return path
+
+
 def test_single_and_continuous_split_archives_produce_equivalent_candidates(tmp_path: Path) -> None:
     archive, _, request, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
     output_one = tmp_path / "one"
@@ -103,6 +160,32 @@ def test_build_map_records_every_combined_scan_and_pins_its_inputs(tmp_path: Pat
         result["files"]["inputs/combined-observations.jsonl"]["sha256"]
         == hashlib.sha256(b"".join(event.encode() + b"\n" for event in events)).hexdigest()
     )
+
+
+def test_declared_pose_handoff_replaces_the_adjacent_gap_requirement(tmp_path: Path) -> None:
+    archive, config, request, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
+    events = _events(archive)
+    handoff = events[1]
+    first = _copy_archive(archive, tmp_path / "first", events[:3])
+    second = _copy_archive(archive, tmp_path / "second", [handoff, *events[3:]])
+    collection = _collection(tmp_path / "collection.json", [first, second], handoff)
+    _bind_request_observations(request, events)
+
+    result = build_map(
+        [first, second],
+        config,
+        "lidar-measured",
+        request,
+        evidence,
+        tmp_path / "map",
+        0,
+        collection,
+    )
+
+    assert result["tag_count"] == 1
+    tags = json.loads((tmp_path / "map" / "tag_candidates.json").read_text())
+    assert tags["raw_observations"]["count"] == len(events) + 1
+    assert tags["unique_observations"]["count"] == len(events)
 
 
 def test_build_map_refuses_a_lidar_budget_that_clips_combined_scans(tmp_path: Path) -> None:

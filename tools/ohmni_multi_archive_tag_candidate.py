@@ -22,6 +22,7 @@ from tools.ohmni_local_map_candidate import (
     _archive,
     _digest,
     _lidar_config,
+    _mapping,
     _object,
     _pin,
     _read_regular,
@@ -152,12 +153,192 @@ def _snapshot_pinned(inputs: Path, pin: Mapping[str, str], payload: bytes, name:
         os.fsync(stream.fileno())
 
 
+def _sha256(value: object, name: str) -> str:
+    if (
+        type(value) is not str
+        or len(value) != 64
+        or any(char not in "0123456789abcdef" for char in value)
+    ):
+        raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _metadata(value: object, name: str) -> dict[str, object]:
+    metadata = _mapping(value, name)
+    if set(metadata) != {"count", "bytes", "sha256"} or (
+        type(metadata["count"]) is not int
+        or metadata["count"] < 1
+        or type(metadata["bytes"]) is not int
+        or metadata["bytes"] < 1
+    ):
+        raise ValueError(f"{name} is invalid")
+    _sha256(metadata["sha256"], name)
+    return metadata
+
+
+def _timestamp(value: object, name: str) -> dict[str, object]:
+    timestamp = _mapping(value, name)
+    if (
+        set(timestamp) != {"clock_id", "unit", "value"}
+        or type(timestamp["clock_id"]) is not str
+        or timestamp["unit"] != "ns"
+        or type(timestamp["value"]) is not int
+    ):
+        raise ValueError(f"{name} is invalid")
+    return timestamp
+
+
+def _collection(
+    path: Path,
+    archives: Sequence[Path],
+    manifests: Sequence[Mapping[str, object]],
+    manifest_payloads: Sequence[bytes],
+    observation_payloads: Sequence[bytes],
+    event_chunks: Sequence[Sequence[Observation]],
+) -> tuple[bytes, dict[str, object], list[Observation], bytes]:
+    payload = _read_regular(path, MAX_MANIFEST_BYTES)
+    document = _object(payload, "continuous mapper collection")
+    if (
+        set(document)
+        != {
+            "schema_version",
+            "kind",
+            "archives",
+            "handoffs",
+            "raw_observations",
+            "unique_observations",
+        }
+        or document["schema_version"] != 1
+        or document["kind"] != "ohmni_continuous_mapper_collection"
+    ):
+        raise ValueError("continuous mapper collection schema is invalid")
+    archive_pins = document["archives"]
+    handoffs = document["handoffs"]
+    if not isinstance(archive_pins, list) or len(archive_pins) != len(archives):
+        raise ValueError("collection archives do not match supplied archives")
+    if not isinstance(handoffs, list) or len(handoffs) != len(archives) - 1:
+        raise ValueError("collection must declare one handoff per archive boundary")
+    for index, pin in enumerate(archive_pins):
+        item = _mapping(pin, "collection archive")
+        if (
+            set(item) != {"path", "manifest_sha256", "observations_sha256"}
+            or type(item["path"]) is not str
+        ):
+            raise ValueError("collection archive pin is invalid")
+        relative = Path(item["path"])
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise ValueError("collection archive path must stay below collection root")
+        if (path.parent / relative).resolve() != archives[index].resolve():
+            raise ValueError("collection archive order does not match supplied archives")
+        if _sha256(item["manifest_sha256"], "collection archive manifest") != _digest(
+            manifest_payloads[index]
+        ):
+            raise ValueError("collection manifest pin does not match archive")
+        if _sha256(item["observations_sha256"], "collection archive observations") != _digest(
+            observation_payloads[index]
+        ):
+            raise ValueError("collection observation pin does not match archive")
+    raw = b"".join(observation_payloads)
+    raw_metadata = _metadata(document["raw_observations"], "collection raw observations")
+    if raw_metadata != {
+        "count": sum(map(len, event_chunks)),
+        "bytes": len(raw),
+        "sha256": _digest(raw),
+    }:
+        raise ValueError("collection raw observation summary does not match archives")
+
+    dropped: set[tuple[int, int]] = set()
+    allowed: set[tuple[str, str]] = set()
+    for boundary, handoff in enumerate(handoffs):
+        item = _mapping(handoff, "collection handoff")
+        if (
+            set(item)
+            != {
+                "from_archive",
+                "to_archive",
+                "source_id",
+                "event_id",
+                "observation_sha256",
+                "t_capture",
+                "t_source_receipt",
+            }
+            or item["from_archive"] != boundary
+            or item["to_archive"] != boundary + 1
+            or not all(type(item[key]) is str for key in ("source_id", "event_id"))
+        ):
+            raise ValueError("collection handoff must name its adjacent archive boundary")
+        _sha256(item["observation_sha256"], "collection handoff observation")
+        capture = _timestamp(item["t_capture"], "collection handoff capture time")
+        receipt = _timestamp(item["t_source_receipt"], "collection handoff receipt time")
+        key = (item["source_id"], item["event_id"])
+        if key in allowed or item["source_id"] != manifests[boundary]["sources"]["pose"]:
+            raise ValueError("collection handoff duplicates or misidentifies its pose source")
+        matches = []
+        for chunk_index in (boundary, boundary + 1):
+            matches.extend(
+                (chunk_index, event_index, event)
+                for event_index, event in enumerate(event_chunks[chunk_index])
+                if (event.submission.source_id, event.submission.event_id) == key
+            )
+        if len(matches) != 2 or {match[0] for match in matches} != {boundary, boundary + 1}:
+            raise ValueError("collection handoff pose must occur once in each adjacent archive")
+        first, second = matches
+        captured = first[2].submission.t_capture
+        received = first[2].submission.t_source_receipt
+        if captured is None or received is None:
+            raise ValueError("collection handoff pose must carry capture and receipt times")
+        encoded = first[2].encode()
+        if (
+            first[2].submission.payload["kind"] != "pose"
+            or second[2].encode() != encoded
+            or _digest(encoded) != item["observation_sha256"]
+            or {
+                "clock_id": captured.clock_id,
+                "unit": captured.unit,
+                "value": captured.value,
+            }
+            != capture
+            or {
+                "clock_id": received.clock_id,
+                "unit": received.unit,
+                "value": received.value,
+            }
+            != receipt
+        ):
+            raise ValueError("collection handoff does not bind one exact accepted pose")
+        allowed.add(key)
+        dropped.add((second[0], second[1]))
+    occurrences: dict[tuple[str, str], int] = {}
+    for chunk in event_chunks:
+        for event in chunk:
+            key = (event.submission.source_id, event.submission.event_id)
+            occurrences[key] = occurrences.get(key, 0) + 1
+    if any(count > 1 and key not in allowed for key, count in occurrences.items()):
+        raise ValueError("collection contains a duplicate event outside a declared handoff")
+    unique_events = [
+        event
+        for chunk_index, chunk in enumerate(event_chunks)
+        for event_index, event in enumerate(chunk)
+        if (chunk_index, event_index) not in dropped
+    ]
+    unique = b"".join(event.encode() + b"\n" for event in unique_events)
+    unique_metadata = _metadata(document["unique_observations"], "collection unique observations")
+    if unique_metadata != {
+        "count": len(unique_events),
+        "bytes": len(unique),
+        "sha256": _digest(unique),
+    }:
+        raise ValueError("collection unique observation summary does not match its handoffs")
+    return payload, document, unique_events, unique
+
+
 def build(
     archives: Sequence[Path],
     request_path: Path,
     evidence_root: Path,
     output: Path,
     maximum_continuity_gap_ns: int,
+    collection_path: Path | None = None,
 ) -> dict[str, object]:
     if not 1 <= len(archives) <= MAX_ARCHIVES:
         raise ValueError(f"archive count must be from 1 through {MAX_ARCHIVES}")
@@ -181,6 +362,7 @@ def build(
 
     baseline: tuple[object, object, object] | None = None
     event_chunks: list[list[Observation]] = []
+    manifests: list[Mapping[str, object]] = []
     manifest_payloads: list[bytes] = []
     observation_payloads: list[bytes] = []
     previous: tuple[str, int, list[list[float]]] | None = None
@@ -210,8 +392,8 @@ def build(
             raise ValueError(
                 "archives must share an exact session, epoch, source, and frame identity"
             )
-        start = _boundary_pose(events, True)
-        if previous is not None:
+        start = _boundary_pose(events, True) if collection_path is None else None
+        if previous is not None and start is not None:
             if (
                 start[0] != previous[0]
                 or start[1] < previous[1]
@@ -225,21 +407,30 @@ def build(
                 raise ValueError("archive pose continuity translation proof failed")
             if _rotation_distance(previous[2], start[2]) > request["maximum_rotation_spread_rad"]:
                 raise ValueError("archive pose continuity rotation proof failed")
-        previous = _boundary_pose(events, False)
+        previous = _boundary_pose(events, False) if collection_path is None else None
         tags = _shared_tag_ids(events)
         shared |= seen_tags.intersection(tags)
         seen_tags |= tags
         event_chunks.append(events)
+        manifests.append(manifest)
         manifest_payloads.append(manifest_payload)
         observation_payloads.append(observations_payload)
         all_events.extend(events)
-    if (
-        len(all_events) > MAX_MULTI_ARCHIVE_OBSERVATIONS
-        or sum(map(len, observation_payloads)) > MAX_AGGREGATE_BYTES
-    ):
+    collection_payload: bytes | None = None
+    collection: dict[str, object] | None = None
+    if collection_path is not None:
+        collection_payload, collection, all_events, combined = _collection(
+            collection_path,
+            archives,
+            manifests,
+            manifest_payloads,
+            observation_payloads,
+            event_chunks,
+        )
+    else:
+        combined = b"".join(observation_payloads)
+    if len(all_events) > MAX_MULTI_ARCHIVE_OBSERVATIONS or len(combined) > MAX_AGGREGATE_BYTES:
         raise ValueError("combined archives exceed the aggregate fusion limit")
-
-    combined = b"".join(observation_payloads)
     observation_pin = _pin(request["observations"], "fusion observations")
     _safe_evidence_path(evidence_root, observation_pin, "fusion observations")
     if observation_pin["sha256"] != _digest(combined):
@@ -291,6 +482,10 @@ def build(
         _snapshot_pinned(inputs, mount_pin, mount_payload, "mount")
         for index, payload in enumerate(manifest_payloads):
             (inputs / f"archive-{index:03d}-manifest.json").write_bytes(payload)
+        if collection_payload is not None and collection is not None:
+            (inputs / "collection.json").write_bytes(collection_payload)
+            for index, payload in enumerate(observation_payloads):
+                (inputs / f"archive-{index:03d}-observations.jsonl").write_bytes(payload)
         result["request_sha256"] = _digest(request_payload)
         result["requested_observations"] = observation_pin
         result["archive_count"] = len(archives)
@@ -303,6 +498,20 @@ def build(
             "maximum_gap_ns": maximum_continuity_gap_ns,
             "checked_boundaries": max(0, len(archives) - 1),
         }
+        if collection_payload is not None and collection is not None:
+            result["collection"] = {
+                "path": "inputs/collection.json",
+                "sha256": _digest(collection_payload),
+            }
+            result["raw_observations"] = collection["raw_observations"]
+            result["unique_observations"] = collection["unique_observations"]
+            result["raw_archives"] = [
+                {
+                    "path": f"inputs/archive-{index:03d}-observations.jsonl",
+                    "sha256": _digest(payload),
+                }
+                for index, payload in enumerate(observation_payloads)
+            ]
         encoded = json.dumps(result, allow_nan=False, indent=2, sort_keys=True).encode() + b"\n"
         (temporary / "candidate.json").write_bytes(encoded)
         os.rename(temporary, output)
@@ -321,6 +530,7 @@ def build_map(
     evidence_root: Path,
     output: Path,
     maximum_continuity_gap_ns: int,
+    collection_path: Path | None = None,
 ) -> dict[str, object]:
     output = output.absolute()
     if output.exists() or output.is_symlink():
@@ -336,6 +546,7 @@ def build_map(
             evidence_root,
             tag_output,
             maximum_continuity_gap_ns,
+            collection_path,
         )
         inputs = tag_output / "inputs"
         combined = _read_regular(inputs / "combined-observations.jsonl", MAX_AGGREGATE_BYTES)
@@ -389,6 +600,8 @@ def build_map(
             "inputs/request.json",
             "inputs/lidar-config.json",
             *(archive["path"] for archive in tags["archives"]),
+            *(archive["path"] for archive in tags.get("raw_archives", [])),
+            *([tags["collection"]["path"]] if "collection" in tags else []),
             calibration_pin["path"],
             mount_pin["path"],
         ]
@@ -430,6 +643,11 @@ def build_map(
             },
             "tag_count": len(tags["candidates"]),
         }
+        if "collection" in tags:
+            manifest["collection"] = tags["collection"]
+            manifest["raw_observations"] = tags["raw_observations"]
+            manifest["unique_observations"] = tags["unique_observations"]
+            manifest["raw_archives"] = tags["raw_archives"]
         _write_snapshot(
             temporary / "manifest.json",
             json.dumps(manifest, allow_nan=False, indent=2, sort_keys=True).encode() + b"\n",
@@ -448,6 +666,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--evidence-root", required=True, type=Path)
     parser.add_argument("--lidar-config", required=True, type=Path)
     parser.add_argument("--lidar-mount-id", required=True)
+    parser.add_argument("--collection", required=True, type=Path)
     parser.add_argument("--maximum-continuity-gap-ns", required=True, type=int)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("archives", nargs="+", type=Path)
@@ -461,6 +680,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.evidence_root,
             args.output,
             args.maximum_continuity_gap_ns,
+            args.collection,
         )
     except (OSError, TypeError, ValueError) as error:
         raise SystemExit(f"ohmni multi-archive tag candidate failed: {error}") from error
