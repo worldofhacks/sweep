@@ -11,12 +11,15 @@ import cv2
 import numpy as np
 
 from calibration.intrinsics import (
+    _FISHEYE_CALIBRATION_FLAGS,
+    _FISHEYE_CRITERIA,
     _MAXIMUM_RELATIVE_FOCAL_STDDEV,
     _MAXIMUM_RMS_REPROJECTION_ERROR_PX,
     _MINIMUM_POSE_CONSTRAINT_RATIO,
     _pipeline,
     _pose_constraint_ratio,
 )
+from calibration.tag_modules import extract_module_corners
 from perception.tag_localization import tag_corners
 
 _MINIMUM_VIEWS = 20
@@ -31,6 +34,7 @@ class TagCandidateRequest:
     minimum_frame_gap: int = 8
     maximum_views: int = 30
     model: str = "pinhole"
+    frames_dir: Path | None = None
 
 
 def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
@@ -92,9 +96,33 @@ def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
         return report
 
     if request.model == "fisheye":
-        reasons.append(
-            "fisheye fitting requires a known multi-tag layout with at least six corners per frame"
+        if request.frames_dir is None:
+            reasons.append("fisheye fitting requires --frames-dir with the raw images")
+            return report
+        module_views = _module_views(selected, request.frames_dir, request.tag_size_m, image_size)
+        if len(module_views) < _MINIMUM_VIEWS:
+            reasons.append("fewer than 20 frames have six validated observed tag corners")
+            return report
+        objects = [view[0].reshape(-1, 1, 3).astype(np.float64) for view in module_views]
+        pixels = [view[1].reshape(-1, 1, 2).astype(np.float64) for view in module_views]
+        try:
+            rms, camera_matrix, distortion, _, _ = cv2.fisheye.calibrate(
+                objects, pixels, image_size, None, None, flags=_FISHEYE_CALIBRATION_FLAGS,
+                criteria=_FISHEYE_CRITERIA,
+            )
+        except cv2.error:
+            reasons.append("fisheye calibration is ill-conditioned")
+            return report
+        report.update(
+            rms_reprojection_error_px=float(rms),
+            camera_matrix=camera_matrix.tolist(),
+            distortion_coefficients=distortion.reshape(-1).tolist(),
+            validated_module_view_count=len(module_views),
         )
+        if not isfinite(float(rms)) or rms >= _MAXIMUM_RMS_REPROJECTION_ERROR_PX:
+            reasons.append("RMS reprojection error is at least 0.5 pixels")
+        if not reasons:
+            report["status"] = "candidate"
         return report
     rms, camera_matrix, distortion, _, _, stddev, _, _ = cv2.calibrateCameraExtended(
         object_points, image_points, image_size, None, None
@@ -182,6 +210,24 @@ def _select(
         if all(abs(item[0] - prior[0]) >= minimum_frame_gap for prior in selected):
             selected.append(item)
     return selected
+
+
+def _module_views(
+    selected: list[tuple[int, int, np.ndarray]], frames_dir: Path, tag_size_m: float,
+    image_size: tuple[int, int],
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    if not frames_dir.is_dir():
+        raise ValueError("frames directory does not exist")
+    views = []
+    for index, identifier, corners in selected:
+        path = frames_dir / f"frame-{index:06}.png"
+        image = cv2.imread(str(path))
+        if image is None or (image.shape[1], image.shape[0]) != image_size:
+            raise ValueError(f"missing or mismatched frame image: {path}")
+        module = extract_module_corners(image, identifier, corners, tag_size_m)
+        if module is not None:
+            views.append((module.object_points, module.image_points))
+    return views
 
 
 def _fov(camera_matrix: np.ndarray, image_size: tuple[int, int]) -> dict[str, float]:

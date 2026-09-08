@@ -99,6 +99,7 @@ def _tag_candidate_command(args: argparse.Namespace) -> None:
                 minimum_frame_gap=args.minimum_frame_gap,
                 maximum_views=args.maximum_views,
                 model=args.model,
+                frames_dir=args.frames_dir,
             )
         ),
     )
@@ -131,6 +132,7 @@ def _parser() -> argparse.ArgumentParser:
     tags.add_argument("--evidence", type=Path, required=True)
     tags.add_argument("--tag-size-m", type=float, required=True)
     tags.add_argument("--model", choices=("pinhole", "fisheye"), default="pinhole")
+    tags.add_argument("--frames-dir", type=Path)
     tags.add_argument("--pipeline", type=Path, required=True)
     tags.add_argument("--minimum-frame-gap", type=int, default=8)
     tags.add_argument("--maximum-views", type=int, default=30)

@@ -92,4 +92,15 @@ def test_tag_candidate_refuses_single_square_fisheye_fit(tmp_path: Path) -> None
     )
 
     assert result["status"] == "rejected"
-    assert "fisheye fitting requires a known multi-tag layout" in result["rejection_reasons"][0]
+    assert "fisheye fitting requires --frames-dir" in result["rejection_reasons"][0]
+
+    with pytest.raises(ValueError, match="missing or mismatched frame image"):
+        calibrate_tag_candidate(
+            TagCandidateRequest(
+                evidence=evidence,
+                tag_size_m=0.199898,
+                pipeline=_pipeline(),
+                model="fisheye",
+                frames_dir=tmp_path,
+            )
+        )
