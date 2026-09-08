@@ -1104,6 +1104,51 @@ class FlightControllerTest {
     }
 
     @Test
+    fun `supervised soft takeoff target permits later horizontal drift below the hard ceiling`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig(hardCeilingM = 1.7))
+        h.trackLocalHeight()
+        h.join()
+        val qualification = RecordingSink()
+        h.controller.qualifyGroundedAuthority(qualification)
+        h.tick(1)
+        assertEquals("completed", qualification.terminal?.first, qualification.events.toString())
+
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 1_200))
+        h.tickMs(3_500)
+        val framesBeforeSoftTarget = h.frames.size
+        h.localHeight(1.4)
+        h.tickMs(500)
+        assertEquals("completed", takeoff.terminal?.first, takeoff.events.toString())
+        assertEquals("idle", h.controller.status.phase)
+        assertFalse(h.model.landing)
+        assertTrue(h.frames.drop(framesBeforeSoftTarget).all { it.verticalThrottle <= 0.0 })
+
+        h.hovering(1.4)
+        h.trackLocalHeight()
+        h.model.deferEnableTicks = 2
+        val horizontal = RecordingSink()
+        assertTrue(h.controller.startBench("forward", StickFrame.NEUTRAL.copy(roll = 0.3), 1_500, horizontal))
+        h.tick(1)
+        assertNull(horizontal.terminal, horizontal.events.toString())
+        h.tickMs(1_700)
+        assertEquals("completed", horizontal.terminal?.first, horizontal.events.toString())
+        assertEquals("idle", h.controller.status.phase)
+        assertFalse(h.model.landing)
+
+        h.hovering(1.4)
+        h.trackLocalHeight()
+        h.model.deferEnableTicks = 0
+        val ceiling = RecordingSink()
+        assertTrue(h.controller.startBench("forward", StickFrame.NEUTRAL.copy(roll = 0.3), 1_500, ceiling))
+        h.tick(1)
+        h.localHeight(1.7)
+        h.tick(1)
+        assertEquals("vertical_ceiling_exceeded", ceiling.terminal?.second, ceiling.events.toString())
+        assertEquals("landing", h.controller.status.phase)
+        assertFalse(h.model.virtualStickEnabled)
+    }
+
+    @Test
     fun `supervised directional bench probes require grounded qualification and stream all body directions`() {
         val h = Harness(supervisedVertical = SupervisedVerticalConfig())
         h.join()
@@ -1297,10 +1342,11 @@ class FlightControllerTest {
         assertFalse(stale.model.virtualStickEnabled)
 
         val (commandCapped, commandCappedTakeoff) = climbingHarness()
-        commandCapped.localHeight(1.86)
-        commandCapped.tick(1)
-        assertEquals("vertical_ceiling_exceeded", commandCappedTakeoff.terminal?.second, commandCappedTakeoff.events.toString())
-        assertEquals("landing", commandCapped.controller.status.phase)
+        commandCapped.hovering(1.86)
+        commandCapped.trackLocalHeight()
+        commandCapped.tickMs(600)
+        assertEquals("completed", commandCappedTakeoff.terminal?.first, commandCappedTakeoff.events.toString())
+        assertEquals("idle", commandCapped.controller.status.phase)
 
         val (capped, cappedTakeoff) = climbingHarness()
         capped.localHeight(2.5908)

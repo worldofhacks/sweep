@@ -127,19 +127,15 @@ data class FlightConfig(
     val supervisedVertical: SupervisedVerticalConfig? = null,
 )
 
-/** The narrow local-height takeoff profile; it does not authorize horizontal navigation. */
+/** Fresh height at or above the hard ceiling triggers landing. */
 data class SupervisedVerticalConfig(
     val maximumHeightAgeMs: Long = 500,
     val hardCeilingM: Double = 2.5908,
-    val targetToleranceM: Double = 0.05,
     val targetSettleMs: Long = 500,
 ) {
     init {
         require(maximumHeightAgeMs > 0) { "maximum height age must be positive" }
         require(hardCeilingM.isFinite() && hardCeilingM > 0) { "hard ceiling must be positive and finite" }
-        require(targetToleranceM.isFinite() && targetToleranceM > 0 && targetToleranceM < hardCeilingM) {
-            "target tolerance must be positive and below the hard ceiling"
-        }
         require(targetSettleMs >= 0) { "target settle time must be non-negative" }
     }
 }

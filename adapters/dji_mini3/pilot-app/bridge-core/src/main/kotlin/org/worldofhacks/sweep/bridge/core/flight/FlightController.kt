@@ -370,11 +370,11 @@ class FlightController(
         }
         val targetZ = args.zMm / 1000.0
         config.supervisedVertical?.let { supervised ->
-            if (targetZ > supervised.hardCeilingM) {
+            if (targetZ >= supervised.hardCeilingM) {
                 fail(
                     sink,
                     FlightReason.VERTICAL_CEILING_EXCEEDED,
-                    "takeoff target ${format(targetZ)} m exceeds the local hard ceiling ${format(supervised.hardCeilingM)} m",
+                    "takeoff target ${format(targetZ)} m is at or above the local hard ceiling ${format(supervised.hardCeilingM)} m",
                 )
                 return
             }
@@ -812,7 +812,7 @@ class FlightController(
     }
 
     private fun checkSupervisedFlight(now: Long) {
-        val targetZM = supervisedFlightTargetZM ?: return
+        if (supervisedFlightTargetZM == null) return
         val supervised = config.supervisedVertical ?: return
         if (facts.flying) supervisedFlightAirborne = true
         if (supervisedTakeoffStopIssued && facts.flying && phase !is Phase.Landing) {
@@ -826,12 +826,7 @@ class FlightController(
             return
         }
         if (authorityLost != null || phase is Phase.Landing) return
-        guardVerticalHeight(
-            targetZM,
-            supervised,
-            now,
-            enforceCommandCeiling = phase is Phase.TakingOff || phase is Phase.SupervisedClimb || phase is Phase.Enabling,
-        )
+        guardVerticalHeight(supervised, now)
     }
 
     private fun advancePhase(now: Long) {
@@ -1084,7 +1079,7 @@ class FlightController(
 
     private fun advanceTakeoff(current: Phase.TakingOff, now: Long) {
         config.supervisedVertical?.let { supervised ->
-            if (guardVerticalHeight(current.targetZM, supervised, now) == null) return
+            if (guardVerticalHeight(supervised, now) == null) return
         }
         val elapsed = now - current.startedMs
         if (facts.flying && elapsed >= config.takeoffMinMs) {
@@ -1115,13 +1110,13 @@ class FlightController(
 
     private fun advanceSupervisedClimb(current: Phase.SupervisedClimb, now: Long) {
         val supervised = config.supervisedVertical ?: return
-        val height = guardVerticalHeight(current.targetZM, supervised, now) ?: return
-        if (abs(current.targetZM - height) <= supervised.targetToleranceM) {
+        val height = guardVerticalHeight(supervised, now) ?: return
+        if (height >= current.targetZM) {
             val since = current.settledSinceMs ?: now
             if (now - since >= supervised.targetSettleMs) {
                 completeActive(
-                    "local height ${format(height)} m remained within ${format(supervised.targetToleranceM)} m of target " +
-                        "${format(current.targetZM)} m for ${now - since} ms",
+                    "local height ${format(height)} m reached the soft target ${format(current.targetZM)} m " +
+                        "for ${now - since} ms",
                 )
                 releaseVirtualStick()
             } else {
@@ -1154,12 +1149,7 @@ class FlightController(
         return sample.zUpM.takeIf { it >= 0.0 && ageMs in 0..supervised.maximumHeightAgeMs }
     }
 
-    private fun guardVerticalHeight(
-        targetZM: Double,
-        supervised: SupervisedVerticalConfig,
-        now: Long,
-        enforceCommandCeiling: Boolean = true,
-    ): Double? {
+    private fun guardVerticalHeight(supervised: SupervisedVerticalConfig, now: Long): Double? {
         val height = freshLocalHeight(supervised)
         if (height == null) {
             stopVertical(
@@ -1173,14 +1163,6 @@ class FlightController(
             stopVertical(
                 FlightReason.VERTICAL_CEILING_EXCEEDED,
                 "local height ${format(height)} m reached the hard ceiling ${format(supervised.hardCeilingM)} m",
-                now,
-            )
-            return null
-        }
-        if (enforceCommandCeiling && height > targetZM + supervised.targetToleranceM) {
-            stopVertical(
-                FlightReason.VERTICAL_CEILING_EXCEEDED,
-                "local height ${format(height)} m exceeded the signed command ceiling ${format(targetZM)} m",
                 now,
             )
             return null
@@ -1210,7 +1192,7 @@ class FlightController(
     private fun afterTakeoff(targetZM: Double, now: Long, elapsedMs: Long) {
         val supervised = config.supervisedVertical
         if (supervised != null) {
-            if (guardVerticalHeight(targetZM, supervised, now) == null) return
+            if (guardVerticalHeight(supervised, now) == null) return
             event("takeoff hover reached at z ${format(facts.zUp)} m; closing the climb on fresh KeyAltitude toward ${format(targetZM)} m")
             beginVirtualStick(now) {
                 transition(Phase.SupervisedClimb(targetZM, null))
@@ -1316,8 +1298,8 @@ class FlightController(
 
     private fun supervisedClimbFrame(current: Phase.SupervisedClimb, now: Long): StickFrame {
         val supervised = config.supervisedVertical ?: return StickFrame.NEUTRAL
-        val height = guardVerticalHeight(current.targetZM, supervised, now) ?: return StickFrame.NEUTRAL
-        if (height >= current.targetZM - supervised.targetToleranceM) return StickFrame.NEUTRAL
+        val height = guardVerticalHeight(supervised, now) ?: return StickFrame.NEUTRAL
+        if (height >= current.targetZM) return StickFrame.NEUTRAL
         return StickFrame.NEUTRAL.copy(verticalThrottle = config.limits.maxVerticalMS)
     }
 

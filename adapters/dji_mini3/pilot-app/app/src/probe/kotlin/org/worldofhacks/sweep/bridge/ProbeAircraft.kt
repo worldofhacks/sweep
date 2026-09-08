@@ -62,8 +62,9 @@ import org.worldofhacks.sweep.bridge.session.GimbalPitchState
  * Provisional mappings, to be confirmed against the aircraft in the next hardware session:
  * - `x`, `y` are east/north metres from the first valid `KeyAircraftLocation3D` fix; indoors
  *   there is usually no fix, so they stay 0 and `pos_quality` stays 0.
- * - `z` is `KeyAltitude` (barometric, metres above takeoff) or, failing that,
- *   `KeyUltrasonicHeight` in decimetres divided by ten.
+ * - `z` is the takeoff-relative `KeyAltitude` in metres or, failing that,
+ *   `KeyUltrasonicHeight` in decimetres divided by ten. The node does not infer a
+ *   ranging-sensor source for `KeyAltitude`.
  * - `vx`, `vy`, `vz`: `KeyAircraftVelocity` is N-E-D (x north, y east, z down), so the SDK's
  *   `y` is the planner's `vx` (east), its `x` the planner's `vy` (north), and `vz` flips to
  *   z-up, matching the east/north position mapping above. The #85 axis probe reads these.
