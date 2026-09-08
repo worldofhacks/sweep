@@ -1712,7 +1712,8 @@ class AutonomySession:
         navigation_wire = getattr(self, "navigation_wire", None)
         if navigation_wire is not None:
             navigation_wire.retire(error.command_id)
-            navigation_wire.retire_intent(error.intent_id)
+            for command_id in navigation_wire.retire_intent(error.intent_id):
+                session.discard_command_waiter(command_id)
         for acknowledgement in result.acknowledgements:
             session.discard_command_waiter(acknowledgement.command_id)
         try:

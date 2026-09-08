@@ -405,12 +405,15 @@ class NavigationWirePublisher:
             self._retained.pop(command_id, None)
             self._pending.pop(command_id, None)
 
-    def retire_intent(self, intent_id: str) -> None:
+    def retire_intent(self, intent_id: str) -> tuple[str, ...]:
+        retired: list[str] = []
         with self._lock:
             for commands in (self._active, self._retained, self._pending):
                 for command_id, active in tuple(commands.items()):
                     if active.command.intent_id == intent_id:
                         commands.pop(command_id)
+                        retired.append(command_id)
+        return tuple(retired)
 
     def retire_epoch(self, drone_id: int, connection_epoch: int) -> None:
         with self._lock:

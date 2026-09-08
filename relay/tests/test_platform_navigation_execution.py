@@ -547,6 +547,23 @@ def test_tracking_failure_stops_the_platform_route_when_reporting_fails(
                         break
                     time.sleep(0.01)
                 assert active is not None
+                second_command_id = "tracking-second-aircraft"
+                autonomy.navigation_wire._active[second_command_id] = replace(
+                    active,
+                    command=replace(
+                        active.command,
+                        command_id=second_command_id,
+                        drone_id=2,
+                    ),
+                )
+                discarded: list[str] = []
+                discard_waiter = session.discard_command_waiter
+
+                def record_discard(command_id: str) -> None:
+                    discarded.append(command_id)
+                    discard_waiter(command_id)
+
+                monkeypatch.setattr(session, "discard_command_waiter", record_discard)
                 if failure == "reporting":
                     composition.set_multiview_listener(
                         lambda *_args: (_ for _ in ()).throw(RuntimeError("listener unavailable"))
@@ -582,6 +599,10 @@ def test_tracking_failure_stops_the_platform_route_when_reporting_fails(
                     composition.runtime.publish(SESSION, events), composition.runtime.loop
                 ).result(timeout=2)
                 assert command["intent_id"] not in autonomy._awaiting
+                assert second_command_id in discarded
+                assert not autonomy.navigation_wire._active
+                assert not autonomy.navigation_wire._retained
+                assert autonomy.navigation_wire.update(session.control_pose(1)) == []
                 hold = next(
                     frame
                     for _ in range(64)
