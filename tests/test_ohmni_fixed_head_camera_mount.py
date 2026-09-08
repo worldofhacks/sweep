@@ -31,23 +31,39 @@ def _absolute_pin(root: Path, name: str, value: bytes) -> dict[str, str]:
     return {"path": str(path), "sha256": hashlib.sha256(value).hexdigest()}
 
 
-def _calibration() -> bytes:
+def _calibration(model: str = "pinhole") -> bytes:
     hashes = {str(index): hashlib.sha256(str(index).encode()).hexdigest() for index in range(20)}
-    return json.dumps(
-        {
-            "schema_version": 1,
-            "status": "offline",
-            "evidence_kind": "recorded_live",
-            "camera_serial": "camera-1",
-            "pipeline": {"resolution_px": [640, 480]},
-            "image_size_px": [640, 480],
-            "camera_matrix": [[350, 0, 320], [0, 350, 240], [0, 0, 1]],
-            "distortion_coefficients": [0, 0, 0, 0, 0],
-            "rms_reprojection_error_px": 0.1,
-            "accepted_image_count": 20,
-            "image_sha256": hashes,
-        }
-    ).encode()
+    calibration: dict[str, object] = {
+        "schema_version": 1,
+        "status": "offline",
+        "evidence_kind": "recorded_live",
+        "camera_serial": "camera-1",
+        "pipeline": {"resolution_px": [640, 480]},
+        "image_size_px": [640, 480],
+        "camera_matrix": [[350, 0, 320], [0, 350, 240], [0, 0, 1]],
+        "distortion_coefficients": [0, 0, 0, 0, 0],
+        "rms_reprojection_error_px": 0.1,
+        "accepted_image_count": 20,
+        "image_sha256": hashes,
+    }
+    if model == "fisheye":
+        calibration.update(
+            {
+                "schema_version": 2,
+                "model": "fisheye",
+                "distortion_coefficients": [-0.08, 0.015, 0.001, -0.001],
+                "quality": {
+                    "accepted_image_count": 20,
+                    "minimum_accepted_image_count": 20,
+                    "rms_reprojection_error_px": 0.1,
+                    "maximum_rms_reprojection_error_px": 0.5,
+                    "minimum_pose_constraint_ratio": 0.005,
+                    "pose_constraint_ratio": 0.1,
+                    "opencv_check_cond": True,
+                },
+            }
+        )
+    return json.dumps(calibration).encode()
 
 
 def _motion(
@@ -155,7 +171,7 @@ def test_refuses_legacy_unbound_motion_evidence(tmp_path: Path) -> None:
         build(request, tmp_path, tmp_path / "out")
 
 
-def _render_frame(camera_tag: np.ndarray) -> bytes:
+def _render_frame(camera_tag: np.ndarray, model: str = "pinhole") -> bytes:
     K = np.array([[350, 0, 320], [0, 350, 240], [0, 0, 1]], dtype=float)
     pixels, _ = cv2.projectPoints(
         tag_corners(TAG_SIZE_M),
@@ -176,6 +192,15 @@ def _render_frame(camera_tag: np.ndarray) -> bytes:
         (640, 480),
         borderValue=255,
     )
+    if model == "fisheye":
+        distortion = np.array([-0.08, 0.015, 0.001, -0.001])
+        y, x = np.indices((480, 640), dtype=np.float32)
+        rectified = cv2.fisheye.undistortPoints(
+            np.stack([x, y], axis=-1).reshape(-1, 1, 2), K, distortion, P=K
+        ).reshape(480, 640, 2)
+        image = cv2.remap(
+            image, rectified[:, :, 0], rectified[:, :, 1], cv2.INTER_LINEAR, borderValue=255
+        )
     ok, encoded = cv2.imencode(".png", image)
     assert ok
     return encoded.tobytes()
@@ -202,8 +227,9 @@ def _capture_manifest(
     ).encode()
 
 
-def test_build_recovers_known_mount_from_readable_raw_rasters(tmp_path: Path) -> None:
-    intrinsics = _pin(tmp_path, "intrinsics.json", _calibration())
+@pytest.mark.parametrize("model", ["pinhole", "fisheye"])
+def test_build_recovers_known_mount_from_readable_raw_rasters(tmp_path: Path, model: str) -> None:
+    intrinsics = _pin(tmp_path, "intrinsics.json", _calibration(model))
     tag = _transform(0.2, 0.0, 0.4)
     initial_camera_tag = np.eye(4)
     initial_camera_tag[:3, :3] = cv2.Rodrigues(np.array([0.55, 0.2, 0.35]))[0] @ np.diag(
@@ -232,7 +258,9 @@ def test_build_recovers_known_mount_from_readable_raw_rasters(tmp_path: Path) ->
     for index, pose in enumerate(poses):
         body = _transform(pose[0], pose[1], np.deg2rad(pose[2]))
         frame = _pin(
-            tmp_path, f"frame-{index}.png", _render_frame(np.linalg.inv(body @ camera) @ tag)
+            tmp_path,
+            f"frame-{index}.png",
+            _render_frame(np.linalg.inv(body @ camera) @ tag, model),
         )
         encoder = {"left": int(pose[0] * 1000), "right": int(pose[0] * 1000)}
         stage = "before" if index == 0 else "after"
@@ -446,8 +474,8 @@ def _retained_motion_record(
                 "pose": {"x_m": 0.0, "y_m": 0.0, "yaw_deg": 0.0},
                 "encoder": {
                     **before_encoder,
-                    "left_receipt_ns": int(start_s * 1_000_000_000),
-                    "right_receipt_ns": int(start_s * 1_000_000_000) + 1,
+                    "left_receipt_ns": int((start_s - 0.15) * 1_000_000_000),
+                    "right_receipt_ns": int((start_s - 0.15) * 1_000_000_000) + 1,
                 },
                 "stage_started_monotonic_s": start_s,
                 "stage_completed_monotonic_s": start_s + 0.25,
@@ -456,8 +484,8 @@ def _retained_motion_record(
                 "pose": {"x_m": delta[0, 3], "y_m": delta[1, 3], "yaw_deg": yaw_deg},
                 "encoder": {
                     **after_encoder,
-                    "left_receipt_ns": int((start_s + 0.5) * 1_000_000_000),
-                    "right_receipt_ns": int((start_s + 0.5) * 1_000_000_000) + 1,
+                    "left_receipt_ns": int((start_s + 0.35) * 1_000_000_000),
+                    "right_receipt_ns": int((start_s + 0.35) * 1_000_000_000) + 1,
                 },
                 "stage_started_monotonic_s": start_s + 0.5,
                 "stage_completed_monotonic_s": start_s + 0.75,
@@ -612,3 +640,45 @@ def test_retained_artifact_adapter_refuses_unbound_motion_encoder(tmp_path: Path
     with pytest.raises(ValueError, match="do not bind"):
         build_retained(request, tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+def test_retained_artifact_adapter_refuses_stale_motion_endpoint(tmp_path: Path) -> None:
+    request, _ = _retained_request(tmp_path)
+    document = json.loads(request.read_text())
+    motion_pin = document["motions"][0]["record"]
+    motion_path = Path(motion_pin["path"])
+    motion = json.loads(motion_path.read_text())
+    encoder = motion["stages"]["before_motion"]["encoder"]
+    encoder["left_receipt_ns"] = 1_649_999_999
+    encoder["right_receipt_ns"] = 1_650_000_000
+    motion_path.write_text(json.dumps(motion))
+    motion_pin["sha256"] = hashlib.sha256(motion_path.read_bytes()).hexdigest()
+    request.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="direct encoder endpoint is invalid"):
+        build_retained(request, tmp_path / "out")
+
+
+def test_retained_artifact_adapter_refuses_stale_paired_motion_sample(tmp_path: Path) -> None:
+    request, _ = _retained_request(tmp_path)
+    document = json.loads(request.read_text())
+    motion_pin = document["motions"][0]["record"]
+    motion_path = Path(motion_pin["path"])
+    motion = json.loads(motion_path.read_text())
+    stage = motion["stages"]["before_motion"]
+    stage["paired_pose_samples"] = [
+        {
+            "poll_id": 1,
+            "pose": stage["pose"],
+            "encoder": {
+                "left": 1002,
+                "right": 2002,
+                "left_receipt_ns": 1_649_999_999,
+                "right_receipt_ns": 1_650_000_000,
+            },
+        }
+    ]
+    motion_path.write_text(json.dumps(motion))
+    motion_pin["sha256"] = hashlib.sha256(motion_path.read_bytes()).hexdigest()
+    request.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="paired samples are invalid"):
+        build_retained(request, tmp_path / "out")

@@ -16,6 +16,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from adapters.ohmni.odometry import MAX_SAMPLE_GAP_S
 from perception.camera_tags import CameraTagDetector
 from perception.tag_localization import tag_corners
 
@@ -523,6 +524,57 @@ def _motion_endpoint_encoder(stage: Mapping[str, object], name: str) -> tuple[di
     raise ValueError(f"retained motion {name} has no paired encoder endpoint")
 
 
+def _retained_motion_encoder(
+    value: Mapping[str, object], name: str, started_s: float, completed_s: float
+) -> bool:
+    earliest_ns = int((started_s - MAX_SAMPLE_GAP_S) * 1_000_000_000)
+    completed_ns = int(completed_s * 1_000_000_000)
+
+    def valid(encoder: object) -> bool:
+        return (
+            isinstance(encoder, Mapping)
+            and type(encoder.get("left")) is int
+            and type(encoder.get("right")) is int
+            and type(encoder.get("left_receipt_ns")) is int
+            and type(encoder.get("right_receipt_ns")) is int
+            and 0 <= encoder["left"] < ENCODER_MODULUS
+            and 0 <= encoder["right"] < ENCODER_MODULUS
+            and earliest_ns <= encoder["left_receipt_ns"]
+            and encoder["right_receipt_ns"] <= completed_ns
+            and encoder["left_receipt_ns"] <= encoder["right_receipt_ns"]
+            and encoder["right_receipt_ns"] - encoder["left_receipt_ns"]
+            <= MAX_ENCODER_PAIR_SKEW_NS
+        )
+
+    direct = value.get("encoder")
+    direct_encoder = valid(direct)
+    if direct is not None and not direct_encoder:
+        raise ValueError(f"retained motion {name} direct encoder endpoint is invalid")
+    pairs = value.get("paired_pose_samples")
+    if pairs is None:
+        return direct_encoder
+    if not isinstance(pairs, list) or not pairs:
+        raise ValueError(f"retained motion {name} paired samples are invalid")
+    previous: Mapping[str, object] | None = None
+    for pair in pairs:
+        if (
+            not isinstance(pair, Mapping)
+            or not isinstance(pair.get("pose"), Mapping)
+            or type(pair.get("poll_id")) is not int
+            or not valid(pair.get("encoder"))
+        ):
+            raise ValueError(f"retained motion {name} paired samples are invalid")
+        _pose(pair["pose"], f"retained motion {name} paired pose")
+        if previous is not None and (
+            pair["poll_id"] <= previous["poll_id"]
+            or pair["encoder"]["left_receipt_ns"] <= previous["encoder"]["left_receipt_ns"]
+            or pair["encoder"]["right_receipt_ns"] <= previous["encoder"]["right_receipt_ns"]
+        ):
+            raise ValueError(f"retained motion {name} paired samples are not ordered")
+        previous = pair
+    return direct_encoder or previous is not None
+
+
 def _retained_step(value: object, boot_id: str) -> None:
     if not isinstance(value, Mapping) or set(value) != {
         "boot_id",
@@ -592,45 +644,21 @@ def _retained_motion(
         raise ValueError("retained motion stages are invalid")
     for name, stage in (("before", before), ("after", after)):
         _pose(stage.get("pose"), f"retained motion {name} pose")
-        encoder = stage.get("encoder")
-        pairs = stage.get("paired_pose_samples")
-        direct_encoder = (
-            isinstance(encoder, Mapping)
-            and type(encoder.get("left")) is int
-            and type(encoder.get("right")) is int
-            and type(encoder.get("left_receipt_ns")) is int
-            and type(encoder.get("right_receipt_ns")) is int
-            and abs(encoder["left_receipt_ns"] - encoder["right_receipt_ns"])
-            <= MAX_ENCODER_PAIR_SKEW_NS
-        )
-        paired_encoder = (
-            isinstance(pairs, list)
-            and bool(pairs)
-            and all(
-                isinstance(pair, Mapping)
-                and isinstance(pair.get("pose"), Mapping)
-                and isinstance(pair.get("encoder"), Mapping)
-                and type(pair["encoder"].get("left")) is int
-                and type(pair["encoder"].get("right")) is int
-                and type(pair["encoder"].get("left_receipt_ns")) is int
-                and type(pair["encoder"].get("right_receipt_ns")) is int
-                for pair in pairs
-            )
-        )
-        if pairs is not None and not paired_encoder:
-            raise ValueError(f"retained motion {name} paired samples are invalid")
-        if paired_encoder:
-            for pair in pairs:
-                _pose(pair["pose"], f"retained motion {name} paired pose")
         if (
-            (not direct_encoder and not paired_encoder)
-            or not all(
+            not all(
                 type(stage.get(key)) in (int, float) and math.isfinite(stage[key])
                 for key in ("stage_started_monotonic_s", "stage_completed_monotonic_s")
             )
             or stage["stage_completed_monotonic_s"] < stage["stage_started_monotonic_s"]
         ):
             raise ValueError(f"retained motion {name} stage is invalid")
+        if not _retained_motion_encoder(
+            stage,
+            name,
+            float(stage["stage_started_monotonic_s"]),
+            float(stage["stage_completed_monotonic_s"]),
+        ):
+            raise ValueError(f"retained motion {name} has no fresh encoder endpoint")
     return dict(before), dict(after)
 
 
@@ -696,6 +724,8 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
         camera_serial=request["camera_serial"],
         tag_sizes_m={identifier: TAG_SIZE_M for identifier in request["tag_ids"]},
     )
+    pixel_frame = "rectified_camera" if detector.model == "fisheye" else "camera"
+    fit_distortion = np.zeros(4) if pixel_frame == "rectified_camera" else detector.D
     transforms = [np.eye(4)]
     identity = {
         key: request[key] for key in ("device_id", "boot_id", "camera_serial", "motion_chain_id")
@@ -768,6 +798,8 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
         if not accepted:
             raise ValueError("raw frame has no accepted floor-tag pose")
         for detection in accepted:
+            if detection.get("pixel_frame") != pixel_frame:
+                raise ValueError("floor-tag pixels are not in the calibrated camera frame")
             tag_id = detection["tag_id"]
             tag_indexes.setdefault(tag_id, len(tag_indexes))
             observation = (
@@ -783,11 +815,11 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
         frame_manifest_pins.append(manifest_pin)
         frame_manifest_payloads.append(manifest_payload)
     parameters, rank, condition, residual = _fit(
-        observations, len(tag_indexes), detector.K, detector.D
+        observations, len(tag_indexes), detector.K, fit_distortion
     )
     if rank < len(parameters) or not math.isfinite(condition) or condition > 1e8:
         raise ValueError("mount observations are rank-deficient or poorly conditioned")
-    resampling = _resampling(grouped, len(tag_indexes), detector.K, detector.D)
+    resampling = _resampling(grouped, len(tag_indexes), detector.K, fit_distortion)
     evaluations = [resampling["held_out"], *resampling["leave_one_capture_state_out"]]
     if any(
         item["status"] != "evaluated" or item["rms_reprojection_error_px"] > 3
@@ -829,6 +861,7 @@ def build(request_path: Path, evidence_root: Path, output: Path) -> dict[str, ob
             "diagnostics": {
                 "observation_count": len(observations),
                 "tag_count": len(tag_indexes),
+                "pixel_frame": pixel_frame,
                 "jacobian_rank": rank,
                 "jacobian_columns": len(parameters),
                 "condition_number": condition,
