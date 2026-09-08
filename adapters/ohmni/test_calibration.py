@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import math
 import socket
 import threading
 
 import pytest
 
+from . import device as device_module
 from .calibration import TICKS_PER_MM, CalibrationConfig, HostLease, LeaseSocketPump, _Progress
 from .device import Config, OhmniDevice
 from .lidar import RawRevolution
@@ -50,6 +52,41 @@ class RawLidar:
         return RawRevolution(
             tuple(Measurement(True, 15, float(index), 1000.0) for index in range(20)), self.clock()
         )
+
+
+@pytest.mark.parametrize(("wheel_diameter", "expected"), [(None, 150.5), ("152.4", 152.4)])
+def test_environment_wheel_diameter_reaches_the_odometry_model(
+    monkeypatch: pytest.MonkeyPatch, wheel_diameter: str | None, expected: float
+) -> None:
+    received: list[Config] = []
+
+    class EnvironmentDevice:
+        def __init__(self, config: Config, *, camera: object | None = None) -> None:
+            received.append(config)
+
+    monkeypatch.setattr(device_module, "OhmniDevice", EnvironmentDevice)
+    monkeypatch.delenv("SWEEP_MEDIA_HOST", raising=False)
+    if wheel_diameter is None:
+        monkeypatch.delenv("SWEEP_WHEEL_DIAMETER_MM", raising=False)
+    else:
+        monkeypatch.setenv("SWEEP_WHEEL_DIAMETER_MM", wheel_diameter)
+
+    device_module.from_environment()
+
+    config = received[0]
+    device = OhmniDevice(
+        config,
+        shell_factory=lambda _path: Shell(),
+        lidar_discover=lambda: None,
+        autostart=False,
+    )
+    try:
+        assert config.wheel_diameter_mm == expected
+        assert device.odometry.ticks_per_mm == pytest.approx(
+            16384 * (30 / 11) / (math.pi * expected)
+        )
+    finally:
+        device.close()
 
 
 def _device(
