@@ -804,6 +804,7 @@ def test_interrupted_second_leg_preserves_three_raw_stages_and_exact_stop_reason
 
     simulation = RunnerSimulation(monkeypatch)
     output = tmp_path / "capture.json"
+
     def interrupt_second_leg(delay: float) -> None:
         pose = simulation.device.odometry.snapshot(simulation.clock())
         if 55 < pose.yaw_deg < 70 and simulation.units[0] != simulation.units[1]:
@@ -813,10 +814,15 @@ def test_interrupted_second_leg_preserves_three_raw_stages_and_exact_stop_reason
 
     with pytest.raises(CalibrationError, match="raw_lidar_revolution_stale"):
         CalibrationRunner(
-            simulation.device, simulation.lease, output,
-            monotonic=simulation.clock, sleep=interrupt_second_leg,
-            config=CalibrationConfig.multistage(), device_id=12,
-            boot_id="unit12-test-boot", executed_bundle_source_sha256="a" * 64,
+            simulation.device,
+            simulation.lease,
+            output,
+            monotonic=simulation.clock,
+            sleep=interrupt_second_leg,
+            config=CalibrationConfig.multistage(),
+            device_id=12,
+            boot_id="unit12-test-boot",
+            executed_bundle_source_sha256="a" * 64,
         ).run()
     assert not output.exists()
     failure = json.loads((tmp_path / "capture.json.failed.json").read_text())
@@ -833,9 +839,9 @@ def test_interrupted_second_leg_preserves_three_raw_stages_and_exact_stop_reason
 
 def test_multistage_budget_keeps_motion_targets_fixed_and_rejects_mixed_limits() -> None:
     profile = CalibrationConfig.multistage()
-    assert profile.forward_distance_m == .4
+    assert profile.forward_distance_m == 0.4
     assert profile.yaw_degrees == 60
-    assert profile.forward_speed_m_s == .04
+    assert profile.forward_speed_m_s == 0.04
     assert profile.yaw_rate_deg_s == 10
     with pytest.raises(ValueError, match="immutable"):
         CalibrationConfig(max_runtime_s=90)
