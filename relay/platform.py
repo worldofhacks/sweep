@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from relay.auth import AuthenticationError, authenticate
 from relay.map_authoring import MapAuthoringError, MapAuthoringStore
 from relay.navigation_service import NavigationError, NavigationService
-from relay.observations import Observation, ObservationError
+from relay.observations import Observation, ObservationError, ObservationSubmission
 from relay.platform_observations import WorldObservationError, WorldObservationService
 from relay.settings import SettingsError
 
@@ -340,8 +340,10 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
         try:
             service.require_current()
             session = service.session(session_id)
+            submission = ObservationSubmission.parse(value)
             events = await runtime.process_and_publish(
-                session_id, lambda: runtime.process_frame(session, value, principal)
+                session_id,
+                lambda: runtime.process_frame(session, submission.to_mapping(), principal),
             )
             event = next((item for item in events if item.get("type") == "observation"), None)
             refusal = next((item for item in events if item.get("type") == "refusal"), None)
