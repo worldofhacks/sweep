@@ -7,6 +7,8 @@ import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay
 import { C1_BASIC_CONTROL_INTENTS, isConsoleIntentV1 } from '../../relay/contract'
 import { createGestureTestRig, hand } from '../../testing/gesture-fixtures'
 
+vi.mock('../../atlas/SpaceMap', () => ({ default: () => <div aria-label="Geographic map test boundary" /> }))
+
 const session = 'gesture-module-session'
 
 interface FixtureClients extends ControlClients {
@@ -65,6 +67,41 @@ const trackingState = () => screen.getByRole('status', { name: 'Tracking state' 
 const enableButton = () => screen.getByRole('button', { name: 'Enable tracking' })
 
 describe('Gesture module', () => {
+  test('a Spaces round trip releases tracking, preserves its preview, and permits explicit re-enable and confirmation', async () => {
+    const { rig, clients, hold } = mount()
+    const user = userEvent.setup()
+    const openModule = async (name: string) => {
+      await user.click(within(screen.getByRole('navigation', { name: 'Modules' })).getByRole('button', { name }))
+    }
+    await screen.findByText(/Development fixture active/i)
+    await user.click(enableButton())
+    hold('Open_Palm', 650)
+    expect(screen.getByRole('region', { name: 'Pending confirmation' })).toHaveTextContent('source webcam')
+
+    await openModule('Spaces')
+    expect(rig.scheduler.pending).toBe(false)
+    expect(rig.camera.controller.state.status).toBe('idle')
+    expect(rig.source.closed).toBe(true)
+    expect(screen.getByRole('region', { name: 'Pending confirmation' })).toHaveTextContent('panel-intent-0123456789abcdef')
+    expect(screen.getByRole('button', { name: 'Network stop' })).toBeEnabled()
+    expect(clients.webcam?.sent).toHaveLength(0)
+
+    await openModule('Gesture')
+    expect(enableButton()).toHaveAttribute('aria-pressed', 'false')
+    expect(rig.camera.startCalls).toBe(1)
+    expect(rig.scheduler.pending).toBe(false)
+    await user.click(enableButton())
+    expect(rig.camera.startCalls).toBe(2)
+    expect(rig.source.loadCalls).toBe(2)
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.webcam?.sent[0]).toMatchObject({
+      intent_id: 'panel-intent-0123456789abcdef', name: 'capture_room', source: 'webcam', confirm: true,
+    })
+    expect(clients.console.sent).toHaveLength(0)
+    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+  })
+
   test('Flight buttons work with the camera off and no webcam connection, but only send the selected pulse after dock confirmation', async () => {
     const { clients, rig } = mount({ withWebcam: false })
     const user = userEvent.setup()

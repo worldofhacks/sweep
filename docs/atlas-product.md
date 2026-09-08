@@ -103,6 +103,21 @@ page/subtab/viewport checks, confirmation continuity, and the passing isolated s
 mission. These results cover tested local UI and simulated-device workflows, not every physical
 camera, robot, network, or accessibility configuration.
 
+### Existing functionality is an acceptance requirement
+
+Atlas is additive. Typed and recorded speech, gesture tracking and confirmation, the dynamic
+all-device camera wall, and every existing fleet page remain required. New work must preserve
+source-bound confirmation, network stop, capability/refusal states, and the shared UI design.
+An unavailable provider or untested hardware path must not be presented as working.
+
+Three additional page-round-trip regressions exercise microphone cleanup and restarted speech,
+explicitly re-enabled gesture confirmation, and cameras joining while the operator is in Spaces.
+The console now passes **1,178 tests**. Leaving an input page intentionally releases its local
+microphone/tracker; returning does not silently resume recording or gesture commands. Live
+playback releases hidden sessions and reopens the current roster on return. These lifecycle
+rules preserve functionality without keeping unused capture or playback resources alive.
+Physical-device acceptance and unfinished Atlas capabilities below remain outstanding.
+
 ## Repeat locally
 
 From the repository root:

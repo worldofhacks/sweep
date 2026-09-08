@@ -76,6 +76,36 @@ Relevant persistent regressions live in `console/src/shell/shell.test.tsx`,
 `PlatformCompatibilityTest.kt` / `RawEvidenceExportTest.kt`. Local browser screenshots remain
 ignored under `output/playwright/`; temporary fixtures are not included in production bundles.
 
+## Speech, gesture, and multi-camera preservation follow-up
+
+The owner's requirement to retain existing functionality is covered by three additional
+application-level regressions, using the real shell and module components with test-only input
+and playback dependencies:
+
+- Speech → Spaces → Speech releases an unfinished recording without uploading it, leaves the
+  microphone off on return, and permits typed compilation and a fresh recorded relay plan.
+  That plan remains pending in Spaces and sends exactly once, through the language client,
+  only after explicit confirmation.
+- Gesture → Spaces → Gesture stops the camera/frame loop and closes the recognizer while
+  preserving its pending preview. Tracking requires explicit re-enablement; a subsequent
+  confirmation gesture sends the original preview once through the webcam client.
+- Live → Spaces → Live releases all five playback sessions. Off-page relay membership and
+  stream changes remain authoritative: the returning wall shows six devices, including the
+  newly joined camera, plays all five live streams, and labels the remaining offline feed.
+  Navigation emits no command. Existing eight-concurrent-feed and per-device reconnect tests
+  continue to pass.
+
+Fresh verification: **81 console files / 1,178 tests**, full ESLint, desktop and Android web-asset
+builds, and the isolated M14 browser mission all pass. The three input/live module files contain
+43 passing tests. The Atlas API/reconstruction/asset/worker selection also passes 21 Python tests;
+this includes in-progress mesh packaging checks, not acceptance of an integrated dense pipeline.
+No production UI, dependency, input policy, or device-control code changed for this follow-up.
+
+These are deterministic functional tests, not real camera pixels, microphone recognition, hand
+recognition accuracy, Android runtime, or physical-device acceptance. A fresh authenticated-host
+ADB enumeration still lists no Android device. Existing build-size, Node test-environment, and
+Python dependency deprecation warnings remain visible. Remote CI was not run for this follow-up.
+
 ## Limits and follow-up
 
 No Android handset was available; the charging iPhone is excluded. The new emulator image license

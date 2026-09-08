@@ -8,6 +8,8 @@ import type { TranscriptClient, TranscriptRequest, VoiceOutcome } from '../../vo
 import type { RecorderFactory } from '../../voice/use-push-to-talk'
 import type { VoiceDependencies } from '../types'
 
+vi.mock('../../atlas/SpaceMap', () => ({ default: () => <div aria-label="Geographic map test boundary" /> }))
+
 const session = 'speech-module-session'
 const T0 = 1_756_700_000_000
 
@@ -207,6 +209,50 @@ async function compileTyped(u: ReturnType<typeof userEvent.setup>, text: string)
 }
 
 describe('Speech module', () => {
+  test('a Spaces round trip discards an active recording, restores speech, and keeps a staged language plan confirmable', async () => {
+    const transcript = new QueuedTranscriptClient()
+    transcript.answer(outcome({
+      transcript: 'Hold position.',
+      plan: relayPlan({ transcript: 'Hold position.', steps: [step(0, 'hold', [1])] }),
+    }))
+    const { clients, recorder, stopTrack } = mount({ transcript })
+    const u = user()
+    const openModule = async (name: string) => {
+      await u.click(within(screen.getByRole('navigation', { name: 'Modules' })).getByRole('button', { name }))
+    }
+    await screen.findByText(/Development fixture active/i)
+    fireEvent.pointerDown(listenButton())
+    await act(async () => {})
+    expect(recorder.start).toHaveBeenCalledTimes(1)
+
+    await openModule('Spaces')
+    expect(recorder.stop).toHaveBeenCalledTimes(1)
+    expect(stopTrack).toHaveBeenCalledTimes(1)
+    expect(transcript.requests).toHaveLength(0)
+    expect(clients.language.sent).toHaveLength(0)
+
+    await openModule('Speech')
+    expect(listenButton()).toBeEnabled()
+    expect(listenButton()).toHaveAttribute('aria-pressed', 'false')
+    expect(recorder.start).toHaveBeenCalledTimes(1)
+    await compileTyped(u, 'hold position')
+    expect(result()).toHaveTextContent('compiled by local fallback')
+    await record()
+    await u.click(await screen.findByRole('button', { name: 'Stage step 1: hold' }))
+    expect(recorder.start).toHaveBeenCalledTimes(2)
+    expect(transcript.requests).toHaveLength(1)
+    expect(clients.language.sent).toHaveLength(0)
+
+    await openModule('Spaces')
+    const dock = within(screen.getByRole('region', { name: 'Pending confirmation' }))
+    expect(dock.getByText(/source language/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Network stop' })).toBeEnabled()
+    await u.click(dock.getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.language.sent).toHaveLength(1))
+    expect(clients.language.sent[0]).toMatchObject({ name: 'hold', source: 'language', selection: [1], confirm: true })
+    expect(clients.console.sent).toHaveLength(0)
+  })
+
   test('language disabled: without a transcription endpoint the hold button is off and typed text still compiles', async () => {
     const { clients } = mount()
     const u = user()
