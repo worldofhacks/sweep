@@ -13,7 +13,9 @@ from tests.test_ohmni_camera_positioning import capture as positioning
 from tools import ohmni_camera_inspection as inspection
 
 
-@pytest.mark.parametrize("fault", [None, "unknown_scan", "head", "source", "lease"])
+@pytest.mark.parametrize(
+    "fault", [None, "unknown_scan", "head", "source", "lease", "moving_unknown", "moving_head"]
+)
 def test_capture_producer_review_request_and_owner_enforce_live_admission(
     tmp_path, monkeypatch, fault
 ):
@@ -35,6 +37,15 @@ def test_capture_producer_review_request_and_owner_enforce_live_admission(
     def sleep(delay):
         nonlocal submitted
         original_sleep(delay)
+        if submitted and simulation.started_moving is not None:
+            if fault == "moving_unknown":
+                simulation.device.lidar.scan.ranges_cm[:] = [0] * 360
+            elif fault == "moving_head":
+                monkeypatch.setattr(
+                    positioning,
+                    "_neck_status",
+                    lambda: {"position": -46000, "target": -46000, "flags": "NONE"},
+                )
         challenge_path = tmp_path / "capture.json.inspection-challenge.json"
         if submitted or not challenge_path.exists():
             return
@@ -84,7 +95,11 @@ def test_capture_producer_review_request_and_owner_enforce_live_admission(
             runner.run()
         assert not runner.output.exists()
         assert runner.output.with_name(runner.output.name + ".failed.json").is_file()
-        assert simulation.started_moving is None
+        if fault.startswith("moving_"):
+            assert simulation.started_moving is not None
+            assert len(pulses) == 1
+        else:
+            assert simulation.started_moving is None
     assert submitted
     assert simulation.device.motion is None
     assert not simulation.device.enabled
