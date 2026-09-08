@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
@@ -232,9 +233,9 @@ def test_platform_confirmation_runs_the_retained_route_through_the_real_flight_w
             session, autonomy = _prepare_session(composition, deployment)
             preview = _preview(deployment)
             execution = autonomy.preview_platform_navigation(preview)
-            lifecycle: list[tuple[str, str, str, str]] = []
+            callback_results: list[tuple[str, str, str, str]] = []
             composition.set_multiview_listener(
-                lambda session_id, intent_id, name, status: lifecycle.append(
+                lambda session_id, intent_id, name, status: callback_results.append(
                     (session_id, intent_id, name, status)
                 )
             )
@@ -308,10 +309,10 @@ def test_platform_confirmation_runs_the_retained_route_through_the_real_flight_w
                         "detail": None,
                     }
                 )
-                lifecycle = []
+                wire_lifecycle = []
                 for _ in range(64):
                     frame = adapter.receive_json()
-                    lifecycle.append(frame)
+                    wire_lifecycle.append(frame)
                     if terminal_status == "completed" and frame.get("type") == "command":
                         clock.value += 3
                         telemetry = telemetry_payload(
@@ -354,14 +355,18 @@ def test_platform_confirmation_runs_the_retained_route_through_the_real_flight_w
                         and frame.get("intent_id") == command["intent_id"]
                     ):
                         break
-                terminal = lifecycle[-1]
+                terminal = wire_lifecycle[-1]
                 if terminal_status == "completed":
-                    assert terminal["status"] == "completed", json.dumps(lifecycle)
+                    assert terminal["status"] == "completed", json.dumps(wire_lifecycle)
                 else:
-                    assert terminal["status"] == "refused", json.dumps(lifecycle)
+                    assert terminal["status"] == "refused", json.dumps(wire_lifecycle)
                     assert terminal["reason"] == "adapter_failure"
                 expected_status = "completed" if terminal_status == "completed" else "refused"
-                assert (SESSION, "platform-intent-1", "navigate", expected_status) in lifecycle
+                expected_callback = (SESSION, "platform-intent-1", "navigate", expected_status)
+                deadline = time.monotonic() + 1
+                while expected_callback not in callback_results and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert expected_callback in callback_results
                 assert session.audit_log.root.exists()
     finally:
         composition.close()
