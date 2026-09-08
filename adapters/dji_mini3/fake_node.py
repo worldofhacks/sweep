@@ -109,6 +109,7 @@ class FakeNode:
         self._media: dict[str, dict[str, object]] = {}
         self._navigation_route: dict[str, object] | None = None
         self._navigation_pose: dict[str, object] | None = None
+        self._pending_goto_start: CommandFrame | None = None
         self._pending_goto_completion: CommandFrame | None = None
         self._outbound: asyncio.Queue[dict[str, object]] | None = None
         self._stop: asyncio.Event | None = None
@@ -278,12 +279,20 @@ class FakeNode:
             self._navigation_route = frame
         elif frame.get("status") == "ready":
             self._navigation_pose = frame
+            pending_start = self._pending_goto_start
+            if pending_start is not None and self._navigation_pose_matches_aircraft(
+                frame, pending_start
+            ):
+                self._pending_goto_start = None
+                self._start_goto(pending_start)
             pending = self._pending_goto_completion
-            if pending is not None and self._navigation_pose_matches_aircraft(frame):
+            if pending is not None and self._navigation_pose_matches_aircraft(frame, pending):
                 self._pending_goto_completion = None
                 self._enqueue(self._acknowledgement(pending, "completed"))
 
-    def _navigation_pose_matches_aircraft(self, frame: dict[str, object]) -> bool:
+    def _navigation_pose_matches_aircraft(self, frame: dict[str, object], command: CommandFrame) -> bool:
+        if frame.get("command_id") != command.command_id:
+            return False
         coordinates = (frame.get("x_mm"), frame.get("y_mm"), frame.get("z_mm"))
         expected = tuple(round(value * 1_000) for value in (
             self._aircraft.x,
@@ -322,13 +331,25 @@ class FakeNode:
         self._finish_command(frame)
 
     def _finish_command(self, frame: CommandFrame) -> None:
-        status, reason, detail = self._execute(frame)
-        if status == "completed" and frame.operation is CommandOperation.GOTO:
-            self._enqueue(self._telemetry_frame())
-            self._enqueue(self._node_status_frame())
-            self._pending_goto_completion = frame
+        if frame.operation is CommandOperation.GOTO:
+            if self._navigation_pose is not None and self._navigation_pose_matches_aircraft(
+                self._navigation_pose, frame
+            ):
+                self._start_goto(frame)
+            else:
+                self._pending_goto_start = frame
             return
+        status, reason, detail = self._execute(frame)
         self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
+
+    def _start_goto(self, frame: CommandFrame) -> None:
+        status, reason, detail = self._execute(frame)
+        if status != "completed":
+            self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
+            return
+        self._enqueue(self._telemetry_frame())
+        self._enqueue(self._node_status_frame())
+        self._pending_goto_completion = frame
 
     def _admission_refusal(
         self, frame: CommandFrame
@@ -420,6 +441,8 @@ class FakeNode:
             record = self._media.get(str(args["file_id"]))
             if record is None:
                 return "failed", "download_failure", "the node has no such file"
+            record = {**record, "retrieval_status": "completed"}
+            self._media[str(args["file_id"])] = record
             self._enqueue(self._media_file_frame(record))
         return "completed", None, None
 
@@ -628,7 +651,7 @@ class FakeNode:
             },
             "checksum_sha256": sha256(payload).hexdigest(),
             "storage_ref": f"fake-node://media/{self.config.drone_id}/{file_id}",
-            "retrieval_status": "completed",
+            "retrieval_status": "pending",
             "map_pose_provenance": provenance,
         }
         self._media[file_id] = record

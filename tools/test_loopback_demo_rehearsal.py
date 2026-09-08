@@ -222,7 +222,7 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
             status = _wait_for(terminal_status, timeout_s=15)
         except AssertionError as error:
             raise AssertionError(last_status) from error
-        assert status["status"] == "completed", status["views"]
+        assert status["status"] == "completed", json.dumps(status, sort_keys=True)
         assert [view["state"] for view in status["views"]] == ["completed", "completed"]
         captures = rehearsal._composition.runtime.sessions[rehearsal.session_id].current_state()[
             "captures"
