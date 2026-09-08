@@ -619,3 +619,55 @@ def test_map_change_invalidates_a_real_flight_execution_review_before_admission(
         if navigation is not None:
             navigation.close()
         composition.close()
+
+
+def test_platform_preview_uses_a_prior_qualified_arrival_as_its_next_route_start(
+    tmp_path: Path,
+) -> None:
+    deployment = _deployment(tmp_path)
+    clock = MutableClock(100_000)
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY},
+        localization_keys={1: LOCALIZATION_KEY},
+        log_dir=tmp_path / "logs",
+        adapter_backend=AdapterBackend.REMOTE,
+    )
+    config = AutonomyConfig(
+        planning=replace(planning_config(), flight_speed_m_s=0.2),
+        safety=replace(
+            safety_config(), geofence=Geofence(-100, 100, -100, 100, -100, 100), ceiling_m=50
+        ),
+        control_localization_projector=_projector(deployment),
+        navigation=deployment,
+    )
+    app, composition = create_autonomy_app(settings, config, clock=clock, event_ids=EventIds())
+    try:
+        with TestClient(app):
+            _, autonomy = _prepare_session(composition, deployment)
+            preview = _preview(deployment)
+            planned = autonomy.preview_platform_navigation(
+                {
+                    **preview,
+                    "trustedStart": {
+                        "target": preview["selected"][0],
+                        "position": {
+                            "xM": 0.0,
+                            "yM": 0.0,
+                            "zM": 1.0,
+                            "floorId": "level_1",
+                            "frame": "world",
+                        },
+                    },
+                }
+            )
+            route = planned["routes"][0]
+            assert route["waypoints"][0] == {
+                "xM": 0.0,
+                "yM": 0.0,
+                "zM": 1.0,
+                "floorId": "level_1",
+                "frame": "world",
+            }
+    finally:
+        composition.close()
