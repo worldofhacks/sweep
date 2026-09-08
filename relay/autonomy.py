@@ -1705,6 +1705,9 @@ class AutonomySession:
         navigation_wire = getattr(self, "navigation_wire", None)
         if navigation_wire is not None:
             navigation_wire.retire(error.command_id)
+            navigation_wire.retire_intent(error.intent_id)
+        for acknowledgement in result.acknowledgements:
+            session.discard_command_waiter(acknowledgement.command_id)
         try:
             events = apply_result(session, job.intent, result)
         except Exception:
@@ -2276,6 +2279,8 @@ class AutonomyComposition:
                                 "navigation tracking refused for aircraft %s", drone_id
                             )
                             output.extend(owner.fail_navigation_tracking(error))
+                        except PlanPreempted:
+                            continue
                         except ValueError:
                             _LOGGER.exception(
                                 "navigation tracking publisher failed for aircraft %s", drone_id
