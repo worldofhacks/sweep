@@ -40,7 +40,8 @@ LONGER_MAX_YAW_DEGREES = 40.0
 MULTISTAGE_FORWARD_DISTANCE_M = 0.4
 MULTISTAGE_YAW_DEGREES = 60.0
 MULTISTAGE_MAX_WHEEL_TRAVEL_M = 1.05
-MULTISTAGE_MAX_YAW_DEGREES = 70.0
+MULTISTAGE_MAX_YAW_DEGREES = 85.0
+MULTISTAGE_MAX_RUNTIME_S = 90.0
 REVOLUTIONS_PER_STAGE = 10
 STAGE_TIMEOUT_S = 8.0
 SETTLE_TIMEOUT_S = 2.0
@@ -111,7 +112,7 @@ class CalibrationConfig:
                 PULSE_DURATION_S,
                 MULTISTAGE_MAX_WHEEL_TRAVEL_M,
                 MULTISTAGE_MAX_YAW_DEGREES,
-                MAX_RUNTIME_S,
+                MULTISTAGE_MAX_RUNTIME_S,
             ),
         ):
             raise ValueError("calibration limits must match an immutable capture profile")
@@ -132,6 +133,7 @@ class CalibrationConfig:
             yaw_degrees=MULTISTAGE_YAW_DEGREES,
             max_wheel_travel_m=MULTISTAGE_MAX_WHEEL_TRAVEL_M,
             max_yaw_degrees=MULTISTAGE_MAX_YAW_DEGREES,
+            max_runtime_s=MULTISTAGE_MAX_RUNTIME_S,
         )
 
     @property

@@ -687,7 +687,8 @@ def test_multistage_runner_reaches_two_independent_translations_within_fixed_bud
         "after_cross_forward",
     }
     assert capture["limits"]["max_wheel_travel_m"] == 1.05
-    assert capture["limits"]["max_yaw_degrees"] == 70.0
+    assert capture["limits"]["max_yaw_degrees"] == 85.0
+    assert capture["limits"]["max_runtime_s"] == 90.0
     cross = capture["stages"]["after_cross_forward"]["pose"]
     turned = capture["stages"]["after_yaw"]["pose"]
     assert cross["x_m"] - turned["x_m"] > 0.15
@@ -731,3 +732,13 @@ def test_interrupted_second_leg_preserves_three_raw_stages_and_exact_stop_reason
     assert not simulation.device.enabled
     assert simulation.device.motion is None
     assert simulation.units == (0, 0)
+
+
+def test_multistage_budget_keeps_motion_targets_fixed_and_rejects_mixed_limits() -> None:
+    profile = CalibrationConfig.multistage()
+    assert profile.forward_distance_m == .4
+    assert profile.yaw_degrees == 60
+    assert profile.forward_speed_m_s == .04
+    assert profile.yaw_rate_deg_s == 10
+    with pytest.raises(ValueError, match="immutable"):
+        CalibrationConfig(max_runtime_s=90)

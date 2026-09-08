@@ -10,7 +10,7 @@ from pathlib import Path
 
 LEASE_PORT = 18912
 TICK_SECONDS = 0.1
-MAX_RUNTIME_SECONDS = 60.0
+MAX_RUNTIME_SECONDS = 90.0
 
 
 def serve_lease(listener: socket.socket, token: bytes, *, lifetime_s: float = 60.0) -> None:
@@ -37,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--token-file", required=True, type=Path)
     parser.add_argument("--port", type=int, default=LEASE_PORT)
+    parser.add_argument("--lifetime-s", type=float, choices=(60.0, 90.0), default=60.0)
     args = parser.parse_args(argv)
     token = bytes.fromhex(args.token_file.read_text(encoding="ascii").strip())
     if len(token) != 32 or not 1024 <= args.port <= 65535:
@@ -47,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         listener.listen(1)
         print("Calibration lease listener ready on loopback.", flush=True)
         try:
-            serve_lease(listener, token)
+            serve_lease(listener, token, lifetime_s=args.lifetime_s)
         except (OSError, ValueError):
             print("Calibration lease ended or was refused.", flush=True)
             return 1
