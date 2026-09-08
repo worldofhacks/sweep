@@ -153,6 +153,29 @@ class RawEvidenceExportTest {
     }
 
     @Test
+    fun `API 24 compatible path checks retain nested evidence and exclude linked files and sibling directories`() {
+        val filesDir = createTempDirectory("raw-evidence").toFile()
+        try {
+            val records = File(filesDir, "sensor-records").apply { mkdirs() }
+            val nested = records.resolve("nested").apply { mkdirs() }.resolve("valid.jsonl").apply { writeText("{}\n") }
+            val sibling = File(filesDir, "sensor-records-other").apply { mkdirs() }
+            sibling.resolve("outside.jsonl").writeText("{}\n")
+            java.nio.file.Files.createSymbolicLink(records.resolve("linked.jsonl").toPath(), nested.toPath())
+            java.nio.file.Files.createSymbolicLink(records.resolve("sibling").toPath(), sibling.toPath())
+            val result = RawEvidenceExport.write(filesDir, "probe report", exportedAtMs = 1234)
+            ZipFile(File((result as ExportResult.Saved).path)).use { archive ->
+                assertEquals(listOf("probe-report.txt", "sensor-records/nested/valid.jsonl", "provenance.json"),
+                    archive.entries().asSequence().map { it.name }.toList())
+            }
+        } finally {
+            // Remove test-created links before recursive fixture cleanup can follow them.
+            File(filesDir, "sensor-records/linked.jsonl").delete()
+            File(filesDir, "sensor-records/sibling").delete()
+            filesDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `export refuses an oversized source before copying it`() {
         val filesDir = createTempDirectory("raw-evidence").toFile()
         try {

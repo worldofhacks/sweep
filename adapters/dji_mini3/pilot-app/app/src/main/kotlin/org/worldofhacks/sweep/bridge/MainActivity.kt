@@ -10,12 +10,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.core.content.ContextCompat
 import org.worldofhacks.sweep.bridge.publish.ui.LocalPublisher
 import org.worldofhacks.sweep.bridge.session.SimulationControls
 import org.worldofhacks.sweep.bridge.ui.SessionScreen
+import org.worldofhacks.sweep.bridge.ui.SweepTheme
 
 class MainActivity : ComponentActivity() {
     private val requestNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -34,7 +34,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             // Phase F hook: the publish cards read the publisher from this CompositionLocal.
             CompositionLocalProvider(LocalPublisher provides app.publisher) {
-                MaterialTheme {
+                SweepTheme {
                     SessionScreen(
                         node = app.node,
                         session = app.session,

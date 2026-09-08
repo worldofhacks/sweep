@@ -107,9 +107,12 @@ internal object RawEvidenceExport {
         val root = directory.canonicalFile
         return directory.walkTopDown().maxDepth(2)
             .filter { candidate ->
+                // java.nio.file requires API 26; the pilot app also supports API 24/25.
+                // Canonicalize the parent separately to reject file symlinks, then enforce
+                // a separator-delimited boundary so sibling directories cannot match.
                 candidate.isFile && candidate.name.endsWith(".jsonl") &&
-                    !java.nio.file.Files.isSymbolicLink(candidate.toPath()) &&
-                    candidate.canonicalFile.toPath().startsWith(root.toPath())
+                    candidate.canonicalFile == File(candidate.parentFile!!.canonicalFile, candidate.name) &&
+                    candidate.canonicalPath.startsWith(root.path + File.separator)
             }
             .map { candidate ->
                 Member(candidate, "$prefix/${candidate.canonicalFile.relativeTo(root).invariantSeparatorsPath}")

@@ -55,13 +55,13 @@
   min-height: var(--min-h-46);
   padding: 11px 16px;
   border: 0;
-  background: var(--color-ink);
+  background: var(--color-accent);
   color: #ffffff;
   font-size: var(--text-14);
   font-weight: var(--weight-600);
   cursor: pointer;
 }
-.sp-compile:hover { background: var(--color-ink-hover); }
+.sp-compile:hover { background: var(--color-accent-hover); }
 .sp-eyebrow {
   margin: 14px 0 6px;
   font-family: var(--font-mono);

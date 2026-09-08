@@ -77,6 +77,32 @@ incident reports. The example fixture is documented in the
 [official COLMAP example](https://github.com/colmap/pycolmap/blob/master/example.py).
 Numeric acceptance evidence is recorded in `docs/evidence/atlas-sparse-2026-09-08.json`.
 
+### Android implementation milestone
+
+The existing Android app now bundles the shared Atlas interface with native CameraX capture,
+capture-time sensors, a private SQLite/WorkManager outbox, encrypted Atlas access separate from
+fleet controls, original export, and credential-isolated offline space metadata. Both APK variants
+build; fake passes 63 and probe passes 83 local Android tests. The console now passes 1,175 tests and full lint.
+The built Android UI was visually checked at phone size using a simulated native bridge and real
+preview HTTP. It is not yet verified on an Android device or emulator. See
+[`atlas-android.md`](atlas-android.md) for architecture, reproduction, evidence limits, the emulator
+license approval dependency, and remaining Android lint warnings. Both Android lint variants now
+pass with zero errors; lint is included in CI. The full goal remains active.
+
+### Cross-page continuity
+
+Spaces and the existing Control, Live, Gesture, Speech, Captures, Worlds, Devices, and Map pages
+now use shared mineral/pine tokens, readable navigation, consistent form controls, and bounded
+phone layouts. Native Compose screens use the corresponding `SweepTheme`. The audit fixed
+overlapping device-selection pairs, inaccessible short-screen content, preview/footer overflow,
+keyboard skip-link focus, and stale space details after access failure. Safety state remains
+visible when an armed fleet empties; navigation does not send a pending request.
+
+The [2026-09-08 continuity evidence](evidence/atlas-ui-continuity-2026-09-08.md) records 168
+page/subtab/viewport checks, confirmation continuity, and the passing isolated simulator browser
+mission. These results cover tested local UI and simulated-device workflows, not every physical
+camera, robot, network, or accessibility configuration.
+
 ## Repeat locally
 
 From the repository root:
@@ -115,8 +141,8 @@ with `--verify-space SPACE_ID`. The tool targets only the local preview.
 
 ## Remaining requirements — goal is not complete
 
-1. Android-native camera/location/sensor integration and durable interrupted-upload recovery
-   in the existing Android app; native permission, lifecycle, storage and real device tests.
+1. Verify the implemented Android-native camera/location/sensor integration and durable upload
+   recovery on the actual Android runtime; native permission, lifecycle, storage and real device tests.
    No Android handset was detected by ADB on this host; the charging iPhone is excluded.
 2. Dense, detailed reconstruction. The delivered model is an actual **sparse point cloud**,
    not a textured mesh, Gaussian scene, or dense surface model. Its scale is relative and it
@@ -126,7 +152,9 @@ with `--verify-space SPACE_ID`. The tool targets only the local preview.
    qualified camera positions, not which surfaces have been reconstructed. Viewpoint requests
    are visible in the shared space; proactive contributor notifications are not implemented.
 4. Full multi-contributor / second-device invitation testing, reliable identity/session boundaries,
-   durable offline drafts, thumbnail/storage lifecycle policy, and cross-device HTTPS deployment.
+   durable offline new-space drafts, native library imports, thumbnail/storage lifecycle policy,
+   and cross-device HTTPS deployment. Android's native-capture outbox and cached space metadata
+   exist, but are not proof that every offline workflow is complete.
 5. Further mobile navigation, type/contrast, focus, large-text and capture-preview refinements.
    Benchmark map and viewer startup on an actual Android device; do not hide bundle-size warnings
    as a substitute for performance work.

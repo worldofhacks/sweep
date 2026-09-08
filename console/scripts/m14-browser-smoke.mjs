@@ -167,6 +167,7 @@ try {
   await openControlPane(page, 'Fleet')
   await page.getByRole('region', { name: 'Registry', exact: true }).getByRole('article', { name: 'D-02 registry card' }).getByRole('button', { name: 'Select D-02', exact: true }).click()
   await waitForRequest(page, 'Select', 'completed')
+  await assertSelectionLayout(page)
   await pressSwarm(page, 'Arm')
   await waitForRequest(page, 'Arm', 'completed')
   await pressSwarm(page, /^Takeoff/)
@@ -323,12 +324,32 @@ async function reportFailure() {
 }
 
 async function openControlPane(page, name) {
+  // Spaces is the product landing page; choose the existing fleet workspace
+  // explicitly so this mission covers the same public navigation as an operator.
+  await page.getByRole('navigation', { name: 'Modules' }).getByRole('button', { name: 'Control', exact: true }).click()
   await page.getByRole('group', { name: 'Control panes' }).getByRole('button', { name, exact: true }).click()
 }
 
 async function pressSwarm(page, name) {
   await openControlPane(page, 'Swarm')
   await page.getByRole('button', { name, exact: typeof name === 'string' }).click()
+}
+
+async function assertSelectionLayout(page) {
+  await openControlPane(page, 'Swarm')
+  const original = page.viewportSize()
+  for (const [width, height] of [[1440, 1000], [768, 1024], [390, 844], [320, 568]]) {
+    await page.setViewportSize({ width, height })
+    const fits = await page.locator('.ct-chip-group').evaluateAll(groups => groups.length === 2 && groups.every(group => {
+      const bounds = group.getBoundingClientRect()
+      return [...group.querySelectorAll('button')].every(button => {
+        const box = button.getBoundingClientRect()
+        return box.width > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1
+      })
+    }))
+    if (!fits) throw new Error(`Device selection buttons overlap at ${width}px`)
+  }
+  await page.setViewportSize(original)
 }
 
 function requestByName(page, name) {

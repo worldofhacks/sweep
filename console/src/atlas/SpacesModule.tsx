@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { ModuleProps } from '../modules/types'
+import type { PlatformConnection } from '../platform/http'
 import { AtlasClient, locate, phonePosition } from './client'
 import { CaptureComposer } from './CaptureComposer'
 import { Icon } from './Icon'
@@ -61,13 +62,20 @@ function identity() {
   }
 }
 
-export function SpacesModule({ services }: ModuleProps) {
+export interface NativeCaptureRequest { spaceId: string; title: string; contributor: string; name: string }
+interface SpacesProps extends Pick<ModuleProps, 'services'> {
+  initialSpace?: string | null
+  captureNative?: (value: NativeCaptureRequest) => Promise<void>
+  connectNative?: () => void
+}
+export function SpacesModule({ services, initialSpace, captureNative, connectNative }: SpacesProps) {
   const [manualClient, setManualClient] = useState<AtlasClient | null>(null)
-  const [invitedSpace, setInvitedSpace] = useState<string | null>(null)
+  const [invitedSpace, setInvitedSpace] = useState<string | null>(initialSpace ?? null)
   const client = manualClient ?? services.atlas ?? null
   const [spaces, setSpaces] = useState<Space[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
+  const [selected, setSelected] = useState<string | null>(initialSpace ?? null)
   const [detail, setDetail] = useState<SpaceDetail | null>(null)
+  const [detailError, setDetailError] = useState('')
   const [loading, setLoading] = useState(Boolean(client))
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
@@ -89,8 +97,31 @@ export function SpacesModule({ services }: ModuleProps) {
   const [sharing, setSharing] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const refresh = useCallback(() => setRefreshKey((key) => key + 1), [])
+  useEffect(() => {
+    const stop = () => setSharing(false)
+    window.addEventListener('atlas-background', stop)
+    return () => window.removeEventListener('atlas-background', stop)
+  }, [])
+  useEffect(() => {
+    const back = () => {
+      if (modal) setModal(null)
+      else if (creating) setCreating(false)
+      else if (selected && !invitedSpace) { setSelected(null); setSharing(false) }
+      else window.dispatchEvent(new Event('atlas-exit'))
+    }
+    window.addEventListener('atlas-back', back)
+    return () => window.removeEventListener('atlas-back', back)
+  }, [modal, creating, selected, invitedSpace])
+  const openConnect = () => { if (connectNative) connectNative(); else setModal('connect') }
+  const openCapture = () => {
+    if (captureNative && selected) {
+      void captureNative({ spaceId: selected, title: detail?.space.title ?? 'Space capture', contributor,
+        name: name.trim() || 'Contributor' }).catch(error => setNotice(errorText(error)))
+    } else setModal('capture')
+  }
   const openSpace = useCallback((id: string) => {
     setSelected(id)
+    setDetailError('')
     setTab('overview')
     setSelectedCell(null)
     setCreating(false)
@@ -132,9 +163,15 @@ export function SpacesModule({ services }: ModuleProps) {
         const result = await client.detail(selected, controller.signal)
         if (!controller.signal.aborted) {
           setDetail(result)
+          setDetailError('')
         }
       } catch (error) {
-        if (!controller.signal.aborted) setNotice(errorText(error))
+        if (!controller.signal.aborted) {
+          // Do not leave stale live locations or a refused space looking current.
+          // Android's explicitly labeled offline cache is handled by its client instead.
+          setDetail(null)
+          setDetailError(errorText(error))
+        }
       }
       if (!controller.signal.aborted) timer = setTimeout(() => void update(), 5000)
     }
@@ -278,7 +315,7 @@ export function SpacesModule({ services }: ModuleProps) {
             disabled={Boolean(invitedSpace)}
             onClick={() => {
               if (!client) {
-                setModal('connect')
+                openConnect()
                 return
               }
               setDraft(emptyDraft)
@@ -395,7 +432,7 @@ export function SpacesModule({ services }: ModuleProps) {
                       if (client) {
                         setCreating(true)
                         setSelected(null)
-                      } else setModal('connect')
+                      } else openConnect()
                     }}
                   >
                     {client ? 'Create the first space' : 'Connect workspace'}
@@ -558,7 +595,7 @@ export function SpacesModule({ services }: ModuleProps) {
                 className="atlas-back"
                 onClick={() => {
                   if (invitedSpace) {
-                    setModal('connect')
+                    openConnect()
                     return
                   }
                   setSelected(null)
@@ -576,7 +613,11 @@ export function SpacesModule({ services }: ModuleProps) {
               )}
             </div>
             {!activeDetail ? (
-              <div className="atlas-empty">Loading this space…</div>
+              <div className="atlas-empty" role="status">
+                {detailError ? <><h3>Space unavailable</h3><p>{detailError}</p>
+                  <button className="atlas-secondary" onClick={() => { setDetailError(''); refresh() }}>Try again</button>
+                </> : 'Loading this space…'}
+              </div>
             ) : (
               <>
                 <span className={`atlas-category ${activeDetail.space.category}`}>
@@ -826,7 +867,7 @@ export function SpacesModule({ services }: ModuleProps) {
                   <button
                     className="atlas-primary atlas-full"
                     disabled={activeDetail.space.status !== 'active'}
-                    onClick={() => setModal('capture')}
+                    onClick={openCapture}
                   >
                     <Icon name="camera" />
                     Add a capture
@@ -1114,7 +1155,7 @@ function MediaCard({
   )
 }
 
-function AtlasDialog({
+export function AtlasDialog({
   title,
   children,
   onClose,
@@ -1148,7 +1189,10 @@ function AtlasDialog({
   )
 }
 
-function ConnectForm({ onConnect }: { onConnect: (client: AtlasClient, space?: string) => void }) {
+export function ConnectForm({ onConnect, createClient }: {
+  onConnect: (client: AtlasClient, space?: string) => void
+  createClient?: (connection: PlatformConnection, space?: string) => Promise<AtlasClient>
+}) {
   const [relay, setRelay] = useState('http://127.0.0.1:8000')
   const [workspace, setWorkspace] = useState('atlas')
   const [token, setToken] = useState('')
@@ -1171,19 +1215,21 @@ function ConnectForm({ onConnect }: { onConnect: (client: AtlasClient, space?: s
                 )
               )
                 throw new Error('Paste the complete space invitation.')
-              const invited = new AtlasClient({
+              const configuration = {
                 baseUrl: invite.relay,
                 sessionId: invite.workspace,
                 token: invite.token,
-              })
+              }
+              const invited = createClient ? await createClient(configuration, invite.space) : new AtlasClient(configuration)
               await invited.detail(invite.space)
               onConnect(invited, invite.space)
             } else {
-              const connection = new AtlasClient({
+              const configuration = {
                 baseUrl: relay.replace(/^http/, 'ws'),
                 sessionId: workspace,
                 token,
-              })
+              }
+              const connection = createClient ? await createClient(configuration) : new AtlasClient(configuration)
               await connection.list()
               onConnect(connection)
             }
@@ -1196,8 +1242,9 @@ function ConnectForm({ onConnect }: { onConnect: (client: AtlasClient, space?: s
       }}
     >
       <p className="atlas-muted">
-        Use your workspace connection or paste a space invitation. Credentials stay in memory for
-        this visit.
+        Use your workspace connection or paste a space invitation. {createClient
+          ? 'Access is saved in encrypted storage on this device, separately from fleet controls.'
+          : 'Credentials stay in memory for this visit.'}
       </p>
       <label className="atlas-field">
         Space invitation

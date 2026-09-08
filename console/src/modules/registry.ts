@@ -10,7 +10,7 @@ import { SpeechModule } from './speech/SpeechModule'
 import { WorldsModule } from './worlds/WorldsModule'
 import type { ModuleDefinition, ModuleId } from './types'
 
-/** Navigation order: Control, Live, Gesture, Speech, Captures, Worlds, Devices, Map. */
+/** Shared desktop and phone navigation order; Spaces and the fleet pages use one shell. */
 export const MODULES: readonly ModuleDefinition[] = [
   {
     id: 'spaces', label: 'Spaces', title: 'Collaborative atlas',

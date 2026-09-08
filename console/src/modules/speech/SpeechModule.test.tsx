@@ -674,7 +674,9 @@ describe('Speech module', () => {
     // The clock passes the deadline between two ticks, so Confirm is still enabled
     // when it is pressed: the control flow refuses and sends nothing.
     drift(10_000)
-    await u.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
+    // Dispatch within this turn: userEvent yields between pointer events and can
+    // allow the real one-second ticker to disable the button before the click.
+    fireEvent.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
     expect(clients.language.sent).toHaveLength(0)
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     const alert = screen.getByText(/Preview invalidated, nothing sent/).closest('[role="alert"]')

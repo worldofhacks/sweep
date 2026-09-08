@@ -1,10 +1,10 @@
 .atlas-workspace {
-  --atlas-ink: #182d29;
-  --atlas-muted: #6d7b76;
-  --atlas-line: #e2e7e2;
-  --atlas-accent: #24634e;
-  --atlas-soft: #edf3ed;
-  --atlas-paper: #fcfdf9;
+  --atlas-ink: var(--color-ink);
+  --atlas-muted: var(--color-ink-2);
+  --atlas-line: var(--color-hairline);
+  --atlas-accent: var(--color-accent);
+  --atlas-soft: var(--color-accent-soft);
+  --atlas-paper: var(--color-surface);
   color: var(--atlas-ink);
   background: #f7f9f5;
   min-width: 0;
@@ -12,6 +12,7 @@
 .atlas-workspace button,
 .atlas-dialog button {
   cursor: pointer;
+  min-height: 44px;
 }
 .atlas-workspace button:disabled,
 .atlas-dialog button:disabled {
@@ -86,12 +87,12 @@
   text-decoration: none;
 }
 .atlas-primary {
-  background: #24634e;
-  border: 1px solid #24634e;
+  background: var(--color-accent);
+  border: 1px solid var(--color-accent);
   color: #fff;
 }
 .atlas-primary:hover:not(:disabled) {
-  background: #174f3e;
+  background: var(--color-accent-hover);
 }
 .atlas-secondary {
   background: #fff;
@@ -163,6 +164,7 @@
   overflow: hidden;
   border-radius: 8px;
 }
+.atlas-map .maplibregl-ctrl-group button { width: 44px; height: 44px; }
 .atlas-map .maplibregl-ctrl-attrib {
   border-radius: 5px;
   font-size: 10px;
@@ -170,9 +172,9 @@
 .atlas-marker {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
-  min-height: 36px !important;
+  width: 44px;
+  height: 44px;
+  min-height: 44px !important;
   border-radius: 12px;
   color: #fff;
   background: #326c51;
@@ -213,8 +215,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   background: #fcfdf9;
   border: 1px solid #d7dfd4;
@@ -285,6 +287,7 @@
   outline: none;
   background: transparent;
   width: 100%;
+  min-height: 44px;
   min-width: 0;
   font-size: 12px;
   color: #233b2f;
@@ -302,11 +305,11 @@
   border-bottom: 1px solid #e2e7dc;
 }
 .atlas-filter-row button {
-  font-size: 11px;
+  font-size: 12px;
   background: none;
   border: 0;
   padding: 10px 7px 12px;
-  color: #7b897b;
+  color: var(--color-ink-2);
   border-radius: 0;
   white-space: nowrap;
   border-bottom: 2px solid transparent;
@@ -512,8 +515,8 @@
   border: 0;
   background: none;
   padding: 0;
-  color: #7a8a70;
-  font-size: 11px;
+  color: var(--color-ink-2);
+  font-size: 13px;
 }
 .atlas-detail h2 {
   margin: 12px 0;
@@ -554,7 +557,7 @@
 }
 .atlas-detail-tabs button {
   font-size: 12px;
-  color: #7b8d70;
+  color: var(--color-ink-2);
   border: 0;
   background: none;
   border-bottom: 2px solid transparent;
@@ -1171,7 +1174,7 @@
   display: flex;
 }
 .atlas-dialog {
-  --atlas-muted: #6d7b76;
+  --atlas-muted: var(--color-ink-2);
   background: #fcfdf9;
   color: #213b2d;
   border: 1px solid #ccd8be;
@@ -1421,8 +1424,8 @@
   }
   .atlas-topbar .atlas-primary {
     padding: 10px 12px;
-    font-size: 11px;
-    min-height: 40px;
+    font-size: 12px;
+    min-height: 44px;
   }
   .atlas-stage {
     overflow-y: auto;
@@ -1499,4 +1502,9 @@
     min-height: 0 !important;
     aspect-ratio: 1;
   }
+}
+
+@media (max-height: 700px) and (max-width: 600px) {
+  [data-frame] .atlas-workspace { overflow-y: auto; }
+  [data-frame] .atlas-stage { flex: 0 0 auto; overflow: visible; }
 }

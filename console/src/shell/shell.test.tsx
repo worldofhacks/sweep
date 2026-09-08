@@ -1,11 +1,13 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import App from '../App'
 import { UnavailableRelayClient } from '../relay/client'
 import { C1_BASIC_CONTROL_INTENTS } from '../relay/contract'
 import { FixtureRelayClient, fixtureAircraft } from '../testing/fixture-relay-client'
 import { formatTime } from './format'
+
+vi.mock('../atlas/SpaceMap', () => ({ default: () => <div aria-label="Geographic map test boundary" /> }))
 
 const session = 'shell-test-session'
 const clock = () => 1_756_700_000_000
@@ -160,13 +162,40 @@ describe('persistent shell', () => {
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
     expect(within(dock).getByText(/"intent_id": "survives-switch"/)).toBeInTheDocument()
 
-    await openModule(user, 'Devices')
+    for (const name of ['Spaces', 'Gesture', 'Speech', 'Captures', 'Worlds', 'Devices', 'Map']) {
+      await openModule(user, name)
+      expect(screen.getByRole('button', { name: 'Network stop' })).toBeEnabled()
+      expect(modulesRail().getByRole('button', { name })).toHaveAttribute('aria-current', 'page')
+      expect(within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('button', { name }))
+        .toHaveAttribute('aria-current', 'page')
+      expect(document.getElementById('pane')).toHaveAttribute('tabindex', '-1')
+      expect(screen.getByRole('region', { name: 'Pending confirmation' })).toHaveTextContent('survives-switch')
+      expect(clients.console.sent).toHaveLength(0)
+    }
     await openModule(user, 'Control')
     expect(screen.getByRole('region', { name: 'Pending confirmation' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
     await waitFor(() => expect(clients.console.sent).toHaveLength(1))
     expect(clients.console.sent[0]).toMatchObject({ intent_id: 'survives-switch', confirm: true })
+  })
+
+  test.each([true, false])('Spaces preserves fleet safety state when the last device leaves (stop %s)', async (estop) => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+    await screen.findByText(/Development fixture active/i)
+    act(() => clients.console.emitServer({
+      v: 1, t: clock() + 1, type: 'state', event_id: 'empty-fleet', session,
+      roster_version: 8, armed: true, estop, selection: [], formation: 'none', spacing: 0.8,
+      mode: 'indoor', capability_profile: 'c1_basic_control', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null, drones: [],
+    }))
+    await openModule(user, 'Spaces')
+    expect(screen.getByRole('button', { name: 'Network stop' })).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: 'Session state' })).toHaveTextContent(estop ? 'Stop active' : 'Armed')
+    expect(screen.getByRole('button', { name: 'Session detail' })).toBeInTheDocument()
+    expect(clients.console.sent).toHaveLength(0)
   })
 
   test('invalidation shows its reason in the footer until the next draft', async () => {

@@ -1,12 +1,14 @@
 import { relayHttpUrl } from '../relay/origin'
-import { PlatformHttp, type PlatformConnection } from '../platform/http'
+import { PlatformHttp, type PlatformConnection, type PlatformFetch } from '../platform/http'
 import type { Capture, CaptureMetadata, GeoPosition, NewSpace, Space, SpaceDetail } from './types'
 
 export class AtlasClient {
   readonly http: PlatformHttp
   readonly connection: PlatformConnection
-  constructor(connection: PlatformConnection) {
-    this.http = new PlatformHttp(connection)
+  private readonly fetcher: PlatformFetch
+  constructor(connection: PlatformConnection, fetcher: PlatformFetch = (input, init) => globalThis.fetch(input, init)) {
+    this.fetcher = fetcher
+    this.http = new PlatformHttp(connection, fetcher)
     this.connection = this.http.connection
   }
   async list(signal?: AbortSignal): Promise<Space[]> {
@@ -45,7 +47,7 @@ export class AtlasClient {
     return this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/reconstruction`, {})
   }
   async world(id: string, jobId: string, signal: AbortSignal): Promise<ArrayBuffer> {
-    const response = await fetch(
+    const response = await this.fetcher(
       this.mediaUrl(id, `/reconstruction/${encodeURIComponent(jobId)}/cloud.glb`),
       {
         headers: { Authorization: `Bearer ${this.connection.token}` },
@@ -116,7 +118,7 @@ export class AtlasClient {
   ): Promise<Capture> {
     if (!file.size || file.size > 64 * 1024 * 1024)
       throw new Error('Choose a capture smaller than 64 MB.')
-    const response = await fetch(this.mediaUrl(id, '/captures'), {
+    const response = await this.fetcher(this.mediaUrl(id, '/captures'), {
       method: 'POST',
       body: file,
       headers: {
@@ -141,7 +143,7 @@ export class AtlasClient {
     return result as Capture
   }
   async media(id: string, captureId: string, signal: AbortSignal): Promise<Blob> {
-    const response = await fetch(
+    const response = await this.fetcher(
       this.mediaUrl(id, `/captures/${encodeURIComponent(captureId)}/media`),
       {
         headers: { Authorization: `Bearer ${this.connection.token}` },

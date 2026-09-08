@@ -64,7 +64,7 @@ export function Pane({
 }: PaneProps) {
   const hasTabs = Boolean(tabs && tabs.length > 1 && activeTab !== undefined && onTabChange)
   return (
-    <section id="pane" className="sh-pane" data-pane="1" aria-label="Working pane">
+    <section id="pane" tabIndex={-1} className="sh-pane" data-pane="1" aria-label="Working pane">
       <div className="sh-pane-head">
         <div className="sh-pane-title-block">
           <h1 className="sh-pane-h1">{title}</h1>

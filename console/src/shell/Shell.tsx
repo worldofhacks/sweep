@@ -85,7 +85,8 @@ export function Shell({
 
   return (
     <Frame
-      header={activeId === 'spaces' && Object.keys(state.aircraft).length === 0 ?
+      header={activeId === 'spaces' && Object.keys(state.aircraft).length === 0 &&
+        !state.armed && !state.estop && !pendingRequest && stopTimes.seenActiveAt === null ?
         <header className="sh-atlas-header"><span className="sh-brand"><Icon name="spaces" size={23} /><strong>sweep</strong><span>ATLAS</span></span><span>See more. Understand together.</span><button className="sh-atlas-fleet" onClick={() => setActiveId('control')}>Fleet workspace <Icon name="arrow" size={14} /></button></header> :
         <Header
           state={state}
