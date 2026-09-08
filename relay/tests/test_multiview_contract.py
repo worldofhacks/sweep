@@ -319,7 +319,11 @@ def test_tracking_hold_terminalizes_other_confirmed_multiview_workflows() -> Non
         _hold=SimpleNamespace(ready=Condition(RLock()), pending=deque()),
     )
     composition = SimpleNamespace(
-        _multiview_listener=service.observe_execution, runtime_if_bound=lambda: None
+        _multiview_listener=service.observe_execution,
+        runtime_if_bound=lambda: None,
+        session=lambda _: SimpleNamespace(
+            multiview_execution_intent=lambda intent_id, **_: intent_id
+        ),
     )
     owner._composition = composition
     owner._cancel = lambda *args, **kwargs: AutonomySession._cancel(owner, *args, **kwargs)

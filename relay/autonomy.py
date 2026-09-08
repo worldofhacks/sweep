@@ -84,6 +84,7 @@ from relay.control_localization import (
     ClockMapping,
     ControlLocalizationPins,
     ControlLocalizationProjector,
+    ControlPose,
 )
 from relay.ground_navigation_execution import GroundPlatformNavigation, PreparedGroundNavigation
 from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, Mode, validate_intent
@@ -740,7 +741,11 @@ class AutonomySession:
         return authorize_graceful_removal(snapshot, drone_id).allowed
 
     def snapshot(
-        self, state: Mapping[str, object], *, capture_readiness: ReadinessSource | None = None
+        self,
+        state: Mapping[str, object],
+        *,
+        capture_readiness: ReadinessSource | None = None,
+        control_poses: Mapping[int, ControlPose] | None = None,
     ) -> FleetSnapshot:
         with self._lock:
             operator_last_seen_ms = self._operator_last_seen_ms
@@ -769,15 +774,30 @@ class AutonomySession:
                 return None
             return LandingRecoveryEvidence(received_at, "virtual_stick_dropped")
 
-        return relay_snapshot(
-            state,
-            operator_last_seen_ms=operator_last_seen_ms,
-            estop_requested=estop_requested,
-            capture_readiness=capture_readiness,
-            landing_recovery=recovery,
+        return replace(
+            relay_snapshot(
+                state,
+                operator_last_seen_ms=operator_last_seen_ms,
+                estop_requested=estop_requested,
+                capture_readiness=capture_readiness,
+                landing_recovery=recovery,
+            ),
+            control_poses=control_poses,
         )
 
-    def preview_search(self, intent: IntentV1, state: Mapping[str, object]) -> object:
+    def current_snapshot(self, session: RelaySession) -> FleetSnapshot:
+        state, poses = session.capture_navigation_state()
+        return self.snapshot(
+            state, capture_readiness=session.capture_readiness, control_poses=poses
+        )
+
+    def preview_search(
+        self,
+        intent: IntentV1,
+        state: Mapping[str, object],
+        *,
+        control_poses: Mapping[int, ControlPose] | None = None,
+    ) -> object:
         if intent.name is not IntentName.SEARCH or self.search_runtime is None:
             return Refusal(
                 intent.intent_id,
@@ -787,7 +807,7 @@ class AutonomySession:
                 RefusalReason.UNSUPPORTED,
                 "search is unavailable",
             )
-        snapshot = self.snapshot(state)
+        snapshot = self.snapshot(state, control_poses=control_poses)
         return self.search_runtime.prepare(intent, snapshot)
 
     def preview_platform_navigation(self, preview: Mapping[str, object]) -> dict[str, object]:
@@ -883,9 +903,7 @@ class AutonomySession:
             mode=Mode.INDOOR,
             confirm=True,
         )
-        snapshot = self.snapshot(
-            session.current_state(), capture_readiness=session.capture_readiness
-        )
+        snapshot = self.current_snapshot(session)
         refusal = self.arbiter.check_intent(intent, snapshot)
         if refusal is not None:
             raise ValueError(refusal.detail)
@@ -1382,9 +1400,7 @@ class AutonomySession:
 
         def current() -> FleetSnapshot:
             job.check()
-            return self.snapshot(
-                session.current_state(), capture_readiness=session.capture_readiness
-            )
+            return self.current_snapshot(session)
 
         def gate(link: RelayNodeLink) -> NodeLink:
             return _PreemptibleLink(link, job, session)
@@ -1688,9 +1704,7 @@ class AutonomySession:
                 pending = owner.pending
                 session = owner.session
         if pending is None:
-            snapshot = self.snapshot(
-                session.current_state(), capture_readiness=session.capture_readiness
-            )
+            snapshot = self.current_snapshot(session)
             result = ExecutionResult(
                 intent_id=job.intent.intent_id,
                 roster_version=snapshot.roster_version,
@@ -1895,10 +1909,7 @@ class AutonomySession:
         owner = token.owner
 
         def current() -> FleetSnapshot:
-            return self.snapshot(
-                owner.session.current_state(),
-                capture_readiness=owner.session.capture_readiness,
-            )
+            return self.current_snapshot(owner.session)
 
         try:
             assert owner.pending.plan is not None
@@ -1921,6 +1932,13 @@ class AutonomySession:
 
     def commit_resume(self, token: _ResumeToken, result: ExecutionResult) -> RelayExecution | None:
         """Commit a still-owned late result and retain ownership if another command waits."""
+        if not self._owns_resume(token):
+            return None
+        next_snapshot = (
+            self.current_snapshot(token.owner.session)
+            if result.status is LifecycleStatus.EXECUTING
+            else None
+        )
         with self._lock:
             if (
                 self._awaiting.get(token.intent_id) is not token.owner
@@ -1930,10 +1948,8 @@ class AutonomySession:
             owner = token.owner
             owner.pending = result
             if result.status is LifecycleStatus.EXECUTING:
-                owner.snapshot = self.snapshot(
-                    owner.session.current_state(),
-                    capture_readiness=owner.session.capture_readiness,
-                )
+                assert next_snapshot is not None
+                owner.snapshot = next_snapshot
             else:
                 self._awaiting.pop(token.intent_id, None)
                 owner.job.finished = True
@@ -2484,8 +2500,9 @@ def create_autonomy_app(
                 status_code=422, detail="a configured console search intent is required"
             )
         session = await runtime.activate_session(session_id)
+        state, poses = session.capture_navigation_state()
         result = composition.session(session_id).preview_search(
-            candidate.intent, session.current_state()
+            candidate.intent, state, control_poses=poses
         )
         if isinstance(result, Refusal):
             raise HTTPException(status_code=422, detail=result.detail)

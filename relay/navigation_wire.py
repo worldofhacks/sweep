@@ -213,7 +213,7 @@ class NavigationWirePublisher:
         self, plan: Plan, command: Command, snapshot: FleetSnapshot
     ) -> list[dict[str, object]]:
         now_ms = self._now()
-        pose = self._control_pose(command, now_ms)
+        pose = self._control_pose(command, now_ms, snapshot)
         snapshot = replace(snapshot, now_ms=now_ms)
         refusal = self.runtime.check(plan, command, snapshot, _tracking_pose=pose)
         if refusal is not None:
@@ -510,9 +510,15 @@ class NavigationWirePublisher:
         if dict(request.args) != expected:
             raise ValueError("wire goto differs from the approved navigation command")
 
-    def _control_pose(self, command: Command, now_ms: int) -> ControlPose:
+    def _control_pose(self, command: Command, now_ms: int, snapshot: FleetSnapshot) -> ControlPose:
         source = self.runtime.control_pose
-        pose = source(command.drone_id) if source is not None else None
+        pose = (
+            snapshot.control_poses.get(command.drone_id)
+            if snapshot.control_poses is not None
+            else source(command.drone_id)
+            if source is not None
+            else None
+        )
         if not isinstance(pose, ControlPose) or pose.status != "ready":
             raise ValueError("navigation route requires a ready retained control pose")
         if pose.session != self.session or pose.connection_epoch != command.connection_epoch:

@@ -485,6 +485,7 @@ class NavigationRuntime:
 
     def prepare(self, intent: IntentV1, snapshot: FleetSnapshot) -> Plan | Refusal:
         try:
+            snapshot = self._with_control_poses(snapshot)
             artifact = self._validate(snapshot)
             destination = self.home_zone_id
             if intent.name is IntentName.NAVIGATE:
@@ -534,6 +535,7 @@ class NavigationRuntime:
     ) -> Plan | Refusal:
         """Plan a sequential route from a prior qualified arrival, after live validation."""
         try:
+            snapshot = self._with_control_poses(snapshot)
             if intent.name is not IntentName.NAVIGATE:
                 raise ValueError("trusted starts only support navigation")
             if trusted_start.drone_id not in intent.selection:
@@ -687,6 +689,7 @@ class NavigationRuntime:
         _tracking_pose: ControlPose | None = None,
     ) -> Refusal | None:
         try:
+            snapshot = self._with_control_poses(snapshot, _tracking_pose)
             execution = plan.navigation
             if not isinstance(execution, NavigationExecution) or not execution.matches_commands(
                 plan
@@ -701,7 +704,7 @@ class NavigationRuntime:
                 or execution.configuration_sha256 != self.approval.configuration_sha256
             ):
                 raise ValueError("navigation configuration or approval changed")
-            positions = self._positions(snapshot, _tracking_pose)
+            positions = self._positions(snapshot)
             route_plan = execution.route
             self._require_tag_destination(route_plan)
             self._require_precision_return(route_plan)
@@ -905,10 +908,33 @@ class NavigationRuntime:
     def _pose_time(self, snapshot: FleetSnapshot, drone_id: int) -> int:
         if self.approval.mode == "simulation":
             return snapshot.aircraft[drone_id].position_last_seen_ms
-        pose = self.control_pose(drone_id)
+        pose = None if snapshot.control_poses is None else snapshot.control_poses.get(drone_id)
         if pose is None:
             raise ValueError("navigation control pose is missing")
         return pose.pose_time_ms
+
+    def _with_control_poses(
+        self, snapshot: FleetSnapshot, override: ControlPose | None = None
+    ) -> FleetSnapshot:
+        if self.approval.mode != "flight":
+            return snapshot
+        if snapshot.control_poses is not None and override is None:
+            return snapshot
+        if snapshot.control_poses is None:
+            poses = {}
+            for drone_id in snapshot.aircraft:
+                pose = (
+                    override
+                    if override is not None and override.drone_id == drone_id
+                    else self.control_pose(drone_id)
+                )
+                if pose is not None:
+                    poses[drone_id] = pose
+        else:
+            poses = dict(snapshot.control_poses)
+        if override is not None:
+            poses[override.drone_id] = override
+        return replace(snapshot, control_poses=poses)
 
     def check_tracking(
         self, plan: Plan, command: Command, snapshot: FleetSnapshot, pose: ControlPose
@@ -922,6 +948,7 @@ class NavigationRuntime:
     def _positions(
         self, snapshot: FleetSnapshot, override: ControlPose | None = None
     ) -> tuple[DronePose, ...]:
+        snapshot = self._with_control_poses(snapshot, override)
         positions = []
         for aircraft in snapshot.aircraft.values():
             if not aircraft.airborne and aircraft.drone_id not in snapshot.selection:
@@ -938,11 +965,7 @@ class NavigationRuntime:
                 raise ValueError("navigation position evidence is stale or low quality")
             xyz = (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z)
             if self.approval.mode == "flight":
-                pose = (
-                    override
-                    if override is not None and override.drone_id == aircraft.drone_id
-                    else self.control_pose(aircraft.drone_id)
-                )
+                pose = snapshot.control_poses.get(aircraft.drone_id)
                 pin = frame.control_pins
                 if (
                     pose is None

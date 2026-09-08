@@ -2400,6 +2400,19 @@ class RelaySession:
             self._ensure_projection_usable()
             return self._state_event(self.clock())
 
+    def capture_navigation_state(self) -> tuple[dict[str, object], dict[int, ControlPose]]:
+        """Copy fleet state and current-epoch poses at one session observation point."""
+        with self._lock:
+            state = self.current_state()
+            poses = {}
+            for drone_id, pose in self._control_pose.items():
+                try:
+                    self.registry.check_current(drone_id, pose.connection_epoch)
+                except RegistryError:
+                    continue
+                poses[drone_id] = pose
+            return state, poses
+
     def current_state_if_available(self) -> dict[str, object] | None:
         """Return immediately so async callers can offload only contended reads."""
         if not self._lock.acquire(blocking=False):

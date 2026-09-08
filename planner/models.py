@@ -17,6 +17,7 @@ from relay.intent_v1 import IntentName, IntentV1
 
 if TYPE_CHECKING:
     from planner.navigation_runtime import NavigationExecution
+    from relay.control_localization import ControlPose
 
 type JsonScalar = None | bool | int | float | str
 type JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -470,6 +471,8 @@ class FleetSnapshot:
     spacing: float = 0.8
     fleet_observation_complete: bool = False
     ground_ids: tuple[int, ...] = ()
+    # None permits per-check sampling; an empty mapping records a captured absence of evidence.
+    control_poses: Mapping[int, ControlPose] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not _is_nonnegative_int(self.roster_version):
@@ -514,6 +517,15 @@ class FleetSnapshot:
         if len(set(self.selection)) != len(self.selection):
             raise ValueError("selection contains duplicate aircraft ids")
         object.__setattr__(self, "aircraft", MappingProxyType(normalized))
+        if self.control_poses is not None:
+            if not isinstance(self.control_poses, Mapping) or any(
+                type(drone_id) is not int
+                or drone_id <= 0
+                or getattr(pose, "drone_id", None) != drone_id
+                for drone_id, pose in self.control_poses.items()
+            ):
+                raise ValueError("control poses must map aircraft IDs to their evidence")
+            object.__setattr__(self, "control_poses", MappingProxyType(dict(self.control_poses)))
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object]) -> FleetSnapshot:
