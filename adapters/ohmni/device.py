@@ -709,9 +709,12 @@ class OhmniDevice:
         The lease callback returns a stop reason or None on admission and each control tick.
         """
         if (
-            not all(math.isfinite(value) for value in (velocity_m_s, yaw_rate_deg_s, duration_s))
+            not all(
+                type(value) in (int, float) and math.isfinite(value)
+                for value in (velocity_m_s, yaw_rate_deg_s, duration_s)
+            )
             or (velocity_m_s, yaw_rate_deg_s) not in {(0.04, 0.0), (0.0, 10.0)}
-            or duration_s != 0.5
+            or not 0 < duration_s <= 0.5
         ):
             raise ValueError("calibration pulse exceeds the fixed safety bounds")
         with self._lock:

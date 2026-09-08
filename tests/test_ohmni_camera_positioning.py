@@ -1,5 +1,9 @@
+import hashlib
 import importlib.util
+import json
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,6 +53,7 @@ class Device:
         self.disable_calls = 0
         self.enable_calls = 0
         self.last_refusal: str | None = None
+        self.durations: list[float] = []
 
     def stop(self) -> None:
         self.stop_calls += 1
@@ -63,7 +68,8 @@ class Device:
     def guard_reason(self, *, forward=False, now=None):
         return None
 
-    def calibration_drive_velocity(self, _speed, _yaw, _duration, *, host_lease):
+    def calibration_drive_velocity(self, _speed, _yaw, duration, *, host_lease):
+        self.durations.append(duration)
         reason = host_lease(0.0)
         if reason is not None:
             self.last_refusal = reason
@@ -116,9 +122,31 @@ def test_closed_loop_forward_reaches_20_cm_within_the_pulse_cap() -> None:
 
     instance._forward_until_target()
 
-    assert instance.forward_pulses_completed == 11
+    assert instance.forward_pulses_completed == 10
     assert instance.forward_pulses_completed <= capture.FORWARD_MAX_PULSES
-    assert instance.forward_distance_m == pytest.approx(0.22)
+    assert instance.forward_distance_m == pytest.approx(0.2)
+
+
+def test_forward_clips_its_final_pulse_to_the_remaining_distance() -> None:
+    instance = runner(step_m=0.005)
+    instance._forward_origin = capture.Pose(0.0, 0.0, 0.0, quality=1.0)
+    instance._progress.travel_m = 0.195
+
+    instance._forward_until_target()
+
+    assert instance.device.durations == [pytest.approx(0.125)]
+
+
+def test_forward_finishes_inside_the_terminal_tolerance_without_another_motor_write() -> None:
+    instance = runner(step_m=0.005)
+    instance._forward_origin = capture.Pose(0.0, 0.0, 0.0, quality=1.0)
+    instance._progress.travel_m = (
+        capture.FORWARD_TARGET_M - capture.FORWARD_TERMINAL_TOLERANCE_M / 2
+    )
+
+    instance._forward_until_target()
+
+    assert instance.device.durations == []
 
 
 def test_forward_private_reserve_refuses_the_next_pulse_before_the_cap() -> None:
@@ -226,6 +254,19 @@ def test_forward_guard_refuses_an_uncalibrated_lidar(
     assert runner._forward_device_guard(simulation.clock()) == "lidar_calibration_required"
 
 
+@pytest.mark.parametrize(
+    "reason", ["lidar_scan_invalid", "lidar_scan_geometry_invalid", "lidar_read_error"]
+)
+def test_invalid_lidar_reads_pause_the_forward_capture(reason: str) -> None:
+    instance = runner(step_m=0.02)
+    instance._forward_device_guard = lambda _now: reason
+
+    with pytest.raises(capture.CameraPosePaused, match=reason):
+        instance._forward_until_target()
+
+    assert instance.device.durations == []
+
+
 def test_positioning_requires_the_unit12_profile() -> None:
     profile = capture._profile(capture.DEVICE_ID)
 
@@ -326,7 +367,11 @@ def test_real_ohmni_runner_reaches_20_cm_within_the_pulse_cap(
     runner._forward_until_target()
 
     assert 1 <= runner.forward_pulses_completed <= capture.FORWARD_MAX_PULSES
-    assert 0.2 <= runner.forward_distance_m <= 0.26
+    assert (
+        capture.FORWARD_TARGET_M - capture.FORWARD_TERMINAL_TOLERANCE_M
+        <= runner.forward_distance_m
+        <= capture.FORWARD_TARGET_M
+    )
     assert simulation.device.motion is None
 
 
@@ -343,7 +388,11 @@ def test_real_ohmni_runner_reaches_20_cm_with_more_than_24_partial_pulses(
     runner._forward_until_target()
 
     assert 1 < runner.forward_pulses_completed <= 28
-    assert 0.2 <= runner.forward_distance_m <= 0.26
+    assert (
+        capture.FORWARD_TARGET_M - capture.FORWARD_TERMINAL_TOLERANCE_M
+        <= runner.forward_distance_m
+        <= capture.FORWARD_TARGET_M
+    )
     assert simulation.device.motion is None
 
 
@@ -358,11 +407,12 @@ def test_forward_capture_records_consistent_20_cm_diagnostics(
     motion = document["motion"]
     limits = document["limits"]["predeclared_modes"]["forward"]
     assert motion["target_distance_m"] == 0.2
+    assert motion["terminal_tolerance_m"] == 0.004
     assert motion["velocity_m_s"] == 0.04
     assert motion["pulse_duration_s"] == 0.5
     assert motion["maximum_pulses"] == 28
     assert motion["pulses_completed"] == runner.forward_pulses_completed
-    assert 0.2 <= motion["measured_distance_m"] <= 0.26
+    assert 0.196 <= motion["measured_distance_m"] <= 0.2
     assert limits["target_distance_m"] == motion["target_distance_m"]
     assert limits["max_wheel_travel_m"] == 0.26
     assert limits["max_yaw_degrees"] == 5.0
@@ -434,11 +484,16 @@ def test_forward_guard_rechecks_existing_obstacle_policy_during_motion(
         return original_guard(forward=forward, now=now)
 
     simulation.device.guard_reason = observed_guard
-    runner._capture_stage = lambda: {"revolutions": []}
-    runner._settle = lambda: None
-
+    runner._started = simulation.clock()
+    runner._deadline = simulation.clock() + runner.config.max_runtime_s
+    assert simulation.device.enable()
+    runner._initialize()
     with pytest.raises(capture.CameraPosePaused, match="obstacle_within_clearance"):
-        runner.run()
+        runner._forward_until_target()
+    simulation.device.disable()
+    runner._pause_for_live_resume(
+        {"before_motion": {"revolutions": []}}, "obstacle_within_clearance"
+    )
 
     paused = __import__("json").loads((tmp_path / "capture.json.paused.json").read_text())
     assert not (tmp_path / "capture.json").exists()
@@ -452,6 +507,8 @@ def test_forward_guard_rechecks_existing_obstacle_policy_during_motion(
     assert simulation.device.motion is None
     assert not simulation.device.enabled
     assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]
+    assert runner._resume_gate is not None
+    runner._resume_gate.close()
 
 
 def _yaw_overshoot_sleep(simulation: RunnerSimulation):
@@ -569,92 +626,154 @@ def test_real_ohmni_yaw_overshoot_stops_and_disables(
     assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]
 
 
-def test_forward_resume_continues_from_the_measured_pause_pose(
+def test_live_owner_resumes_only_after_a_cli_request_without_constructing_a_second_device(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    initial, simulation = _simulated_capture_runner(
-        monkeypatch, tmp_path, sleep_factory=_obstacle_after_motion_sleep
-    )
-    initial._capture_stage = lambda: {"revolutions": []}
-    initial._settle = lambda: None
+    tripped = False
 
-    with pytest.raises(capture.CameraPosePaused, match="obstacle_within_clearance"):
-        initial.run()
+    def pause_once(simulation: RunnerSimulation):
+        raw_sleep = simulation.sleep
 
-    paused_path = tmp_path / "capture.json.paused.json"
-    paused = capture._read_pause(paused_path)
-    simulation.forward_scan_cm = 100
-    _set_forward_scan(simulation)
+        def sleep(delay: float) -> None:
+            nonlocal tripped
+            raw_sleep(delay)
+            if simulation.started_moving is not None and not tripped:
+                tripped = True
+                simulation.forward_scan_cm = 44
+
+        return sleep
+
+    runner, simulation = _simulated_capture_runner(monkeypatch, tmp_path, sleep_factory=pause_once)
+    boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    source_sha256 = capture.camera_positioning_source_sha256()
+    runner.boot_id = boot_id
+    runner.executed_bundle_source_sha256 = source_sha256
+    runner._capture_stage = lambda: {"revolutions": []}
+    runner._settle = lambda: None
+    raw_sleep = runner.sleep
 
     def sleep(delay: float) -> None:
-        simulation.sleep(delay)
+        raw_sleep(delay)
         _set_forward_scan(simulation)
+        if runner._resume_gate is not None:
+            time.sleep(0.001)
 
-    resumed = capture.CameraPoseCaptureRunner(
-        simulation.device,
-        simulation.lease,
-        tmp_path / "capture.json",
-        mode="forward",
-        resume=paused,
-        boot_id="boot",
-        executed_bundle_source_sha256="source",
-        monotonic=simulation.clock,
-        sleep=sleep,
-    )
-    capture_calls: list[str] = []
-    resumed._capture_stage = lambda: capture_calls.append("after") or {"revolutions": []}
-    resumed._settle = lambda: None
-
-    resumed.run()
-
-    document = __import__("json").loads((tmp_path / "capture.json").read_text())
-    assert capture_calls == ["after"]
-    assert document["stages"]["before_motion"] == {"revolutions": []}
-    assert document["motion"]["measured_distance_m"] >= capture.FORWARD_TARGET_M
-    assert document["resume_decision"]["pause_evidence_sha256"] == paused["pause_evidence_sha256"]
-    assert document["resume_decision"]["remaining_distance_m"] < capture.FORWARD_TARGET_M
-    assert (
-        document["resume_decision"]["expires_at_monotonic_s"]
-        > document["resume_decision"]["issued_at_monotonic_s"]
-    )
-    assert simulation.device.motion is None
-    assert not simulation.device.enabled
-
-
-def test_forward_resume_refuses_a_changed_pause_pose_without_motion(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    initial, simulation = _simulated_capture_runner(
-        monkeypatch, tmp_path, sleep_factory=_obstacle_after_motion_sleep
-    )
-    initial._capture_stage = lambda: {"revolutions": []}
-    initial._settle = lambda: None
-    with pytest.raises(capture.CameraPosePaused):
-        initial.run()
-
-    paused = capture._read_pause(tmp_path / "capture.json.paused.json")
+    runner.sleep = sleep
+    outcome: list[BaseException] = []
+    owner = threading.Thread(target=lambda: _run_owner(runner, outcome))
+    owner.start()
+    paused_path = tmp_path / "capture.json.paused.json"
+    _wait_for(paused_path)
     simulation.forward_scan_cm = 100
-    simulation.clock.value += 0.1
     _set_forward_scan(simulation)
-    ticks = 0.04 * 1000 * TICKS_PER_MM
-    simulation.left -= ticks
-    simulation.right += ticks
-    simulation._sample()
-    resumed = capture.CameraPoseCaptureRunner(
-        simulation.device,
-        simulation.lease,
-        tmp_path / "capture.json",
-        mode="forward",
-        resume=paused,
-        boot_id="boot",
-        executed_bundle_source_sha256="source",
-        monotonic=simulation.clock,
-        sleep=simulation.sleep,
-    )
-    resumed._capture_stage = lambda: pytest.fail("resume recaptured before admission")
+    monkeypatch.setattr(capture, "OhmniDevice", lambda *_args: pytest.fail("new device opened"))
 
-    with pytest.raises(CalibrationError, match="camera_pose_resume_pose_changed"):
-        resumed.run()
+    assert capture.main(
+        [
+            "--lease-port",
+            "1",
+            "--lease-token-file",
+            str(tmp_path / "unused-token"),
+            "--output",
+            str(tmp_path / "ignored.json"),
+            "--mode",
+            "forward",
+            "--device-id",
+            "12",
+            "--resume-from",
+            str(paused_path),
+            "--expected-boot-id",
+            boot_id,
+            "--expected-source-sha256",
+            source_sha256,
+        ]
+    ) == 0
+    owner.join(2)
 
+    assert not owner.is_alive()
+    assert outcome == []
+    document = json.loads((tmp_path / "capture.json").read_text())
+    assert document["stages"]["before_motion"] == {"revolutions": []}
+    assert document["resume_decision"]["pause_evidence_sha256"] == hashlib.sha256(
+        paused_path.read_bytes()
+    ).hexdigest()
     assert simulation.device.motion is None
     assert not simulation.device.enabled
+
+
+def _run_owner(runner, outcome) -> None:
+    try:
+        runner.run()
+    except BaseException as error:
+        outcome.append(error)
+
+
+def _wait_for(path: Path) -> None:
+    deadline = time.monotonic() + 2
+    while not path.exists():
+        if time.monotonic() >= deadline:
+            pytest.fail("live pause artifact was not written")
+        time.sleep(0.001)
+
+
+def test_live_resume_request_is_bound_to_one_exact_pause_artifact(tmp_path: Path) -> None:
+    gate = capture._LiveResumeGate(
+        boot_id="boot",
+        device_id=12,
+        source_sha256="source",
+        deadline=time.monotonic() + 1,
+    )
+    artifact = {
+        "live_resume": {
+            "socket": str(gate.path),
+            "pause_nonce": gate.nonce,
+            "expires_at_monotonic_s": gate.deadline,
+            "boot_id": "boot",
+            "device_id": 12,
+            "tool_bundle_sha256": "source",
+        }
+    }
+    payload = (json.dumps(artifact, separators=(",", ":")) + "\n").encode()
+    paused = tmp_path / "capture.paused.json"
+    paused.write_bytes(payload)
+    gate.publish(payload)
+    record = capture._read_pause(paused)
+    try:
+        altered = dict(record)
+        altered["pause_evidence_sha256"] = "wrong"
+        with pytest.raises(CalibrationError, match="camera_pose_resume_request_invalid"):
+            capture._submit_live_resume(
+                altered, boot_id="boot", device_id=12, source_sha256="source"
+            )
+        with pytest.raises(CalibrationError, match="camera_pose_resume_record_invalid"):
+            capture._submit_live_resume(record, boot_id="boot", device_id=12, source_sha256="other")
+
+        capture._submit_live_resume(record, boot_id="boot", device_id=12, source_sha256="source")
+        with pytest.raises(CalibrationError, match="camera_pose_resume_request_used"):
+            capture._submit_live_resume(
+                record, boot_id="boot", device_id=12, source_sha256="source"
+            )
+    finally:
+        gate.close()
+
+
+def test_live_resume_gate_rejects_requests_after_its_owner_deadline() -> None:
+    gate = capture._LiveResumeGate(
+        boot_id="boot",
+        device_id=12,
+        source_sha256="source",
+        deadline=3.0,
+        monotonic=lambda: 3.0,
+    )
+
+    assert gate._accept(b"{}") == "camera_pose_resume_request_expired"
+
+
+def test_live_resume_request_rejects_a_fabricated_pause_artifact(tmp_path: Path) -> None:
+    paused = tmp_path / "fabricated.json"
+    paused.write_text("{}\n")
+
+    with pytest.raises(CalibrationError, match="camera_pose_resume_record_invalid"):
+        capture._submit_live_resume(
+            capture._read_pause(paused), boot_id="boot", device_id=12, source_sha256="source"
+        )

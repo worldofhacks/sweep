@@ -8,8 +8,13 @@ import json
 import math
 import os
 import re
+import secrets
 import signal
+import socket
+import tempfile
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
@@ -53,6 +58,8 @@ BASELINE_CAPTURE_TIMEOUT_S = 5.0
 RESUME_POSE_TOLERANCE_M = 0.02
 RESUME_YAW_TOLERANCE_DEG = 1.0
 RESUME_NECK_TOLERANCE = 200
+RESUME_REQUEST_MAX_BYTES = 4096
+FORWARD_TERMINAL_TOLERANCE_M = FORWARD_SPEED_M_S * 0.1
 
 
 class PositioningProfile:
@@ -96,6 +103,9 @@ _PAUSE_REASONS = frozenset(
         "lidar_scan_coverage_missing",
         "lidar_scan_coverage_sparse",
         "lidar_scan_stale",
+        "lidar_scan_invalid",
+        "lidar_scan_geometry_invalid",
+        "lidar_read_error",
         # Kept while installed nodes report the previous guard vocabulary.
         "lidar_stale",
         "lidar_full_circle_coverage_missing",
@@ -105,6 +115,120 @@ _PAUSE_REASONS = frozenset(
 
 class CameraPosePaused(CalibrationError):
     pass
+
+
+class _LiveResumeGate:
+    def __init__(
+        self,
+        *,
+        boot_id: str,
+        device_id: int,
+        source_sha256: str,
+        deadline: float,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.boot_id, self.device_id = boot_id, device_id
+        self.source_sha256, self.deadline = source_sha256, deadline
+        self.monotonic = monotonic
+        self.nonce = secrets.token_hex(32)
+        self.path = Path(tempfile.gettempdir()) / f"sweep-positioning-{secrets.token_hex(8)}.sock"
+        self._accepted = threading.Event()
+        self._closed = threading.Event()
+        self._lock = threading.Lock()
+        self._artifact_sha256: str | None = None
+        self._used = False
+        self._listener: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+
+    def publish(self, artifact: bytes) -> None:
+        self._artifact_sha256 = hashlib.sha256(artifact).hexdigest()
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.settimeout(0.1)
+        listener.bind(str(self.path))
+        os.chmod(self.path, 0o600)
+        listener.listen(4)
+        self._listener = listener
+        self._thread = threading.Thread(
+            target=self._serve, name="camera-position-resume", daemon=True
+        )
+        self._thread.start()
+
+    def wait(
+        self,
+        require_lease: Callable[[], None],
+        observe_pause: Callable[[], None],
+        sleep: Callable[[float], None],
+    ) -> None:
+        while not self._accepted.is_set():
+            require_lease()
+            observe_pause()
+            if self.monotonic() >= self.deadline:
+                raise CalibrationError("camera_pose_resume_request_expired")
+            sleep(0.01)
+
+    def close(self) -> None:
+        self._closed.set()
+        if self._listener is not None:
+            self._listener.close()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=0.2)
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _serve(self) -> None:
+        assert self._listener is not None
+        while not self._closed.is_set():
+            try:
+                connection, _ = self._listener.accept()
+            except (OSError, TimeoutError):
+                continue
+            with connection:
+                try:
+                    connection.settimeout(0.35)
+                    payload = connection.recv(RESUME_REQUEST_MAX_BYTES + 1)
+                    response = self._accept(payload)
+                    connection.sendall((response + "\n").encode())
+                except OSError:
+                    continue
+
+    def _accept(self, payload: bytes) -> str:
+        if self.monotonic() >= self.deadline:
+            return "camera_pose_resume_request_expired"
+        if len(payload) > RESUME_REQUEST_MAX_BYTES:
+            return "camera_pose_resume_request_invalid"
+        try:
+            request = json.loads(payload)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "camera_pose_resume_request_invalid"
+        expected = {
+            "schema_version",
+            "kind",
+            "pause_evidence_sha256",
+            "pause_nonce",
+            "boot_id",
+            "device_id",
+            "tool_bundle_sha256",
+        }
+        if (
+            not isinstance(request, dict)
+            or set(request) != expected
+            or request.get("schema_version") != 1
+            or request.get("kind") != "camera_pose_live_resume_request"
+            or request.get("pause_evidence_sha256") != self._artifact_sha256
+            or request.get("pause_nonce") != self.nonce
+            or request.get("boot_id") != self.boot_id
+            or request.get("device_id") != self.device_id
+            or request.get("tool_bundle_sha256") != self.source_sha256
+        ):
+            return "camera_pose_resume_request_invalid"
+        with self._lock:
+            if self._used:
+                return "camera_pose_resume_request_used"
+            self._used = True
+            self._accepted.set()
+        return "camera_pose_resume_request_accepted"
 
 
 def _profile(device_id: int) -> PositioningProfile:
@@ -359,13 +483,12 @@ class CameraPoseCaptureRunner(CalibrationRunner):
         if mode not in {"yaw", "forward"}:
             raise ValueError("camera pose mode must be yaw or forward")
         _profile(device_id)
-        if resume is not None and mode != "forward":
-            raise ValueError("only a forward camera capture can resume")
+        if resume is not None:
+            raise ValueError("resume requests are handled by the live camera capture owner")
         super().__init__(*args, **kwargs)
         self.config = PositioningConfig()
         self.mode = mode
         self.device_id = device_id
-        self.resume = resume
         self.neck_before: dict[str, int | str] | None = None
         self.neck_after_motion: dict[str, int | str] | None = None
         self.neck_after_cleanup: dict[str, int | str] | None = None
@@ -374,6 +497,10 @@ class CameraPoseCaptureRunner(CalibrationRunner):
         self._forward_origin: Pose | None = None
         self._resume_decision: dict[str, object] | None = None
         self._pause_guard_evidence: dict[str, object] | None = None
+        self._live_pause: dict[str, object] | None = None
+        self._resume_gate: _LiveResumeGate | None = None
+        self._deadline = 0.0
+        self.pre_pulse_guard = None
 
     def _check_private_limits(self, *, reserve_duration_s: float = 0.0) -> None:
         wheel_travel_m, yaw_degrees = self._progress.values()
@@ -437,17 +564,6 @@ class CameraPoseCaptureRunner(CalibrationRunner):
     def _pause_reason(reason: str | None) -> bool:
         return reason in _PAUSE_REASONS
 
-    @staticmethod
-    def _pose_from_record(value: object, field: str) -> Pose:
-        if not isinstance(value, dict) or set(value) != {"x_m", "y_m", "yaw_deg", "quality"}:
-            raise CalibrationError(f"camera_pose_resume_{field}_invalid")
-        coordinates = tuple(value[name] for name in ("x_m", "y_m", "yaw_deg", "quality"))
-        if any(type(item) not in (int, float) or not math.isfinite(item) for item in coordinates):
-            raise CalibrationError(f"camera_pose_resume_{field}_invalid")
-        if coordinates[3] <= 0:
-            raise CalibrationError(f"camera_pose_resume_{field}_unqualified")
-        return Pose(*coordinates)
-
     def _forward_displacement(self, pose: Pose) -> float:
         if getattr(self, "_forward_origin", None) is None:
             raise CalibrationError("camera_pose_forward_origin_unavailable")
@@ -456,10 +572,10 @@ class CameraPoseCaptureRunner(CalibrationRunner):
             pose.y - self._forward_origin.y
         ) * math.sin(heading_rad)
 
-    def _refresh_forward_progress(self) -> Pose:
-        pose, _ = super()._snapshot()
+    def _refresh_forward_progress(self) -> tuple[Pose, object]:
+        pose, pair = super()._snapshot()
         self.forward_distance_m = self._forward_displacement(pose)
-        return pose
+        return pose, pair
 
     @staticmethod
     def _neck_is_qualified(neck: object) -> bool:
@@ -472,94 +588,39 @@ class CameraPoseCaptureRunner(CalibrationRunner):
             and abs(neck["position"] - neck["target"]) <= RESUME_NECK_TOLERANCE
         )
 
-    def _prepare_resume(self) -> dict[str, object]:
-        record = self.resume
-        if not isinstance(record, dict):
-            raise CalibrationError("camera_pose_resume_record_unavailable")
-        if (
-            record.get("schema_version") != 1
-            or record.get("kind") != "camera_calibration_poses_paused"
-            or record.get("mode") != "forward"
-            or record.get("device_id") != self.device_id
-            or record.get("boot_id") != self.boot_id
-            or record.get("executed_bundle_source_sha256") != self.executed_bundle_source_sha256
-            or not self._pause_reason(record.get("pause_reason"))
-        ):
-            raise CalibrationError("camera_pose_resume_identity_mismatch")
-        origin = self._pose_from_record(record.get("forward_origin"), "origin")
-        paused = self._pose_from_record(record.get("paused_pose"), "paused_pose")
-        motion = record.get("motion")
-        stages = record.get("completed_stages")
-        paused_neck = record.get("neck_at_pause")
-        if (
-            not isinstance(motion, dict)
-            or not isinstance(stages, dict)
-            or not self._neck_is_qualified(paused_neck)
-            or motion.get("target_distance_m") != FORWARD_TARGET_M
-            or type(motion.get("pulses_completed")) is not int
-            or motion["pulses_completed"] < 0
-            or type(motion.get("measured_distance_m")) not in (int, float)
-            or not math.isfinite(motion["measured_distance_m"])
-            or type(motion.get("remaining_distance_m")) not in (int, float)
-            or not math.isfinite(motion["remaining_distance_m"])
-        ):
-            raise CalibrationError("camera_pose_resume_record_invalid")
-        measured = float(motion["measured_distance_m"])
-        remaining = float(motion["remaining_distance_m"])
-        if not 0 <= measured < FORWARD_TARGET_M or not 0 < remaining <= FORWARD_TARGET_M:
-            raise CalibrationError("camera_pose_resume_remaining_distance_invalid")
-        if not math.isclose(measured + remaining, FORWARD_TARGET_M, abs_tol=0.002):
-            raise CalibrationError("camera_pose_resume_remaining_distance_invalid")
-        persisted = self._forward_displacement_from(origin, paused)
-        if not math.isclose(persisted, measured, abs_tol=RESUME_POSE_TOLERANCE_M):
-            raise CalibrationError("camera_pose_resume_progress_invalid")
-        return {
-            "origin": origin,
-            "paused": paused,
-            "motion": motion,
-            "stages": stages,
-            "paused_neck": paused_neck,
-        }
-
-    @staticmethod
-    def _forward_displacement_from(origin: Pose, pose: Pose) -> float:
-        heading_rad = math.radians(origin.yaw_deg)
-        return (pose.x - origin.x) * math.cos(heading_rad) + (pose.y - origin.y) * math.sin(
-            heading_rad
-        )
-
-    def _admit_resume(self) -> dict[str, object]:
-        record = self._prepare_resume()
-        self._forward_origin = record["origin"]
+    def _admit_live_resume(self) -> None:
+        state = self._live_pause
+        gate = self._resume_gate
+        if state is None or gate is None:
+            raise CalibrationError("camera_pose_resume_owner_unavailable")
         self._require_lease()
         current_neck = _neck_status()
         if not self._neck_is_qualified(current_neck):
             raise CalibrationError("camera_pose_resume_head_unqualified")
-        paused_neck = record["paused_neck"]
+        paused_neck = state["neck"]
         assert isinstance(paused_neck, dict)
         if abs(current_neck["position"] - paused_neck["position"]) > RESUME_NECK_TOLERANCE:
             raise CalibrationError("camera_pose_resume_head_changed")
-        current = self._refresh_forward_progress()
-        paused = record["paused"]
+        current, _ = self._refresh_forward_progress()
+        paused = state["pose"]
         assert isinstance(paused, Pose)
         if (
             math.hypot(current.x - paused.x, current.y - paused.y) > RESUME_POSE_TOLERANCE_M
             or abs(_yaw_delta(current.yaw_deg, paused.yaw_deg)) > RESUME_YAW_TOLERANCE_DEG
         ):
             raise CalibrationError("camera_pose_resume_pose_changed")
-        measured = float(record["motion"]["measured_distance_m"])
+        measured = float(state["distance_m"])
         if not math.isclose(self.forward_distance_m, measured, abs_tol=RESUME_POSE_TOLERANCE_M):
             raise CalibrationError("camera_pose_resume_progress_changed")
         clearance_reason = self._forward_device_guard(self.monotonic())
         if clearance_reason is not None:
             raise CalibrationError(f"camera_pose_resume_{clearance_reason}")
-        self.forward_pulses_completed = int(record["motion"]["pulses_completed"])
         issued_at = self.monotonic()
         self._resume_decision = {
-            "pause_evidence_sha256": self.resume.get("pause_evidence_sha256"),
-            "pause_reason": self.resume["pause_reason"],
+            "pause_evidence_sha256": state["artifact_sha256"],
+            "pause_reason": state["reason"],
             "issued_at_monotonic_s": issued_at,
-            "expires_at_monotonic_s": issued_at + self.config.max_runtime_s,
+            "expires_at_monotonic_s": self._deadline,
             "remaining_distance_m": FORWARD_TARGET_M - self.forward_distance_m,
             "pose": _pose(current),
             "neck": current_neck,
@@ -568,7 +629,26 @@ class CameraPoseCaptureRunner(CalibrationRunner):
                 "forward_guard_passed", self.monotonic()
             ),
         }
-        return record["stages"]
+
+    def _observe_live_pause(self) -> None:
+        state = self._live_pause
+        if state is None:
+            raise CalibrationError("camera_pose_resume_owner_unavailable")
+        current_neck = _neck_status()
+        if not self._neck_is_qualified(current_neck):
+            raise CalibrationError("camera_pose_resume_head_unqualified")
+        paused_neck = state["neck"]
+        assert isinstance(paused_neck, dict)
+        if abs(current_neck["position"] - paused_neck["position"]) > RESUME_NECK_TOLERANCE:
+            raise CalibrationError("camera_pose_resume_head_changed")
+        current, _ = self._refresh_forward_progress()
+        paused = state["pose"]
+        assert isinstance(paused, Pose)
+        if (
+            math.hypot(current.x - paused.x, current.y - paused.y) > RESUME_POSE_TOLERANCE_M
+            or abs(_yaw_delta(current.yaw_deg, paused.yaw_deg)) > RESUME_YAW_TOLERANCE_DEG
+        ):
+            raise CalibrationError("camera_pose_resume_pose_changed")
 
     def _pulse_until(self, velocity_m_s: float, yaw_rate_deg_s: float, target: float) -> None:
         try:
@@ -591,11 +671,39 @@ class CameraPoseCaptureRunner(CalibrationRunner):
             if self.forward_pulses_completed >= FORWARD_MAX_PULSES:
                 self.device.stop()
                 raise CalibrationError("camera_pose_forward_target_unreached")
+            remaining_distance_m = FORWARD_TARGET_M - self.forward_distance_m
+            if remaining_distance_m <= FORWARD_TERMINAL_TOLERANCE_M:
+                return
+            pulse_duration_s = min(
+                self.config.pulse_duration_s, remaining_distance_m / FORWARD_SPEED_M_S
+            )
+            neck_before = getattr(self, "neck_before", None)
+            neck = _neck_status() if neck_before is not None else None
+            if neck is not None and not self._neck_is_qualified(neck):
+                raise CalibrationError("camera_pose_head_unqualified")
+            if getattr(self, "_live_pause", None) is not None:
+                paused_neck = self._live_pause["neck"]
+                assert isinstance(paused_neck, dict)
+                assert neck is not None
+                if abs(neck["position"] - paused_neck["position"]) > RESUME_NECK_TOLERANCE:
+                    raise CalibrationError("camera_pose_resume_head_changed")
+            guard = self._forward_device_guard(self.monotonic())
+            if guard is not None:
+                if self._pause_reason(guard):
+                    raise CameraPosePaused(guard)
+                raise CalibrationError(guard)
+            if callable(getattr(self, "pre_pulse_guard", None)):
+                assert neck is not None
+                inspection_reason = self.pre_pulse_guard(
+                    pose_before, neck, self.monotonic(), pulse_duration_s
+                )
+                if inspection_reason is not None:
+                    raise CalibrationError(inspection_reason)
             try:
                 motion_id = self.device.calibration_drive_velocity(
                     FORWARD_SPEED_M_S,
                     0.0,
-                    self.config.pulse_duration_s,
+                    pulse_duration_s,
                     host_lease=self._forward_device_guard,
                 )
             except RuntimeError as error:
@@ -604,7 +712,7 @@ class CameraPoseCaptureRunner(CalibrationRunner):
                 if self._pause_reason(reason):
                     raise CameraPosePaused(reason) from error
                 raise
-            deadline = self.monotonic() + self.config.pulse_duration_s + LEASE_MAX_AGE_S
+            deadline = self.monotonic() + pulse_duration_s + LEASE_MAX_AGE_S
             while True:
                 completed = self.device.motion_done(motion_id)
                 if completed is not False:
@@ -639,21 +747,43 @@ class CameraPoseCaptureRunner(CalibrationRunner):
         self.output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         descriptor = os.open(self.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         self._started = self.monotonic()
+        self._deadline = self._started + self.config.max_runtime_s
         stages: dict[str, object] = {}
         try:
             self._require_lease()
             self.neck_before = _neck_status()
+            if not self._neck_is_qualified(self.neck_before):
+                raise CalibrationError("camera_pose_head_unqualified")
             if not self.device.enable():
                 raise CalibrationError(
                     self.device.last_refusal or "camera_pose_device_enable_refused"
                 )
             self._initialize()
             if self.mode == "forward":
-                if getattr(self, "resume", None) is None:
-                    stages["before_motion"] = self._capture_stage()
-                else:
-                    stages.update(self._admit_resume())
-                self._forward_until_target()
+                stages["before_motion"] = self._capture_stage()
+                while True:
+                    try:
+                        self._forward_until_target()
+                        break
+                    except CameraPosePaused as error:
+                        self._remove_owned_output(descriptor)
+                        os.close(descriptor)
+                        descriptor = -1
+                        self.device.disable()
+                        self.neck_after_cleanup = _neck_status()
+                        self._pause_for_live_resume(stages, str(error))
+                        assert self._resume_gate is not None
+                        self._resume_gate.wait(
+                            self._require_lease, self._observe_live_pause, self.sleep
+                        )
+                        self._admit_live_resume()
+                        if not self.device.enable():
+                            raise CalibrationError(
+                                self.device.last_refusal or "camera_pose_device_enable_refused"
+                            ) from error
+                        descriptor = os.open(
+                            self.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+                        )
                 self._settle()
                 stages["after_forward"] = self._capture_stage()
             else:
@@ -665,18 +795,9 @@ class CameraPoseCaptureRunner(CalibrationRunner):
             self.device.disable()
             self.neck_after_cleanup = _neck_status()
             self._write(stages, descriptor)
-        except CameraPosePaused as error:
-            self._remove_owned_output(descriptor)
-            try:
-                self.device.disable()
-            finally:
-                try:
-                    self.neck_after_cleanup = _neck_status()
-                finally:
-                    self._write_pause(stages, str(error))
-            raise
         except BaseException as error:
-            self._remove_owned_output(descriptor)
+            if descriptor >= 0:
+                self._remove_owned_output(descriptor)
             try:
                 self.device.disable()
             finally:
@@ -690,10 +811,14 @@ class CameraPoseCaptureRunner(CalibrationRunner):
                 self.device.stop()
                 self.device.disable()
             except BaseException:
-                self._remove_owned_output(descriptor)
+                if descriptor >= 0:
+                    self._remove_owned_output(descriptor)
                 raise
             finally:
-                os.close(descriptor)
+                if descriptor >= 0:
+                    os.close(descriptor)
+                if getattr(self, "_resume_gate", None) is not None:
+                    self._resume_gate.close()
         return self.output
 
     def _write_failure(self, stages: dict[str, object], error: BaseException) -> None:
@@ -713,18 +838,29 @@ class CameraPoseCaptureRunner(CalibrationRunner):
         )
         _write_new(self.output.with_name(self.output.name + ".failed.json"), body)
 
-    def _write_pause(self, stages: dict[str, object], reason: str) -> None:
+    def _pause_for_live_resume(self, stages: dict[str, object], reason: str) -> None:
+        if self._resume_gate is not None:
+            self._resume_gate.close()
         if self._forward_origin is None:
             raise CalibrationError("camera_pose_pause_progress_unavailable")
         try:
-            paused_pose = self._refresh_forward_progress()
+            paused_pose, paused_pair = self._refresh_forward_progress()
             neck_at_pause = _neck_status()
         except (CalibrationError, OSError) as error:
             raise CalibrationError("camera_pose_pause_evidence_unavailable") from error
         if not self._neck_is_qualified(neck_at_pause):
             raise CalibrationError("camera_pose_pause_head_unqualified")
+        if paused_pair is None:
+            raise CalibrationError("camera_pose_pause_encoder_unavailable")
         if not 0 <= self.forward_distance_m < FORWARD_TARGET_M:
             raise CalibrationError("camera_pose_pause_progress_invalid")
+        gate = _LiveResumeGate(
+            boot_id=self.boot_id,
+            device_id=self.device_id,
+            source_sha256=self.executed_bundle_source_sha256,
+            deadline=self._deadline,
+            monotonic=self.monotonic,
+        )
         body = self._body(stages)
         body.update(
             {
@@ -735,9 +871,19 @@ class CameraPoseCaptureRunner(CalibrationRunner):
                 "forward_origin": _pose(self._forward_origin),
                 "paused_pose": _pose(paused_pose),
                 "neck_at_pause": neck_at_pause,
+                "paused_encoder": asdict(paused_pair),
+                "live_resume": {
+                    "socket": str(gate.path),
+                    "pause_nonce": gate.nonce,
+                    "expires_at_monotonic_s": self._deadline,
+                    "boot_id": self.boot_id,
+                    "device_id": self.device_id,
+                    "tool_bundle_sha256": self.executed_bundle_source_sha256,
+                },
                 "motion": {
                     "shape": "forward_only",
                     "target_distance_m": FORWARD_TARGET_M,
+                    "terminal_tolerance_m": FORWARD_TERMINAL_TOLERANCE_M,
                     "measured_distance_m": self.forward_distance_m,
                     "remaining_distance_m": FORWARD_TARGET_M - self.forward_distance_m,
                     "pulse_duration_s": self.config.pulse_duration_s,
@@ -746,7 +892,25 @@ class CameraPoseCaptureRunner(CalibrationRunner):
                 },
             }
         )
-        _write_new(self.output.with_name(self.output.name + ".paused.json"), body)
+        artifact = _encode(body)
+        gate.publish(artifact)
+        try:
+            written = _write_new(self.output.with_name(self.output.name + ".paused.json"), body)
+        except BaseException:
+            gate.close()
+            raise
+        if written != artifact:
+            gate.close()
+            raise CalibrationError("camera_pose_pause_artifact_changed")
+        self._resume_gate = gate
+        self._live_pause = {
+            "reason": reason,
+            "pose": paused_pose,
+            "neck": neck_at_pause,
+            "distance_m": self.forward_distance_m,
+            "artifact_sha256": hashlib.sha256(artifact).hexdigest(),
+            "stages": stages,
+        }
 
     def _write(self, stages: dict[str, object], descriptor: int) -> None:
         _write_owned(self.output, descriptor, self._body(stages))
@@ -757,6 +921,7 @@ class CameraPoseCaptureRunner(CalibrationRunner):
                 "shape": "forward_only",
                 "velocity_m_s": FORWARD_SPEED_M_S,
                 "target_distance_m": FORWARD_TARGET_M,
+                "terminal_tolerance_m": FORWARD_TERMINAL_TOLERANCE_M,
                 "measured_distance_m": self.forward_distance_m,
                 "pulse_duration_s": self.config.pulse_duration_s,
                 "maximum_pulses": FORWARD_MAX_PULSES,
@@ -843,12 +1008,14 @@ def _write_owned(path: Path, descriptor: int, body: dict[str, object]) -> None:
         raise CalibrationError("camera_pose_output_replaced")
 
 
-def _write_new(path: Path, body: dict[str, object]) -> None:
+def _write_new(path: Path, body: dict[str, object]) -> bytes:
+    encoded = _encode(body)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as stream:
-        stream.write(_encode(body))
+        stream.write(encoded)
         stream.flush()
         os.fsync(stream.fileno())
+    return encoded
 
 
 def _read_pause(path: Path) -> dict[str, object]:
@@ -878,6 +1045,62 @@ def _read_pause(path: Path) -> dict[str, object]:
     return value
 
 
+def camera_positioning_source_sha256() -> str:
+    tool = Path(__file__).resolve()
+    digest = hashlib.sha256()
+    digest.update(b"adapters\0")
+    digest.update(calibration_source_sha256().encode())
+    digest.update(b"tools/ohmni_camera_positioning.py\0")
+    digest.update(hashlib.sha256(tool.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def _submit_live_resume(
+    record: dict[str, object], *, boot_id: str, device_id: int, source_sha256: str
+) -> None:
+    live = record.get("live_resume")
+    expected = {
+        "socket",
+        "pause_nonce",
+        "expires_at_monotonic_s",
+        "boot_id",
+        "device_id",
+        "tool_bundle_sha256",
+    }
+    if (
+        not isinstance(live, dict)
+        or set(live) != expected
+        or not isinstance(record.get("pause_evidence_sha256"), str)
+        or not isinstance(live["socket"], str)
+        or not isinstance(live["pause_nonce"], str)
+        or type(live["expires_at_monotonic_s"]) not in (int, float)
+        or live["boot_id"] != boot_id
+        or live["device_id"] != device_id
+        or live["tool_bundle_sha256"] != source_sha256
+    ):
+        raise CalibrationError("camera_pose_resume_record_invalid")
+    request = {
+        "schema_version": 1,
+        "kind": "camera_pose_live_resume_request",
+        "pause_evidence_sha256": record["pause_evidence_sha256"],
+        "pause_nonce": live["pause_nonce"],
+        "boot_id": boot_id,
+        "device_id": device_id,
+        "tool_bundle_sha256": source_sha256,
+    }
+    encoded = json.dumps(request, separators=(",", ":"), allow_nan=False).encode()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(1.0)
+            connection.connect(live["socket"])
+            connection.sendall(encoded)
+            response = connection.recv(128).decode().strip()
+    except OSError as error:
+        raise CalibrationError("camera_pose_resume_owner_unavailable") from error
+    if response != "camera_pose_resume_request_accepted":
+        raise CalibrationError(response or "camera_pose_resume_request_invalid")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lease-port", required=True, type=int)
@@ -894,9 +1117,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--resume-from requires --mode forward")
     resume = _read_pause(args.resume_from) if args.resume_from is not None else None
     boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-    source_sha256 = calibration_source_sha256()
+    source_sha256 = camera_positioning_source_sha256()
     if boot_id != args.expected_boot_id or source_sha256 != args.expected_source_sha256:
         raise CalibrationError("camera_pose_provenance_mismatch")
+    if resume is not None:
+        _submit_live_resume(
+            resume,
+            boot_id=boot_id,
+            device_id=profile.device_id,
+            source_sha256=source_sha256,
+        )
+        return 0
     token = _token(args.lease_token_file)
     resource: OhmniDevice | ReadOnlyBaselineCapture | None = None
     lease = HostLease(token)
@@ -959,7 +1190,6 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 mode=args.mode,
                 device_id=profile.device_id,
-                resume=resume,
                 boot_id=boot_id,
                 executed_bundle_source_sha256=source_sha256,
             ).run()
