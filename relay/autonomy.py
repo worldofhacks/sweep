@@ -1092,6 +1092,7 @@ class AutonomySession:
                 self._platform_dispatch.pop(prepared.intent.intent_id, None)
             raise ValueError("relay session is unavailable")
         try:
+
             def still_current() -> bool:
                 with self._lock:
                     return self._platform_stop_generation == generation
@@ -1190,6 +1191,14 @@ class AutonomySession:
     def _route(self, job: _Job) -> _Lane:
         """Choose the lane and cancel the plans this intent preempts before it queues."""
         name = job.intent.name
+        if name in {IntentName.HOLD, IntentName.LAND_ALL, IntentName.ESTOP}:
+            with self._lock:
+                self._platform_stop_generation += 1
+                self._platform_navigation_reservations.clear()
+                self._platform_dispatch.clear()
+            self._composition.report_multiview_lifecycle(
+                self.session_id, job.intent.intent_id, name.value, "accepted"
+            )
         if name is IntentName.ESTOP:
             with self._lock:
                 self._stop_requested = True
@@ -1205,13 +1214,6 @@ class AutonomySession:
             )
             return self._estop
         if name is IntentName.HOLD:
-            with self._lock:
-                self._platform_stop_generation += 1
-                self._platform_navigation_reservations.clear()
-                self._platform_dispatch.clear()
-            self._composition.report_multiview_lifecycle(
-                self.session_id, job.intent.intent_id, name.value, "accepted"
-            )
             with self._lock:
                 running = self._normal.running
                 behind_safety_plan = (

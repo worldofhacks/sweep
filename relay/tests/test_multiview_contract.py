@@ -240,11 +240,14 @@ def test_multiview_releases_reserved_children_when_a_later_reservation_fails() -
 
     navigation.reserve = reserve
     with pytest.raises(NavigationError, match="reservation"):
-        service.confirm("s", {key: preview[key] for key in ("previewId", "intentId", "previewHash")})
+        service.confirm(
+            "s", {key: preview[key] for key in ("previewId", "intentId", "previewHash")}
+        )
     assert navigation.discarded == ["preview-north-zone"]
 
 
-def test_hold_blocks_a_queued_next_route_dispatch() -> None:
+@pytest.mark.parametrize("stop", ["hold", "land_all", "estop"])
+def test_terminal_stop_blocks_a_queued_next_route_dispatch(stop: str) -> None:
     navigation = _Navigation()
     service = MultiviewService(navigation)
     preview = service.preview(
@@ -260,7 +263,7 @@ def test_hold_blocks_a_queued_next_route_dispatch() -> None:
     )
     service.confirm("s", {key: preview[key] for key in ("previewId", "intentId", "previewHash")})
     first_intent = navigation.confirmed["intentId"]
-    service.observe_execution("s", "hold-1", "hold", "executing")
+    service.observe_execution("s", f"{stop}-1", stop, "executing")
     workflow = service._workflows[preview["previewId"]]
     service._dispatch_navigation("s", preview["previewId"], 1, workflow.views[1])
     assert navigation.confirmed["intentId"] == first_intent

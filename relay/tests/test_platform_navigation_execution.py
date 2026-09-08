@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
@@ -18,6 +19,7 @@ from planner.test_navigation_runtime import KEY
 from relay.auth import Principal, sign_event
 from relay.autonomy import AutonomyComposition, AutonomyConfig, create_autonomy_app
 from relay.control_localization import ControlLocalizationProjector, ControlPose
+from relay.intent_v1 import IntentName, IntentV1, Mode
 from relay.navigation_service import NavigationService
 from relay.platform import _FlightExecutionAdapter
 from relay.settings import AdapterBackend, RelaySettings
@@ -426,6 +428,96 @@ def test_platform_confirmation_refreshes_only_the_internal_admission_timestamp(
                     autonomy.confirm_platform_navigation(
                         {**preview, "execution": execution["execution"]}
                     )
+    finally:
+        composition.close()
+
+
+def test_hold_between_reserved_admission_and_execution_never_starts_a_goto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deployment = _deployment(tmp_path)
+    clock = MutableClock(100_000)
+    settings = RelaySettings(
+        relay_token=CONSOLE_KEY,
+        adapter_keys={1: ADAPTER_KEY},
+        localization_keys={1: LOCALIZATION_KEY},
+        log_dir=tmp_path / "logs",
+        adapter_backend=AdapterBackend.REMOTE,
+    )
+    config = AutonomyConfig(
+        planning=replace(planning_config(), flight_speed_m_s=0.2),
+        safety=replace(
+            safety_config(), geofence=Geofence(-100, 100, -100, 100, -100, 100), ceiling_m=50
+        ),
+        control_localization_projector=_projector(deployment),
+        navigation=deployment,
+    )
+    app, composition = create_autonomy_app(settings, config, clock=clock, event_ids=EventIds())
+    try:
+        with TestClient(app):
+            session, autonomy = _prepare_session(composition, deployment)
+            preview = _preview(deployment)
+            execution = autonomy.preview_platform_navigation(preview)
+            reserved = {**preview, "execution": execution["execution"]}
+            assert autonomy.reserve_platform_navigation(reserved)["status"] == "accepted"
+
+            admitted = threading.Event()
+            release_execution = threading.Event()
+            original_publish = autonomy._publish
+            publishes = 0
+
+            def block_after_admission(runtime, operation):
+                nonlocal publishes
+                original_publish(runtime, operation)
+                publishes += 1
+                if publishes == 1:
+                    admitted.set()
+                    assert release_execution.wait(2)
+
+            monkeypatch.setattr(autonomy, "_publish", block_after_admission)
+            execute_pending_calls = 0
+            original_execute_pending = session.execute_pending_intent
+
+            def count_execute_pending(*args, **kwargs):
+                nonlocal execute_pending_calls
+                execute_pending_calls += 1
+                return original_execute_pending(*args, **kwargs)
+
+            monkeypatch.setattr(session, "execute_pending_intent", count_execute_pending)
+            result: list[BaseException] = []
+
+            def dispatch() -> None:
+                try:
+                    autonomy.dispatch_reserved_platform_navigation("platform-preview-1")
+                except BaseException as error:
+                    result.append(error)
+
+            worker = threading.Thread(target=dispatch)
+            worker.start()
+            assert admitted.wait(2)
+            autonomy.submit(
+                IntentV1(
+                    v=1,
+                    t=clock(),
+                    type="intent",
+                    intent_id="barrier-hold",
+                    retry_of=None,
+                    source="console",
+                    session=SESSION,
+                    name=IntentName.HOLD,
+                    args={},
+                    selection=(1,),
+                    mode=Mode.INDOOR,
+                    confirm=False,
+                ),
+                session.current_state(),
+            )
+            release_execution.set()
+            worker.join(2)
+            assert not worker.is_alive()
+            assert len(result) == 1
+            assert isinstance(result[0], ValueError)
+            assert execute_pending_calls == 0
     finally:
         composition.close()
 
