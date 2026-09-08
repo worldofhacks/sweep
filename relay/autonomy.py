@@ -899,9 +899,11 @@ class AutonomySession:
         if navigation is None:
             raise ValueError("qualified navigation did not produce a route")
         map_ref = preview.get("map")
+        authoring_pin = runtime.config.authoring_map_pin
+        reviewed_pin = authoring_pin or navigation.route.map_pin
         if not isinstance(map_ref, Mapping) or map_ref.get("mapPin") != {
-            "version": navigation.route.map_pin.version,
-            "contentSha256": navigation.route.map_pin.content_sha256,
+            "version": reviewed_pin.version,
+            "contentSha256": reviewed_pin.content_sha256,
         }:
             raise ValueError("platform map revision differs from the approved navigation artifact")
         targets = {target["id"]: target for target in selected}
@@ -952,6 +954,11 @@ class AutonomySession:
             "configurationSha256": navigation.configuration_sha256,
             "permissionZoneIds": sorted(navigation.route.permission.permitted_zone_ids),
         }
+        if authoring_pin is not None:
+            execution["authoringMapPin"] = {
+                "version": authoring_pin.version,
+                "contentSha256": authoring_pin.content_sha256,
+            }
         with self._lock:
             self._prune_platform_navigation(now)
             self._platform_navigation[preview_id] = (
@@ -2077,9 +2084,8 @@ class AutonomyComposition:
                 command_id = event.get("command_id")
                 intent_id = event.get("intent_id")
                 if isinstance(command_id, str):
-                    if (
-                        event.get("status") != "completed"
-                        or not publisher.retain_arrival(command_id)
+                    if event.get("status") != "completed" or not publisher.retain_arrival(
+                        command_id
                     ):
                         publisher.retire(command_id)
                 elif isinstance(intent_id, str) and event.get("status") != "completed":

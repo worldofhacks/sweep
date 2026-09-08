@@ -59,9 +59,9 @@ export function MultiviewCapture({ controller, services, now }: Pick<ModuleProps
       const value = await client.preview({ intentId, selected: [{ id: device.drone_id, deviceClass: 'aircraft', epoch: device.connection_epoch }],
         viewpoints: zones.map((zoneId, index) => ({ viewpointId: `view-${index + 1}`, zoneId, captureId: `${intentId}-${index + 1}` })) })
       if (requestGeneration !== generation.current) return
-      if (!catalog || value.execution.approvalId !== catalog.map.approvalId ||
-        (['mapPin', 'geometryPin', 'navigationPin'] as const).some((key) =>
-          value.execution[key].version !== catalog.map[key].version || value.execution[key].contentSha256 !== catalog.map[key].contentSha256)) {
+      const reviewedMap = value.execution.authoringMapPin ?? value.execution.mapPin
+      if (!catalog || reviewedMap.version !== catalog.map.mapPin.version ||
+        reviewedMap.contentSha256 !== catalog.map.mapPin.contentSha256) {
         throw new Error('The accepted map changed while preparing the photo route.')
       }
       setReviewedIdentity(requestedIdentity)

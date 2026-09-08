@@ -79,6 +79,7 @@ export interface NavigationNodeOutcome {
 /** Pins that bind an eligible preview to the route the relay prepared. */
 export interface NavigationExecutionEvidence {
   readonly planHash: string
+  readonly authoringMapPin?: ArtifactPin
   readonly mapPin: ArtifactPin
   readonly geometryPin: ArtifactPin
   readonly navigationPin: ArtifactPin

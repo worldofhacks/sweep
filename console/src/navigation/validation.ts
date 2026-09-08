@@ -101,7 +101,9 @@ function sortedIdentities(value: unknown): boolean {
 }
 
 export function isNavigationExecution(value: unknown): value is NavigationExecutionEvidence {
-  return exact(value, ['planHash', 'mapPin', 'geometryPin', 'navigationPin', 'approvalId', 'configurationSha256', 'permissionZoneIds']) &&
+  return exact(value, ['planHash', 'mapPin', 'geometryPin', 'navigationPin', 'approvalId', 'configurationSha256', 'permissionZoneIds',
+    ...(record(value) && 'authoringMapPin' in value ? ['authoringMapPin'] : [])]) &&
+    (value.authoringMapPin === undefined || pin(value.authoringMapPin)) &&
     typeof value.planHash === 'string' && /^[a-f0-9]{64}$/.test(value.planHash) &&
     pin(value.mapPin) && pin(value.geometryPin) && pin(value.navigationPin) && identity(value.approvalId) &&
     typeof value.configurationSha256 === 'string' && /^[a-f0-9]{64}$/.test(value.configurationSha256) &&
@@ -218,7 +220,7 @@ export function parseNavigationPreview(raw: unknown): NavigationPreview | null {
       (preview.dispatchEligible && (planned.length !== selected.size || preview.destination.excluded ||
         preview.destination.reachability !== 'reachable' || preview.selected.some((item) => !preview.destination.allowedClasses.includes(item.deviceClass))))) return null
     if (preview.dispatchEligible && (preview.execution === undefined ||
-      !same(preview.execution.mapPin, preview.map.mapPin) ||
+      !same(preview.execution.authoringMapPin ?? preview.execution.mapPin, preview.map.mapPin) ||
       !preview.execution.permissionZoneIds.includes(preview.destination.zoneId) ||
       preview.selected.length !== 1 || preview.selected[0].deviceClass !== 'aircraft' ||
       preview.routes[0]?.holdBehavior !== 'hover')) return null

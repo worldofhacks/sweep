@@ -457,6 +457,43 @@ def test_qualified_flight_preview_dispatches_the_exact_retained_route(tmp_path):
         case.service.close()
 
 
+@pytest.mark.parametrize("binding", ["valid", "missing", "wrong"])
+def test_distinct_flight_map_requires_explicit_authoring_binding(tmp_path, binding):
+    class BoundFlightExecution(FlightExecution):
+        def preview(self, session, preview):
+            result = super().preview(session, preview)
+            execution = result["execution"]
+            if binding != "missing":
+                execution["authoringMapPin"] = copy.deepcopy(execution["mapPin"])
+                if binding == "wrong":
+                    execution["authoringMapPin"]["contentSha256"] = "f" * 64
+            execution["mapPin"] = {"version": "flight-map-v1", "contentSha256": "d" * 64}
+            return result
+
+    flight = BoundFlightExecution()
+    case = Case(tmp_path, flight_execution=flight)
+    try:
+        case.state = live_state(("aircraft",))
+        if binding != "valid":
+            with pytest.raises(NavigationError, match="pins do not bind the approved map"):
+                case.preview()
+            assert flight.confirm_calls == []
+            return
+        envelope = case.preview()
+        preview = envelope["preview"]
+        assert preview["dispatchEligible"] is (binding == "valid")
+        if binding == "valid":
+            assert preview["execution"]["authoringMapPin"] == preview["map"]["mapPin"]
+            assert preview["execution"]["mapPin"] != preview["map"]["mapPin"]
+            result = case.service.confirm("test-session", case.confirmation(envelope))
+            assert result["status"] == "accepted"
+            assert flight.confirm_calls == [("test-session", preview)]
+        else:
+            assert flight.confirm_calls == []
+    finally:
+        case.service.close()
+
+
 def test_qualified_flight_review_can_be_reserved_then_dispatched(tmp_path):
     flight = FlightExecution()
     case = Case(tmp_path, flight_execution=flight)

@@ -1100,7 +1100,12 @@ def validate_flight_execution_preview(
             "approvalId",
             "configurationSha256",
             "permissionZoneIds",
-        },
+        }
+        | (
+            {"authoringMapPin"}
+            if isinstance(result["execution"], dict) and "authoringMapPin" in result["execution"]
+            else set()
+        ),
     )
     if (
         type(execution["planHash"]) is not str
@@ -1108,10 +1113,15 @@ def validate_flight_execution_preview(
         or type(execution["configurationSha256"]) is not str
         or _HASH.fullmatch(execution["configurationSha256"]) is None
         or not isinstance(map_ref, dict)
-        or execution["mapPin"] != map_ref.get("mapPin")
+        or execution.get("authoringMapPin", execution["mapPin"]) != map_ref.get("mapPin")
     ):
         _fail("planner_contract_invalid", "Qualified execution pins do not bind the approved map.")
-    for name in ("geometryPin", "navigationPin"):
+    for name in (
+        "mapPin",
+        "geometryPin",
+        "navigationPin",
+        *(("authoringMapPin",) if "authoringMapPin" in execution else ()),
+    ):
         value = execution[name]
         if (
             type(value) is not dict

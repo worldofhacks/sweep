@@ -335,6 +335,10 @@ describe('current-context and frozen-preview validity', () => {
     expect(parsed).toEqual(qualified)
     expect(navigationPreviewValidity(parsed, catalog(), { ...context(), selected: [selected[0]] }).valid).toBe(true)
     expect(parseNavigationPreview({ ...qualified, execution: { ...qualified.execution!, mapPin: original.map.geometryPin } })).toBeNull()
+    const bound = { ...qualified, execution: { ...qualified.execution!, authoringMapPin: original.map.mapPin, mapPin: original.map.geometryPin } }
+    expect(parseNavigationPreview(bound)).toEqual(bound)
+    expect(parseNavigationPreview({ ...bound, execution: { ...bound.execution, authoringMapPin: original.map.geometryPin } })).toBeNull()
+    expect(parseNavigationPreview({ ...bound, execution: { ...bound.execution, authoringMapPin: null } })).toBeNull()
   })
 })
 

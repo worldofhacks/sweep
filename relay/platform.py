@@ -89,7 +89,13 @@ class _FlightExecutionAdapter:
             or set(pin) != {"version", "contentSha256"}
         ):
             return ()
-        return resolver(ArtifactPin(pin["version"], pin["contentSha256"]))
+        requested_pin = ArtifactPin(pin["version"], pin["contentSha256"])
+        authoring_pin = deployment.config.authoring_map_pin
+        if authoring_pin is not None:
+            if requested_pin != authoring_pin:
+                raise ValueError("authored map differs from the signed navigation binding")
+            requested_pin = deployment.artifact().map_pin
+        return resolver(requested_pin)
 
 
 class PlatformServices:
