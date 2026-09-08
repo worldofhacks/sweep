@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
+import os
 import secrets
 from collections.abc import Mapping
 from copy import deepcopy
@@ -16,6 +18,7 @@ MAX_APPROVAL_TTL_NS = 1_000_000_000
 PULSE_SPEED_M_S = 0.04
 PULSE_DURATION_S = 0.5
 PULSE_DISTANCE_M = 0.02
+MAX_REQUEST_BYTES = 65_536
 
 
 class InspectionError(ValueError):
@@ -24,6 +27,19 @@ class InspectionError(ValueError):
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def capture_bundle_source_sha256() -> str:
+    root = Path(__file__).parent
+    payload = b"".join(
+        (name + "\0").encode() + (root / name).read_bytes()
+        for name in (
+            "ohmni_dual_calibration_capture.py",
+            "ohmni_calibration_frame_record.py",
+            "ohmni_camera_inspection.py",
+        )
+    )
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _hex(value: object, name: str) -> str:
@@ -351,3 +367,116 @@ class InspectionAuthority:
             decision,
         )
         return None
+
+
+def _read_mapping(path: Path) -> dict[str, object]:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        encoded = os.read(descriptor, MAX_REQUEST_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    if not encoded or len(encoded) > MAX_REQUEST_BYTES:
+        raise InspectionError("camera inspection request is invalid")
+
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for name, value in pairs:
+            if name in result:
+                raise ValueError("duplicate field")
+            result[name] = value
+        return result
+
+    try:
+        value = json.loads(encoded, object_pairs_hook=unique, parse_constant=lambda _: None)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise InspectionError("camera inspection request is invalid") from error
+    if not isinstance(value, dict):
+        raise InspectionError("camera inspection request is invalid")
+    return value
+
+
+def read_approval_request(path: Path, challenge: CaptureChallenge) -> dict[str, object]:
+    request = _read_mapping(path)
+    expected = {
+        "v",
+        "kind",
+        "challenge",
+        "frame_record",
+        "manifest",
+        "operator_id",
+        "accepted",
+        "review_notes",
+    }
+    if (
+        set(request) != expected
+        or request["v"] != 1
+        or request["kind"] != "camera_inspection_approval_request"
+        or parse_challenge(request["challenge"]) != challenge
+        or not isinstance(request["frame_record"], str)
+        or not isinstance(request["manifest"], str)
+        or not isinstance(request["operator_id"], str)
+        or request["accepted"] is not True
+        or not isinstance(request["review_notes"], str)
+        or not request["review_notes"].strip()
+    ):
+        raise InspectionError("camera inspection request is invalid")
+    return request
+
+
+def write_approval_request(
+    challenge_path: Path,
+    frame_record: Path,
+    manifest: Path,
+    *,
+    operator_id: str,
+    accepted: bool,
+    review_notes: str,
+) -> Path:
+    challenge = parse_challenge(_read_mapping(challenge_path))
+    if accepted is not True or not operator_id or not review_notes.strip():
+        raise InspectionError("camera inspection request is invalid")
+    evidence = FrameEvidence.load(frame_record, manifest)
+    if evidence.challenge != challenge:
+        raise InspectionError("camera inspection request is invalid")
+    request = {
+        "v": 1,
+        "kind": "camera_inspection_approval_request",
+        "challenge": challenge.to_mapping(),
+        "frame_record": str(frame_record),
+        "manifest": str(manifest),
+        "operator_id": operator_id,
+        "accepted": True,
+        "review_notes": review_notes,
+    }
+    encoded = (json.dumps(request, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    path = Path(str(challenge_path) + ".approval.json")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(encoded)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--challenge", type=Path, required=True)
+    parser.add_argument("--frame-record", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--operator-id", required=True)
+    parser.add_argument("--review-notes", required=True)
+    parser.add_argument("--accept", action="store_true", required=True)
+    args = parser.parse_args(argv)
+    write_approval_request(
+        args.challenge,
+        args.frame_record,
+        args.manifest,
+        operator_id=args.operator_id,
+        accepted=args.accept,
+        review_notes=args.review_notes,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

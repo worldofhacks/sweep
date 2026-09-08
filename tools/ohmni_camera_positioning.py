@@ -38,6 +38,7 @@ from adapters.ohmni.device import Config, OhmniDevice
 from adapters.ohmni.lidar import Lidar, discover
 from adapters.ohmni.odometry import Odometry, Pose
 from adapters.ohmni.paired_encoder import PairedEncoderStream, default_socket_path
+from tools import ohmni_camera_inspection as inspection
 
 DEVICE_ID = 12
 LIDAR_OFFSET_DEG = 131.269876
@@ -60,6 +61,7 @@ RESUME_YAW_TOLERANCE_DEG = 1.0
 RESUME_NECK_TOLERANCE = 200
 RESUME_REQUEST_MAX_BYTES = 4096
 FORWARD_TERMINAL_TOLERANCE_M = FORWARD_SPEED_M_S * 0.1
+INSPECTED_FORWARD_TARGET_M = 0.02
 
 
 class PositioningProfile:
@@ -480,8 +482,8 @@ class CameraPoseCaptureRunner(CalibrationRunner):
         resume: dict[str, object] | None = None,
         **kwargs: object,
     ) -> None:
-        if mode not in {"yaw", "forward"}:
-            raise ValueError("camera pose mode must be yaw or forward")
+        if mode not in {"yaw", "forward", "inspected-forward"}:
+            raise ValueError("camera pose mode must be yaw, forward, or inspected-forward")
         _profile(device_id)
         if resume is not None:
             raise ValueError("resume requests are handled by the live camera capture owner")
@@ -501,18 +503,27 @@ class CameraPoseCaptureRunner(CalibrationRunner):
         self._resume_gate: _LiveResumeGate | None = None
         self._deadline = 0.0
         self.pre_pulse_guard = None
+        self.inspection_challenge: inspection.CaptureChallenge | None = None
+        self.inspection_approval: dict[str, object] | None = None
+        self._pause_sequence = 0
 
     def _check_private_limits(self, *, reserve_duration_s: float = 0.0) -> None:
         wheel_travel_m, yaw_degrees = self._progress.values()
         if reserve_duration_s:
-            if self.mode == "forward":
+            if self.mode in {"forward", "inspected-forward"}:
                 wheel_travel_m += FORWARD_SPEED_M_S * reserve_duration_s
             else:
                 yaw_degrees += YAW_RATE_DEG_S * reserve_duration_s
         max_wheel_travel_m = (
-            FORWARD_MAX_WHEEL_TRAVEL_M if self.mode == "forward" else YAW_MODE_MAX_WHEEL_TRAVEL_M
+            FORWARD_MAX_WHEEL_TRAVEL_M
+            if self.mode in {"forward", "inspected-forward"}
+            else YAW_MODE_MAX_WHEEL_TRAVEL_M
         )
-        max_yaw_degrees = FORWARD_MAX_YAW_DEG if self.mode == "forward" else YAW_MODE_MAX_YAW_DEG
+        max_yaw_degrees = (
+            FORWARD_MAX_YAW_DEG
+            if self.mode in {"forward", "inspected-forward"}
+            else YAW_MODE_MAX_YAW_DEG
+        )
         if wheel_travel_m > max_wheel_travel_m:
             self.device.stop()
             raise CalibrationError("camera_pose_wheel_travel_limit")
@@ -743,6 +754,118 @@ class CameraPoseCaptureRunner(CalibrationRunner):
             self.forward_pulses_completed += 1
             self.forward_distance_m = self._forward_displacement(pose_after)
 
+    def _inspection_state(self) -> inspection.LiveState:
+        pose, _ = self._snapshot()
+        neck = _neck_status()
+        return inspection.LiveState(
+            self.device_id,
+            self.boot_id,
+            self.executed_bundle_source_sha256,
+            pose.x,
+            pose.y,
+            pose.yaw_deg,
+            pose.quality,
+            neck["position"],
+            neck["target"],
+            neck["flags"],
+        )
+
+    def _inspection_motion_guard(
+        self, expires_at_ns: int, issued_state: inspection.LiveState, now: float
+    ) -> str | None:
+        if int(self.monotonic() * 1_000_000_000) > expires_at_ns:
+            return "camera_inspection_approval_expired"
+        try:
+            current = self._inspection_state()
+        except (CalibrationError, inspection.InspectionError, KeyError) as error:
+            return str(error)
+        if (
+            current.device_id != issued_state.device_id
+            or current.boot_id != issued_state.boot_id
+            or current.positioning_source_sha256 != issued_state.positioning_source_sha256
+            or current.head_position != issued_state.head_position
+            or current.head_target != issued_state.head_target
+            or current.head_flags != issued_state.head_flags
+        ):
+            return "camera_inspection_live_state_changed"
+        return self._forward_device_guard(now)
+
+    def _run_inspected_forward(self, stages: dict[str, object]) -> None:
+        self.device.stop()
+        self.device.disable()
+        authority = inspection.InspectionAuthority()
+        issued_state = self._inspection_state()
+        now_ns = int(self.monotonic() * 1_000_000_000)
+        remaining_ns = int((self._deadline - self.monotonic()) * 1_000_000_000)
+        challenge = authority.issue_challenge(
+            issued_state,
+            now_ns,
+            inspection.capture_bundle_source_sha256(),
+            ttl_ns=min(inspection.MAX_CHALLENGE_TTL_NS, max(1, remaining_ns)),
+        )
+        self.inspection_challenge = challenge
+        challenge_path = self.output.with_name(self.output.name + ".inspection-challenge.json")
+        _write_new(challenge_path, challenge.to_mapping())
+        request_path = Path(str(challenge_path) + ".approval.json")
+        while not request_path.exists():
+            self._require_lease()
+            if self.monotonic() >= self._deadline:
+                raise CalibrationError("camera_inspection_challenge_expired")
+            if self._inspection_state() != issued_state:
+                raise CalibrationError("camera_inspection_live_state_changed")
+            self.sleep(0.01)
+        request = inspection.read_approval_request(request_path, challenge)
+        evidence = inspection.FrameEvidence.load(
+            Path(request["frame_record"]), Path(request["manifest"])
+        )
+        pulse = inspection.ForwardPulse(FORWARD_SPEED_M_S, 0.0, 0.5)
+        approval_id = authority.approve(
+            evidence,
+            pulse,
+            self._inspection_state(),
+            int(self.monotonic() * 1_000_000_000),
+            operator_id=request["operator_id"],
+            accepted=request["accepted"],
+            review_notes=request["review_notes"],
+        )
+        approval = authority.approval_record(approval_id)
+        expires_at_ns = approval["expires_at_device_monotonic_ns"]
+        assert type(expires_at_ns) is int
+        reason = authority.consume(
+            approval_id, pulse, self._inspection_state(), int(self.monotonic() * 1_000_000_000)
+        )
+        if reason is not None:
+            raise CalibrationError(reason)
+        self.inspection_approval = authority.approval_record(approval_id)
+        if not self.device.enable():
+            raise CalibrationError(self.device.last_refusal or "camera_pose_device_enable_refused")
+        if self._inspection_state() != issued_state:
+            raise CalibrationError("camera_inspection_live_state_changed")
+        guard = self._inspection_motion_guard(expires_at_ns, issued_state, self.monotonic())
+        if guard is not None:
+            raise CalibrationError(guard)
+        self._forward_origin, _ = self._snapshot()
+        motion_id = self.device.calibration_drive_velocity(
+            pulse.velocity_m_s,
+            pulse.yaw_rate_deg_s,
+            pulse.duration_s,
+            host_lease=lambda now: self._inspection_motion_guard(expires_at_ns, issued_state, now),
+        )
+        motion_deadline = self.monotonic() + pulse.duration_s + LEASE_MAX_AGE_S
+        while self.device.motion_done(motion_id) is False:
+            self._require_lease()
+            if self.monotonic() >= motion_deadline:
+                self.device.stop()
+                raise CalibrationError("camera_pose_pulse_timeout")
+            self.sleep(0.01)
+        if self.device.motion_done(motion_id) is not True:
+            self.device.stop()
+            raise CalibrationError(self.device.last_refusal or "camera_pose_pulse_failed")
+        self.forward_pulses_completed = 1
+        self.forward_distance_m = self._forward_displacement(self._snapshot()[0])
+        self.device.stop()
+        stages["after_inspected_forward"] = self._capture_stage()
+
     def run(self) -> Path:
         self.output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         descriptor = os.open(self.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -786,6 +909,8 @@ class CameraPoseCaptureRunner(CalibrationRunner):
                         )
                 self._settle()
                 stages["after_forward"] = self._capture_stage()
+            elif self.mode == "inspected-forward":
+                self._run_inspected_forward(stages)
             else:
                 self._pulse_until(0.0, YAW_RATE_DEG_S, YAW_TARGET_DEG)
                 self._settle()
@@ -861,10 +986,18 @@ class CameraPoseCaptureRunner(CalibrationRunner):
             deadline=self._deadline,
             monotonic=self.monotonic,
         )
+        sequence = getattr(self, "_pause_sequence", 0) + 1
+        self._pause_sequence = sequence
+        pause_name = (
+            self.output.name + ".paused.json"
+            if sequence == 1
+            else self.output.name + f".paused-{sequence}.json"
+        )
         body = self._body(stages)
         body.update(
             {
                 "kind": "camera_calibration_poses_paused",
+                "pause_sequence": sequence,
                 "pause_reason": reason,
                 "pause_guard_evidence": self._pause_guard_evidence,
                 "completed_stages": stages,
@@ -895,7 +1028,7 @@ class CameraPoseCaptureRunner(CalibrationRunner):
         artifact = _encode(body)
         gate.publish(artifact)
         try:
-            written = _write_new(self.output.with_name(self.output.name + ".paused.json"), body)
+            written = _write_new(self.output.with_name(pause_name), body)
         except BaseException:
             gate.close()
             raise
@@ -929,6 +1062,16 @@ class CameraPoseCaptureRunner(CalibrationRunner):
             }
             if self.mode == "forward"
             else {
+                "shape": "inspected_forward_only",
+                "velocity_m_s": FORWARD_SPEED_M_S,
+                "target_distance_m": INSPECTED_FORWARD_TARGET_M,
+                "pulse_duration_s": 0.5,
+                "maximum_pulses": 1,
+                "measured_distance_m": self.forward_distance_m,
+                "pulses_completed": self.forward_pulses_completed,
+            }
+            if self.mode == "inspected-forward"
+            else {
                 "shape": "yaw_only",
                 "direction": "left",
                 "velocity_m_s": 0.0,
@@ -953,6 +1096,12 @@ class CameraPoseCaptureRunner(CalibrationRunner):
             "limits": _limits(),
             "lease_diagnostics": {"current_reason": self.lease.reason(self.monotonic())},
             "resume_decision": getattr(self, "_resume_decision", None),
+            "inspection_challenge": (
+                None
+                if self.inspection_challenge is None
+                else self.inspection_challenge.to_mapping()
+            ),
+            "inspection_approval": self.inspection_approval,
             "stages": stages,
         }
 
@@ -986,6 +1135,12 @@ def _limits() -> dict[str, object]:
                 "maximum_pulses": FORWARD_MAX_PULSES,
                 "max_wheel_travel_m": FORWARD_MAX_WHEEL_TRAVEL_M,
                 "max_yaw_degrees": FORWARD_MAX_YAW_DEG,
+            },
+            "inspected-forward": {
+                "target_distance_m": INSPECTED_FORWARD_TARGET_M,
+                "velocity_m_s": FORWARD_SPEED_M_S,
+                "pulse_duration_s": 0.5,
+                "maximum_pulses": 1,
             },
         },
     }
@@ -1052,6 +1207,8 @@ def camera_positioning_source_sha256() -> str:
     digest.update(calibration_source_sha256().encode())
     digest.update(b"tools/ohmni_camera_positioning.py\0")
     digest.update(hashlib.sha256(tool.read_bytes()).digest())
+    digest.update(b"tools/ohmni_camera_inspection.py\0")
+    digest.update(hashlib.sha256(Path(inspection.__file__).read_bytes()).digest())
     return digest.hexdigest()
 
 
@@ -1106,7 +1263,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lease-port", required=True, type=int)
     parser.add_argument("--lease-token-file", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--mode", required=True, choices=("baseline", "yaw", "forward"))
+    parser.add_argument(
+        "--mode", required=True, choices=("baseline", "yaw", "forward", "inspected-forward")
+    )
     parser.add_argument("--device-id", required=True, type=int)
     parser.add_argument("--resume-from", type=Path)
     parser.add_argument("--expected-boot-id", required=True)

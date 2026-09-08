@@ -511,6 +511,36 @@ def test_forward_guard_rechecks_existing_obstacle_policy_during_motion(
     runner._resume_gate.close()
 
 
+def test_later_live_pause_keeps_the_first_artifact_and_issues_a_fresh_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner, simulation = _simulated_capture_runner(
+        monkeypatch, tmp_path, sleep_factory=_obstacle_after_motion_sleep
+    )
+    runner._started = simulation.clock()
+    runner._deadline = simulation.clock() + runner.config.max_runtime_s
+    assert simulation.device.enable()
+    runner._initialize()
+    with pytest.raises(capture.CameraPosePaused):
+        runner._forward_until_target()
+    simulation.device.disable()
+    stages = {"before_motion": {"revolutions": []}}
+    runner._pause_for_live_resume(stages, "obstacle_within_clearance")
+    first = tmp_path / "capture.json.paused.json"
+    first_bytes = first.read_bytes()
+    runner._pause_for_live_resume(stages, "obstacle_within_clearance")
+    second = tmp_path / "capture.json.paused-2.json"
+
+    assert first.read_bytes() == first_bytes
+    assert json.loads(second.read_text())["pause_sequence"] == 2
+    with pytest.raises(CalibrationError, match="camera_pose_resume_owner_unavailable"):
+        capture._submit_live_resume(
+            capture._read_pause(first), boot_id="boot", device_id=12, source_sha256="source"
+        )
+    assert runner._resume_gate is not None
+    runner._resume_gate.close()
+
+
 def _yaw_overshoot_sleep(simulation: RunnerSimulation):
     original_sleep = simulation.sleep
 
@@ -668,35 +698,39 @@ def test_live_owner_resumes_only_after_a_cli_request_without_constructing_a_seco
     _set_forward_scan(simulation)
     monkeypatch.setattr(capture, "OhmniDevice", lambda *_args: pytest.fail("new device opened"))
 
-    assert capture.main(
-        [
-            "--lease-port",
-            "1",
-            "--lease-token-file",
-            str(tmp_path / "unused-token"),
-            "--output",
-            str(tmp_path / "ignored.json"),
-            "--mode",
-            "forward",
-            "--device-id",
-            "12",
-            "--resume-from",
-            str(paused_path),
-            "--expected-boot-id",
-            boot_id,
-            "--expected-source-sha256",
-            source_sha256,
-        ]
-    ) == 0
+    assert (
+        capture.main(
+            [
+                "--lease-port",
+                "1",
+                "--lease-token-file",
+                str(tmp_path / "unused-token"),
+                "--output",
+                str(tmp_path / "ignored.json"),
+                "--mode",
+                "forward",
+                "--device-id",
+                "12",
+                "--resume-from",
+                str(paused_path),
+                "--expected-boot-id",
+                boot_id,
+                "--expected-source-sha256",
+                source_sha256,
+            ]
+        )
+        == 0
+    )
     owner.join(2)
 
     assert not owner.is_alive()
     assert outcome == []
     document = json.loads((tmp_path / "capture.json").read_text())
     assert document["stages"]["before_motion"] == {"revolutions": []}
-    assert document["resume_decision"]["pause_evidence_sha256"] == hashlib.sha256(
-        paused_path.read_bytes()
-    ).hexdigest()
+    assert (
+        document["resume_decision"]["pause_evidence_sha256"]
+        == hashlib.sha256(paused_path.read_bytes()).hexdigest()
+    )
     assert simulation.device.motion is None
     assert not simulation.device.enabled
 
@@ -777,3 +811,95 @@ def test_live_resume_request_rejects_a_fabricated_pause_artifact(tmp_path: Path)
         capture._submit_live_resume(
             capture._read_pause(paused), boot_id="boot", device_id=12, source_sha256="source"
         )
+
+
+def _write_inspection_capture(challenge_path: Path) -> tuple[Path, Path]:
+    challenge = capture.inspection.parse_challenge(json.loads(challenge_path.read_text()))
+    parent = challenge_path.parent / "review"
+    parent.mkdir()
+    image, raw = parent / "frame.png", parent / "frame.raw"
+    image.write_bytes(b"image")
+    raw.write_bytes(b"raw")
+    pipeline = {"camera": "main"}
+    pipeline_sha = hashlib.sha256(
+        json.dumps(pipeline, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    frame = {
+        "inspection_challenge": challenge.to_mapping(),
+        "boot_id": challenge.source_boot_id,
+        "image_file": image.name,
+        "image_sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+        "source_file": raw.name,
+        "source_sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
+        "source_device_sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
+        "source_device_size_bytes": len(raw.read_bytes()),
+        "capture_pipeline_sha256": pipeline_sha,
+        "raw_capture_collection": "review",
+        "camera": "main",
+        "frame_index": 0,
+    }
+    frame_path = parent / "frame-000000.json"
+    frame_path.write_text(json.dumps(frame))
+    manifest_path = parent / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "inspection_challenge": challenge.to_mapping(),
+                "boot_id": challenge.source_boot_id,
+                "device_id": challenge.device_id,
+                "raw_capture_collection": "review",
+                "capture_pipeline": pipeline,
+                "capture_pipeline_sha256": pipeline_sha,
+            }
+        )
+    )
+    return frame_path, manifest_path
+
+
+def test_inspected_forward_consumes_one_verified_review_for_one_pulse(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner, simulation = _simulated_capture_runner(monkeypatch, tmp_path)
+    runner.mode = "inspected-forward"
+    runner.boot_id = "boot"
+    runner.executed_bundle_source_sha256 = capture.camera_positioning_source_sha256()
+    runner._capture_stage = lambda: {"revolutions": []}
+    raw_sleep = runner.sleep
+    submitted = False
+
+    def sleep(delay: float) -> None:
+        nonlocal submitted
+        raw_sleep(delay)
+        challenge_path = tmp_path / "capture.json.inspection-challenge.json"
+        if challenge_path.exists() and not submitted:
+            frame, manifest = _write_inspection_capture(challenge_path)
+            assert (
+                capture.inspection.main(
+                    [
+                        "--challenge",
+                        str(challenge_path),
+                        "--frame-record",
+                        str(frame),
+                        "--manifest",
+                        str(manifest),
+                        "--operator-id",
+                        "spotter",
+                        "--review-notes",
+                        "clear",
+                        "--accept",
+                    ]
+                )
+                == 0
+            )
+            submitted = True
+
+    runner.sleep = sleep
+    runner.run()
+
+    document = json.loads((tmp_path / "capture.json").read_text())
+    assert submitted
+    assert document["motion"]["pulses_completed"] == 1
+    assert document["inspection_approval"]["consumed"] is True
+    assert simulation.device.motion is None
+    assert not simulation.device.enabled
