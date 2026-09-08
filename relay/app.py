@@ -42,7 +42,13 @@ from relay.session import (
     RelaySession,
 )
 from relay.settings import AdapterBackend, RelaySettings, console_origins_from_env
-from relay.voice import MAX_AUDIO_BYTES, MAX_AUDIO_DURATION_MS, TranscriptService, VoiceOutcome
+from relay.voice import (
+    MAX_AUDIO_BYTES,
+    MAX_AUDIO_DURATION_MS,
+    MAX_TRANSCRIPT_CHARS,
+    TranscriptService,
+    VoiceOutcome,
+)
 
 IntentSinkFactory = Callable[[RelaySession], IntentSink | None]
 LeaveAuthorizerFactory = Callable[[str], LeaveAuthorizer | None]
@@ -1289,6 +1295,75 @@ def create_app(
             status_code=status_code,
         )
 
+    @application.post("/api/sessions/{session_id}/utterances", response_model=None)
+    async def utterance(
+        session_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+        correlation_id: str | None = Header(default=None, alias="X-Sweep-Correlation-Id"),
+    ) -> JSONResponse:
+        runtime = authorized_runtime(authorization)
+        try:
+            _validate_session_id(session_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid session ID") from None
+        session = runtime.sessions.get(session_id)
+        if session is None:
+            outcome = VoiceOutcome("refused", "template", "session_unavailable", None)
+            return JSONResponse(
+                outcome.to_dict(session_id=session_id, correlation_id=correlation_id or ""),
+                status_code=409,
+            )
+        max_utterance_bytes = MAX_TRANSCRIPT_CHARS * 4 + 64
+        content_length = _content_length(request.headers.get("content-length"))
+        if content_length is not None and content_length > max_utterance_bytes:
+            outcome = VoiceOutcome("refused", "template", "invalid_transcript", None)
+            return JSONResponse(
+                outcome.to_dict(session_id=session_id, correlation_id=correlation_id or ""),
+                status_code=413,
+            )
+        try:
+            raw = json.loads(
+                await _bounded_request_body(
+                    request,
+                    timeout_s=runtime.settings.transcript_upload_timeout_ms / 1_000,
+                    max_bytes=max_utterance_bytes,
+                )
+            )
+            if not isinstance(raw, dict) or set(raw) != {"text"}:
+                raise ValueError
+        except TimeoutError:
+            outcome = VoiceOutcome("refused", "template", "invalid_transcript", None)
+            return JSONResponse(
+                outcome.to_dict(session_id=session_id, correlation_id=correlation_id or ""),
+                status_code=408,
+            )
+        except ValueError as error:
+            outcome = VoiceOutcome("refused", "template", "invalid_transcript", None)
+            return JSONResponse(
+                outcome.to_dict(session_id=session_id, correlation_id=correlation_id or ""),
+                status_code=413 if str(error) == "upload_too_large" else 400,
+            )
+        except json.JSONDecodeError:
+            outcome = VoiceOutcome("refused", "template", "invalid_transcript", None)
+            return JSONResponse(
+                outcome.to_dict(session_id=session_id, correlation_id=correlation_id or ""),
+                status_code=400,
+            )
+        outcome = await asyncio.to_thread(
+            application.state.transcript_service.process_text,
+            session_id=session_id,
+            correlation_id=correlation_id or "",
+            text=raw["text"],
+            relay_state=session.current_state(),
+            rooms=runtime.authoritative_rooms(session),
+            now_ms=runtime.clock(),
+            refresh_state=lambda: (session.current_state(), runtime.clock()),
+        )
+        return JSONResponse(
+            outcome.to_dict(session_id=session_id, correlation_id=correlation_id or "")
+        )
+
     return application
 
 
@@ -1313,11 +1388,13 @@ def _same_state_projection(left: Mapping[str, object], right: Mapping[str, objec
     }
 
 
-async def _bounded_request_body(request: Request, *, timeout_s: float = 15.0) -> bytes:
+async def _bounded_request_body(
+    request: Request, *, timeout_s: float = 15.0, max_bytes: int = MAX_AUDIO_BYTES
+) -> bytes:
     body = bytearray()
     async with asyncio.timeout(timeout_s):
         async for chunk in request.stream():
-            if len(chunk) > MAX_AUDIO_BYTES - len(body):
+            if len(chunk) > max_bytes - len(body):
                 raise ValueError("upload_too_large")
             body.extend(chunk)
     return bytes(body)

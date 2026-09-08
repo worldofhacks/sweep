@@ -179,6 +179,46 @@ describe('transcript upload client', () => {
     expect(trackedFetcher.mock.contexts[0]).toBeUndefined()
   })
 
+  test('posts typed text to the authenticated semantic compiler endpoint', async () => {
+    const typedPlan = compiledPlan({ transcript: 'Go to the atrium.' })
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          outcomeWith(typedPlan, {
+            source: 'typed',
+            transcript: 'Go to the atrium.',
+          }),
+        ),
+        { status: 200 },
+      ),
+    )
+    const client = new HttpTranscriptClient(
+      { baseUrl: 'wss://relay.example/internal', token: 'relay-token' },
+      fetcher,
+    )
+
+    const outcome = await client.compileText({
+      sessionId: 'session-1',
+      correlationId: 'voice-plan',
+      text: 'Go to the atrium.',
+    })
+
+    expect(outcome.source).toBe('typed')
+    expect(outcome.emissions).toEqual([])
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://relay.example/internal/api/sessions/session-1/utterances',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer relay-token',
+          'Content-Type': 'application/json',
+          'X-Sweep-Correlation-Id': 'voice-plan',
+        },
+        body: JSON.stringify({ text: 'Go to the atrium.' }),
+      }),
+    )
+  })
+
   test('sends bounded recorded audio to the authenticated relay endpoint', async () => {
     const fetcher = vi.fn().mockResolvedValue(
       new Response(

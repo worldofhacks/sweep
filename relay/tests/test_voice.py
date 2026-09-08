@@ -263,6 +263,124 @@ def test_transcript_endpoint_passes_only_session_authoritative_rooms_to_compiler
     assert compiler.calls[0][3] == ("room-from-authoritative-catalog",)
 
 
+def test_typed_utterance_endpoint_uses_the_grounded_compiler_and_never_emits(
+    tmp_path: Path,
+) -> None:
+    settings = RelaySettings(relay_token=CONSOLE_KEY, log_dir=tmp_path)
+    compiler = SpyCompiler()
+    app = create_app(settings)
+    runtime = RelayRuntime(
+        settings,
+        authoritative_rooms_factory=lambda session: (
+            ("room-from-authoritative-catalog",) if session.session_id == SESSION else ()
+        ),
+    )
+    app.state.relay_runtime = runtime
+    app.state.transcript_service = TranscriptService(
+        transcription=FixedTranscriptionTransport(),
+        compiler=compiler,
+    )
+    runtime.session(SESSION)
+
+    async def request() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            return await client.post(
+                f"/api/sessions/{SESSION}/utterances",
+                headers={
+                    "Authorization": f"Bearer {CONSOLE_KEY.decode()}",
+                    "Content-Type": "application/json",
+                    "X-Sweep-Correlation-Id": "typed-authoritative-rooms",
+                },
+                json={"text": "Go to the atrium."},
+            )
+
+    response = asyncio.run(request())
+    assert response.status_code == 200
+    assert response.json() == {
+        "v": 1,
+        "type": "voice_outcome",
+        "session": SESSION,
+        "correlation_id": "typed-authoritative-rooms",
+        "status": "transcribed",
+        "source": "typed",
+        "reason": None,
+        "transcript": "Go to the atrium.",
+        "emissions": [],
+        "plan": None,
+    }
+    assert compiler.calls[0][0] == "Go to the atrium."
+    assert compiler.calls[0][3] == ("room-from-authoritative-catalog",)
+
+
+@pytest.mark.parametrize("payload", [{}, {"text": "hold", "extra": True}, []])
+def test_typed_utterance_endpoint_rejects_noncanonical_request_bodies(
+    tmp_path: Path, payload: object
+) -> None:
+    settings = RelaySettings(relay_token=CONSOLE_KEY, log_dir=tmp_path)
+    compiler = SpyCompiler()
+    app = create_app(settings)
+    runtime = RelayRuntime(settings)
+    app.state.relay_runtime = runtime
+    app.state.transcript_service = TranscriptService(
+        transcription=FixedTranscriptionTransport(),
+        compiler=compiler,
+    )
+    runtime.session(SESSION)
+
+    async def request() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            return await client.post(
+                f"/api/sessions/{SESSION}/utterances",
+                headers={
+                    "Authorization": f"Bearer {CONSOLE_KEY.decode()}",
+                    "Content-Type": "application/json",
+                    "X-Sweep-Correlation-Id": "typed-invalid-body",
+                },
+                json=payload,
+            )
+
+    response = asyncio.run(request())
+    assert response.status_code == 400
+    assert response.json()["reason"] == "invalid_transcript"
+    assert compiler.calls == []
+
+
+def test_typed_utterance_endpoint_refuses_nontext_without_compiling(tmp_path: Path) -> None:
+    settings = RelaySettings(relay_token=CONSOLE_KEY, log_dir=tmp_path)
+    compiler = SpyCompiler()
+    app = create_app(settings)
+    runtime = RelayRuntime(settings)
+    app.state.relay_runtime = runtime
+    app.state.transcript_service = TranscriptService(
+        transcription=FixedTranscriptionTransport(),
+        compiler=compiler,
+    )
+    runtime.session(SESSION)
+
+    async def request() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            return await client.post(
+                f"/api/sessions/{SESSION}/utterances",
+                headers={
+                    "Authorization": f"Bearer {CONSOLE_KEY.decode()}",
+                    "Content-Type": "application/json",
+                    "X-Sweep-Correlation-Id": "typed-nontext",
+                },
+                json={"text": 7},
+            )
+
+    response = asyncio.run(request())
+    assert response.status_code == 200
+    assert response.json()["reason"] == "invalid_transcript"
+    assert compiler.calls == []
+
+
 def test_voice_trace_records_duration_and_provider_plus_combined_cost() -> None:
     events: list[dict[str, object]] = []
 

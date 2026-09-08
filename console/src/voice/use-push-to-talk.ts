@@ -245,6 +245,40 @@ export function usePushToTalk({
     timerRef.current = setTimeout(stop, maxRecordingMs)
   }, [clearTimer, client, maxRecordingMs, nextId, now, recorderFactory, requestAudio, sessionId, stop])
 
+  const compileText = useCallback(async (text: string) => {
+    if (sessionRef.current !== sessionId || clientRef.current !== client) return
+    if (!client.compileText) {
+      setStatus('error')
+      setDetail('The relay has no typed language compiler. Nothing was emitted.')
+      return
+    }
+    const generation = ++generationRef.current
+    const requestSession = sessionId
+    const correlationId = nextId()
+    const isCurrent = () =>
+      generationRef.current === generation && sessionRef.current === requestSession && clientRef.current === client
+    setStateScope({ sessionId: requestSession, client })
+    setStatus('uploading')
+    setDetail(null)
+    setOutcome(null)
+    try {
+      const received = await client.compileText({ sessionId: requestSession, correlationId, text })
+      if (!isCurrent()) return
+      if (received.session !== requestSession || received.correlation_id !== correlationId) {
+        setStatus('error')
+        setDetail('Language compiler returned a response for another request. Nothing was emitted.')
+        return
+      }
+      setOutcome(received)
+      setStatus(received.status)
+      setDetail(received.reason)
+    } catch (error) {
+      if (!isCurrent()) return
+      setStatus('error')
+      setDetail(error instanceof Error ? error.message : 'Language compiler request failed. Nothing was emitted.')
+    }
+  }, [client, nextId, sessionId])
+
   useEffect(() => {
     sessionRef.current = sessionId
     clientRef.current = client
@@ -264,6 +298,7 @@ export function usePushToTalk({
     start,
     stop,
     reset,
+    compileText,
     isRecording: scopeIsCurrent && status === 'recording',
     startedAt: scopeIsCurrent ? startedAt : null,
     maxRecordingMs,

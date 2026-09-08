@@ -280,7 +280,7 @@ class VoicePlan:
 @dataclass(frozen=True, slots=True)
 class VoiceOutcome:
     status: Literal["transcribed", "refused"]
-    source: Literal["whisper", "template"]
+    source: Literal["whisper", "typed", "template"]
     reason: str | None
     transcript: str | None
     emissions: tuple[()] = ()
@@ -678,6 +678,95 @@ class TranscriptService:
                     session_id=session_id,
                     cost_usd=cost_usd,
                 )
+        return self._compile_transcript(
+            transcript,
+            source="whisper",
+            grounded_state=grounded_state,
+            grounded_rooms=grounded_rooms,
+            capability_version=capability_version,
+            now_ms=now_ms,
+            correlation_id=correlation_id,
+            session_id=session_id,
+            cost_usd=cost_usd,
+        )
+
+    def process_text(
+        self,
+        *,
+        session_id: str,
+        correlation_id: str,
+        text: object,
+        relay_state: object,
+        rooms: tuple[str, ...] = (),
+        now_ms: int,
+        refresh_state: Callable[[], tuple[object, int]] | None = None,
+    ) -> VoiceOutcome:
+        """Compile one typed utterance through the same grounded compiler as speech."""
+        if not is_valid_correlation_id(correlation_id):
+            return VoiceOutcome("refused", "template", "invalid_correlation_id", None)
+        try:
+            transcript = _validated_transcript(text)
+        except ValueError:
+            return self._complete(
+                VoiceOutcome("refused", "template", "invalid_transcript", None),
+                correlation_id=correlation_id,
+                session_id=session_id,
+                cost_usd=None,
+            )
+        try:
+            grounded_state = compiler_relay_state(relay_state)
+            grounded_rooms = compiler_rooms(rooms)
+            capability_version = compiler_capability_version(grounded_state)
+            if refresh_state is not None:
+                fresh_state, now_ms = refresh_state()
+                grounded_state = compiler_relay_state(fresh_state)
+                capability_version = compiler_capability_version(grounded_state)
+                _nonnegative_integer(now_ms)
+        except Exception:
+            return self._complete(
+                VoiceOutcome("refused", "template", "invalid_relay_state", transcript),
+                correlation_id=correlation_id,
+                session_id=session_id,
+                cost_usd=None,
+            )
+        self._record(
+            {
+                "event": "voice_started",
+                "correlation_id": correlation_id,
+                "session_id": session_id,
+                "model": "typed",
+                "content_type": "text/plain",
+                "bytes": len(transcript.encode()),
+                "audio_duration_ms": None,
+                "provider_cost_usd": None,
+                "combined_cost_usd": None,
+            }
+        )
+        return self._compile_transcript(
+            transcript,
+            source="typed",
+            grounded_state=grounded_state,
+            grounded_rooms=grounded_rooms,
+            capability_version=capability_version,
+            now_ms=now_ms,
+            correlation_id=correlation_id,
+            session_id=session_id,
+            cost_usd=None,
+        )
+
+    def _compile_transcript(
+        self,
+        transcript: str,
+        *,
+        source: Literal["whisper", "typed"],
+        grounded_state: Mapping[str, object],
+        grounded_rooms: tuple[str, ...],
+        capability_version: str,
+        now_ms: int,
+        correlation_id: str,
+        session_id: str,
+        cost_usd: float | None,
+    ) -> VoiceOutcome:
         try:
             compiler_result = self._compiler.compile(
                 transcript,
@@ -723,7 +812,7 @@ class TranscriptService:
                 cost_usd=cost_usd,
             )
         return self._complete(
-            VoiceOutcome("transcribed", "whisper", None, transcript, (), plan),
+            VoiceOutcome("transcribed", source, None, transcript, (), plan),
             correlation_id=correlation_id,
             session_id=session_id,
             cost_usd=cost_usd,

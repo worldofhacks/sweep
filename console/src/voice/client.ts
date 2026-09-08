@@ -15,14 +15,14 @@ export type VoiceOutcome = {
   session: string
   correlation_id: string
   status: 'transcribed' | 'refused'
-  source: 'whisper' | 'template'
+  source: 'whisper' | 'typed' | 'template'
   reason: string | null
   transcript: string | null
   emissions: []
   /**
    * The compiler's validated preview, present only when the relay has a
    * compiler and transcription succeeded. Absent or null means the relay
-   * answered in the original shape and the local fallback compiles instead.
+   * returned a validated semantic plan.
    */
   plan?: VoicePlan | null
 }
@@ -34,8 +34,15 @@ export type TranscriptRequest = {
   durationMs: number
 }
 
+export type TypedUtteranceRequest = {
+  sessionId: string
+  correlationId: string
+  text: string
+}
+
 export interface TranscriptClient {
   transcribe(request: TranscriptRequest): Promise<VoiceOutcome>
+  compileText?(request: TypedUtteranceRequest): Promise<VoiceOutcome>
 }
 
 export type HttpTranscriptClientConfig = {
@@ -52,6 +59,30 @@ export class HttpTranscriptClient implements TranscriptClient {
   constructor(config: HttpTranscriptClientConfig, fetcher: Fetcher = fetch) {
     this.config = config
     this.fetcher = fetcher
+  }
+
+  async compileText(request: TypedUtteranceRequest): Promise<VoiceOutcome> {
+    const fetcher = this.fetcher
+    const response = await fetcher(utteranceEndpoint(this.config.baseUrl, request.sessionId), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.config.token}`,
+        'Content-Type': 'application/json',
+        'X-Sweep-Correlation-Id': request.correlationId,
+      },
+      body: JSON.stringify({ text: request.text }),
+    })
+    if (!response.ok) throw new Error(textCompileFailure(response.status))
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      throw new Error('Language compiler returned an invalid response.')
+    }
+    if (!isVoiceOutcome(payload, request.sessionId, request.correlationId)) {
+      throw new Error('Language compiler returned an invalid response.')
+    }
+    return payload
   }
 
   async transcribe(request: TranscriptRequest): Promise<VoiceOutcome> {
@@ -84,6 +115,14 @@ export class HttpTranscriptClient implements TranscriptClient {
   }
 }
 
+function textCompileFailure(status: number): string {
+  if (status === 400) return 'Typed language input was rejected by the relay.'
+  if (status === 401) return 'Language compiler authentication failed.'
+  if (status === 404 || status === 405) return 'The relay has no typed language compiler. Nothing was emitted.'
+  if (status === 413) return 'Typed language input exceeds the relay limit.'
+  return 'Language compiler request failed.'
+}
+
 function responseFailure(status: number): string {
   if (status === 400) return 'Voice request was rejected by the relay.'
   if (status === 401) return 'Voice relay authentication failed.'
@@ -100,10 +139,22 @@ export class UnavailableTranscriptClient implements TranscriptClient {
     this.reason = reason
   }
 
+
   async transcribe(request: TranscriptRequest): Promise<VoiceOutcome> {
     void request
     throw new Error(this.reason)
   }
+
+  async compileText(request: TypedUtteranceRequest): Promise<VoiceOutcome> {
+    void request
+    throw new Error(this.reason)
+  }
+}
+
+export function utteranceEndpoint(baseUrl: string, sessionId: string): string {
+  const url = relayHttpUrl(baseUrl, `/api/sessions/${encodeURIComponent(sessionId)}/utterances`)
+  if (!url) throw new Error('Relay URL must use ws, wss, http, or https.')
+  return url
 }
 
 export function transcriptEndpoint(baseUrl: string, sessionId: string): string {
@@ -121,7 +172,7 @@ export function isVoiceOutcome(value: unknown, sessionId: string, correlationId:
     record.session === sessionId &&
     record.correlation_id === correlationId &&
     (record.status === 'transcribed' || record.status === 'refused') &&
-    (record.source === 'whisper' || record.source === 'template') &&
+    (record.source === 'whisper' || record.source === 'typed' || record.source === 'template') &&
     (record.reason === null || typeof record.reason === 'string') &&
     (record.transcript === null || typeof record.transcript === 'string') &&
     Array.isArray(record.emissions) &&
