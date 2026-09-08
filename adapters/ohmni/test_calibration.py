@@ -695,3 +695,39 @@ def test_multistage_runner_reaches_two_independent_translations_within_fixed_bud
     assert simulation.device.motion is None
     assert not simulation.device.enabled
     assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]
+
+
+def test_interrupted_second_leg_preserves_three_raw_stages_and_exact_stop_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import json
+
+    from .calibration import CalibrationError, CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch)
+    output = tmp_path / "capture.json"
+    def interrupt_second_leg(delay: float) -> None:
+        pose = simulation.device.odometry.snapshot(simulation.clock())
+        if 55 < pose.yaw_deg < 70 and simulation.units[0] != simulation.units[1]:
+            simulation.device.stop()
+            simulation.device.last_refusal = "raw_lidar_revolution_stale"
+        simulation.sleep(delay)
+
+    with pytest.raises(CalibrationError, match="raw_lidar_revolution_stale"):
+        CalibrationRunner(
+            simulation.device, simulation.lease, output,
+            monotonic=simulation.clock, sleep=interrupt_second_leg,
+            config=CalibrationConfig.multistage(), device_id=12,
+            boot_id="unit12-test-boot", executed_bundle_source_sha256="a" * 64,
+        ).run()
+    assert not output.exists()
+    failure = json.loads((tmp_path / "capture.json.failed.json").read_text())
+    assert failure["kind"] == "ohmni_lidar_calibration_failed_attempt"
+    assert failure["device_id"] == 12
+    assert failure["boot_id"] == "unit12-test-boot"
+    assert failure["device_refusal"] == "raw_lidar_revolution_stale"
+    assert set(failure["completed_stages"]) == {"baseline", "after_forward", "after_yaw"}
+    assert all(len(stage["revolutions"]) == 10 for stage in failure["completed_stages"].values())
+    assert not simulation.device.enabled
+    assert simulation.device.motion is None
+    assert simulation.units == (0, 0)

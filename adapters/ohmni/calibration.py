@@ -316,8 +316,12 @@ class CalibrationRunner:
                 stages["after_cross_forward"] = self._capture_stage()
             self.device.disable()
             self._write(stages, descriptor)
-        except BaseException:
+        except BaseException as error:
             self._remove_owned_output(descriptor)
+            try:
+                self.device.disable()
+            finally:
+                self._write_failure(stages, error)
             raise
         finally:
             try:
@@ -521,7 +525,7 @@ class CalibrationRunner:
                 self.sleep(0.01)
             if self.device.motion_done(motion_id) is not True:
                 self.device.stop()
-                raise CalibrationError("calibration_pulse_failed")
+                raise CalibrationError(self.device.last_refusal or "calibration_pulse_failed")
             pose_after, _ = self._snapshot()
             pulse_progress = (
                 math.hypot(pose_after.x - pose_before.x, pose_after.y - pose_before.y)
@@ -543,6 +547,32 @@ class CalibrationRunner:
 
     def _yaw(self) -> None:
         self._pulse_until(0.0, self.config.yaw_rate_deg_s, self.config.yaw_degrees)
+
+    def _write_failure(self, stages: dict[str, object], error: BaseException) -> None:
+        wheel_travel, yaw = self._progress.values()
+        body = {
+            "schema_version": 1,
+            "kind": "ohmni_lidar_calibration_failed_attempt",
+            "device_id": self.device_id,
+            "boot_id": self.boot_id,
+            "executed_bundle_source_sha256": self.executed_bundle_source_sha256,
+            "failure": str(error),
+            "device_refusal": self.device.last_refusal,
+            "elapsed_s": self.monotonic() - self._started,
+            "wheel_travel_m": wheel_travel,
+            "yaw_travel_deg": yaw,
+            "limits": asdict(self.config),
+            "completed_stages": stages,
+        }
+        encoded = (json.dumps(body, separators=(",", ":"), allow_nan=False) + "\n").encode()
+        if len(encoded) > MAX_OUTPUT_BYTES:
+            raise CalibrationError("calibration_diagnostics_exceed_byte_limit")
+        path = self.output.with_name(self.output.name + ".failed.json")
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def _write(self, stages: dict[str, object], descriptor: int) -> None:
         body = {
