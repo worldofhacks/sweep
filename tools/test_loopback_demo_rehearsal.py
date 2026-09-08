@@ -111,6 +111,11 @@ def _submit_console_intent(
         raise AssertionError(f"{intent_id} was not admitted")
 
 
+def _audit_events(rehearsal: LoopbackDemoRehearsal) -> list[dict[str, object]]:
+    path = rehearsal._composition.runtime.sessions[rehearsal.session_id].audit_log.path
+    return [json.loads(line)["event"] for line in path.read_text().splitlines()]
+
+
 def test_rehearsal_deployment_reloads_a_signed_fresh_session(tmp_path) -> None:
     now = epoch_ms()
     deployment, projector, pins = _rehearsal_deployment(
@@ -247,7 +252,11 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
         )
         _wait_for(
             lambda: (
-                (pose := rehearsal._composition.runtime.sessions[rehearsal.session_id].control_pose(1))
+                (
+                    pose := rehearsal._composition.runtime.sessions[
+                        rehearsal.session_id
+                    ].control_pose(1)
+                )
                 is not None
                 and 0 <= epoch_ms() - pose.fix_time_ms <= 20
             ),
@@ -286,7 +295,7 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
         )
 
 
-def test_loopback_rehearsal_holds_an_empty_aircraft_survey(tmp_path) -> None:
+def test_loopback_rehearsal_completes_an_empty_aircraft_survey(tmp_path) -> None:
     bootstrap = tmp_path / "bootstrap.json"
     with LoopbackDemoRehearsal(
         start_console=False,
@@ -325,31 +334,98 @@ def test_loopback_rehearsal_holds_an_empty_aircraft_survey(tmp_path) -> None:
         )
         search = rehearsal._composition.session(rehearsal.session_id).search_runtime
         assert search is not None
-        running = _wait_for(
+        status = _wait_for(
             lambda: (
-                status
-                if (status := search.status_payload(intent_id))["state"] == "running"
+                payload
+                if (payload := search.status_payload(intent_id))["state"] == "covered"
                 else None
+            ),
+            timeout_s=15,
+        )
+        assert status["mode"] == "survey"
+        assert status["candidates"] == []
+
+
+def test_loopback_rehearsal_hold_prevents_a_future_multiview_leg(tmp_path) -> None:
+    bootstrap = tmp_path / "bootstrap.json"
+    with LoopbackDemoRehearsal(
+        start_console=False,
+        bootstrap_path=bootstrap,
+        console_port=47770,
+    ) as rehearsal:
+        token = json.loads(bootstrap.read_text())["relay"]["token"]
+        base = f"http://127.0.0.1:{rehearsal.relay_port}/api/sessions/{rehearsal.session_id}"
+        _select_aircraft(rehearsal, token)
+        _wait_for(
+            lambda: (
+                (
+                    pose := rehearsal._composition.runtime.sessions[
+                        rehearsal.session_id
+                    ].control_pose(1)
+                )
+                is not None
+                and 2 <= epoch_ms() - pose.fix_time_ms <= 100
+            ),
+            timeout_s=3,
+        )
+        preview = _http_json(
+            f"{base}/multiview/preview",
+            token,
+            {
+                "intentId": "loopback-held-multiview",
+                "selected": [{"id": 1, "deviceClass": "aircraft", "epoch": 1}],
+                "viewpoints": [
+                    {"viewpointId": "west", "zoneId": "demo-west", "captureId": "held-west"},
+                    {"viewpointId": "east", "zoneId": "demo-east", "captureId": "held-east"},
+                ],
+            },
+        )
+        _http_json(
+            f"{base}/multiview/confirm",
+            token,
+            {key: preview[key] for key in ("previewId", "intentId", "previewHash")},
+        )
+        first_goto = _wait_for(
+            lambda: next(
+                (
+                    event
+                    for event in _audit_events(rehearsal)
+                    if event.get("type") == "command"
+                    and event.get("operation") == "goto"
+                    and event.get("intent_id", "").startswith("platform:")
+                ),
+                None,
             ),
             timeout_s=5,
         )
-        assert running["candidates"] == []
-
         _submit_console_intent(
             rehearsal,
             token,
-            intent_id="loopback-survey-hold",
+            intent_id="loopback-multiview-hold",
             name="hold",
             args={},
             selection=[1],
         )
-        status = _wait_for(
-            lambda: (
-                payload
-                if (payload := search.status_payload(intent_id))["state"] in {"hold", "cancelled"}
-                else None
+        hold = _wait_for(
+            lambda: next(
+                (
+                    event
+                    for event in _audit_events(rehearsal)
+                    if event.get("type") == "command"
+                    and event.get("operation") == "hover"
+                    and event.get("intent_id") == "loopback-multiview-hold"
+                ),
+                None,
             ),
             timeout_s=5,
         )
-        assert status["mode"] == "survey"
-        assert status["candidates"] == []
+        time.sleep(0.2)
+        later_gotos = [
+            event
+            for event in _audit_events(rehearsal)
+            if event.get("type") == "command"
+            and event.get("operation") == "goto"
+            and event.get("intent_id") == first_goto["intent_id"]
+            and event["t"] > hold["t"]
+        ]
+        assert later_gotos == []
