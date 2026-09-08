@@ -343,8 +343,7 @@ def _retained_capture(
     }
     plan_pin = _absolute_pin(root, f"{prefix}/plan.json", json.dumps(plan).encode())
     samples = [
-        {"position": target + offset, "target": target, "flags": "NONE"}
-        for offset in (12, 8, 10)
+        {"position": target + offset, "target": target, "flags": "NONE"} for offset in (12, 8, 10)
     ]
     step = {
         "boot_id": "boot-1",
@@ -405,9 +404,7 @@ def _retained_capture(
     image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_COLOR)
     assert image is not None
     raw = cv2.cvtColor(image, cv2.COLOR_BGR2YUV_UYVY)
-    ok, retained_frame = cv2.imencode(
-        ".png", cv2.cvtColor(raw, cv2.COLOR_YUV2BGR_UYVY)
-    )
+    ok, retained_frame = cv2.imencode(".png", cv2.cvtColor(raw, cv2.COLOR_YUV2BGR_UYVY))
     assert ok
     frame_pin = _absolute_pin(root, f"{prefix}/frame-000000.png", retained_frame.tobytes())
     raw_pin = _absolute_pin(

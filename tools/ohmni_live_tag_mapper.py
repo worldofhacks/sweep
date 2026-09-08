@@ -383,10 +383,7 @@ class ContinuousAcceptedObservationArchive:
     def stopped(self) -> bool:
         if not self._archive.stopped:
             return False
-        if (
-            self._index + 1 >= self.max_archives
-            or not self._archive_has_forward_content
-        ):
+        if self._index + 1 >= self.max_archives or not self._archive_has_forward_content:
             return True
         return not self._rotate()
 

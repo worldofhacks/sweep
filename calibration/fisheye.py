@@ -131,9 +131,7 @@ def _first_monotonic_theta_limit(distortion):
     )
     critical = np.polynomial.polynomial.polyroots(derivative)
     roots = [
-        float(np.sqrt(root.real))
-        for root in critical
-        if abs(root.imag) <= 1e-10 and root.real > 0
+        float(np.sqrt(root.real)) for root in critical if abs(root.imag) <= 1e-10 and root.real > 0
     ]
     return min([*roots, np.pi / 2])
 

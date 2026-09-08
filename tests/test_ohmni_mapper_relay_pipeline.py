@@ -83,10 +83,10 @@ class _Detector:
                 "tag_id": 7,
                 "pose_accepted": True,
                 "T_camera_tag": np.array(
-                        [
-                            [1.0, 0.0, 0.0, 1.0],
-                            [0.0, -1.0, 0.0, 2.0],
-                            [0.0, 0.0, -1.0, 3.0],
+                    [
+                        [1.0, 0.0, 0.0, 1.0],
+                        [0.0, -1.0, 0.0, 2.0],
+                        [0.0, 0.0, -1.0, 3.0],
                         [0.0, 0.0, 0.0, 1.0],
                     ]
                 ),
@@ -160,12 +160,8 @@ def _configuration(relay_reference_ms: int) -> ObservationConfiguration:
             (
                 FrameDeclaration("odom", "odom", "right_handed_z_up", "m", *pose_scope),
                 FrameDeclaration("body", "body", "forward_left_up", "m", *pose_scope),
-                FrameDeclaration(
-                    "odom", "odom", "right_handed_z_up", "m", *capture_pose_scope
-                ),
-                FrameDeclaration(
-                    "body", "body", "forward_left_up", "m", *capture_pose_scope
-                ),
+                FrameDeclaration("odom", "odom", "right_handed_z_up", "m", *capture_pose_scope),
+                FrameDeclaration("body", "body", "forward_left_up", "m", *capture_pose_scope),
                 FrameDeclaration("odom", "odom", "right_handed_z_up", "m", *lidar_scope),
                 FrameDeclaration("lidar", "lidar", "forward_left_up", "m", *lidar_scope),
                 FrameDeclaration("camera", "camera", "right_down_forward", "m", *camera_scope),
@@ -559,12 +555,15 @@ async def _run_continuous_map_pipeline(
         )
         async with connect(f"{url}/ws/{SESSION}") as localizer:
             await _authenticate(localizer, "localization", LOCALIZATION_KEY)
+
             async def submit_adapter(frame: Event) -> None:
                 await adapter.send(json.dumps(frame))
                 accepted = await _receive_until(
                     localizer,
-                    lambda event: event.get("type") == "observation"
-                    and event.get("event_id") == frame["event_id"],
+                    lambda event: (
+                        event.get("type") == "observation"
+                        and event.get("event_id") == frame["event_id"]
+                    ),
                 )
                 assert archive.observe(accepted)
 
@@ -574,8 +573,10 @@ async def _run_continuous_map_pipeline(
                     await localizer.send(json.dumps(event.to_mapping()))
                     accepted = await _receive_until(
                         localizer,
-                        lambda received, event=event: received.get("type") == "observation"
-                        and received.get("event_id") == event.event_id,
+                        lambda received, event=event: (
+                            received.get("type") == "observation"
+                            and received.get("event_id") == event.event_id
+                        ),
                     )
                     assert archive.observe(accepted)
                     count += 1
@@ -595,12 +596,10 @@ def test_runtime_pose_relay_archive_rotation_and_map_builder_share_measured_prov
     relay_server: _RelayServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, lidar_config, request_path, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
-    calibration_id = "sha256:" + hashlib.sha256(
-        (evidence / "calibration.json").read_bytes()
-    ).hexdigest()
-    monkeypatch.setattr(
-        "adapters.ohmni.runtime._kernel_boot_id", lambda: "mapper-pipeline-boot"
+    calibration_id = (
+        "sha256:" + hashlib.sha256((evidence / "calibration.json").read_bytes()).hexdigest()
     )
+    monkeypatch.setattr("adapters.ohmni.runtime._kernel_boot_id", lambda: "mapper-pipeline-boot")
     collection, capture_pose = asyncio.run(
         _run_continuous_map_pipeline(relay_server.url, tmp_path / "collection", calibration_id)
     )

@@ -596,9 +596,7 @@ def test_continuous_archive_stops_before_exceeding_its_combined_consumer_limit(
         tmp_path / limit,
         scope=scope,
         mapper=mapper.config,
-        config=ArchiveConfig(
-            "ohmni-pose", "ohmni-lidar", "odom", "body", "lidar", max_records=2
-        ),
+        config=ArchiveConfig("ohmni-pose", "ohmni-lidar", "odom", "body", "lidar", max_records=2),
         max_archives=3,
     )
 

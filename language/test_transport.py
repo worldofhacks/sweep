@@ -193,7 +193,9 @@ def test_compiler_uses_active_pinned_model_and_strict_tool_schema(monkeypatch) -
     assert isinstance(tools, list)
     assert tools[0]["strict"] is True
     intent_schema = tools[0]["input_schema"]["properties"]["intents"]["items"]
-    assert intent_schema["properties"]["name"]["enum"] == [name.value for name in IntentName]
+    assert intent_schema["properties"]["name"]["enum"] == [
+        name.value for name in IntentName if name is not IntentName.NAVIGATE
+    ]
     assert "land" in intent_schema["properties"]["name"]["enum"]
     assert intent_schema["properties"]["args"]["additionalProperties"] is False
     assert {

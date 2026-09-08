@@ -542,8 +542,7 @@ def _retained_motion_encoder(
             and earliest_ns <= encoder["left_receipt_ns"]
             and encoder["right_receipt_ns"] <= completed_ns
             and encoder["left_receipt_ns"] <= encoder["right_receipt_ns"]
-            and encoder["right_receipt_ns"] - encoder["left_receipt_ns"]
-            <= MAX_ENCODER_PAIR_SKEW_NS
+            and encoder["right_receipt_ns"] - encoder["left_receipt_ns"] <= MAX_ENCODER_PAIR_SKEW_NS
         )
 
     direct = value.get("encoder")
