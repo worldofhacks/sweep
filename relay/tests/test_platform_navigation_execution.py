@@ -566,11 +566,13 @@ def test_tracking_failure_stops_the_platform_route_when_reporting_fails(
 
                     monkeypatch.setattr(session, "admit_safety_stop", retry_once)
                 else:
-                    monkeypatch.setattr(
-                        autonomy,
-                        "_route",
-                        lambda _job: (_ for _ in ()).throw(RuntimeError("routing unavailable")),
-                    )
+                        monkeypatch.setattr(
+                            autonomy,
+                            "_route",
+                            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                                RuntimeError("routing unavailable")
+                            ),
+                        )
                 events = autonomy.fail_navigation_tracking(
                     NavigationTrackingError(active, "control pose lost before execution wait")
                 )

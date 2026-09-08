@@ -1307,8 +1307,6 @@ class AutonomySession:
         for victim in victims:
             if self.navigation_wire is not None:
                 self.navigation_wire.retire_intent(victim.intent.intent_id)
-            if not report_multiview:
-                continue
             try:
                 event = session.record_lifecycle(
                     intent_id=victim.intent.intent_id,
@@ -1332,15 +1330,16 @@ class AutonomySession:
                     self.ground_navigation.deployment.cancel(ground.plan)
             if event is not None:
                 stop.publications.append(event)
-            try:
-                self._composition.report_multiview_lifecycle(
-                    self.session_id,
-                    victim.intent.intent_id,
-                    victim.intent.name.value,
-                    "invalidated",
-                )
-            except Exception:
-                _LOGGER.exception("multiview lifecycle reporting failed for safety preemption")
+            if report_multiview:
+                try:
+                    self._composition.report_multiview_lifecycle(
+                        self.session_id,
+                        victim.intent.intent_id,
+                        victim.intent.name.value,
+                        "invalidated",
+                    )
+                except Exception:
+                    _LOGGER.exception("multiview lifecycle reporting failed for safety preemption")
 
     def _run(self, lane: _Lane) -> None:
         while True:
@@ -1770,7 +1769,11 @@ class AutonomySession:
                 _LOGGER.exception("navigation tracking safety hold retry could not be recorded")
                 events = []
         hold_job = _Job(safety_intent, session)
-        hold_lane = self._route(hold_job, report_multiview=False)
+        try:
+            hold_lane = self._route(hold_job, report_multiview=False)
+        except Exception:
+            _LOGGER.exception("navigation tracking safety hold could not be routed")
+            hold_lane = self._hold
         with hold_lane.ready:
             hold_lane.pending.append(hold_job)
             hold_lane.ready.notify()
