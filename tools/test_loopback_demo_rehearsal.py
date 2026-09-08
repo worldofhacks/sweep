@@ -67,8 +67,9 @@ def _select_aircraft(rehearsal: LoopbackDemoRehearsal, token: str) -> None:
                 }
             )
         )
-        for _ in range(32):
-            event = json.loads(socket.recv(timeout=10))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            event = json.loads(socket.recv(timeout=max(0.001, deadline - time.monotonic())))
             if event.get("intent_id") == "loopback-select" and event.get("source") == "autonomy":
                 return
         raise AssertionError("selection did not complete")
@@ -105,8 +106,9 @@ def _submit_console_intent(
                 }
             )
         )
-        for _ in range(32):
-            event = json.loads(socket.recv(timeout=10))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            event = json.loads(socket.recv(timeout=max(0.001, deadline - time.monotonic())))
             if event.get("intent_id") == intent_id and event.get("source") == "autonomy":
                 assert event["status"] in {"accepted", "completed"}, json.dumps(
                     event, sort_keys=True
@@ -371,11 +373,17 @@ def test_loopback_rehearsal_completes_an_empty_aircraft_survey(tmp_path) -> None
         status = _wait_for(
             lambda: (
                 payload
-                if (payload := search.status_payload(intent_id))["state"] == "covered"
+                if (payload := search.status_payload(intent_id))["state"]
+                in {"covered", "incomplete", "cancelled", "hold"}
                 else None
             ),
             timeout_s=120,
         )
+        if status["state"] != "covered":
+            diagnostics = {"search": status, **_navigation_diagnostics(rehearsal)}
+            (tmp_path / "search-diagnostics.json").write_text(json.dumps(diagnostics))
+            print(json.dumps(diagnostics, sort_keys=True))
+            raise AssertionError(diagnostics)
         assert status["mode"] == "survey"
         assert status["candidates"] == []
 
