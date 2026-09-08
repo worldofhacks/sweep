@@ -22,6 +22,8 @@ data class AircraftFacts(
     val vyNorth: Double = 0.0,
     val vzUp: Double = 0.0,
     val yawDeg: Double = 0.0,
+    val attitudeReceivedAtMonotonicMs: Long? = null,
+    val velocityReceivedAtMonotonicMs: Long? = null,
     /** The finite, takeoff-relative KeyAltitude value and the node's monotonic callback receipt time. */
     val localHeight: LocalHeightFacts? = null,
 ) {

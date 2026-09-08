@@ -39,6 +39,8 @@ class FakeAircraft(
             camera = camera,
             attitudeAvailable = connected,
             attitudeMeasuredAtMs = startedAtMs.takeIf { connected },
+            attitudeReceivedAtMonotonicMs = startedAtMs.takeIf { connected },
+            velocityReceivedAtMonotonicMs = startedAtMs.takeIf { connected },
         ),
     )
     override val snapshot: StateFlow<AircraftSnapshot> = _snapshot.asStateFlow()
@@ -61,6 +63,8 @@ class FakeAircraft(
                 velocityMeasuredAtMs = now.takeIf { aircraft },
                 attitudeAvailable = aircraft,
                 attitudeMeasuredAtMs = now.takeIf { aircraft },
+                attitudeReceivedAtMonotonicMs = now.takeIf { aircraft },
+                velocityReceivedAtMonotonicMs = now.takeIf { aircraft },
             )
         }
     }
@@ -125,6 +129,8 @@ class FakeAircraft(
             positionMeasuredAtMs = nowMs.takeIf { snapshot.positionAvailable },
             velocityMeasuredAtMs = nowMs.takeIf { snapshot.velocityAvailable },
             attitudeMeasuredAtMs = nowMs.takeIf { snapshot.attitudeAvailable },
+            attitudeReceivedAtMonotonicMs = nowMs.takeIf { snapshot.attitudeAvailable },
+            velocityReceivedAtMonotonicMs = nowMs.takeIf { snapshot.velocityAvailable },
         )
 
     companion object {

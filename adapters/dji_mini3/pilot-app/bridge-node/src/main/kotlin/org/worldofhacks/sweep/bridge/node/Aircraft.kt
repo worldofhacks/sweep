@@ -73,6 +73,8 @@ data class AircraftSnapshot(
     val authorityLostReason: String? = null,
     /** A finite KeyAltitude result and its monotonic receipt time; null until a real callback arrives. */
     val localHeight: LocalHeightMeasurement? = null,
+    val attitudeReceivedAtMonotonicMs: Long? = null,
+    val velocityReceivedAtMonotonicMs: Long? = null,
 )
 
 data class LocalHeightMeasurement(val zM: Double, val receivedAtMonotonicMs: Long) {

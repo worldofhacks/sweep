@@ -104,6 +104,8 @@ internal class ProbeAircraft(
     private var locationMeasuredAtMs: Long? = null
     private var velocityMeasuredAtMs: Long? = null
     private var attitudeMeasuredAtMs: Long? = null
+    private var attitudeReceivedAtMonotonicMs: Long? = null
+    private var velocityReceivedAtMonotonicMs: Long? = null
     private var altitudeMeasuredAtMs: Long? = null
     private var ultrasonicMeasuredAtMs: Long? = null
     private var flightMode: FlightMode? = null
@@ -479,8 +481,14 @@ internal class ProbeAircraft(
             binding.accept(value)
             when (binding.name) {
                 "KeyAircraftLocation3D" -> locationMeasuredAtMs = now
-                "KeyAircraftVelocity" -> velocityMeasuredAtMs = now
-                "KeyAircraftAttitude" -> attitudeMeasuredAtMs = now
+                "KeyAircraftVelocity" -> {
+                    velocityMeasuredAtMs = now
+                    velocityReceivedAtMonotonicMs = SystemClock.elapsedRealtime()
+                }
+                "KeyAircraftAttitude" -> {
+                    attitudeMeasuredAtMs = now
+                    attitudeReceivedAtMonotonicMs = SystemClock.elapsedRealtime()
+                }
                 "KeyAltitude" -> altitudeMeasuredAtMs = now
                 "KeyUltrasonicHeight" -> ultrasonicMeasuredAtMs = now
             }
@@ -597,6 +605,8 @@ internal class ProbeAircraft(
             yawDeg = yaw,
             attitudeAvailable = attitude != null && attitudeMeasuredAtMs != null,
             attitudeMeasuredAtMs = attitudeMeasuredAtMs,
+            attitudeReceivedAtMonotonicMs = attitudeReceivedAtMonotonicMs,
+            velocityReceivedAtMonotonicMs = velocityReceivedAtMonotonicMs,
             virtualStickEnabled = virtualStickEnabled,
             authorityLostReason = authorityLostReason,
             localHeight = altitude?.let { height ->
@@ -616,6 +626,8 @@ internal class ProbeAircraft(
         locationMeasuredAtMs = null
         velocityMeasuredAtMs = null
         attitudeMeasuredAtMs = null
+        attitudeReceivedAtMonotonicMs = null
+        velocityReceivedAtMonotonicMs = null
         altitudeMeasuredAtMs = null
         ultrasonicMeasuredAtMs = null
         flightMode = null

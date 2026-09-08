@@ -234,6 +234,8 @@ class FlightExecutor(
                 vyNorth = snapshot.vy,
                 vzUp = snapshot.vz,
                 yawDeg = snapshot.yawDeg,
+                attitudeReceivedAtMonotonicMs = snapshot.attitudeReceivedAtMonotonicMs.takeIf { snapshot.attitudeAvailable },
+                velocityReceivedAtMonotonicMs = snapshot.velocityReceivedAtMonotonicMs.takeIf { snapshot.velocityAvailable },
                 localHeight = snapshot.localHeight?.let { LocalHeightFacts(it.zM, it.receivedAtMonotonicMs) },
             )
         }

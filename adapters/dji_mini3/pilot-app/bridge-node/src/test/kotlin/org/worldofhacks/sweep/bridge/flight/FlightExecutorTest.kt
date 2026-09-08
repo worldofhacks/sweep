@@ -22,6 +22,8 @@ import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonString
 import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
 import org.worldofhacks.sweep.bridge.node.FlightStates
+import org.worldofhacks.sweep.bridge.node.AircraftSnapshot
+import org.worldofhacks.sweep.bridge.node.FakeAircraft
 import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.LinkTiming
 import org.worldofhacks.sweep.bridge.node.LocalHeightMeasurement
@@ -39,6 +41,32 @@ import org.worldofhacks.sweep.bridge.node.StubRelay
  * sees it (readiness `control_authority=false`, `node_status.authority_change_reason`).
  */
 class FlightExecutorTest {
+    @Test
+    fun `aircraft facts preserve callback receipts and discard unavailable measurements`() {
+        val snapshot = AircraftSnapshot(
+            hardware = FakeAircraft.FAKE_PROFILE,
+            yawDeg = 90.0,
+            attitudeAvailable = true,
+            attitudeMeasuredAtMs = 1_000_000,
+            attitudeReceivedAtMonotonicMs = 100,
+            vx = 0.3,
+            velocityAvailable = true,
+            velocityMeasuredAtMs = 1_000_001,
+            velocityReceivedAtMonotonicMs = 101,
+        )
+        val facts = FlightExecutor.facts(snapshot)
+        assertEquals(90.0, facts.yawDeg)
+        assertEquals(0.3, facts.speedMS)
+        assertEquals(100L, facts.attitudeReceivedAtMonotonicMs)
+        assertEquals(101L, facts.velocityReceivedAtMonotonicMs)
+        val unavailable = FlightExecutor.facts(snapshot.copy(attitudeAvailable = false, velocityAvailable = false))
+        assertEquals(null, unavailable.attitudeReceivedAtMonotonicMs)
+        assertEquals(null, unavailable.velocityReceivedAtMonotonicMs)
+        val unmeasured = FlightExecutor.facts(snapshot.copy(attitudeReceivedAtMonotonicMs = null, velocityReceivedAtMonotonicMs = null))
+        assertEquals(null, unmeasured.attitudeReceivedAtMonotonicMs)
+        assertEquals(null, unmeasured.velocityReceivedAtMonotonicMs)
+    }
+
     private val key = "adapter-key-0123456789abcdef0123456789abcdef".toByteArray(Charsets.UTF_8)
     private val timing = LinkTiming(telemetryHz = 10.0, watchdogPollMs = 20, initialBackoffMs = 50, maxBackoffMs = 200, authTimeoutMs = 2_000, joinFallbackMs = 500)
     private val phone = PhoneStatusSource { PhoneStatus(batteryPercent = 81, thermalState = PhoneThermalState.NONE) }

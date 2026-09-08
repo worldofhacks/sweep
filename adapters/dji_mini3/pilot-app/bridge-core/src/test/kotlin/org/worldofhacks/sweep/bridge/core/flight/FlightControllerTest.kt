@@ -90,6 +90,8 @@ class FlightControllerTest {
         var relayAlive = true
         private var localHeight: LocalHeightFacts? = if (supervisedVertical == null && navigationEnabled) LocalHeightFacts(1.2, clock.nowMs()) else null
         private var trackLocalHeight = supervisedVertical == null && navigationEnabled
+        var attitudeAgeMs: Long? = 0
+        var velocityAgeMs: Long? = 0
         private var localHeightDelayMs = 0L
         private var localHeightQuantumM: Double? = null
         private val localHeightHistory = ArrayDeque<Pair<Long, Double>>()
@@ -177,7 +179,11 @@ class FlightControllerTest {
                 val sampledHeight = if (quantumM == null) zUpM else round(zUpM / quantumM) * quantumM
                 localHeight = LocalHeightFacts(sampledHeight, receivedAtMs)
             }
-            controller.updateAircraft(model.facts.copy(localHeight = localHeight))
+            controller.updateAircraft(model.facts.copy(
+                localHeight = localHeight,
+                attitudeReceivedAtMonotonicMs = attitudeAgeMs?.let { clock.nowMs() - it },
+                velocityReceivedAtMonotonicMs = velocityAgeMs?.let { clock.nowMs() - it },
+            ))
         }
 
         fun navigation(
@@ -193,6 +199,7 @@ class FlightControllerTest {
             poseConnectionEpoch: Int = 1,
             trackingTimeoutMs: Long = 3_000,
             arrivalHoldTimeoutMs: Long = 0,
+            poseFreshnessMs: Long = 500,
         ) {
             val now = clock.nowMs()
             val authorization = NavigationRouteAuthorization(
@@ -203,7 +210,7 @@ class FlightControllerTest {
                 geometrySha256 = "a".repeat(64), cameraCalibrationSha256 = "a".repeat(64), bodyExtrinsicsSha256 = "a".repeat(64), worldTransformSha256 = "a".repeat(64),
                 controlSourceIds = listOf("tag-source"), segments = listOf(NavigationSegment(0, 0, 1_200, 0, 2_000, targetZMm, 300)),
                 maxSpeedMmS = 300, maxAccelerationMmS2 = 300, maxDecelerationMmS2 = 300, maxPositionUncertaintyMm = 100, maxCrossTrackMm = 300,
-                arrivalHorizontalToleranceMm = 200, arrivalVerticalToleranceMm = 200, poseFreshnessMs = 500, trackingTimeoutMs = trackingTimeoutMs,
+                arrivalHorizontalToleranceMm = 200, arrivalVerticalToleranceMm = 200, poseFreshnessMs = poseFreshnessMs, trackingTimeoutMs = trackingTimeoutMs,
                 flightApproved = true, signature = "0".repeat(64), arrivalHoldTimeoutMs = arrivalHoldTimeoutMs,
             )
             val ready = poseStatus == NavigationPose.Status.READY
@@ -280,6 +287,77 @@ class FlightControllerTest {
         assertEquals("landing", h.controller.status.phase)
         assertEquals("navigation_lost", h.controller.status.landingReason)
         assertFalse(h.model.virtualStickEnabled)
+    }
+
+    @Test
+    fun `mapped navigation refuses missing stale or future heading and velocity before enabling sticks`() {
+        for (heading in listOf(true, false)) {
+            for (ageMs in listOf(null, 501L, -1L)) {
+                val h = Harness(navigationEnabled = true)
+                if (heading) h.attitudeAgeMs = ageMs else h.velocityAgeMs = ageMs
+                h.hovering()
+                h.join()
+                h.navigation()
+                val route = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+                assertEquals("navigation_lost", route.terminal?.second, "heading=$heading age=$ageMs ${route.events}")
+                assertFalse(h.model.virtualStickEnabled)
+                assertTrue(h.frames.all { it.isNeutral })
+            }
+        }
+    }
+
+    @Test
+    fun `mapped navigation holds on telemetry loss while localization and height remain fresh`() {
+        for (heading in listOf(true, false)) {
+            val h = Harness(navigationEnabled = true)
+            h.hovering()
+            h.join()
+            h.navigation()
+            val route = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+            h.tick(2)
+            assertTrue(h.frames.any { !it.isNeutral })
+            if (heading) h.attitudeAgeMs = 501 else h.velocityAgeMs = 501
+            h.navigation()
+            h.tick()
+            assertEquals("navigation_lost", route.terminal?.second, route.events.toString())
+            assertEquals("navigation_hold", h.controller.status.phase)
+            assertTrue(h.frames.last().isNeutral)
+            h.tickMs(400)
+            assertEquals("landing", h.controller.status.phase)
+        }
+    }
+
+    @Test
+    fun `signed landing request keeps priority when heading and velocity disappear`() {
+        val h = Harness(navigationEnabled = true)
+        h.hovering()
+        h.join()
+        h.navigation()
+        h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        h.tick(2)
+        h.attitudeAgeMs = null
+        h.velocityAgeMs = null
+        h.navigation(poseStatus = NavigationPose.Status.LAND)
+        h.tick()
+        assertEquals("landing", h.controller.status.phase)
+        assertEquals("navigation_land", h.controller.status.landingReason)
+    }
+
+    @Test
+    fun `heading and velocity obey the tighter local or signed freshness limit`() {
+        for (signedLimitMs in listOf(100L, 1_000L)) {
+            for (heading in listOf(true, false)) {
+                val h = Harness(navigationEnabled = true)
+                val ageMs = minOf(500L, signedLimitMs) + 1
+                if (heading) h.attitudeAgeMs = ageMs else h.velocityAgeMs = ageMs
+                h.hovering()
+                h.join()
+                h.navigation(poseFreshnessMs = signedLimitMs)
+                val route = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+                assertEquals("navigation_lost", route.terminal?.second, route.events.toString())
+                assertFalse(h.model.virtualStickEnabled)
+            }
+        }
     }
 
     @Test

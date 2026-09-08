@@ -1077,6 +1077,16 @@ class FlightController(
             NavigationPose.Status.LAND -> return NavigationCheck.Invalid(FlightReason.NAVIGATION_LAND, "signed navigation pose requested landing")
             NavigationPose.Status.READY -> Unit
         }
+        val telemetryMaxAgeMs = minOf(local.poseFreshnessMs, authorization.poseFreshnessMs)
+        val telemetryNowMs = monotonicNowMs()
+        val attitudeTime = facts.attitudeReceivedAtMonotonicMs
+        if (!facts.yawDeg.isFinite() || attitudeTime == null || attitudeTime !in 0..telemetryNowMs || telemetryNowMs - attitudeTime > telemetryMaxAgeMs) {
+            return navigationLost("KeyAircraftAttitude is absent, invalid, future-dated, or older than $telemetryMaxAgeMs ms")
+        }
+        val velocityTime = facts.velocityReceivedAtMonotonicMs
+        if (!facts.speedMS.isFinite() || velocityTime == null || velocityTime !in 0..telemetryNowMs || telemetryNowMs - velocityTime > telemetryMaxAgeMs) {
+            return navigationLost("KeyAircraftVelocity is absent, invalid, future-dated, or older than $telemetryMaxAgeMs ms")
+        }
         val poseTime = pose.poseTimeMs ?: return navigationLost("ready navigation pose omitted pose time")
         val fixTime = pose.fixTimeMs ?: return navigationLost("ready navigation pose omitted fix time")
         val freshUntil = navigation.poseFreshUntilMs ?: return navigationLost("navigation pose has no local freshness deadline")
