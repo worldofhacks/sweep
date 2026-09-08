@@ -1,6 +1,7 @@
 """Offline safety regressions: no hardware sockets, threads or motor writes."""
 
 import asyncio
+import math
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from planner.models import CommandOperation
 from relay.auth import sign_event
 from relay.contracts import command_event, parse_command
 
+from . import device as device_module
 from .device import Config, Motion, OhmniDevice
 from .fake import FakeGroundDevice
 from .models import RangeScan
@@ -296,3 +298,43 @@ def test_missing_mount_is_read_only_even_with_valid_fake_pose():
     node = node_for(device, mount=False)
     node._on_heartbeat(heartbeat(node))
     assert not node._ready and not device.enabled
+
+
+@pytest.mark.parametrize(("wheel_diameter", "expected"), [(None, 150.5), ("152.4", 152.4)])
+def test_environment_wheel_model_reaches_integrated_wheel_distance(
+    monkeypatch, wheel_diameter, expected
+):
+    received = []
+
+    class EnvironmentDevice:
+        def __init__(self, config, *, camera=None):
+            received.append(config)
+
+    monkeypatch.setattr(device_module, "OhmniDevice", EnvironmentDevice)
+    monkeypatch.delenv("SWEEP_MEDIA_HOST", raising=False)
+    monkeypatch.delenv("SWEEP_ALLOW_NO_LIDAR", raising=False)
+    if wheel_diameter is None:
+        monkeypatch.delenv("SWEEP_WHEEL_DIAMETER_MM", raising=False)
+    else:
+        monkeypatch.setenv("SWEEP_WHEEL_DIAMETER_MM", wheel_diameter)
+    device_module.from_environment()
+    device = OhmniDevice(
+        received[0], shell_factory=Shell, lidar_discover=lambda: None, autostart=False
+    )
+    try:
+        device.odometry.update((1000, 1000), 1.0)
+        device.odometry.update((0, 2000), 1.1)
+        pose = device.odometry.snapshot(1.1)
+        assert pose.x == pytest.approx(math.pi * expected / (16384 * (30 / 11)))
+        assert pose.y == pytest.approx(0.0)
+        assert pose.yaw_deg == pytest.approx(0.0)
+        assert pose.quality > 0
+        assert not device.enabled
+    finally:
+        device.close()
+
+
+@pytest.mark.parametrize("invalid", [True, False, 0, -1, float("nan"), float("inf"), "152.4"])
+def test_invalid_wheel_model_is_refused_before_device_construction(invalid):
+    with pytest.raises(ValueError, match="wheel"):
+        Config(wheel_diameter_mm=invalid)

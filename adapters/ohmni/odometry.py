@@ -44,7 +44,11 @@ class Odometry:
     def __init__(
         self, shell: object, launch: tuple[float, float, float], *, wheel_diameter_mm: float = 150.5
     ) -> None:
-        if not math.isfinite(wheel_diameter_mm) or wheel_diameter_mm <= 0:
+        if (
+            type(wheel_diameter_mm) not in (int, float)
+            or not math.isfinite(wheel_diameter_mm)
+            or wheel_diameter_mm <= 0
+        ):
             raise ValueError("wheel diameter must be finite and positive")
         self.shell = shell
         self.ticks_per_mm = 16384 * (30 / 11) / (math.pi * wheel_diameter_mm)
@@ -72,8 +76,8 @@ class Odometry:
                 self.lost = True
                 self.pose = Pose(pose.x, pose.y, pose.yaw_deg)
                 return
-            left = encoder_delta(self._previous[0], pair[0]) / self.ticks_per_mm
-            right = -encoder_delta(self._previous[1], pair[1]) / self.ticks_per_mm
+            left = -encoder_delta(self._previous[0], pair[0]) / self.ticks_per_mm
+            right = encoder_delta(self._previous[1], pair[1]) / self.ticks_per_mm
             distance = (left + right) / 2000
             turn = (right - left) / BASE_MM
             yaw = math.radians(pose.yaw_deg)

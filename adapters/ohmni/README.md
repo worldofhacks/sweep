@@ -48,6 +48,7 @@ SWEEP_LIDAR_MOUNT_X_M=0.00
 SWEEP_LIDAR_MOUNT_Y_M=0.00
 SWEEP_LIDAR_MOUNT_Z_M=0.25
 SWEEP_LIDAR_MOUNT_YAW_DEG=0.00
+SWEEP_WHEEL_DIAMETER_MM=152.4
 ```
 
 Keep `SWEEP_RELAY_URL` at the verified `wss://` hostname. When the robot must dial a numeric address, set `SWEEP_RELAY_CONNECT_HOST` to that IPv4 or IPv6 address. The TCP connection uses the numeric address while TLS and the HTTP Host header use the hostname in `SWEEP_RELAY_URL`.

@@ -83,10 +83,13 @@ class Config:
             "scan_max_age_s",
             "owner_timeout_s",
             "motion_timeout_s",
+            "wheel_diameter_mm",
         ):
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value):
                 raise ValueError(f"{name} must be finite")
+        if self.wheel_diameter_mm <= 0:
+            raise ValueError("wheel diameter must be positive")
         if not 0 < self.max_speed_m_s <= 0.18:
             raise ValueError("drive speed exceeds the measured 0.18 m/s envelope")
         if not 0 < self.max_goto_m <= 2.0 or not 0 < self.scan_max_age_s <= 0.5:
@@ -673,6 +676,7 @@ class OhmniDevice:
 def from_environment(*, key: str = "") -> OhmniDevice:
     offset = os.environ.get("SWEEP_LIDAR_OFFSET_DEG")
     sign = os.environ.get("SWEEP_LIDAR_ANGLE_SIGN")
+    wheel_diameter = os.environ.get("SWEEP_WHEEL_DIAMETER_MM")
     if os.environ.get("SWEEP_ALLOW_NO_LIDAR", "0") not in ("", "0"):
         raise ValueError("LiDAR avoidance is mandatory; SWEEP_ALLOW_NO_LIDAR is not supported")
 
@@ -695,6 +699,7 @@ def from_environment(*, key: str = "") -> OhmniDevice:
         lidar_mount_y_m=measurement("SWEEP_LIDAR_MOUNT_Y_M"),
         lidar_mount_z_m=measurement("SWEEP_LIDAR_MOUNT_Z_M"),
         spotter_present=os.environ.get("SWEEP_SPOTTER") == "1",
+        wheel_diameter_mm=float(wheel_diameter) if wheel_diameter else Config.wheel_diameter_mm,
     )
     media_host = os.environ.get("SWEEP_MEDIA_HOST")
     camera = camera_from_environment(media_host, key) if media_host else None
