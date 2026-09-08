@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import asdict
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -114,6 +115,21 @@ def _submit_console_intent(
 def _audit_events(rehearsal: LoopbackDemoRehearsal) -> list[dict[str, object]]:
     path = rehearsal._composition.runtime.sessions[rehearsal.session_id].audit_log.path
     return [json.loads(line)["event"] for line in path.read_text().splitlines()]
+
+
+def _navigation_diagnostics(rehearsal: LoopbackDemoRehearsal) -> dict[str, object]:
+    session = rehearsal._composition.runtime.sessions[rehearsal.session_id]
+    return {
+        "drone": session.current_state()["drones"][0],
+        "control_pose": asdict(session.control_pose(1)) if session.control_pose(1) else None,
+        "navigation_events": [
+            event
+            for event in _audit_events(rehearsal)
+            if event.get("operation") == "goto"
+            or event.get("reason") is not None
+            or event.get("intent_id") == "loopback-multiview"
+        ],
+    }
 
 
 def test_rehearsal_deployment_reloads_a_signed_fresh_session(tmp_path) -> None:
@@ -282,7 +298,10 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
             status = _wait_for(terminal_status, timeout_s=15)
         except AssertionError as error:
             raise AssertionError(last_status) from error
-        assert status["status"] == "completed", status
+        assert status["status"] == "completed", {
+            "workflow": status,
+            **_navigation_diagnostics(rehearsal),
+        }
         assert [view["state"] for view in status["views"]] == ["completed", "completed"]
         captures = rehearsal._composition.runtime.sessions[rehearsal.session_id].current_state()[
             "captures"

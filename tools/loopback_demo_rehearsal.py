@@ -573,10 +573,17 @@ class LoopbackDemoRehearsal:
         self._started = True
 
     def _node_position(self) -> tuple[float, float, float] | None:
-        if self._node is None:
+        state = self._composition.runtime.sessions[self.session_id].current_state()
+        drone = next(
+            (item for item in state["drones"] if item.get("drone_id") == 1),
+            None,
+        )
+        telemetry = None if drone is None else drone.get("telemetry")
+        if not isinstance(telemetry, dict) or any(
+            not isinstance(telemetry.get(axis), (int, float)) for axis in ("x", "y", "z")
+        ):
             return None
-        aircraft = self._node._aircraft
-        return aircraft.x, aircraft.y, aircraft.z
+        return float(telemetry["x"]), float(telemetry["y"]), float(telemetry["z"])
 
     def stop(self) -> None:
         if self._pose_publisher is not None:
