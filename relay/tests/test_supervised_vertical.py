@@ -48,7 +48,7 @@ def _vertical_config() -> SupervisedVerticalConfig:
 
 
 @pytest.fixture
-def vertical_server(tmp_path: Path) -> Iterator[RelayServer]:
+def vertical_server(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[RelayServer]:
     settings = RelaySettings(
         relay_token=CONSOLE_KEY,
         adapter_keys={1: ADAPTER_KEY, GROUND_ID: GROUND_KEY},
@@ -60,7 +60,7 @@ def vertical_server(tmp_path: Path) -> Iterator[RelayServer]:
         node_watchdog_failsafe_ms=10_000,
         observation_configuration=_ground_observation_configuration(),
     )
-    config = _vertical_config()
+    config = getattr(request, "param", _vertical_config())
     app, composition = create_autonomy_app(settings, AutonomyConfig(supervised_vertical=config))
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -135,6 +135,63 @@ def test_supervised_vertical_round_trip_without_home_pose_or_gps_quality(
             event.get("intent_id") == translate_id and event.get("type") == "command"
             for event in records
         )
+    finally:
+        node.stop()
+        console.stop()
+
+
+@pytest.mark.parametrize(
+    "vertical_server",
+    [
+        replace(
+            _vertical_config(),
+            takeoff_altitude_m=1.2,
+            maximum_height_m=2.4384,
+            operator_declared_vertical_clearance_m=2.5908,
+        )
+    ],
+    indirect=True,
+)
+def test_reviewed_12m_profile_signs_the_2438mm_hard_ceiling(
+    vertical_server: RelayServer,
+) -> None:
+    console = ConsoleProbe(vertical_server.url)
+    node = FakeNode(
+        FakeNodeConfig(
+            relay_url=vertical_server.url,
+            session=SESSION,
+            drone_id=1,
+            token=ADAPTER_KEY.decode(),
+            adapter_id="vertical-12m-fake-node",
+            telemetry_hz=5.0,
+            home_pose_confirmed=False,
+        )
+    )
+    node._aircraft.pos_quality = 0.0
+    console.start()
+    node.start()
+    try:
+        _wait_until(
+            lambda: _home_unconfirmed_ready_with_height(vertical_server),
+            "GPS-denied node ready with SDK height",
+        )
+        _, select = _run(console, "select", [], {"ids": [1]})
+        assert select["status"] == "completed", select
+        _, arm = _run(console, "arm", [])
+        assert arm["status"] == "completed", arm
+        takeoff_id, takeoff = _run(console, "takeoff", [1], confirm=True)
+        assert takeoff["status"] == "completed", takeoff
+        records = [event["event"] for event in vertical_server.runtime.replay(SESSION)["events"]]
+        command = next(
+            event
+            for event in records
+            if event.get("type") == "command" and event.get("intent_id") == takeoff_id
+        )
+        assert command["args"] == {
+            "z_mm": 1_200,
+            "maximum_height_mm": 2_438,
+            "max_local_height_age_ms": 500,
+        }
     finally:
         node.stop()
         console.stop()

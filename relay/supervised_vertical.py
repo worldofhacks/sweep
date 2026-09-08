@@ -24,6 +24,7 @@ from relay.intent_v1 import IntentV1, Mode
 
 LOCAL_HEIGHT_SOURCE: Final = "flight_controller_altitude"
 MAX_SUPERVISED_VERTICAL_HEIGHT_M: Final = 2.5908
+REVIEWED_SUPERVISED_TAKEOFF_ALTITUDES_M: Final = frozenset({1.2, 1.8})
 SUPERVISED_VERTICAL_PROFILE = CapabilityProfile(
     name="supervised_vertical",
     enabled_intent_names=frozenset(
@@ -70,8 +71,11 @@ class SupervisedVerticalConfig:
                 or value <= 0
             ):
                 raise ValueError(f"{name} must be a finite positive number")
-        if self.takeoff_altitude_m != 1.8:
-            raise ValueError("takeoff_altitude_m must be the fixed 1.8 metre supervised height")
+        if self.takeoff_altitude_m not in REVIEWED_SUPERVISED_TAKEOFF_ALTITUDES_M:
+            raise ValueError(
+                "takeoff_altitude_m must be one of the reviewed supervised heights: "
+                "1.2 or 1.8 metres"
+            )
         if self.maximum_height_m > MAX_SUPERVISED_VERTICAL_HEIGHT_M:
             raise ValueError("maximum_height_m exceeds the 8.5 foot supervised ceiling")
         if self.takeoff_altitude_m > self.maximum_height_m:
