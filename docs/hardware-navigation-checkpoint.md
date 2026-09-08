@@ -24,6 +24,7 @@ replacement tags, remain part of the upcoming map test.
 | Drone registration | Each aircraft ID, connection epoch, phone build and world-to-local transform | Command admission and telemetry association |
 | Camera measurements | Delivered image dimensions, intrinsics, body/gimbal transform and frame-time uncertainty | Tag localization, photo provenance and search positions |
 | Control telemetry | Observed heading and velocity update intervals against the configured freshness limits | Mapped-flight admission and continued motion |
+| Position stream timing | Observed position disagreement during movement and the timing of adapter and localization updates | Arrival tolerance within the reserved tracking allowance |
 
 The map uses tag 38 as origin, positive X toward tag 39 and positive Z upward.
 Local takeoff-relative altitude and elevation in this map are different values.
@@ -56,6 +57,13 @@ Then bind the resulting map, geometry, allowed destinations, speed and stopping
 bounds, localization identities and selected vehicles in the navigation deployment.
 A checkpoint needs an arrival position and height that fit the measured volume.
 A named tag alone supplies no flight clearance.
+
+The relay checks agreement between adapter position and the signed control pose.
+Adapter telemetry carries its publication time; it does not carry the position
+measurement time retained on Android. Measure disagreement during movement before
+choosing the deployment's position tolerance, and keep that tolerance within the
+reserved tracking allowance. Publication times alone cannot establish sample
+alignment.
 
 The field environment needs these existing configuration inputs:
 

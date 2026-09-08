@@ -49,6 +49,15 @@ LAND and emergency control must retain priority. Tests need to call that convers
 and the navigation controller together; constructing already-valid facts would
 miss the defect.
 
+Position timing has a separate limitation. Android retains `positionMeasuredAtMs`,
+but its telemetry frame carries publication time. The relay compares that position
+with a localization pose evaluated at its mapped time. At the test fixture's
+0.2 m/s speed and 5 mm tolerance, a 25 ms sample offset can consume the whole
+tolerance. Field settings are still pending measurement, so this does not establish
+a field failure rate. Measure moving-stream disagreement and choose a tolerance
+within the reserved tracking allowance. A time-alignment calculation would first
+need trustworthy acquisition times for both positions.
+
 ## Mission identity and termination
 
 The multi-stop workflow retains a semantic child intent for each route. The relay
