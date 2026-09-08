@@ -107,6 +107,8 @@ class FakeNode:
         self._media_t = 0
         self._frame_counts: dict[str, int] = {}
         self._media: dict[str, dict[str, object]] = {}
+        self._navigation_route: dict[str, object] | None = None
+        self._navigation_pose: dict[str, object] | None = None
         self._outbound: asyncio.Queue[dict[str, object]] | None = None
         self._stop: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -214,6 +216,8 @@ class FakeNode:
             frame_type = frame.get("type")
             if frame_type == "command":
                 self._handle_command(frame)
+            elif frame_type in {"navigation_route_authorization", "navigation_pose"}:
+                self._handle_navigation_evidence(frame)
             elif frame_type == "membership" and frame.get("drone_id") == self.config.drone_id:
                 self._handle_membership(frame)
             elif frame_type == "state":
@@ -259,6 +263,20 @@ class FakeNode:
         self._enqueue(self._capabilities_frame())
         self._enqueue(self._node_status_frame())
         self._enqueue(self._capture_readiness_frame())
+
+    def _handle_navigation_evidence(self, frame: dict[str, object]) -> None:
+        if frame.get("device_id") != self.config.drone_id:
+            return
+        signature = frame.get("signature")
+        unsigned = {key: value for key, value in frame.items() if key != "signature"}
+        if not isinstance(signature, str) or not verify_event_signature(
+            unsigned, signature, self._key
+        ):
+            return
+        if frame.get("type") == "navigation_route_authorization":
+            self._navigation_route = frame
+        elif frame.get("status") == "ready":
+            self._navigation_pose = frame
 
     def _handle_command(self, raw: dict[str, object]) -> None:
         try:
@@ -532,14 +550,54 @@ class FakeNode:
             f"{aircraft.x}|{aircraft.y}|{aircraft.z}|{aircraft.yaw_deg}|"
             f"{aircraft.gimbal_pitch_deg}|{width}|{height}|{projection}"
         ).encode()
+        route, navigation_pose = self._navigation_route, self._navigation_pose
+        map_pose = (
+            route is not None
+            and navigation_pose is not None
+            and route.get("command_id") == navigation_pose.get("command_id")
+            and isinstance(route.get("expires_at_ms"), int)
+            and route["expires_at_ms"] > _epoch_ms()
+            and all(isinstance(navigation_pose.get(key), int) for key in ("x_mm", "y_mm", "z_mm"))
+        )
+        provenance = None
+        pose = {"x": aircraft.x, "y": aircraft.y, "z": aircraft.z}
+        if map_pose:
+            pose = {
+                "x": navigation_pose["x_mm"] / 1000,
+                "y": navigation_pose["y_mm"] / 1000,
+                "z": navigation_pose["z_mm"] / 1000,
+            }
+            provenance = {
+                "navigation_pose_event_id": navigation_pose["event_id"],
+                "navigation_pose_seq": navigation_pose["seq"],
+                "command_id": navigation_pose["command_id"],
+                "route_id": navigation_pose["route_id"],
+                "pose_time_ms": navigation_pose["pose_time_ms"],
+                "fix_time_ms": navigation_pose["fix_time_ms"],
+                "position_uncertainty_mm": navigation_pose["position_uncertainty_mm"],
+                **{
+                    key: navigation_pose[key]
+                    for key in (
+                        "navigation_config_id",
+                        "navigation_config_sha256",
+                        "map_version",
+                        "map_sha256",
+                        "geometry_sha256",
+                        "camera_calibration_sha256",
+                        "body_extrinsics_sha256",
+                        "world_transform_sha256",
+                        "control_source_ids",
+                    )
+                },
+            }
         record: dict[str, object] = {
             "capture_id": capture_id,
             "file_id": file_id,
             "timestamp_ms": self._media_t,
             "drone_id": self.config.drone_id,
             "connection_epoch": self._connection_epoch,
-            "pose": {"x": aircraft.x, "y": aircraft.y, "z": aircraft.z},
-            "position_frame": "dji_local_enu",
+            "pose": pose,
+            "position_frame": "map_enu" if map_pose else "dji_local_enu",
             "actual_yaw_deg": aircraft.yaw_deg,
             "yaw_frame": "dji_compass_deg",
             "gimbal_pitch_deg": aircraft.gimbal_pitch_deg,
@@ -552,7 +610,7 @@ class FakeNode:
             "checksum_sha256": sha256(payload).hexdigest(),
             "storage_ref": f"fake-node://media/{self.config.drone_id}/{file_id}",
             "retrieval_status": "completed",
-            "map_pose_provenance": None,
+            "map_pose_provenance": provenance,
         }
         self._media[file_id] = record
         return record
