@@ -20,7 +20,7 @@ Validation checked all 95 referenced source hashes, finite numeric values, and t
 
 ## Agreement with recorded dimensions
 
-Comparing tag-center distances in the final map against the recorded survey inputs gives these differences. The camera fit has no independent metric qualification, so these differences do not establish measurement error.
+Comparing tag-center distances in the final map against the original survey entries gives the differences below. The operator subsequently identified both conflicting floor-distance entries as mistakes and confirmed the provisional map. Keep the fitted geometry and retain those original entries as superseded inputs. No replacement tape readings or measured uncertainty were supplied.
 
 | Dimension | Recorded input | Fitted value | Difference |
 | --- | --- | --- | --- |
@@ -29,9 +29,9 @@ Comparing tag-center distances in the final map against the recorded survey inpu
 | Tag 15 center height | 56 in | 58.39 in, unconstrained fit | +2.39 in |
 | Tag 18 center height | 59 in | 63.31 in, unconstrained fit | +4.31 in |
 
-The hallway list contains 19 tags, including tag 53, which creates 18 gaps. Eighteen nominal 37-inch gaps total 666 inches, 5.27 inches below the fitted length. The recorded 629-inch length equals 17 such gaps. An omitted gap is a possible explanation to check against the physical endpoints.
+The hallway list contains 19 tags, including tag 53, which creates 18 gaps. Eighteen nominal 37-inch gaps total 666 inches, 5.27 inches below the fitted length. The superseded 629-inch length equals 17 such gaps, consistent with an omitted gap in the original count.
 
-The corridor-to-carpet cross-tie differs from the recorded input by 2.65 m. After reviewing this comparison, the operator confirmed the provisional map's tag 31–0 placement. Retain that placement and preserve the original 122-inch entry as a conflicting survey input. The confirmation supplies no new tape measurement or independent metric uncertainty. The 16–17 baseline sets the fit's scale; its exact agreement is imposed. The selected tag-18 candidate also uses the measured height as a constraint. Neither supplies independent validation.
+The corridor-to-carpet cross-tie differs from the superseded 122-inch entry by 2.65 m. The operator confirmed the provisional map's tag 31–0 placement. The 16–17 baseline sets the fit's scale; its exact agreement is imposed. The selected tag-18 candidate also uses the measured height as a constraint. Neither supplies independent validation.
 
 The recorded inputs are in `office-tag-layout-provisional-20260908/provisional-office-tag-layout.json`; the wall alternatives are in `unit12-live-camera-map-fit-20260908/wall-height-constrained-alternatives.json`, under the same capture-host root as the artifacts above.
 
