@@ -2,6 +2,7 @@ package org.worldofhacks.sweep.bridge.core.frames
 
 import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonArray
+import org.worldofhacks.sweep.bridge.core.json.JsonNull
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonString
 
@@ -72,6 +73,115 @@ data class WireIntrinsics(val widthPx: Int, val heightPx: Int, val horizontalFov
     }
 }
 
+enum class MediaPositionFrame(val wire: String) {
+    DJI_LOCAL_ENU("dji_local_enu"),
+    MAP_ENU("map_enu");
+
+    companion object {
+        fun fromWire(value: String): MediaPositionFrame? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+enum class MediaYawFrame(val wire: String) {
+    DJI_COMPASS_DEG("dji_compass_deg");
+
+    companion object {
+        fun fromWire(value: String): MediaYawFrame? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+data class MapPoseProvenance(
+    val navigationPoseEventId: String,
+    val navigationPoseSeq: Long,
+    val commandId: String,
+    val routeId: String,
+    val poseTimeMs: Long,
+    val fixTimeMs: Long,
+    val positionUncertaintyMm: Long,
+    val navigationConfigId: String,
+    val navigationConfigSha256: String,
+    val mapVersion: String,
+    val mapSha256: String,
+    val geometrySha256: String,
+    val cameraCalibrationSha256: String,
+    val bodyExtrinsicsSha256: String,
+    val worldTransformSha256: String,
+    val controlSourceIds: List<String>,
+) {
+    init {
+        require(listOf(navigationPoseEventId, commandId, routeId, navigationConfigId, mapVersion).all(::isMapIdentity)) {
+            "map pose provenance identities are invalid"
+        }
+        require(navigationPoseSeq > 0 && poseTimeMs >= fixTimeMs && fixTimeMs >= 0 && positionUncertaintyMm > 0) {
+            "map pose provenance timing is invalid"
+        }
+        require(
+            listOf(
+                navigationConfigSha256, mapSha256, geometrySha256, cameraCalibrationSha256,
+                bodyExtrinsicsSha256, worldTransformSha256,
+            ).all { it.length == 64 && it.all { char -> char in '0'..'9' || char in 'a'..'f' } },
+        ) { "map pose provenance hashes are invalid" }
+        require(controlSourceIds.isNotEmpty() && controlSourceIds == controlSourceIds.distinct().sorted() && controlSourceIds.all(::isMapIdentity)) {
+            "map pose provenance source identities are invalid"
+        }
+    }
+
+    fun toJson(): JsonObject = Json.json(
+        "navigation_pose_event_id" to navigationPoseEventId,
+        "navigation_pose_seq" to navigationPoseSeq,
+        "command_id" to commandId,
+        "route_id" to routeId,
+        "pose_time_ms" to poseTimeMs,
+        "fix_time_ms" to fixTimeMs,
+        "position_uncertainty_mm" to positionUncertaintyMm,
+        "navigation_config_id" to navigationConfigId,
+        "navigation_config_sha256" to navigationConfigSha256,
+        "map_version" to mapVersion,
+        "map_sha256" to mapSha256,
+        "geometry_sha256" to geometrySha256,
+        "camera_calibration_sha256" to cameraCalibrationSha256,
+        "body_extrinsics_sha256" to bodyExtrinsicsSha256,
+        "world_transform_sha256" to worldTransformSha256,
+        "control_source_ids" to controlSourceIds,
+    )
+
+    companion object {
+        private val FIELDS = setOf(
+            "navigation_pose_event_id", "navigation_pose_seq", "command_id", "route_id", "pose_time_ms", "fix_time_ms",
+            "position_uncertainty_mm", "navigation_config_id", "navigation_config_sha256", "map_version", "map_sha256",
+            "geometry_sha256", "camera_calibration_sha256", "body_extrinsics_sha256", "world_transform_sha256", "control_source_ids",
+        )
+
+        fun parse(json: JsonObject, code: String): MapPoseProvenance {
+            Fields.exact(json, FIELDS, code)
+            return try {
+                MapPoseProvenance(
+                    Fields.nonEmptyString(json["navigation_pose_event_id"], "navigation_pose_event_id", code),
+                    Fields.positiveInt(json["navigation_pose_seq"], "navigation_pose_seq", code),
+                    Fields.nonEmptyString(json["command_id"], "command_id", code),
+                    Fields.nonEmptyString(json["route_id"], "route_id", code),
+                    Fields.nonNegativeInt(json["pose_time_ms"], "pose_time_ms", code),
+                    Fields.nonNegativeInt(json["fix_time_ms"], "fix_time_ms", code),
+                    Fields.positiveInt(json["position_uncertainty_mm"], "position_uncertainty_mm", code),
+                    Fields.nonEmptyString(json["navigation_config_id"], "navigation_config_id", code),
+                    Fields.nonEmptyString(json["navigation_config_sha256"], "navigation_config_sha256", code),
+                    Fields.nonEmptyString(json["map_version"], "map_version", code),
+                    Fields.nonEmptyString(json["map_sha256"], "map_sha256", code),
+                    Fields.nonEmptyString(json["geometry_sha256"], "geometry_sha256", code),
+                    Fields.nonEmptyString(json["camera_calibration_sha256"], "camera_calibration_sha256", code),
+                    Fields.nonEmptyString(json["body_extrinsics_sha256"], "body_extrinsics_sha256", code),
+                    Fields.nonEmptyString(json["world_transform_sha256"], "world_transform_sha256", code),
+                    Fields.stringList(json["control_source_ids"], "control_source_ids", code, allowEmpty = false),
+                )
+            } catch (error: IllegalArgumentException) {
+                throw ContractError(code, error.message ?: "map pose provenance is invalid")
+            }
+        }
+    }
+}
+
+private fun isMapIdentity(value: String): Boolean = Fields.isCanonicalPrintable(value, 128)
+
 /** `relay.contracts.MediaFileRecord`: the `MediaFile` fields without the transport envelope. */
 data class MediaFileRecord(
     val captureId: String,
@@ -80,12 +190,15 @@ data class MediaFileRecord(
     val droneId: Int,
     val connectionEpoch: Int,
     val pose: WirePose,
+    val positionFrame: MediaPositionFrame = MediaPositionFrame.DJI_LOCAL_ENU,
     val actualYawDeg: Double,
+    val yawFrame: MediaYawFrame = MediaYawFrame.DJI_COMPASS_DEG,
     val gimbalPitchDeg: Double,
     val intrinsics: WireIntrinsics,
     val checksumSha256: String,
     val storageRef: String,
     val retrievalStatus: RetrievalStatus,
+    val mapPoseProvenance: MapPoseProvenance? = null,
 ) {
     init {
         require(isChecksum(checksumSha256)) { "checksum_sha256 must be 64 lowercase hex characters" }
@@ -94,6 +207,9 @@ data class MediaFileRecord(
         }
         require(retrievalStatus != RetrievalStatus.COMPLETED || checksumSha256 != PENDING_CHECKSUM) {
             "completed media requires a content checksum"
+        }
+        require((positionFrame == MediaPositionFrame.MAP_ENU) == (mapPoseProvenance != null)) {
+            "map-frame media requires map pose provenance"
         }
     }
 
@@ -104,20 +220,23 @@ data class MediaFileRecord(
         "drone_id" to droneId,
         "connection_epoch" to connectionEpoch,
         "pose" to pose.toJson(),
+        "position_frame" to positionFrame.wire,
         "actual_yaw_deg" to actualYawDeg,
+        "yaw_frame" to yawFrame.wire,
         "gimbal_pitch_deg" to gimbalPitchDeg,
         "intrinsics" to intrinsics.toJson(),
         "checksum_sha256" to checksumSha256,
         "storage_ref" to storageRef,
         "retrieval_status" to retrievalStatus.wire,
+        "map_pose_provenance" to (mapPoseProvenance?.toJson() ?: JsonNull),
     )
 
     companion object {
         /** The checksum of a `pending` record: no bytes have been hashed yet. */
         const val PENDING_CHECKSUM = "0000000000000000000000000000000000000000000000000000000000000000"
         val FIELDS = setOf(
-            "capture_id", "file_id", "timestamp_ms", "drone_id", "connection_epoch", "pose", "actual_yaw_deg",
-            "gimbal_pitch_deg", "intrinsics", "checksum_sha256", "storage_ref", "retrieval_status",
+            "capture_id", "file_id", "timestamp_ms", "drone_id", "connection_epoch", "pose", "position_frame", "actual_yaw_deg",
+            "yaw_frame", "gimbal_pitch_deg", "intrinsics", "checksum_sha256", "storage_ref", "retrieval_status", "map_pose_provenance",
         )
 
         fun isChecksum(value: String): Boolean = value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }
@@ -134,6 +253,15 @@ data class MediaFileRecord(
             if (status == RetrievalStatus.COMPLETED && checksum == PENDING_CHECKSUM) {
                 throw ContractError(code, "completed media requires a content checksum")
             }
+            val positionFrame = (json["position_frame"] as? JsonString)?.let { MediaPositionFrame.fromWire(it.value) }
+                ?: throw ContractError(code, "position_frame must be dji_local_enu or map_enu")
+            val yawFrame = (json["yaw_frame"] as? JsonString)?.let { MediaYawFrame.fromWire(it.value) }
+                ?: throw ContractError(code, "yaw_frame must be dji_compass_deg")
+            val provenance = when (val raw = json["map_pose_provenance"]) {
+                JsonNull -> null
+                is JsonObject -> MapPoseProvenance.parse(raw, code)
+                else -> throw ContractError(code, "map_pose_provenance must be an object or null")
+            }
             return MediaFileRecord(
                 captureId = Fields.nonEmptyString(json["capture_id"], "capture_id", code),
                 fileId = Fields.nonEmptyString(json["file_id"], "file_id", code),
@@ -141,12 +269,15 @@ data class MediaFileRecord(
                 droneId = Fields.positiveInt32(json["drone_id"], "drone_id", code),
                 connectionEpoch = Fields.positiveInt32(json["connection_epoch"], "connection_epoch", code),
                 pose = WirePose.parse(Fields.obj(json["pose"], "pose", code), code),
+                positionFrame = positionFrame,
                 actualYawDeg = Fields.finiteNumber(json["actual_yaw_deg"], "actual_yaw_deg", code),
+                yawFrame = yawFrame,
                 gimbalPitchDeg = Fields.finiteNumber(json["gimbal_pitch_deg"], "gimbal_pitch_deg", code),
                 intrinsics = WireIntrinsics.parse(Fields.obj(json["intrinsics"], "intrinsics", code), code),
                 checksumSha256 = checksum,
                 storageRef = Fields.nonEmptyString(json["storage_ref"], "storage_ref", code),
                 retrievalStatus = status,
+                mapPoseProvenance = provenance,
             )
         }
     }

@@ -168,12 +168,15 @@ def _panorama_record(capture_id: str, *, timestamp_ms: int = 100_100) -> MediaFi
         1,
         1,
         WirePose(0.0, 0.0, 1.0),
+        "dji_local_enu",
         0.0,
+        "dji_compass_deg",
         0.0,
         WireIntrinsics(4_096, 2_048, 360.0, "equirectangular"),
         "a" * 64,
         f"node://media/1/{capture_id}-pano-360",
         "completed",
+        None,
     )
 
 

@@ -321,7 +321,9 @@ def frame_vectors() -> dict[str, object]:
         "drone_id": 1,
         "connection_epoch": 1,
         "pose": {"x": 1.5, "y": -0.25, "z": 1.0},
+        "position_frame": "dji_local_enu",
         "actual_yaw_deg": 45.0,
+        "yaw_frame": "dji_compass_deg",
         "gimbal_pitch_deg": 0.0,
         "intrinsics": {
             "width_px": 4000,
@@ -332,6 +334,7 @@ def frame_vectors() -> dict[str, object]:
         "checksum_sha256": "0" * 64,
         "storage_ref": "aircraft://sdcard/DJI_0001.JPG",
         "retrieval_status": "pending",
+        "map_pose_provenance": None,
     }
     media_file = {
         "v": 1,

@@ -9,6 +9,8 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.random.Random
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,7 +30,9 @@ import org.worldofhacks.sweep.bridge.core.frames.AuthAccepted
 import org.worldofhacks.sweep.bridge.core.frames.AuthFrame
 import org.worldofhacks.sweep.bridge.core.frames.AuthRefused
 import org.worldofhacks.sweep.bridge.camera.CaptureReadinessBody
+import org.worldofhacks.sweep.bridge.camera.CaptureArrivalHold
 import org.worldofhacks.sweep.bridge.camera.CaptureReadinessSource
+import org.worldofhacks.sweep.bridge.camera.MapCapturePose
 import org.worldofhacks.sweep.bridge.camera.NodeFrameSink
 import org.worldofhacks.sweep.bridge.camera.NodeIdentity
 import org.worldofhacks.sweep.bridge.core.frames.CapabilitiesFrame
@@ -44,6 +48,7 @@ import org.worldofhacks.sweep.bridge.core.frames.LifecycleStatus
 import org.worldofhacks.sweep.bridge.core.frames.LocalHeight
 import org.worldofhacks.sweep.bridge.core.frames.MediaFileFrame
 import org.worldofhacks.sweep.bridge.core.frames.MediaFileRecord
+import org.worldofhacks.sweep.bridge.core.frames.MapPoseProvenance
 import org.worldofhacks.sweep.bridge.core.frames.MembershipEvent
 import org.worldofhacks.sweep.bridge.core.frames.MembershipFrame
 import org.worldofhacks.sweep.bridge.core.frames.NavigationPose
@@ -54,6 +59,7 @@ import org.worldofhacks.sweep.bridge.core.frames.RefusalEvent
 import org.worldofhacks.sweep.bridge.core.frames.StateEvent
 import org.worldofhacks.sweep.bridge.core.frames.TelemetryFrame
 import org.worldofhacks.sweep.bridge.core.frames.VideoPublishState
+import org.worldofhacks.sweep.bridge.core.frames.WirePose
 import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
 import org.worldofhacks.sweep.bridge.core.json.JsonParseException
@@ -938,6 +944,8 @@ class RelayLink(
             }
         }
 
+        override fun captureMapPose(hold: CaptureArrivalHold?): MapCapturePose? = this@RelayLink.captureMapPose(hold)
+
         override fun sendMediaFile(record: MediaFileRecord): Boolean = onLoop {
             val current = _state.value
             if (!current.joined || current.connectionEpoch != record.connectionEpoch || record.droneId != config.droneId) {
@@ -1088,6 +1096,44 @@ class RelayLink(
             pose.commandId == authorization.commandId && pose.routeId == authorization.routeId &&
             poseMatchesAuthorization(pose, authorization) &&
             _state.value.navigationPoseFreshUntilMs?.let { now < it } == true
+    }
+
+    private fun captureMapPose(hold: CaptureArrivalHold?): MapCapturePose? {
+        val arrival = hold ?: return null
+        val current = _state.value
+        val authorization = current.navigationAuthorization ?: return null
+        val pose = current.navigationPose ?: return null
+        val epoch = current.connectionEpoch ?: return null
+        val now = clock.nowMs()
+        val relayNow = admission.relayNowMs()
+        if (
+            !current.joined || epoch != pose.connectionEpoch ||
+            arrival.commandId != authorization.commandId || arrival.routeId != authorization.routeId ||
+            listOf(arrival.targetXMm, arrival.targetYMm, arrival.targetZMm) != authorization.target() ||
+            pose.status != NavigationPose.Status.READY || pose.commandId != arrival.commandId || pose.routeId != arrival.routeId ||
+            !authorization.verifies(config.key) || !pose.verifies(config.key) || !poseMatchesAuthorization(pose, authorization) ||
+            !navigationPinsMatch(authorization, navigationAdmission ?: return null) || authorization.expiresAtMs <= relayNow ||
+            current.navigationPoseFreshUntilMs?.let { now < it } != true
+        ) return null
+        val xMm = pose.xMm ?: return null
+        val yMm = pose.yMm ?: return null
+        val zMm = pose.zMm ?: return null
+        val poseTimeMs = pose.poseTimeMs ?: return null
+        val fixTimeMs = pose.fixTimeMs ?: return null
+        val uncertaintyMm = pose.positionUncertaintyMm ?: return null
+        val horizontal = hypot((xMm - arrival.targetXMm).toDouble(), (yMm - arrival.targetYMm).toDouble())
+        if (horizontal > arrival.arrivalHorizontalToleranceMm || abs(zMm - arrival.targetZMm) > arrival.arrivalVerticalToleranceMm) {
+            return null
+        }
+        return MapCapturePose(
+            WirePose(xMm / 1000.0, yMm / 1000.0, zMm / 1000.0),
+            MapPoseProvenance(
+                pose.eventId, pose.seq, pose.commandId, pose.routeId, poseTimeMs, fixTimeMs,
+                uncertaintyMm, pose.navigationConfigId, pose.navigationConfigSha256, pose.mapVersion,
+                pose.mapSha256, pose.geometrySha256, pose.cameraCalibrationSha256, pose.bodyExtrinsicsSha256,
+                pose.worldTransformSha256, pose.controlSourceIds,
+            ),
+        )
     }
 
     private inner class Report(private val command: CommandFrame) : CommandReport {

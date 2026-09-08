@@ -586,6 +586,11 @@ def _media_file(record: MediaFileRecord) -> MediaFile:
         checksum_sha256=record.checksum_sha256,
         storage_ref=record.storage_ref,
         retrieval_status=CameraResultStatus(record.retrieval_status),
+        position_frame=record.position_frame,
+        yaw_frame=record.yaw_frame,
+        map_pose_provenance=None
+        if record.map_pose_provenance is None
+        else record.map_pose_provenance.to_dict(),
     )
 
 

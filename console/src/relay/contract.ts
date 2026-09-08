@@ -386,6 +386,27 @@ export interface RelayAircraftState {
 export type MediaRetrievalStatus = 'pending' | 'completed' | 'unsupported' | 'failed'
 export type CaptureBundleStatus = 'completed' | 'unsupported' | 'failed'
 export type CaptureCoverage = 'full_equirectangular' | 'incomplete_vertical_coverage' | 'single_view'
+export type MediaPositionFrame = 'dji_local_enu' | 'map_enu'
+export type MediaYawFrame = 'dji_compass_deg'
+
+export interface MapPoseProvenance {
+  navigation_pose_event_id: string
+  navigation_pose_seq: number
+  command_id: string
+  route_id: string
+  pose_time_ms: number
+  fix_time_ms: number
+  position_uncertainty_mm: number
+  navigation_config_id: string
+  navigation_config_sha256: string
+  map_version: string
+  map_sha256: string
+  geometry_sha256: string
+  camera_calibration_sha256: string
+  body_extrinsics_sha256: string
+  world_transform_sha256: string
+  control_source_ids: string[]
+}
 
 /** One node-authored `media_file` record as `state.captures[].files` carries it verbatim. */
 export interface RelayCaptureFile {
@@ -395,13 +416,16 @@ export interface RelayCaptureFile {
   drone_id: DroneId
   connection_epoch: number
   pose: { x: number; y: number; z: number }
+  position_frame: MediaPositionFrame
   actual_yaw_deg: number
+  yaw_frame: MediaYawFrame
   gimbal_pitch_deg: number
   intrinsics: { width_px: number; height_px: number; horizontal_fov_deg: number; projection: string }
   /** Sixty-four lowercase hex characters; all zeros while `retrieval_status` is `pending`. */
   checksum_sha256: string
   storage_ref: string
   retrieval_status: MediaRetrievalStatus
+  map_pose_provenance: MapPoseProvenance | null
 }
 
 /**
@@ -1353,7 +1377,9 @@ export function isRelayCaptureFile(value: unknown): value is RelayCaptureFile {
     isNonNegativeInteger(value.connection_epoch) &&
     isRecord(pose) &&
     ['x', 'y', 'z'].every((axis) => isFiniteNumber(pose[axis])) &&
+    (value.position_frame === 'dji_local_enu' || value.position_frame === 'map_enu') &&
     isFiniteNumber(value.actual_yaw_deg) &&
+    value.yaw_frame === 'dji_compass_deg' &&
     isFiniteNumber(value.gimbal_pitch_deg) &&
     isRecord(intrinsics) &&
     isDroneId(intrinsics.width_px) &&
@@ -1367,7 +1393,38 @@ export function isRelayCaptureFile(value: unknown): value is RelayCaptureFile {
     typeof value.retrieval_status === 'string' &&
     MEDIA_RETRIEVAL_STATUSES.has(value.retrieval_status) &&
     (value.retrieval_status !== 'pending' || checksumIsPending) &&
-    (value.retrieval_status !== 'completed' || !checksumIsPending)
+    (value.retrieval_status !== 'completed' || !checksumIsPending) &&
+    isMapPoseProvenance(value.map_pose_provenance) &&
+    ((value.position_frame === 'map_enu') === (value.map_pose_provenance !== null))
+  )
+}
+
+function isMapPoseProvenance(value: unknown): value is MapPoseProvenance | null {
+  if (value === null) return true
+  if (!isRecord(value)) return false
+  const hashes = [
+    value.navigation_config_sha256,
+    value.map_sha256,
+    value.geometry_sha256,
+    value.camera_calibration_sha256,
+    value.body_extrinsics_sha256,
+    value.world_transform_sha256,
+  ]
+  const sources = value.control_source_ids
+  return (
+    ['navigation_pose_event_id', 'command_id', 'route_id', 'navigation_config_id', 'map_version'].every(
+      (field) => typeof value[field] === 'string' && value[field].length > 0,
+    ) &&
+    isDroneId(value.navigation_pose_seq) &&
+    isNonNegativeInteger(value.pose_time_ms) &&
+    isNonNegativeInteger(value.fix_time_ms) &&
+    value.pose_time_ms >= value.fix_time_ms &&
+    isDroneId(value.position_uncertainty_mm) &&
+    hashes.every((hash) => typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash)) &&
+    Array.isArray(sources) &&
+    sources.length > 0 &&
+    sources.every((source) => typeof source === 'string' && source.length > 0) &&
+    [...sources].sort().every((source, index) => source === sources[index])
   )
 }
 

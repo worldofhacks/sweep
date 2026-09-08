@@ -4,8 +4,10 @@ import java.io.File
 import kotlinx.coroutines.flow.StateFlow
 import org.worldofhacks.sweep.bridge.core.flight.PortResult
 import org.worldofhacks.sweep.bridge.core.frames.CameraProbe
+import org.worldofhacks.sweep.bridge.core.frames.MapPoseProvenance
 import org.worldofhacks.sweep.bridge.core.frames.MediaFileRecord
 import org.worldofhacks.sweep.bridge.core.frames.SuggestedDelta
+import org.worldofhacks.sweep.bridge.core.frames.WirePose
 
 /** Null measurements mean the SDK has not reported them. */
 data class CameraFacts(
@@ -105,11 +107,32 @@ fun interface CaptureReadinessSource {
     fun current(): CaptureReadinessBody
 }
 
+data class CaptureArrivalHold(
+    val commandId: String,
+    val routeId: String,
+    val targetXMm: Long,
+    val targetYMm: Long,
+    val targetZMm: Long,
+    val arrivalHorizontalToleranceMm: Long,
+    val arrivalVerticalToleranceMm: Long,
+)
+
+fun interface CaptureArrivalHoldSource {
+    fun current(): CaptureArrivalHold?
+}
+
+data class MapCapturePose(
+    val pose: WirePose,
+    val provenance: MapPoseProvenance,
+)
+
 /** Adds the joined identity and envelope; sends return false when disconnected. */
 interface NodeFrameSink {
     fun identity(): NodeIdentity?
 
     fun sendCaptureReadiness(body: CaptureReadinessBody): Boolean
+
+    fun captureMapPose(hold: CaptureArrivalHold?): MapCapturePose?
 
     fun sendMediaFile(record: MediaFileRecord): Boolean
 }

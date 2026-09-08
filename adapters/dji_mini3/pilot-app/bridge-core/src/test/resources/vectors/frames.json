@@ -231,13 +231,16 @@
         "y": -0.25,
         "z": 1.0
       },
+      "position_frame": "dji_local_enu",
       "retrieval_status": "pending",
+      "map_pose_provenance": null,
       "session": "session-a",
       "storage_ref": "aircraft://sdcard/DJI_0001.JPG",
       "t": 8000,
       "timestamp_ms": 8000,
       "type": "media_file",
-      "v": 1
+      "v": 1,
+      "yaw_frame": "dji_compass_deg"
     }
   },
   "membership_event": {

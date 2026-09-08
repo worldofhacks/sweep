@@ -17,6 +17,8 @@ import dji.v5.manager.SDKManager
 import dji.v5.manager.interfaces.SDKManagerCallback
 import java.io.File
 import kotlinx.coroutines.flow.StateFlow
+import org.worldofhacks.sweep.bridge.camera.CaptureArrivalHold
+import org.worldofhacks.sweep.bridge.camera.CaptureArrivalHoldSource
 import org.worldofhacks.sweep.bridge.camera.CameraExecutor
 import org.worldofhacks.sweep.bridge.camera.DjiCameraPort
 import org.worldofhacks.sweep.bridge.flight.DjiFlightPort
@@ -228,6 +230,7 @@ internal class SdkSession(private val application: Application) :
         File(application.filesDir, "captures"),
         log = { line -> model.event("Camera", line) },
         onFacts = probe::setCamera,
+        arrivalHold = CaptureArrivalHoldSource(::captureArrivalHold),
     )
 
     // Phase D hook: local FPV, yaw, and codec evidence (org.worldofhacks.sweep.bridge.video).
@@ -273,6 +276,18 @@ internal class SdkSession(private val application: Application) :
         monotonicNowMs = SystemClock::elapsedRealtime,
         log = { line -> model.event("Flight", line) },
     )
+
+    private fun captureArrivalHold(): CaptureArrivalHold? = flightExecutor.status.value.arrivalHold?.let {
+        CaptureArrivalHold(
+            it.commandId,
+            it.routeId,
+            it.targetXMm,
+            it.targetYMm,
+            it.targetZMm,
+            it.arrivalHorizontalToleranceMm,
+            it.arrivalVerticalToleranceMm,
+        )
+    }
     override val flight: FlightNode = FlightNode(
         flightExecutor,
         probe,

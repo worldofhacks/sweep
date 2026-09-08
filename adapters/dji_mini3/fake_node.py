@@ -539,7 +539,9 @@ class FakeNode:
             "drone_id": self.config.drone_id,
             "connection_epoch": self._connection_epoch,
             "pose": {"x": aircraft.x, "y": aircraft.y, "z": aircraft.z},
+            "position_frame": "dji_local_enu",
             "actual_yaw_deg": aircraft.yaw_deg,
+            "yaw_frame": "dji_compass_deg",
             "gimbal_pitch_deg": aircraft.gimbal_pitch_deg,
             "intrinsics": {
                 "width_px": width,
@@ -550,6 +552,7 @@ class FakeNode:
             "checksum_sha256": sha256(payload).hexdigest(),
             "storage_ref": f"fake-node://media/{self.config.drone_id}/{file_id}",
             "retrieval_status": "completed",
+            "map_pose_provenance": None,
         }
         self._media[file_id] = record
         return record

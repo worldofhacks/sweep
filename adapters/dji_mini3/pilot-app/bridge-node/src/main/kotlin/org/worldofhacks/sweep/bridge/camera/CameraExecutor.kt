@@ -26,7 +26,10 @@ import org.worldofhacks.sweep.bridge.core.flight.PortResult
 import org.worldofhacks.sweep.bridge.core.frames.CameraProbe
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.CommandFrame
+import org.worldofhacks.sweep.bridge.core.frames.MapPoseProvenance
 import org.worldofhacks.sweep.bridge.core.frames.MediaFileRecord
+import org.worldofhacks.sweep.bridge.core.frames.MediaPositionFrame
+import org.worldofhacks.sweep.bridge.core.frames.MediaYawFrame
 import org.worldofhacks.sweep.bridge.core.frames.RetrievalStatus
 import org.worldofhacks.sweep.bridge.core.frames.WireIntrinsics
 import org.worldofhacks.sweep.bridge.core.frames.WirePose
@@ -105,9 +108,12 @@ data class CameraStatus(
 private data class CaptureEvidence(
     val timestampMs: Long,
     val pose: WirePose,
+    val positionFrame: MediaPositionFrame,
     val yawDeg: Double,
+    val yawFrame: MediaYawFrame,
     val gimbalPitchDeg: Double,
     val intrinsics: WireIntrinsics,
+    val mapPoseProvenance: MapPoseProvenance?,
 )
 
 private sealed interface CaptureEvidenceResult {
@@ -126,6 +132,7 @@ class CameraExecutor(
     private val log: NodeLog = NodeLog { },
     /** Pushes the probed camera facts into the flavor's aircraft snapshot for the `capabilities` frame. */
     private val onFacts: (CameraProbe) -> Unit = {},
+    private val arrivalHold: CaptureArrivalHoldSource? = null,
 ) : CommandExecutor, CaptureReadinessSource, AutoCloseable {
     private val worker = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "camera-loop").apply { isDaemon = true } }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -180,7 +187,7 @@ class CameraExecutor(
         return CaptureReadinessBody(
             roomId = null,
             captureId = captureId,
-            poseOk = capturePoseAvailable(snapshot, clock.nowMs()),
+            poseOk = capturePoseAvailable(snapshot, clock.nowMs()) || mapCapturePose() != null,
             clearanceOk = false,
             cameraOk = captureCameraOk(facts, snapshot),
             storageOk = storageOk(facts),
@@ -331,13 +338,13 @@ class CameraExecutor(
             finish()
             return
         }
-        when (val evidence = captureEvidence()) {
+        val beforeShutter = when (val evidence = captureEvidence()) {
             is CaptureEvidenceResult.Missing -> {
                 report.failed(CAMERA_NOT_READY, "capture evidence unavailable before shutter: ${evidence.detail} [retryable]")
                 finish()
                 return
             }
-            is CaptureEvidenceResult.Available -> Unit
+            is CaptureEvidenceResult.Available -> evidence.value
         }
         val newCapture = synchronized(lock) {
             val changed = activeCaptureId != captureId
@@ -381,6 +388,11 @@ class CameraExecutor(
                 return
             }
         }
+        if (beforeShutter.mapPoseProvenance != atShutter.mapPoseProvenance) {
+            report.failed(CAMERA_FAILURE, "capture map-pose evidence changed during shutter [terminal]")
+            finish()
+            return
+        }
         val file = awaitNewFile(shutterStartedAt)
         if (file == null) {
             report.failed(
@@ -411,12 +423,15 @@ class CameraExecutor(
             droneId = identity.droneId,
             connectionEpoch = identity.connectionEpoch,
             pose = atShutter.pose,
+            positionFrame = atShutter.positionFrame,
             actualYawDeg = atShutter.yawDeg,
+            yawFrame = atShutter.yawFrame,
             gimbalPitchDeg = atShutter.gimbalPitchDeg,
             intrinsics = atShutter.intrinsics,
             checksumSha256 = MediaFileRecord.PENDING_CHECKSUM,
             storageRef = "aircraft://camera/${file.index}/${file.name}",
             retrievalStatus = RetrievalStatus.PENDING,
+            mapPoseProvenance = atShutter.mapPoseProvenance,
         )
         val captured = CapturedFile(captureId, fileId, frameNumber, file, record, path = null)
         val sent = frames?.sendMediaFile(record) ?: false
@@ -685,6 +700,12 @@ class CameraExecutor(
             snapshot.posQuality > 0.0 &&
             listOf(snapshot.x, snapshot.y, snapshot.z, snapshot.yawDeg).all(Double::isFinite)
 
+    private fun captureYawAvailable(snapshot: AircraftSnapshot, nowMs: Long): Boolean =
+        snapshot.aircraftConnected &&
+            snapshot.attitudeAvailable &&
+            measurementFresh(snapshot.attitudeMeasuredAtMs, nowMs) &&
+            snapshot.yawDeg.isFinite()
+
     private fun captureMotionOk(snapshot: AircraftSnapshot, nowMs: Long): Boolean =
         snapshot.velocityAvailable &&
             measurementFresh(snapshot.velocityMeasuredAtMs, nowMs) &&
@@ -700,9 +721,15 @@ class CameraExecutor(
         if (!facts.cameraConnected || !facts.photoMode) {
             return CaptureEvidenceResult.Missing("camera disconnected or not in still-photo mode")
         }
-        if (!capturePoseAvailable(snapshot, now)) {
+        val mapPose = mapCapturePose()
+        if (mapPose == null && !capturePoseAvailable(snapshot, now)) {
             return CaptureEvidenceResult.Missing(
                 "measured position and attitude are unavailable or older than ${config.maxTelemetryAgeMs} ms",
+            )
+        }
+        if (!captureYawAvailable(snapshot, now)) {
+            return CaptureEvidenceResult.Missing(
+                "measured compass attitude is unavailable or older than ${config.maxTelemetryAgeMs} ms",
             )
         }
         if (!captureMotionOk(snapshot, now)) {
@@ -724,8 +751,10 @@ class CameraExecutor(
         return CaptureEvidenceResult.Available(
             CaptureEvidence(
                 timestampMs = now,
-                pose = WirePose(snapshot.x, snapshot.y, snapshot.z),
+                pose = mapPose?.pose ?: WirePose(snapshot.x, snapshot.y, snapshot.z),
+                positionFrame = if (mapPose == null) MediaPositionFrame.DJI_LOCAL_ENU else MediaPositionFrame.MAP_ENU,
                 yawDeg = FlightOverlay.heading(snapshot.yawDeg),
+                yawFrame = MediaYawFrame.DJI_COMPASS_DEG,
                 gimbalPitchDeg = gimbal,
                 intrinsics = WireIntrinsics(
                     facts.photoWidthPx,
@@ -733,9 +762,13 @@ class CameraExecutor(
                     measuredHfov,
                     "rectilinear",
                 ),
+                mapPoseProvenance = mapPose?.provenance,
             ),
         )
     }
+
+    private fun mapCapturePose(): MapCapturePose? =
+        arrivalHold?.current()?.let { hold -> frames?.captureMapPose(hold) }
 
     private fun measurementFresh(measuredAtMs: Long?, nowMs: Long): Boolean =
         measuredAtMs != null && measuredAtMs <= nowMs && nowMs - measuredAtMs <= config.maxTelemetryAgeMs

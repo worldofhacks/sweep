@@ -369,12 +369,15 @@ describe('M1.1 wire compatibility', () => {
       drone_id: 1,
       connection_epoch: 2,
       pose: { x: 1.5, y: -0.25, z: 1.2 },
+      position_frame: 'dji_local_enu',
       actual_yaw_deg: 45,
+      yaw_frame: 'dji_compass_deg',
       gimbal_pitch_deg: -15,
       intrinsics: { width_px: 4000, height_px: 3000, horizontal_fov_deg: 82.1, projection: 'rectilinear' },
       checksum_sha256: '0'.repeat(64),
       storage_ref: 'aircraft://camera/12/DJI_0012.JPG',
       retrieval_status: 'pending',
+      map_pose_provenance: null,
     }
     const base = {
       v: 1,

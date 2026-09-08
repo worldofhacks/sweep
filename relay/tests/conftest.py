@@ -309,7 +309,9 @@ def media_record(
         "drone_id": drone_id,
         "connection_epoch": connection_epoch,
         "pose": {"x": 1.0, "y": 2.0, "z": 1.0},
+        "position_frame": "dji_local_enu",
         "actual_yaw_deg": 0.0,
+        "yaw_frame": "dji_compass_deg",
         "gimbal_pitch_deg": 0.0,
         "intrinsics": {
             "width_px": 4_096,
@@ -320,6 +322,7 @@ def media_record(
         "checksum_sha256": "a" * 64,
         "storage_ref": f"node://media/{drone_id}/{file_id}",
         "retrieval_status": "completed",
+        "map_pose_provenance": None,
     }
     record.update(overrides)
     return record

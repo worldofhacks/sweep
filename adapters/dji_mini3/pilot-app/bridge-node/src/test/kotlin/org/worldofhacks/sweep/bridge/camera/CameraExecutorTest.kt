@@ -68,6 +68,9 @@ class CameraExecutorTest {
         override fun sendCaptureReadiness(body: CaptureReadinessBody): Boolean =
             delegate.sendCaptureReadiness(body)
 
+        override fun captureMapPose(hold: CaptureArrivalHold?): MapCapturePose? =
+            delegate.captureMapPose(hold)
+
         override fun sendMediaFile(record: MediaFileRecord): Boolean {
             if (record.retrievalStatus == RetrievalStatus.COMPLETED && !rejected) {
                 rejected = true
@@ -85,6 +88,8 @@ class CameraExecutorTest {
             maxTelemetryAgeMs = 10_000,
         ),
         rejectFirstCompleted: Boolean = false,
+        arrivalHold: CaptureArrivalHold? = null,
+        navigationAdmission: org.worldofhacks.sweep.bridge.node.NavigationAdmissionConfig? = null,
     ): Node {
         val aircraft = FakeAircraft(connected = true)
         aircraft.update { it.copy(state = FlightStates.HOVERING, x = 1.5, y = -0.25, z = 1.2, yawDeg = 45.0) }
@@ -97,9 +102,13 @@ class CameraExecutorTest {
             config = config,
             log = { logs += it },
             onFacts = { probe -> aircraft.update { it.copy(camera = probe) } },
+            arrivalHold = CaptureArrivalHoldSource { arrivalHold },
         )
         val nodeConfig = NodeConfig(stub.url, stub.session, 1, String(key, Charsets.UTF_8), "test-node-1", listOf("flight", "reconstruct_8"))
-        val link = RelayLink(nodeConfig, aircraft, executor, phone, timing = timing, log = { logs += it }, captureReadiness = executor)
+        val link = RelayLink(
+            nodeConfig, aircraft, executor, phone, timing = timing, log = { logs += it },
+            captureReadiness = executor, navigationAdmission = navigationAdmission,
+        )
         val frameSink = if (rejectFirstCompleted) RejectFirstCompleted(link.frames) else link.frames
         executor.frames = frameSink
         link.setReadiness(ReadinessInput(homePoseConfirmed = true, controlAuthority = true, rcSafetyOperatorPresent = true))
@@ -224,6 +233,51 @@ class CameraExecutorTest {
                 stub.awaitFrame("media_file") { it.str("file_id") == "cap-2-frame-01" }
                 assertEquals(RetrievalStatus.PENDING, node.executor.status.value.files.last().record.retrievalStatus)
                 assertEquals(listOf(45.0), node.executor.progress.value.acceptedHeadingsDeg)
+            }
+        }
+    }
+
+    @Test
+    fun `capture during a retained verified arrival records map position and compass yaw separately`() {
+        StubRelay(key, emitControlHeartbeats = false).use { stub ->
+            val hold = CaptureArrivalHold(
+                "route-command-1", "route-1", 1_000, 0, 1_000, 100, 100,
+            )
+            val navigation = org.worldofhacks.sweep.bridge.node.NavigationAdmissionConfig(
+                navigationConfigId = "navigation-a",
+                navigationConfigSha256 = "a".repeat(64),
+                mapVersion = "map-v1",
+                mapSha256 = "a".repeat(64),
+                geometrySha256 = "a".repeat(64),
+                cameraCalibrationSha256 = "a".repeat(64),
+                bodyExtrinsicsSha256 = "a".repeat(64),
+                worldTransformSha256 = "a".repeat(64),
+                controlSourceIds = listOf("tag-source"),
+                clockLeaseId = "lease-1",
+                clockLeaseExpiresAtMs = Long.MAX_VALUE,
+                maxAuthorizationLifetimeMs = 1_000,
+                approvedEvidenceFiles = listOf(Files.createTempFile("approved-navigation", ".evidence").toFile().also {
+                    it.writeText("operator-approved evidence")
+                    it.deleteOnExit()
+                }),
+                enabled = true,
+            )
+            node(stub, arrivalHold = hold, navigationAdmission = navigation).use { node ->
+                await("ready") { node.link.state.value.membership == "ready" }
+                stub.sendNavigationAuthorization()
+                stub.sendNavigationPose(xMm = 1_000)
+                await("route pose") { node.link.state.value.navigationPose?.xMm == 1_000L }
+
+                val photo = stub.issueCommand(CommandArgs.CapturePhoto("cap-map"))
+                stub.awaitAck(photo.commandId, "completed")
+                val pending = stub.awaitFrame("media_file") { it.str("file_id") == "cap-map-frame-01" }
+                assertEquals("map_enu", pending.str("position_frame"))
+                assertEquals("dji_compass_deg", pending.str("yaw_frame"))
+                val pose = pending["pose"] as JsonObject
+                assertEquals(1.0, (pose["x"] as org.worldofhacks.sweep.bridge.core.json.JsonFloat).value)
+                val provenance = pending["map_pose_provenance"] as JsonObject
+                assertEquals("route-command-1", provenance.str("command_id"))
+                assertEquals("route-1", provenance.str("route_id"))
             }
         }
     }

@@ -252,7 +252,10 @@ def _capture_evidence(record: MediaFileRecord) -> tuple[object, ...]:
         record.drone_id,
         record.connection_epoch,
         record.pose,
+        record.position_frame,
         record.actual_yaw_deg,
+        record.yaw_frame,
         record.gimbal_pitch_deg,
         record.intrinsics,
+        record.map_pose_provenance,
     )

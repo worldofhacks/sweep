@@ -510,6 +510,46 @@ class WireIntrinsics:
 
 
 @dataclass(frozen=True, slots=True)
+class MapPoseProvenance:
+    navigation_pose_event_id: str
+    navigation_pose_seq: int
+    command_id: str
+    route_id: str
+    pose_time_ms: int
+    fix_time_ms: int
+    position_uncertainty_mm: int
+    navigation_config_id: str
+    navigation_config_sha256: str
+    map_version: str
+    map_sha256: str
+    geometry_sha256: str
+    camera_calibration_sha256: str
+    body_extrinsics_sha256: str
+    world_transform_sha256: str
+    control_source_ids: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "navigation_pose_event_id": self.navigation_pose_event_id,
+            "navigation_pose_seq": self.navigation_pose_seq,
+            "command_id": self.command_id,
+            "route_id": self.route_id,
+            "pose_time_ms": self.pose_time_ms,
+            "fix_time_ms": self.fix_time_ms,
+            "position_uncertainty_mm": self.position_uncertainty_mm,
+            "navigation_config_id": self.navigation_config_id,
+            "navigation_config_sha256": self.navigation_config_sha256,
+            "map_version": self.map_version,
+            "map_sha256": self.map_sha256,
+            "geometry_sha256": self.geometry_sha256,
+            "camera_calibration_sha256": self.camera_calibration_sha256,
+            "body_extrinsics_sha256": self.body_extrinsics_sha256,
+            "world_transform_sha256": self.world_transform_sha256,
+            "control_source_ids": list(self.control_source_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class MediaFileRecord:
     """Wire mirror of ``adapters.protocols.MediaFile`` without the transport envelope."""
 
@@ -519,12 +559,15 @@ class MediaFileRecord:
     drone_id: int
     connection_epoch: int
     pose: WirePose
+    position_frame: str
     actual_yaw_deg: float
+    yaw_frame: str
     gimbal_pitch_deg: float
     intrinsics: WireIntrinsics
     checksum_sha256: str
     storage_ref: str
     retrieval_status: str
+    map_pose_provenance: MapPoseProvenance | None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -534,12 +577,17 @@ class MediaFileRecord:
             "drone_id": self.drone_id,
             "connection_epoch": self.connection_epoch,
             "pose": self.pose.to_dict(),
+            "position_frame": self.position_frame,
             "actual_yaw_deg": self.actual_yaw_deg,
+            "yaw_frame": self.yaw_frame,
             "gimbal_pitch_deg": self.gimbal_pitch_deg,
             "intrinsics": self.intrinsics.to_dict(),
             "checksum_sha256": self.checksum_sha256,
             "storage_ref": self.storage_ref,
             "retrieval_status": self.retrieval_status,
+            "map_pose_provenance": None
+            if self.map_pose_provenance is None
+            else self.map_pose_provenance.to_dict(),
         }
 
 
@@ -1688,12 +1736,15 @@ _MEDIA_RECORD_FIELDS = frozenset(
         "drone_id",
         "connection_epoch",
         "pose",
+        "position_frame",
         "actual_yaw_deg",
+        "yaw_frame",
         "gimbal_pitch_deg",
         "intrinsics",
         "checksum_sha256",
         "storage_ref",
         "retrieval_status",
+        "map_pose_provenance",
     }
 )
 
@@ -1721,6 +1772,13 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
         raise ContractError(code, "pending media requires the all-zero checksum sentinel")
     if retrieval_status == "completed" and checksum == MEDIA_PENDING_CHECKSUM:
         raise ContractError(code, "completed media requires a content checksum")
+    position_frame = _choice(
+        value["position_frame"], "position_frame", frozenset({"dji_local_enu", "map_enu"}), code
+    )
+    yaw_frame = _choice(value["yaw_frame"], "yaw_frame", frozenset({"dji_compass_deg"}), code)
+    provenance = _map_pose_provenance(value["map_pose_provenance"], code)
+    if (position_frame == "map_enu") != (provenance is not None):
+        raise ContractError(code, "map-frame media requires map pose provenance")
     return MediaFileRecord(
         _nonempty_string(value["capture_id"], "capture_id", code),
         _nonempty_string(value["file_id"], "file_id", code),
@@ -1732,7 +1790,9 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
             _finite_number(pose["y"], "y", code),
             _finite_number(pose["z"], "z", code),
         ),
+        position_frame,
         _finite_number(value["actual_yaw_deg"], "actual_yaw_deg", code),
+        yaw_frame,
         _finite_number(value["gimbal_pitch_deg"], "gimbal_pitch_deg", code),
         WireIntrinsics(
             _positive_int(intrinsics["width_px"], "width_px", code),
@@ -1743,6 +1803,89 @@ def _media_record(value: Mapping[str, object], code: str) -> MediaFileRecord:
         checksum,
         _nonempty_string(value["storage_ref"], "storage_ref", code),
         retrieval_status,
+        provenance,
+    )
+
+
+_MAP_POSE_PROVENANCE_FIELDS = frozenset(
+    {
+        "navigation_pose_event_id",
+        "navigation_pose_seq",
+        "command_id",
+        "route_id",
+        "pose_time_ms",
+        "fix_time_ms",
+        "position_uncertainty_mm",
+        "navigation_config_id",
+        "navigation_config_sha256",
+        "map_version",
+        "map_sha256",
+        "geometry_sha256",
+        "camera_calibration_sha256",
+        "body_extrinsics_sha256",
+        "world_transform_sha256",
+        "control_source_ids",
+    }
+)
+
+
+def _map_pose_provenance(value: object, code: str) -> MapPoseProvenance | None:
+    if value is None:
+        return None
+    raw = _mapping(value, code, "map_pose_provenance must be an object or null")
+    _exact_fields(raw, set(_MAP_POSE_PROVENANCE_FIELDS), code)
+    identity_fields = (
+        "navigation_pose_event_id",
+        "command_id",
+        "route_id",
+        "navigation_config_id",
+        "map_version",
+    )
+    hashes = (
+        "navigation_config_sha256",
+        "map_sha256",
+        "geometry_sha256",
+        "camera_calibration_sha256",
+        "body_extrinsics_sha256",
+        "world_transform_sha256",
+    )
+    values = {
+        field: _nonempty_string(raw[field], field, code) for field in (*identity_fields, *hashes)
+    }
+    if any(not _is_identifier(values[field]) for field in identity_fields):
+        raise ContractError(code, "map pose provenance identities are invalid")
+    if any(not _is_sha256(values[field]) for field in hashes):
+        raise ContractError(code, "map pose provenance hashes are invalid")
+    pose_time = _nonnegative_int(raw["pose_time_ms"], "pose_time_ms", code)
+    fix_time = _nonnegative_int(raw["fix_time_ms"], "fix_time_ms", code)
+    sequence = _positive_int(raw["navigation_pose_seq"], "navigation_pose_seq", code)
+    uncertainty = _positive_int(raw["position_uncertainty_mm"], "position_uncertainty_mm", code)
+    if pose_time < fix_time:
+        raise ContractError(code, "map pose provenance timing is invalid")
+    sources = _string_list(
+        raw["control_source_ids"], "control_source_ids", allow_empty=False, code=code
+    )
+    if tuple(sorted(set(sources))) != sources or any(
+        not _is_identifier(source) for source in sources
+    ):
+        raise ContractError(code, "map pose provenance source identities are invalid")
+    return MapPoseProvenance(
+        values["navigation_pose_event_id"],
+        sequence,
+        values["command_id"],
+        values["route_id"],
+        pose_time,
+        fix_time,
+        uncertainty,
+        values["navigation_config_id"],
+        values["navigation_config_sha256"],
+        values["map_version"],
+        values["map_sha256"],
+        values["geometry_sha256"],
+        values["camera_calibration_sha256"],
+        values["body_extrinsics_sha256"],
+        values["world_transform_sha256"],
+        sources,
     )
 
 
@@ -1750,3 +1893,11 @@ def _is_machine_code(value: str) -> bool:
     return bool(value) and all(
         "a" <= char <= "z" or "0" <= char <= "9" or char == "_" for char in value
     )
+
+
+def _is_identifier(value: str) -> bool:
+    return bool(value) and len(value) <= 128 and value.isprintable() and value == value.strip()
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)

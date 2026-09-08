@@ -12,12 +12,15 @@ function file(overrides: Partial<RelayCaptureFile> = {}): RelayCaptureFile {
     drone_id: 1,
     connection_epoch: 1,
     pose: { x: 1.5, y: -0.25, z: 1.2 },
+    position_frame: 'dji_local_enu',
     actual_yaw_deg: 45,
+    yaw_frame: 'dji_compass_deg',
     gimbal_pitch_deg: -15,
     intrinsics: { width_px: 4000, height_px: 3000, horizontal_fov_deg: 82.1, projection: 'rectilinear' },
     checksum_sha256: 'a'.repeat(64),
     storage_ref: 'file:///data/user/0/org.worldofhacks.sweep.bridge/files/captures/cap-1/DJI_0001.JPG',
     retrieval_status: 'completed',
+    map_pose_provenance: null,
     ...overrides,
   }
 }

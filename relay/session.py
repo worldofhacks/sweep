@@ -370,6 +370,10 @@ class RelaySession:
         self._command_waiters: dict[str, queue.SimpleQueue[AdapterAcknowledgement]] = {}
         self._captures = CaptureLedger()
         self._capture_readiness: dict[int, CaptureReadinessFrame] = {}
+        self._navigation_route_authorizations: dict[
+            tuple[int, int, str, str], dict[str, object]
+        ] = {}
+        self._navigation_pose_evidence: dict[tuple[int, int, str], dict[str, object]] = {}
         self._control_pose: dict[int, ControlPose] = {}
         self._world_observation_contexts: dict[tuple[int, str], str] = {}
         self._pending_intents: dict[str, _PendingIntent] = {}
@@ -1399,6 +1403,18 @@ class RelaySession:
                     )
                 self.registry.check_current(drone_id, connection_epoch)
                 if isinstance(frame, MediaFileFrame):
+                    prior = self._captures.media_files(
+                        frame.file.drone_id, frame.file.connection_epoch, frame.file.capture_id
+                    )
+                    known_file = any(item.file_id == frame.file.file_id for item in prior)
+                    if frame.file.map_pose_provenance is not None and not known_file:
+                        if frame.file.retrieval_status != "pending":
+                            raise ContractError(
+                                "map_pose_unverified",
+                                "map-frame media must retain pending shutter "
+                                "evidence before retrieval completes",
+                            )
+                        self._validate_media_map_pose(frame.file, t=now)
                     self._captures.validate_media(frame.file, t=frame.t)
                 elif isinstance(frame, CaptureBundleFrame):
                     raise ContractError(
@@ -1849,6 +1865,96 @@ class RelaySession:
                 self.clock(),
             )
             self._append_audit({**event, "signature_emitted": True})
+            if event["type"] == "navigation_route_authorization":
+                key = (device_id, epoch, event["command_id"], event["route_id"])
+                self._navigation_route_authorizations[key] = event
+                while len(self._navigation_route_authorizations) > 128:
+                    self._navigation_route_authorizations.pop(
+                        next(iter(self._navigation_route_authorizations))
+                    )
+            elif event["type"] == "navigation_pose":
+                key = (device_id, epoch, event["event_id"])
+                self._navigation_pose_evidence[key] = event
+                while len(self._navigation_pose_evidence) > 512:
+                    self._navigation_pose_evidence.pop(next(iter(self._navigation_pose_evidence)))
+
+    def _validate_media_map_pose(self, record: MediaFileRecord, *, t: int) -> None:
+        provenance = record.map_pose_provenance
+        if provenance is None:
+            return
+        event = self._navigation_pose_evidence.get(
+            (record.drone_id, record.connection_epoch, provenance.navigation_pose_event_id)
+        )
+        if (
+            event is None
+            or event.get("type") != "navigation_pose"
+            or event.get("status") != "ready"
+        ):
+            raise ContractError(
+                "map_pose_unverified",
+                "map-frame media does not name retained signed navigation pose evidence",
+            )
+        authorization = self._navigation_route_authorizations.get(
+            (record.drone_id, record.connection_epoch, provenance.command_id, provenance.route_id)
+        )
+        if authorization is None or authorization.get("type") != "navigation_route_authorization":
+            raise ContractError(
+                "map_pose_unverified",
+                "map-frame media does not name retained signed route authorization",
+            )
+        expires_at = authorization.get("expires_at_ms")
+        pose_freshness = authorization.get("pose_freshness_ms")
+        max_clock_error = authorization.get("max_clock_error_ms")
+        pose_time = event.get("pose_time_ms")
+        fix_time = event.get("fix_time_ms")
+        if (
+            type(expires_at) is not int
+            or type(pose_freshness) is not int
+            or type(max_clock_error) is not int
+            or type(pose_time) is not int
+            or type(fix_time) is not int
+            or t >= expires_at
+            or any(
+                t - observed > pose_freshness + max_clock_error
+                for observed in (pose_time, fix_time)
+            )
+        ):
+            raise ContractError(
+                "map_pose_unverified",
+                "map-frame media navigation evidence is no longer fresh or authorized",
+            )
+        expected = {
+            "seq": provenance.navigation_pose_seq,
+            "command_id": provenance.command_id,
+            "route_id": provenance.route_id,
+            "pose_time_ms": provenance.pose_time_ms,
+            "fix_time_ms": provenance.fix_time_ms,
+            "position_uncertainty_mm": provenance.position_uncertainty_mm,
+            "navigation_config_id": provenance.navigation_config_id,
+            "navigation_config_sha256": provenance.navigation_config_sha256,
+            "map_version": provenance.map_version,
+            "map_sha256": provenance.map_sha256,
+            "geometry_sha256": provenance.geometry_sha256,
+            "camera_calibration_sha256": provenance.camera_calibration_sha256,
+            "body_extrinsics_sha256": provenance.body_extrinsics_sha256,
+            "world_transform_sha256": provenance.world_transform_sha256,
+            "control_source_ids": list(provenance.control_source_ids),
+        }
+        if any(event.get(name) != value for name, value in expected.items()):
+            raise ContractError(
+                "map_pose_unverified",
+                "map-frame media provenance differs from retained signed navigation pose evidence",
+            )
+        coordinates = (event.get("x_mm"), event.get("y_mm"), event.get("z_mm"))
+        if any(type(value) is not int for value in coordinates) or (
+            record.pose.x,
+            record.pose.y,
+            record.pose.z,
+        ) != tuple(value / 1000 for value in coordinates):
+            raise ContractError(
+                "map_pose_unverified",
+                "map-frame media pose differs from retained signed navigation pose evidence",
+            )
 
     def record_world_observation(
         self, raw: Observation, registration: Mapping[str, object], manifest: Mapping
