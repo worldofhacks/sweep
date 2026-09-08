@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import socket
 import subprocess
@@ -23,6 +24,8 @@ from relay.observations import (
     decode_observation,
 )
 from tools.ohmni_live_tag_mapper import (
+    ArchiveConfig,
+    ContinuousAcceptedObservationArchive,
     LiveMapperError,
     LiveScope,
     LiveTagMapper,
@@ -439,6 +442,259 @@ def test_publisher_archives_relay_accepted_camera_tag_pose_and_scan_events(tmp_p
     assert {
         item.t_ingest for item in observations if item.submission.source_id.startswith("ohmni-live")
     } == {1_100, 1_110, 1_120}
+
+
+def test_continuous_archive_repeats_one_accepted_pose_and_records_raw_and_unique_counts(
+    tmp_path,
+) -> None:
+    from relay.observations import Observation
+    from tools.ohmni_live_tag_mapper import ContinuousAcceptedObservationArchive
+
+    mapper = _mapper()
+    scope = LiveScope("live-12", 12, 9)
+    archive = ContinuousAcceptedObservationArchive(
+        tmp_path / "collection",
+        scope=scope,
+        mapper=mapper.config,
+        config=ArchiveConfig(
+            "ohmni-pose",
+            "ohmni-lidar",
+            "odom",
+            "body",
+            "lidar",
+            max_records=2,
+        ),
+        max_archives=2,
+    )
+    pose = {
+        "v": 1,
+        "type": "observation",
+        "event_id": "pose-1",
+        "session": "live-12",
+        "device_id": 12,
+        "connection_epoch": 9,
+        "source_id": "ohmni-pose",
+        "node_type": "ground",
+        "frame": "odom",
+        "confidence": 0.8,
+        "t_capture": {"clock_id": "ohmni12-boot-monotonic", "unit": "ns", "value": 10},
+        "t_source_receipt": {
+            "clock_id": "ohmni12-boot-monotonic",
+            "unit": "ns",
+            "value": 10,
+        },
+        "clock_mapping_id": "ohmni12-live",
+        "payload": {
+            "kind": "pose",
+            "pose": {
+                "parent_frame": "odom",
+                "child_frame": "body",
+                "x_m": 0.0,
+                "y_m": 0.0,
+                "z_m": 0.0,
+                "qx": 0.0,
+                "qy": 0.0,
+                "qz": 0.0,
+                "qw": 1.0,
+            },
+        },
+        "t_ingest": 10,
+    }
+    camera = Observation(mapper.observations(scope, _frame())[0], 11).to_mapping()
+
+    assert archive.observe(pose)
+    assert archive.observe(camera)
+    assert not archive.stopped
+    manifest = archive.finish()
+
+    assert manifest["raw_observations"]["count"] == 3
+    assert manifest["unique_observations"]["count"] == 2
+    assert manifest["handoffs"][0]["event_id"] == "pose-1"
+    first = (tmp_path / "collection" / "archive-000" / "observations.jsonl").read_bytes()
+    second = (tmp_path / "collection" / "archive-001" / "observations.jsonl").read_bytes()
+    assert first.splitlines()[0] == second.splitlines()[0]
+    assert (tmp_path / "collection" / "collection.json").is_file()
+
+    now = [0.0]
+    idle = ContinuousAcceptedObservationArchive(
+        tmp_path / "idle",
+        scope=scope,
+        mapper=mapper.config,
+        config=ArchiveConfig(
+            "ohmni-pose", "ohmni-lidar", "odom", "body", "lidar", max_records=3, duration_s=1
+        ),
+        max_archives=2,
+        monotonic=lambda: now[0],
+    )
+    assert idle.observe(pose)
+    now[0] = 1.1
+    assert idle.remaining_s == 0
+    idle_manifest = idle.finish()
+    assert idle_manifest["raw_observations"]["count"] == 1
+    assert not (tmp_path / "idle" / "archive-001").exists()
+
+
+@pytest.mark.parametrize("limit", ("records", "bytes"))
+def test_continuous_archive_stops_before_exceeding_its_combined_consumer_limit(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, limit: str
+) -> None:
+    from relay.observations import Observation
+    from tools import ohmni_live_tag_mapper
+    from tools.ohmni_live_tag_mapper import ContinuousAcceptedObservationArchive
+
+    mapper = _mapper()
+    scope = LiveScope("live-12", 12, 9)
+    pose = {
+        "v": 1,
+        "type": "observation",
+        "event_id": "pose-1",
+        "session": "live-12",
+        "device_id": 12,
+        "connection_epoch": 9,
+        "source_id": "ohmni-pose",
+        "node_type": "ground",
+        "frame": "odom",
+        "confidence": 0.8,
+        "t_capture": {"clock_id": "ohmni12-boot-monotonic", "unit": "ns", "value": 10},
+        "t_source_receipt": {
+            "clock_id": "ohmni12-boot-monotonic",
+            "unit": "ns",
+            "value": 10,
+        },
+        "clock_mapping_id": "ohmni12-live",
+        "payload": {
+            "kind": "pose",
+            "pose": {
+                "parent_frame": "odom",
+                "child_frame": "body",
+                "x_m": 0.0,
+                "y_m": 0.0,
+                "z_m": 0.0,
+                "qx": 0.0,
+                "qy": 0.0,
+                "qz": 0.0,
+                "qw": 1.0,
+            },
+        },
+        "t_ingest": 10,
+    }
+    camera = Observation(mapper.observations(scope, _frame())[0], 11).to_mapping()
+    second_camera = {**camera, "event_id": "camera-2", "t_ingest": 12}
+    pose_bytes = len(Observation.parse(pose).encode()) + 1
+    camera_bytes = len(Observation.parse(camera).encode()) + 1
+    monkeypatch.setattr(
+        ohmni_live_tag_mapper,
+        "MAX_CONTINUOUS_ARCHIVE_RECORDS",
+        3 if limit == "records" else 100,
+    )
+    monkeypatch.setattr(
+        ohmni_live_tag_mapper,
+        "MAX_CONTINUOUS_ARCHIVE_BYTES",
+        1_000_000 if limit == "records" else pose_bytes * 2 + camera_bytes,
+    )
+    archive = ContinuousAcceptedObservationArchive(
+        tmp_path / limit,
+        scope=scope,
+        mapper=mapper.config,
+        config=ArchiveConfig(
+            "ohmni-pose", "ohmni-lidar", "odom", "body", "lidar", max_records=2
+        ),
+        max_archives=3,
+    )
+
+    assert archive.observe(pose)
+    assert archive.observe(camera)
+    assert not archive.stopped
+    assert not archive.observe(second_camera)
+    assert archive.stopped
+    manifest = archive.finish()
+
+    assert manifest["raw_observations"]["count"] == 3
+    assert manifest["unique_observations"]["count"] == 2
+
+
+def test_continuous_archive_requires_room_after_a_handoff(tmp_path) -> None:
+    with pytest.raises(LiveMapperError, match="leave room"):
+        ContinuousAcceptedObservationArchive(
+            tmp_path / "collection",
+            scope=LiveScope("live-12", 12, 9),
+            mapper=_mapper().config,
+            config=ArchiveConfig(
+                "ohmni-pose", "ohmni-lidar", "odom", "body", "lidar", max_records=1
+            ),
+            max_archives=2,
+        )
+
+
+def test_continuous_collection_checks_the_relay_installed_capture_pose_registration(
+    tmp_path,
+) -> None:
+    from tools.ohmni_live_tag_mapper import _capture_pose_registration
+
+    registration = tmp_path / "observations.json"
+    registration.write_text(
+        json.dumps(
+            {
+                "bindings": [
+                    {
+                        "session": "live-12",
+                        "device_id": 12,
+                        "connection_epoch": 9,
+                        "source_id": "ohmni-capture-pose",
+                        "node_type": "ground",
+                        "allowed_frames": ["odom", "body"],
+                        "allowed_payload_kinds": ["pose"],
+                        "allowed_clock_mapping_ids": ["ohmni12-live"],
+                        "producer_role": "adapter",
+                    }
+                ],
+                "frames": [
+                    {
+                        "frame_id": "odom",
+                        "kind": "odom",
+                        "axis_convention": "right_handed_z_up",
+                        "unit": "m",
+                        "session": "live-12",
+                        "device_id": 12,
+                        "connection_epoch": 9,
+                        "source_id": "ohmni-capture-pose",
+                    },
+                    {
+                        "frame_id": "body",
+                        "kind": "body",
+                        "axis_convention": "forward_left_up",
+                        "unit": "m",
+                        "session": "live-12",
+                        "device_id": 12,
+                        "connection_epoch": 9,
+                        "source_id": "ohmni-capture-pose",
+                    },
+                ],
+                "clock_mappings": [
+                    {
+                        "mapping_id": "ohmni12-live",
+                        "source_clock_id": "ohmni12-boot-monotonic",
+                        "source_unit": "ns",
+                        "source_reference": 1_000,
+                        "relay_reference_ms": 2_000,
+                        "relay_ms_numerator": 1,
+                        "source_units_denominator": 1_000_000,
+                        "max_error_ms": 10,
+                    }
+                ],
+                "minimum_interval_ms": 10,
+            }
+        )
+    )
+    registration_record = _capture_pose_registration(
+        registration,
+        LiveScope("live-12", 12, 9),
+        _mapper().config,
+        ArchiveConfig("ohmni-capture-pose", "ohmni-lidar", "odom", "body", "lidar"),
+    )
+
+    assert registration_record["mapping_id"] == "ohmni12-live"
+    assert registration_record["sha256"] == hashlib.sha256(registration.read_bytes()).hexdigest()
 
 
 def test_publisher_finishes_a_valid_archive_at_the_record_bound(tmp_path) -> None:

@@ -14,6 +14,14 @@ The default source and frame values match the Ohmni runtime: `ohmni-pose`, `ohmn
 
 The archive writes only observations returned by the relay after authenticated admission. It preserves each accepted `t_capture`, source receipt timestamp, clock mapping ID, and relay-assigned `t_ingest`. A missing pose capture timestamp remains null. Tag fusion needs a pose producer with a measured capture association before it can use that pose for a camera frame.
 
+## Continuous collection
+
+Use `--continuous-archive-output` to rotate accepted archives while one mapper connection stays open. Each chunk keeps the configured record, byte, and duration limits. The collector also stops before its raw or unique aggregate reaches 32,768 observations or 64 MiB, the candidate builder's limits. At a boundary, the collector copies the last accepted body-pose observation into the next chunk without changing its event ID, bytes, capture time, or receipt time. `collection.json` pins every raw chunk and declares that one duplicated handoff pose for each boundary. It also records separate hashes and counts for the raw concatenation and the aggregate after removing the declared second handoff copies.
+
+The multi-archive candidate tool accepts this collection file with `--collection`. It validates every archive's pose clock and timestamp order, the exact handoff bytes and timestamps, and the raw and unique summaries. An undeclared duplicate is refused. The handoff replaces only the generic cross-chunk gap check.
+
+The body-pose source uses the paired encoder's right receipt as its pose timestamp. Camera frames retain their V4L2 PTS. Fusion compares those two measurements using the reviewed association bound, which must be no more than 100 ms. The encoder record retains both receipt times and the pair skew; it does not identify either receipt as a camera exposure.
+
 ## Host command
 
 After capture qualification, use the session's reviewed configuration and measured
@@ -41,6 +49,8 @@ timeout --signal=INT --kill-after=5s 90s python -m tools.ohmni_live_tag_mapper \
   --confidence "$CONFIDENCE" --covariance "$COVARIANCE_M2" \
   --tag-sizes "$TAG_SIZES_JSON"
 ```
+
+For a multi-chunk run, replace `--archive-output` with `--continuous-archive-output "$COLLECTION_DIRECTORY"`, add `--continuous-archive-max-chunks 8`, and pass `--relay-observations-file "$SWEEP_OBSERVATIONS_FILE"`. Continuous collection defaults its pose source to `ohmni-capture-pose`; override it only with the configured capture-pose source. The file must be the exact host-owned file loaded by the relay. The mapper verifies its ground adapter binding, `odom` and `body` declarations, and the same `CLOCK_MAPPING_ID` on the same nanosecond `CLOCK_ID`, then reports the file's SHA-256 in its result. The collection stops after the configured number of chunks or when the NUT stream ends.
 
 `COVARIANCE_M2` is a JSON array of nine values for the qualified translation
 covariance. `TAG_SIZES_JSON` maps tag IDs to measured black-square sizes in metres.

@@ -26,7 +26,14 @@ from websockets.asyncio.client import connect
 from perception.camera_tags import CameraTagDetector, read_calibration
 from perception.ohmni_clock_probe import ClockProbeError, clock_mapping, probe_clock
 from perception.ohmni_pts_capture import CapturedFrame, NutCaptureReader
-from relay.observations import FramedPose, Observation, ObservationSubmission, decode_submission
+from relay.observation_ingress import ObservationConfiguration
+from relay.observations import (
+    FramedPose,
+    Observation,
+    ObservationSubmission,
+    decode_observation,
+    decode_submission,
+)
 
 
 class LiveMapperError(ValueError):
@@ -38,6 +45,9 @@ MAX_ARCHIVE_RECORDS = 1_024
 MAX_ARCHIVE_BYTES = 10 * 1024 * 1024
 MANIFEST_RESERVE_BYTES = 4 * 1024
 MAX_ARCHIVE_DURATION_S = 120.0
+MAX_CONTINUOUS_ARCHIVE_RECORDS = 32_768
+MAX_CONTINUOUS_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_CONTINUOUS_ARCHIVES = 64
 ADB_CLOCK_QUERY_TIMEOUT_S = 5.0
 OHMNI_LOADER = "/data/local/sweep/lib/ld-musl-x86_64.so.1"
 OHMNI_PYTHON = "/data/local/sweep/python/bin/python3.12"
@@ -149,6 +159,7 @@ class AcceptedObservationArchive:
         self.digest = hashlib.sha256()
         self.kinds = {name: 0 for name in ("camera_frame", "tag_observation", "pose", "range_scan")}
         self._event_ids: set[tuple[str, str]] = set()
+        self._last_pose: Observation | None = None
         self._reserved_output = False
         self._finished = False
         self.stop_reason: str | None = None
@@ -194,9 +205,15 @@ class AcceptedObservationArchive:
         self.count += 1
         self.byte_count += len(encoded)
         self.kinds[observation.submission.payload["kind"]] += 1
+        if observation.submission.payload["kind"] == "pose":
+            self._last_pose = observation
         if self.count >= self.config.max_records:
             self.stop_reason = "max_records"
         return True
+
+    @property
+    def last_pose(self) -> Observation | None:
+        return self._last_pose
 
     @property
     def stopped(self) -> bool:
@@ -272,6 +289,9 @@ class AcceptedObservationArchive:
         self._finished = True
         return manifest
 
+    def stop_for_duration(self) -> None:
+        self.stop_reason = "duration"
+
     def abort(self) -> None:
         if self._finished:
             return
@@ -320,6 +340,290 @@ class AcceptedObservationArchive:
                 and pose["child_frame"] == self.config.lidar_frame
             )
         return False
+
+
+class ContinuousAcceptedObservationArchive:
+    def __init__(
+        self,
+        output: Path,
+        *,
+        scope: LiveScope,
+        mapper: MapperConfig,
+        config: ArchiveConfig,
+        max_archives: int,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if type(max_archives) is not int or not 2 <= max_archives <= MAX_CONTINUOUS_ARCHIVES:
+            raise LiveMapperError(
+                f"continuous archive count must be from two through {MAX_CONTINUOUS_ARCHIVES}"
+            )
+        if config.max_records < 2:
+            raise LiveMapperError("continuous archive records must leave room beyond a handoff")
+        self.output = output.absolute()
+        if self.output.exists() or self.output.is_symlink():
+            raise LiveMapperError(f"archive output already exists: {self.output}")
+        self.output.mkdir(parents=True)
+        self.scope = scope
+        self.mapper = mapper
+        self.config = config
+        self.max_archives = max_archives
+        self.monotonic = monotonic
+        self._index = 0
+        self._finished = False
+        self._manifests: list[dict[str, object]] = []
+        self._handoffs: list[dict[str, object]] = []
+        self._raw_count = 0
+        self._raw_bytes = 0
+        self._unique_count = 0
+        self._unique_bytes = 0
+        self._archive_has_forward_content = False
+        self._archive = self._new_archive()
+
+    @property
+    def stopped(self) -> bool:
+        if not self._archive.stopped:
+            return False
+        if (
+            self._index + 1 >= self.max_archives
+            or not self._archive_has_forward_content
+        ):
+            return True
+        return not self._rotate()
+
+    @property
+    def remaining_s(self) -> float:
+        return self._archive.remaining_s
+
+    def observe(self, raw: Mapping[str, object]) -> bool:
+        if self._finished:
+            raise LiveMapperError("archive is already complete")
+        if self.stopped:
+            return False
+        observation = Observation.parse(raw)
+        if not self._archive._selected(observation):
+            return False
+        event_key = (observation.submission.source_id, observation.submission.event_id)
+        if event_key in self._archive._event_ids:
+            return False
+        encoded = observation.encode() + b"\n"
+        if not self._can_add(encoded, unique=True):
+            self._archive.stop_reason = "aggregate_limit"
+            return False
+        if not self._archive.observe(raw):
+            return False
+        self._raw_count += 1
+        self._raw_bytes += len(encoded)
+        self._unique_count += 1
+        self._unique_bytes += len(encoded)
+        self._archive_has_forward_content = True
+        return True
+
+    def finish(self) -> dict[str, object]:
+        if self._finished:
+            raise LiveMapperError("archive is already complete")
+        self._finish_current()
+        archive_payloads = [
+            (self.output / f"archive-{index:03d}" / "observations.jsonl").read_bytes()
+            for index in range(len(self._manifests))
+        ]
+        chunks = [payload.splitlines() for payload in archive_payloads]
+        raw = b"".join(archive_payloads)
+        omitted = {
+            (handoff["to_archive"], handoff["source_id"], handoff["event_id"])
+            for handoff in self._handoffs
+        }
+        unique_lines = [
+            line
+            for index, chunk in enumerate(chunks)
+            for line in chunk
+            if (index, *self._event_key(line)) not in omitted
+        ]
+        unique = b"".join(line + b"\n" for line in unique_lines)
+        document = {
+            "schema_version": 1,
+            "kind": "ohmni_continuous_mapper_collection",
+            "archives": [
+                {
+                    "path": f"archive-{index:03d}",
+                    "manifest_sha256": hashlib.sha256(
+                        (self.output / f"archive-{index:03d}" / "manifest.json").read_bytes()
+                    ).hexdigest(),
+                    "observations_sha256": hashlib.sha256(payload).hexdigest(),
+                }
+                for index, payload in enumerate(archive_payloads)
+            ],
+            "handoffs": self._handoffs,
+            "raw_observations": {
+                "count": sum(len(chunk) for chunk in chunks),
+                "bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            },
+            "unique_observations": {
+                "count": len(unique_lines),
+                "bytes": len(unique),
+                "sha256": hashlib.sha256(unique).hexdigest(),
+            },
+        }
+        if document["raw_observations"] != {
+            "count": self._raw_count,
+            "bytes": self._raw_bytes,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        } or document["unique_observations"] != {
+            "count": self._unique_count,
+            "bytes": self._unique_bytes,
+            "sha256": hashlib.sha256(unique).hexdigest(),
+        }:
+            raise LiveMapperError(
+                "continuous archive aggregate accounting disagrees with its chunks"
+            )
+        _write_json(self.output / "collection.json", document)
+        self._finished = True
+        return document
+
+    def stop_for_duration(self) -> None:
+        self._archive.stop_for_duration()
+
+    def abort(self) -> None:
+        if self._finished:
+            return
+        self._archive.abort()
+        shutil.rmtree(self.output, ignore_errors=True)
+
+    def _new_archive(self) -> AcceptedObservationArchive:
+        return AcceptedObservationArchive(
+            self.output / f"archive-{self._index:03d}",
+            scope=self.scope,
+            mapper=self.mapper,
+            config=self.config,
+            monotonic=self.monotonic,
+        )
+
+    def _rotate(self) -> bool:
+        handoff = self._archive.last_pose
+        if handoff is None:
+            raise LiveMapperError("archive rotation requires an accepted body pose handoff")
+        encoded = handoff.encode() + b"\n"
+        if not self._can_add(encoded, unique=False):
+            self._archive.stop_reason = "aggregate_limit"
+            return False
+        self._finish_current()
+        from_archive = self._index
+        self._index += 1
+        self._archive = self._new_archive()
+        raw = handoff.to_mapping()
+        if not self._archive.observe(raw):
+            raise LiveMapperError("archive rotation rejected its accepted body pose handoff")
+        self._raw_count += 1
+        self._raw_bytes += len(encoded)
+        self._archive_has_forward_content = False
+        capture = handoff.submission.t_capture
+        if capture is None:
+            raise LiveMapperError("archive handoff pose is missing its source timestamp")
+        receipt = handoff.submission.t_source_receipt
+        self._handoffs.append(
+            {
+                "from_archive": from_archive,
+                "to_archive": self._index,
+                "source_id": handoff.submission.source_id,
+                "event_id": handoff.submission.event_id,
+                "observation_sha256": hashlib.sha256(handoff.encode()).hexdigest(),
+                "t_capture": capture.to_mapping(),
+                "t_source_receipt": receipt.to_mapping(),
+            }
+        )
+        return True
+
+    def _finish_current(self) -> None:
+        if len(self._manifests) <= self._index:
+            self._manifests.append(self._archive.finish())
+
+    @staticmethod
+    def _event_key(line: bytes) -> tuple[str, str]:
+        event = decode_observation(line)
+        return event.submission.source_id, event.submission.event_id
+
+    def _can_add(self, encoded: bytes, *, unique: bool) -> bool:
+        return (
+            self._raw_count + 1 <= MAX_CONTINUOUS_ARCHIVE_RECORDS
+            and self._raw_bytes + len(encoded) <= MAX_CONTINUOUS_ARCHIVE_BYTES
+            and (
+                not unique
+                or (
+                    self._unique_count + 1 <= MAX_CONTINUOUS_ARCHIVE_RECORDS
+                    and self._unique_bytes + len(encoded) <= MAX_CONTINUOUS_ARCHIVE_BYTES
+                )
+            )
+        )
+
+
+def _write_json(path: Path, value: Mapping[str, object]) -> None:
+    encoded = json.dumps(value, allow_nan=False, indent=2, sort_keys=True).encode() + b"\n"
+    with path.open("xb") as stream:
+        stream.write(encoded)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _capture_pose_registration(
+    path: Path, scope: LiveScope, mapper: MapperConfig, archive: ArchiveConfig
+) -> dict[str, str]:
+    configuration = ObservationConfiguration.load(path)
+    binding = next(
+        (
+            item
+            for item in configuration.bindings
+            if (
+                item.session,
+                item.device_id,
+                item.connection_epoch,
+                item.source_id,
+            )
+            == (scope.session, scope.device_id, scope.connection_epoch, archive.pose_source_id)
+        ),
+        None,
+    )
+    if (
+        binding is None
+        or binding.node_type != "ground"
+        or binding.producer_role != "adapter"
+        or not {archive.odom_frame, archive.body_frame}.issubset(binding.allowed_frames)
+        or "pose" not in binding.allowed_payload_kinds
+        or mapper.clock_mapping_id not in binding.allowed_clock_mapping_ids
+    ):
+        raise LiveMapperError("relay observation file does not admit the capture-pose source")
+    mapping = next(
+        (
+            item
+            for item in configuration.clock_mappings
+            if item.mapping_id == mapper.clock_mapping_id
+        ),
+        None,
+    )
+    if mapping is None or (mapping.source_clock_id, mapping.source_unit) != (mapper.clock_id, "ns"):
+        raise LiveMapperError("relay observation file does not bind the capture-pose clock mapping")
+    declarations = {
+        (item.frame_id, item.kind, item.axis_convention, item.unit)
+        for item in configuration.frames.declarations
+        if (
+            item.session,
+            item.device_id,
+            item.connection_epoch,
+            item.source_id,
+        )
+        == (scope.session, scope.device_id, scope.connection_epoch, archive.pose_source_id)
+    }
+    expected = {
+        (archive.odom_frame, "odom", "right_handed_z_up", "m"),
+        (archive.body_frame, "body", "forward_left_up", "m"),
+    }
+    if not expected.issubset(declarations):
+        raise LiveMapperError("relay observation file does not declare capture-pose frames")
+    payload = path.read_bytes()
+    return {
+        "path": str(path),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "mapping_id": mapper.clock_mapping_id,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -757,7 +1061,6 @@ async def _publish_reader(
         if archive is not None:
             remaining = archive.remaining_s
             if remaining <= 0:
-                archive.stop_reason = "duration"
                 if close_frames is not None:
                     close_frames()
                 return count
@@ -766,7 +1069,7 @@ async def _publish_reader(
                     asyncio.to_thread(next, frames, None), timeout=remaining
                 )
             except TimeoutError:
-                archive.stop_reason = "duration"
+                archive.stop_for_duration()
                 if close_frames is not None:
                     close_frames()
                 return count
@@ -964,11 +1267,15 @@ async def _main_async(args: argparse.Namespace) -> int:
     )
     mapping = _qualify_clock(args)
     archive_output = getattr(args, "archive_output", None)
+    continuous_archive_output = getattr(args, "continuous_archive_output", None)
     archive_config = (
         None
-        if archive_output is None
+        if archive_output is None and continuous_archive_output is None
         else ArchiveConfig(
-            pose_source_id=getattr(args, "archive_pose_source_id", "ohmni-pose"),
+            pose_source_id=(
+                args.archive_pose_source_id
+                or ("ohmni-capture-pose" if continuous_archive_output is not None else "ohmni-pose")
+            ),
             lidar_source_id=getattr(args, "archive_lidar_source_id", "ohmni-lidar"),
             odom_frame=getattr(args, "archive_odom_frame", "odom"),
             body_frame=getattr(args, "archive_body_frame", "body"),
@@ -982,6 +1289,7 @@ async def _main_async(args: argparse.Namespace) -> int:
     source: socket.socket | None = None
     archive: AcceptedObservationArchive | None = None
     archive_manifest: dict[str, object] | None = None
+    capture_registration: dict[str, str] | None = None
     try:
         mapper = LiveTagMapper(
             config, detector, receipt_time_ns=lambda: mapping.robot_time_ns(time.monotonic_ns())
@@ -1007,12 +1315,29 @@ async def _main_async(args: argparse.Namespace) -> int:
                 )
                 scope = await _authenticated_scope(relay, mapper, args.relay_receive_timeout_s)
                 if archive_config is not None:
-                    archive = AcceptedObservationArchive(
-                        archive_output,
-                        scope=scope,
-                        mapper=config,
-                        config=archive_config,
-                    )
+                    if continuous_archive_output is not None:
+                        registration_path = getattr(args, "relay_observations_file", None)
+                        if registration_path is None:
+                            raise LiveMapperError(
+                                "continuous collection requires the relay observation file"
+                            )
+                        capture_registration = _capture_pose_registration(
+                            registration_path, scope, config, archive_config
+                        )
+                        archive = ContinuousAcceptedObservationArchive(
+                            continuous_archive_output,
+                            scope=scope,
+                            mapper=config,
+                            config=archive_config,
+                            max_archives=args.continuous_archive_max_chunks,
+                        )
+                    else:
+                        archive = AcceptedObservationArchive(
+                            archive_output,
+                            scope=scope,
+                            mapper=config,
+                            config=archive_config,
+                        )
                 count = await _publish_reader(
                     relay,
                     mapper,
@@ -1035,7 +1360,11 @@ async def _main_async(args: argparse.Namespace) -> int:
             source.close()
         _remove_adb_reverse(args.adb, args.adb_serial, args.pts_port)
     result = {"published": count}
-    if archive_manifest is not None:
+    if archive_manifest is not None and continuous_archive_output is not None:
+        result["collection"] = str(continuous_archive_output)
+        result["archived_observations"] = archive_manifest["raw_observations"]["count"]
+        result["capture_pose_registration"] = capture_registration
+    elif archive_manifest is not None:
         result["archive"] = str(archive_output)
         result["archived_observations"] = archive_manifest["observations"]["count"]
     print(json.dumps(result))
@@ -1070,7 +1399,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--covariance", required=True, type=_covariance)
     parser.add_argument("--tag-sizes", required=True, type=_tag_sizes)
     parser.add_argument("--archive-output", type=Path)
-    parser.add_argument("--archive-pose-source-id", default="ohmni-pose")
+    parser.add_argument("--continuous-archive-output", type=Path)
+    parser.add_argument("--continuous-archive-max-chunks", type=int, default=2)
+    parser.add_argument("--relay-observations-file", type=Path)
+    parser.add_argument("--archive-pose-source-id")
     parser.add_argument("--archive-lidar-source-id", default="ohmni-lidar")
     parser.add_argument("--archive-odom-frame", default="odom")
     parser.add_argument("--archive-body-frame", default="body")
@@ -1080,6 +1412,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--archive-duration-s", type=float, default=MAX_ARCHIVE_DURATION_S)
     parser.add_argument("--archive-drain-s", type=float, default=2.0)
     args = parser.parse_args(argv)
+    if args.archive_output is not None and args.continuous_archive_output is not None:
+        parser.error("archive output and continuous archive output are mutually exclusive")
     if (
         args.clock_probes < 1
         or args.maximum_clock_error_ms < 0
@@ -1094,6 +1428,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         or isinstance(args.archive_drain_s, bool)
         or not math.isfinite(args.archive_drain_s)
         or not 0 <= args.archive_drain_s <= 10
+        or not 2 <= args.continuous_archive_max_chunks <= 64
     ):
         parser.error("clock qualification bounds must be nonnegative with at least one probe")
     return asyncio.run(_main_async(args))

@@ -21,6 +21,19 @@ class GroundStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class EncoderPoseSample:
+    x: float
+    y: float
+    yaw_deg: float
+    vx: float
+    vy: float
+    quality: float
+    poll_id: int
+    left_receipt_ns: int
+    right_receipt_ns: int
+
+
+@dataclass(frozen=True, slots=True)
 class RangeScan:
     t_ms: int
     pose: tuple[float, float, float]

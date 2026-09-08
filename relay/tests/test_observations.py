@@ -439,6 +439,59 @@ def test_pose_camera_and_status_payloads_have_closed_encodable_shapes() -> None:
         assert decode_observation(result.encode()).submission.payload["kind"] == payload["kind"]
 
 
+def test_encoder_receipt_pose_keeps_its_timestamp_and_pair_provenance_together() -> None:
+    raw = json.loads((FIXTURES / "ground-odom-range-scan.json").read_text())
+    receipt = {"clock_id": "ohmni-boot-clock", "unit": "ns", "value": 20_000}
+    raw.update(
+        {
+            "event_id": "encoder-pose",
+            "frame": "odom",
+            "t_capture": receipt,
+            "t_source_receipt": receipt,
+            "clock_mapping_id": "ohmni-capture-clock",
+            "payload": {
+                "kind": "pose",
+                "pose": {
+                    "parent_frame": "odom",
+                    "child_frame": "lidar",
+                    "x_m": 0.0,
+                    "y_m": 0.0,
+                    "z_m": 0.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "qw": 1.0,
+                },
+                "encoder_timing": {
+                    "v": 1,
+                    "time_basis": "encoder_reply_receipt",
+                    "boot_id": "boot-17",
+                    "poll_id": 17,
+                    "left_receipt": {
+                        "clock_id": "ohmni-boot-clock",
+                        "unit": "ns",
+                        "value": 10_000,
+                    },
+                    "right_receipt": receipt,
+                    "pair_skew_ns": 10_000,
+                },
+            },
+        }
+    )
+
+    parsed = ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+
+    assert parsed.payload["encoder_timing"]["right_receipt"] == receipt
+    raw["payload"]["encoder_timing"]["right_receipt"] = {
+        "clock_id": "ohmni-boot-clock",
+        "unit": "ns",
+        "value": 19_999,
+    }
+    raw["payload"]["encoder_timing"]["left_receipt"]["value"] = 9_999
+    with pytest.raises(ObservationError, match="encoder-receipt pose time"):
+        ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})
+
+
 def test_submission_state_is_deeply_immutable_and_export_returns_fresh_values() -> None:
     raw = json.loads((FIXTURES / "ground-odom-range-scan.json").read_text())
     submission = ObservationSubmission.parse({key: raw[key] for key in raw if key != "t_ingest"})

@@ -558,6 +558,8 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
         fields = frozenset({"kind", "pose"})
         if "capture_alignment" in raw:
             fields |= {"capture_alignment"}
+        if "encoder_timing" in raw:
+            fields |= {"encoder_timing"}
         value = _exact(raw, fields, "pose payload")
         pose = FramedPose.parse(value["pose"])
         if pose.parent_frame != envelope_frame:
@@ -640,6 +642,46 @@ def _payload(raw: object, envelope_frame: str) -> dict[str, object]:
                 if number < 0:
                     _error("invalid_payload", f"{name} must be non-negative")
                 result["capture_alignment"][name] = number
+        if "encoder_timing" in value:
+            timing = _exact(
+                value["encoder_timing"],
+                frozenset(
+                    {
+                        "v",
+                        "time_basis",
+                        "boot_id",
+                        "poll_id",
+                        "left_receipt",
+                        "right_receipt",
+                        "pair_skew_ns",
+                    }
+                ),
+                "pose encoder timing",
+            )
+            if timing["v"] != 1 or type(timing["v"]) is not int:
+                _error("invalid_payload", "pose encoder timing requires v 1")
+            if timing["time_basis"] != "encoder_reply_receipt":
+                _error("invalid_payload", "pose encoder timing has an unknown time basis")
+            left = SourceTime.parse(timing["left_receipt"])
+            right = SourceTime.parse(timing["right_receipt"])
+            skew = _integer(
+                timing["pair_skew_ns"], "encoder pair skew", maximum=350_000_000
+            )
+            if (
+                (left.clock_id, left.unit) != (right.clock_id, right.unit)
+                or left.value > right.value
+                or right.value - left.value != skew
+            ):
+                _error("invalid_payload", "pose encoder timing receipts are inconsistent")
+            result["encoder_timing"] = {
+                "v": 1,
+                "time_basis": "encoder_reply_receipt",
+                "boot_id": _text(timing["boot_id"], "encoder boot_id"),
+                "poll_id": _integer(timing["poll_id"], "encoder poll_id", minimum=1),
+                "left_receipt": left.to_mapping(),
+                "right_receipt": right.to_mapping(),
+                "pair_skew_ns": skew,
+            }
         return result
     if kind == "range_scan":
         fields = frozenset(
@@ -909,6 +951,19 @@ class ObservationSubmission:
                 )
             if self.t_capture.value > self.t_source_receipt.value:
                 _error("invalid_time_order", "capture time exceeds source receipt time")
+        timing = self.payload.get("encoder_timing")
+        if timing is not None:
+            right = timing["right_receipt"]
+            if (
+                self.t_capture is None
+                or self.clock_mapping_id is None
+                or self.t_capture.to_mapping() != right
+                or self.t_source_receipt.to_mapping() != right
+            ):
+                _error(
+                    "invalid_time_order",
+                    "encoder-receipt pose time must equal its mapped right receipt",
+                )
         if self.clock_mapping_id is not None:
             object.__setattr__(
                 self, "clock_mapping_id", _text(self.clock_mapping_id, "clock_mapping_id")

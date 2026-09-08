@@ -712,7 +712,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--evidence-root", required=True, type=Path)
     parser.add_argument("--lidar-config", required=True, type=Path)
     parser.add_argument("--lidar-mount-id", required=True)
-    parser.add_argument("--collection", required=True, type=Path)
+    parser.add_argument("--collection", type=Path)
     parser.add_argument("--expected-tags", type=Path)
     parser.add_argument("--maximum-continuity-gap-ns", required=True, type=int)
     parser.add_argument("--output", required=True, type=Path)
@@ -734,7 +734,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit(f"ohmni multi-archive tag candidate failed: {error}") from error
     print(
         json.dumps(
-            {"output": str(args.output), "tag_count": len(result["candidates"])}, sort_keys=True
+            {"output": str(args.output), "tag_count": result["tag_count"]}, sort_keys=True
         )
     )
     return 0

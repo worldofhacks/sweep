@@ -27,6 +27,7 @@ from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION
 from tests.autonomy_fixtures import planning_config, safety_config
 
 from .fake import FakeGroundDevice
+from .models import EncoderPoseSample
 from .return_controller import ApprovedReturnRoute, ReturnPoint, ReturnSegment, WorldToOdom
 from .runtime import GroundRuntimeConfig, OhmniRuntime, parse_args
 
@@ -203,6 +204,97 @@ def test_numeric_dial_address_preserves_the_tls_hostname(monkeypatch):
     assert calls == [
         (f"wss://relay.example/field/ws/{SESSION}", {"host": "192.0.2.5", "proxy": None})
     ]
+
+
+def test_capture_pose_uses_the_encoder_reply_receipt_once_per_paired_poll(monkeypatch) -> None:
+    class Device(FakeGroundDevice):
+        def encoder_pose_sample(self) -> EncoderPoseSample | None:
+            return EncoderPoseSample(1.0, 2.0, 90.0, 0.1, 0.0, 0.8, 17, 10_000, 20_000)
+
+    node = OhmniRuntime(
+        GroundRuntimeConfig(
+            "ws://relay.example",
+            SESSION,
+            GROUND_ID,
+            GROUND_KEY.decode(),
+            "ground-9",
+            source_clock_id="ohmni-boot-clock",
+            capture_pose_source_id="ohmni-capture-pose",
+            capture_pose_boot_id="boot-17",
+            capture_pose_clock_mapping_id="ohmni-capture-clock",
+        ),
+        Device(),
+    )
+    node._epoch = 1
+    node._outbound = asyncio.Queue()
+    monkeypatch.setattr("adapters.ohmni.runtime._kernel_boot_id", lambda: "boot-17")
+
+    node._publish_observations()
+    node._publish_observations()
+
+    frames = []
+    while not node._outbound.empty():
+        frames.append(node._outbound.get_nowait())
+    captures = [frame for frame in frames if frame["source_id"] == "ohmni-capture-pose"]
+    assert len(captures) == 1
+    capture = captures[0]
+    assert capture["t_capture"] == {
+        "clock_id": "ohmni-boot-clock",
+        "unit": "ns",
+        "value": 20_000,
+    }
+    assert capture["t_source_receipt"] == capture["t_capture"]
+    assert capture["clock_mapping_id"] == "ohmni-capture-clock"
+    assert capture["payload"]["encoder_timing"] == {
+        "v": 1,
+        "time_basis": "encoder_reply_receipt",
+        "boot_id": "boot-17",
+        "poll_id": 17,
+        "left_receipt": {"clock_id": "ohmni-boot-clock", "unit": "ns", "value": 10_000},
+        "right_receipt": {"clock_id": "ohmni-boot-clock", "unit": "ns", "value": 20_000},
+        "pair_skew_ns": 10_000,
+    }
+
+
+def test_capture_pose_withdraws_when_the_kernel_boot_id_changes(monkeypatch) -> None:
+    node = OhmniRuntime(
+        GroundRuntimeConfig(
+            "ws://relay.example",
+            SESSION,
+            GROUND_ID,
+            GROUND_KEY.decode(),
+            "ground-9",
+            capture_pose_source_id="ohmni-capture-pose",
+            capture_pose_boot_id="boot-17",
+            capture_pose_clock_mapping_id="ohmni-capture-clock",
+        ),
+        FakeGroundDevice(),
+    )
+    node._epoch = 1
+    node._outbound = asyncio.Queue()
+    monkeypatch.setattr("adapters.ohmni.runtime._kernel_boot_id", lambda: "boot-18")
+
+    node._publish_observations()
+
+    assert all(frame["source_id"] != "ohmni-capture-pose" for frame in node._outbound._queue)
+
+
+@pytest.mark.parametrize(
+    "config",
+    (
+        {"capture_pose_source_id": "capture"},
+        {
+            "capture_pose_source_id": "ohmni-pose",
+            "capture_pose_boot_id": "boot-17",
+            "capture_pose_clock_mapping_id": "clock-17",
+        },
+    ),
+)
+def test_capture_pose_configuration_requires_a_complete_distinct_identity(config) -> None:
+    with pytest.raises(ValueError, match="capture pose"):
+        GroundRuntimeConfig(
+            "ws://relay.example", SESSION, GROUND_ID, GROUND_KEY.decode(), "ground-9", **config
+        )
 
 
 def test_measured_clock_correction_applies_to_envelopes_and_lease_expiry(monkeypatch):

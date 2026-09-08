@@ -268,6 +268,36 @@ def test_refuses_malformed_or_oversized_expected_tag_inventory(
     assert not output.exists()
 
 
+def test_map_cli_reports_the_built_tag_count(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    archive, config, request, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
+    output = tmp_path / "map"
+
+    assert (
+        ohmni_multi_archive_tag_candidate.main(
+            [
+                "--fusion-request",
+                str(request),
+                "--evidence-root",
+                str(evidence),
+                "--lidar-config",
+                str(config),
+                "--lidar-mount-id",
+                "lidar-measured",
+                "--maximum-continuity-gap-ns",
+                "100",
+                "--output",
+                str(output),
+                str(archive),
+            ]
+        )
+        == 0
+    )
+
+    assert json.loads(capsys.readouterr().out) == {"output": str(output), "tag_count": 1}
+
+
 def test_declared_pose_handoff_replaces_the_adjacent_gap_requirement(tmp_path: Path) -> None:
     archive, config, request, evidence, _ = local_fixture._write_candidate_inputs(tmp_path)
     events = _events(archive)

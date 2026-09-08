@@ -19,7 +19,7 @@ from .botshell import DEFAULT_PATH, BotShell
 from .camera import Camera
 from .camera import from_environment as camera_from_environment
 from .lidar import Lidar, discover
-from .models import GroundStatus, RangeScan
+from .models import EncoderPoseSample, GroundStatus, RangeScan
 from .odometry import BASE_MM, Odometry
 from .paired_encoder import PairedEncoderStream, default_socket_path
 
@@ -221,6 +221,22 @@ class OhmniDevice:
                 "spotter_present": self.spotter_present,
                 "last_refusal": self.last_refusal,
             },
+        )
+
+    def encoder_pose_sample(self) -> EncoderPoseSample | None:
+        pose, pair = self.odometry.snapshot_with_sample()
+        if pair is None or pose.quality <= 0:
+            return None
+        return EncoderPoseSample(
+            pose.x,
+            pose.y,
+            pose.yaw_deg,
+            pose.vx,
+            pose.vy,
+            pose.quality,
+            pair.poll_id,
+            pair.left_receipt_ns,
+            pair.right_receipt_ns,
         )
 
     def enable(self) -> bool:

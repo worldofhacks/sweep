@@ -36,6 +36,11 @@ SWEEP_ADAPTER_ID=ohmni-9
 SWEEP_RELAY_CONNECT_HOST=192.0.2.10
 SWEEP_RELAY_CLOCK_OFFSET_MS=0
 SWEEP_ODOM_ORIGIN_ID=measured-odom-origin
+# Set these together only for a reviewed capture-pose source and active boot clock mapping.
+SWEEP_SOURCE_CLOCK_ID=ohmni-boot-monotonic
+SWEEP_CAPTURE_POSE_SOURCE_ID=ohmni-capture-pose
+SWEEP_CAPTURE_POSE_BOOT_ID=replace-with-current-kernel-boot-id
+SWEEP_CAPTURE_POSE_CLOCK_MAPPING_ID=ohmni-capture-clock
 # Set all six when this node is approved to publish PTS-backed video for mapping.
 SWEEP_MEDIA_HOST=media-host:8554
 SWEEP_CAMERA_DEVICE=/dev/video1
@@ -54,6 +59,8 @@ SWEEP_WHEEL_DIAMETER_MM=152.4
 Keep `SWEEP_RELAY_URL` at the verified `wss://` hostname. When the robot must dial a numeric address, set `SWEEP_RELAY_CONNECT_HOST` to that IPv4 or IPv6 address. The TCP connection uses the numeric address while TLS and the HTTP Host header use the hostname in `SWEEP_RELAY_URL`.
 
 `SWEEP_RELAY_CLOCK_OFFSET_MS` is a measured relay wall-clock correction, bounded to five minutes. It applies to signed relay envelopes and lease deadlines. It does not alter sensor receipt times or establish a capture-clock mapping.
+
+The optional capture-pose source publishes only from an accepted paired encoder sample. Its pose time and source receipt both use `right_receipt_ns`, the time used by odometry integration. The payload records the pair poll ID, left and right receipts, receipt skew, and `encoder_reply_receipt` as its time basis. It does not claim a camera exposure time. The runtime publishes only strictly increasing paired poll IDs and right receipts, so its 5 Hz telemetry loop cannot replay an encoder sample. The runtime reads `/proc/sys/kernel/random/boot_id` before every capture-pose publication and withholds the source when it differs from `SWEEP_CAPTURE_POSE_BOOT_ID`. Configure the source, boot ID, and clock mapping together; the source remains off when any value is absent. The host relay's `SWEEP_OBSERVATIONS_FILE` must separately bind this source as a ground adapter pose with `odom` and `body` frame declarations and authorize the same mapping ID for `SWEEP_SOURCE_CLOCK_ID` in nanoseconds.
 
 Measure the lidar center relative to the midpoint between the drive wheels: X forward, Y left, and Z up from the floor, in metres. Do not copy the example XYZ values. `SWEEP_LIDAR_OFFSET_DEG` and `SWEEP_LIDAR_ANGLE_SIGN` convert raw scan angles into body axes and require a stationary target check. The published scan keeps the lidar center as its origin and uses body-aligned axes, so `SWEEP_LIDAR_MOUNT_YAW_DEG` must be zero. A nonzero yaw is refused because it would rotate an already normalized scan again.
 

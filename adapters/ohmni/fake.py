@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .models import GroundStatus, RangeScan
+from .models import EncoderPoseSample, GroundStatus, RangeScan
 
 
 @dataclass
@@ -97,6 +97,20 @@ class FakeGroundDevice:
                 "camera_present": self.camera_available,
                 "spotter_present": self.spotter_present,
             },
+        )
+
+    def encoder_pose_sample(self) -> EncoderPoseSample | None:
+        now_ns = int(self.monotonic() * 1_000_000_000)
+        return EncoderPoseSample(
+            self.x,
+            self.y,
+            self.yaw_deg,
+            0.0,
+            0.0,
+            0.9 if self.lidar_available else 0.0,
+            1,
+            now_ns,
+            now_ns,
         )
 
     def latest_scan(self) -> RangeScan | None:
