@@ -1,6 +1,64 @@
 # Sweep production-chain readiness
 
-## Mapping and flight checkpoint, 2026-09-07 23:35 UTC
+## Mapping and flight checkpoint, 2026-09-08 00:20 UTC
+
+The supervised directional build completed a physical takeoff to 1.2 m and a
+forward pulse. Both telemetry and the operator confirmed forward motion. The
+pulse measured mean body-forward velocity 0.195 m/s and body-right velocity
+-0.029 m/s. Before the backward pulse, reported local height reached 1.4 m.
+The controller reused the completed takeoff target as a signed 1.2 m ceiling
+while enabling the next probe, rejected that probe, and landed automatically.
+Fresh telemetry twice confirmed landed, height 0.0 m, and Virtual Stick disabled.
+Backward, left, and right acceptance remain pending. The operator requested a
+soft ascent limit separate from the hard landing ceiling; that correction is
+being implemented and has not been installed.
+
+The flown APK was built from `34231390` with the registered SDK key and matching
+signer. Its SHA-256 is
+`37cab45a5c755f536b5d2fe057e66137b021dfc145d18b4856d47bb9a2c87474`.
+The installed build passed 317 tests and a fresh ground authority check. The
+flight used session `sweep-direction-tags-20260907-2322`, connection epoch 2.
+The session remains armed; that authorization does not imply airborne state.
+
+The recording contains 615 frames, with tags in 388 frames. Detected IDs were
+0, 2, 3, 4, 5, 6, 7, 8, 10, and 11. The clip SHA-256 is
+`d7097149eff4d1308dfc834ad5d5d18aa83dfe9fc32645e997fb0f822a65f34c`.
+A diagnostic replay used the operator's measured 7.87-inch black-square edge
+(0.199898 m), assumed focal length 843.23 px, centered principal point, and zero
+distortion. All 193 frames received between the reported takeoff completion and
+backward refusal supported at least one geometric pose under those assumptions;
+190 supported at least two. Across the clip, admitted fits had median 0.323 px
+reprojection RMS. These are conditional camera-to-tag fits: a +/-10% focal-length
+change shifted estimated translations by a median 0.188 m. No measured camera
+intrinsics, body extrinsic, exposure-time alignment, or surveyed room position
+was established. Decoder receipt times do not establish exposure timing.
+
+Ohmni 11 also completed the longer 0.4 m/30-degree calibration profile. Capture
+SHA-256 is `9cbe3448d97311097dafe30b563725d8cf1eb28cf20d37dc8a8074614b2dae92`;
+executed source SHA-256 is
+`792d3afae723ffd2bb2d6933746cd772d85a73ba3c3e487d00b8db9545eb7ec6`.
+Odometry reported 0.4067 m forward and about 32.9 degrees counterclockwise.
+The robot stopped and its lease and reverse tunnel were removed. The fitter
+still refused the candidate. Re-examining the original mounting measurements
+exposed a geometry interpretation error: the 22-inch diagonal was treated as a
+horizontal radius. Diagnostic alternatives retain the original capture and
+still fail angular uncertainty limits. No lidar calibration has been applied;
+a more informative motion sequence is being implemented with unchanged quality
+gates.
+
+A stationary Ohmni 11 camera capture now works at 640x480 through the media-only
+publisher. Its legacy `ground1` stream override was corrected to `drone11`, with
+a private pre-change backup. The bounded publisher and reverse tunnel were
+stopped after capture. A camera clock-probe fix handles Android's two-field
+`/proc/uptime`; ten live probes bounded the clock mapping error at 51.8 ms.
+The PTS sidecar, optical calibration, and camera-to-body registration remain
+unqualified, so no metric shared-map observation is claimed.
+
+All five CI jobs passed for [#323](https://github.com/worldofhacks/sweep/pull/323)
+at `74250954`, [#324](https://github.com/worldofhacks/sweep/pull/324) at `34231390`,
+and [#325](https://github.com/worldofhacks/sweep/pull/325) at `0adbe702`.
+
+## Historical mapping and flight checkpoint, 2026-09-07 23:35 UTC
 
 Physical testing has resumed. Ohmni 11 completed three bounded calibration
 captures. The operator confirmed forward motion followed by a left turn. Those
