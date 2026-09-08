@@ -31,7 +31,7 @@ Comparing tag-center distances in the final map against the recorded survey inpu
 
 The hallway list contains 19 tags, including tag 53, which creates 18 gaps. Eighteen nominal 37-inch gaps total 666 inches, 5.27 inches below the fitted length. The recorded 629-inch length equals 17 such gaps. An omitted gap is a possible explanation to check against the physical endpoints.
 
-The corridor-to-carpet cross-tie disagrees by 2.65 m and remains unresolved. Recheck its endpoint IDs and the cross-zone camera fit before approving the map. The 16–17 baseline sets the fit's scale; its exact agreement is imposed. The selected tag-18 candidate also uses the measured height as a constraint. Neither supplies independent validation.
+The corridor-to-carpet cross-tie differs from the recorded input by 2.65 m. After reviewing this comparison, the operator confirmed the provisional map's tag 31–0 placement. Retain that placement and preserve the original 122-inch entry as a conflicting survey input. The confirmation supplies no new tape measurement or independent metric uncertainty. The 16–17 baseline sets the fit's scale; its exact agreement is imposed. The selected tag-18 candidate also uses the measured height as a constraint. Neither supplies independent validation.
 
 The recorded inputs are in `office-tag-layout-provisional-20260908/provisional-office-tag-layout.json`; the wall alternatives are in `unit12-live-camera-map-fit-20260908/wall-height-constrained-alternatives.json`, under the same capture-host root as the artifacts above.
 
