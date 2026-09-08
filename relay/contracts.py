@@ -14,6 +14,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Literal
 
+from nodekit.telemetry import device_telemetry_payload
 from planner.models import CommandOperation, DeviceClass
 from relay.body_pulse import valid_body_pulse_args
 
@@ -62,6 +63,7 @@ class NodeAcknowledgementReason(StrEnum):
     AUTHORITY_LOST = "authority_lost"
     WATCHDOG_HOLD = "watchdog_hold"
     WATCHDOG_FAILSAFE = "watchdog_failsafe"
+    UNSUPPORTED_OPERATION = "unsupported_operation"
 
 
 class GuidanceMode(StrEnum):
@@ -162,6 +164,7 @@ MAX_STORAGE_REMAINING_BYTES = (1 << 63) - 1
 # cross-language float representation, the same rule signed membership claims follow.
 COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingProxyType(
     {
+        CommandOperation.ROBOT_PERIPHERAL: MappingProxyType({}),
         CommandOperation.TAKEOFF: MappingProxyType({"z_mm": "integer"}),
         CommandOperation.GOTO: MappingProxyType(
             {"x_mm": "integer", "y_mm": "integer", "z_mm": "integer", "speed_mm_s": "positive"}
@@ -647,6 +650,7 @@ class NodeStatusFrame:
     video_publish_state: VideoPublishState
     phone_battery_percent: int
     phone_thermal_state: PhoneThermalState
+    device_telemetry: dict[str, object] | None = None
 
     def to_event(self) -> dict[str, object]:
         return {
@@ -679,6 +683,11 @@ class NodeStatusFrame:
             "video_publish_state": self.video_publish_state.value,
             "phone_battery_percent": self.phone_battery_percent,
             "phone_thermal_state": self.phone_thermal_state.value,
+            **(
+                {}
+                if self.device_telemetry is None
+                else {"device_telemetry": device_telemetry_payload(self.device_telemetry)}
+            ),
         }
 
 
@@ -1258,7 +1267,15 @@ def parse_node_status(raw: object) -> NodeStatusFrame:
         "phone_battery_percent",
         "phone_thermal_state",
     }
+    if "device_telemetry" in value:
+        fields = fields | {"device_telemetry"}
     _exact_fields(value, fields, code)
+    custom = None
+    if "device_telemetry" in value:
+        try:
+            custom = device_telemetry_payload(value["device_telemetry"])
+        except (ValueError, TypeError) as error:
+            raise ContractError(code, str(error)) from error
     _common_envelope(value, expected_type="node_status", code=code)
     battery = _nonnegative_int(value["phone_battery_percent"], "phone_battery_percent", code)
     if battery > 100:
@@ -1283,6 +1300,7 @@ def parse_node_status(raw: object) -> NodeStatusFrame:
         _enum(VideoPublishState, value["video_publish_state"], "video_publish_state", code),
         battery,
         _enum(PhoneThermalState, value["phone_thermal_state"], "phone_thermal_state", code),
+        custom,
     )
 
 
@@ -1628,6 +1646,13 @@ def _azimuth(value: object, field: str, code: str) -> float:
 def _command_arguments(
     operation: CommandOperation, raw: object, code: str
 ) -> Mapping[str, int | str]:
+    if operation is CommandOperation.ROBOT_PERIPHERAL:
+        from nodekit.peripherals import peripheral_arguments
+
+        try:
+            return peripheral_arguments(raw)
+        except (ValueError, TypeError) as error:
+            raise ContractError(code, str(error)) from None
     if operation is CommandOperation.BODY_PULSE and not valid_body_pulse_args(raw):
         raise ContractError(code, "body_pulse arguments exceed the bounded integer contract")
     spec = COMMAND_ARGUMENT_FIELDS[operation]

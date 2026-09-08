@@ -83,7 +83,11 @@ _HEADERS = {
     "X-Sweep-Correlation-Id": _CORRELATION,
 }
 _QUALIFIED_TEST_INTENTS = ",".join(
-    sorted(name.value for name in C1_IMPLEMENTED_INTENT_NAMES if name is not IntentName.ESTOP)
+    sorted(
+        name.value
+        for name in C1_IMPLEMENTED_INTENT_NAMES
+        if name not in {IntentName.ESTOP, IntentName.ROBOT_PERIPHERAL, IntentName.CAMERA_CONTROL}
+    )
 )
 
 
@@ -334,7 +338,15 @@ def test_speech_pair_qualification_configuration_is_closed_and_immutable() -> No
     assert _qualified_voice_intents(
         {"SWEEP_QUALIFIED_VOICE_INTENTS": "takeoff, hold"}, profile
     ) == ("hold", "takeoff")
-    for raw in ("takeoff,takeoff", "takeoff,", "unknown", "disarm", "map_area"):
+    for raw in (
+        "takeoff,takeoff",
+        "takeoff,",
+        "unknown",
+        "disarm",
+        "map_area",
+        "robot_peripheral",
+        "camera_control",
+    ):
         with pytest.raises(SettingsError, match="unique enabled language-source names"):
             _qualified_voice_intents({"SWEEP_QUALIFIED_VOICE_INTENTS": raw}, profile)
 

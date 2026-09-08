@@ -752,6 +752,8 @@ def test_retry_cannot_reference_its_own_intent_id(
 
 
 _C1_ARGS: dict[IntentName, dict[str, object]] = {
+    IntentName.ROBOT_PERIPHERAL: {"kind": "screen", "text": "Fixture message"},
+    IntentName.CAMERA_CONTROL: {"kind": "ready"},
     IntentName.SELECT: {"ids": [1]},
     IntentName.TRANSLATE: {"dx": 1, "dy": 0},
     IntentName.BODY_PULSE: {"forward_mm_s": 250, "duration_ms": 500},
@@ -767,6 +769,8 @@ _C1_ARGS: dict[IntentName, dict[str, object]] = {
 }
 _CONFIRMED_NAMES = frozenset(
     {
+        IntentName.ROBOT_PERIPHERAL,
+        IntentName.CAMERA_CONTROL,
         IntentName.BODY_PULSE,
         IntentName.TAKEOFF,
         IntentName.LAND,

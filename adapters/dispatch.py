@@ -305,7 +305,9 @@ class AdapterDispatcher:
                 )
             try:
                 with self._intent_scope(command.intent_id, command.roster_version, (command,)):
-                    outcome = self._execute(command, captures, provider)
+                    outcome = self._execute(
+                        command, captures, provider, intent_name=plan.intent_name
+                    )
             except AdapterTimeout as error:
                 failure = self._failure_for(
                     command,
@@ -399,7 +401,12 @@ class AdapterDispatcher:
                 latest = outcome
 
             # Preserve completed I/O evidence while refusing stale mission completion.
-            if plan.intent_name in {IntentName.CAPTURE_ROOM, IntentName.ALTITUDE}:
+            if plan.intent_name in {
+                IntentName.CAPTURE_ROOM,
+                IntentName.ALTITUDE,
+                IntentName.ROBOT_PERIPHERAL,
+                IntentName.CAMERA_CONTROL,
+            }:
                 after = provider()
                 effective_projected = self._effective_projected_positions(
                     projected, evidence_baseline, after
@@ -1212,8 +1219,32 @@ class AdapterDispatcher:
         command: Command,
         captures: dict[str, CaptureResult],
         provider: SnapshotProvider,
+        *,
+        intent_name: IntentName | None = None,
     ) -> CommandOutcome:
         operation = command.operation
+        if intent_name is IntentName.CAMERA_CONTROL:
+            runner = getattr(self.camera, "camera_control", None)
+            if not callable(runner):
+                return self._command_refusal(
+                    command,
+                    provider(),
+                    RefusalReason.CAMERA_UNSUPPORTED,
+                    "adapter does not implement standalone camera acknowledgements",
+                )
+            raw = runner(command.drone_id, command.operation, command.parameters)
+            return self.validate_acknowledgement(command, raw, provider())
+        if operation is CommandOperation.ROBOT_PERIPHERAL:
+            runner = getattr(self.flight, "robot_peripheral", None)
+            if not callable(runner):
+                return self._command_refusal(
+                    command,
+                    provider(),
+                    RefusalReason.UNSUPPORTED,
+                    "adapter does not implement robot peripherals",
+                )
+            raw = runner(command.drone_id, command.parameters)
+            return self.validate_acknowledgement(command, raw, provider())
         if operation is CommandOperation.TAKEOFF:
             raw = self.flight.takeoff([command.drone_id], float(command.parameters["z"]))[0]
             return self.validate_acknowledgement(command, raw, provider())
@@ -1544,6 +1575,10 @@ class AdapterDispatcher:
         fallback_snapshot: FleetSnapshot | None = None,
         owner_still_valid: Callable[[], bool] | None = None,
     ) -> list[CommandAcknowledgement]:
+        if plan.intent_name in {IntentName.ROBOT_PERIPHERAL, IntentName.CAMERA_CONTROL}:
+            # These plans launch no wheel or flight motion. Their failure must not
+            # acquire an unrelated motion-control lease or emit a recovery HOVER.
+            return []
         if owner_still_valid is not None and not owner_still_valid():
             return []
         try:
@@ -1835,6 +1870,9 @@ class AdapterDispatcher:
 
     @staticmethod
     def _capture_metadata(plan: Plan) -> tuple[str, str, CapturePattern, int, int] | None:
+        if plan.intent_name is IntentName.CAMERA_CONTROL:
+            # A shutter acknowledgement is not a downloaded or validated media bundle.
+            return None
         capture_command = next(
             (
                 command

@@ -6,6 +6,7 @@ from math import isfinite
 from types import MappingProxyType
 from typing import Literal
 
+from nodekit.peripherals import peripheral_arguments
 from relay.body_pulse import valid_body_pulse_args
 from relay.capabilities import (
     C1_CAPABILITY_PROFILE,
@@ -101,7 +102,8 @@ SOURCE_ALLOWED_NAMES: Mapping[str, frozenset[IntentName]] = MappingProxyType(
         ),
         # This is only the schema ceiling. RelaySession additionally requires a
         # one-shot audited compiler-plan binding for every language intent.
-        "language": C1_IMPLEMENTED_INTENT_NAMES,
+        "language": C1_IMPLEMENTED_INTENT_NAMES
+        - {IntentName.ROBOT_PERIPHERAL, IntentName.CAMERA_CONTROL},
     }
 )
 _REQUIRED_FIELDS = frozenset(
@@ -254,7 +256,7 @@ def _is_bounded_intent_text(value: object, maximum_chars: int) -> bool:
 def _has_valid_scope(name: IntentName, raw: Mapping[object, object]) -> bool:
     if name is IntentName.NAVIGATE:
         return raw["confirm"] is True and bool(raw["selection"])
-    if name is IntentName.CAPTURE_ROOM:
+    if name in {IntentName.CAPTURE_ROOM, IntentName.ROBOT_PERIPHERAL, IntentName.CAMERA_CONTROL}:
         return raw["confirm"] is True and len(raw["selection"]) == 1
     if name is IntentName.SURVEY_AREA:
         return raw["confirm"] is True
@@ -291,6 +293,14 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         if not valid_body_pulse_args(value):
             raise ValueError
         return MappingProxyType(dict(value))
+
+    if name is IntentName.ROBOT_PERIPHERAL:
+        return MappingProxyType(peripheral_arguments(value))
+
+    if name is IntentName.CAMERA_CONTROL:
+        from .camera_control_args import camera_control_arguments
+
+        return MappingProxyType(camera_control_arguments(value))
 
     if name is IntentName.TRANSLATE:
         if set(value) != {"dx", "dy"}:

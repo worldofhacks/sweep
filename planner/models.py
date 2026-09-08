@@ -130,6 +130,7 @@ class CommandOperation(StrEnum):
     TAKEOFF = "takeoff"
     GOTO = "goto"
     BODY_PULSE = "body_pulse"
+    ROBOT_PERIPHERAL = "robot_peripheral"
     ROTATE_TO = "rotate_to"
     HOVER = "hover"
     LAND = "land"
@@ -255,6 +256,126 @@ class Geofence:
 
 
 @dataclass(frozen=True, slots=True)
+class CameraControlEvidence:
+    """Current-epoch node facts for stationary camera operations, separate from navigation."""
+
+    t_ms: int
+    connection_epoch: int
+    control_authority: bool
+    watchdog_state: str
+    supported_operations: frozenset[str]
+    pitch_min_deg: float | None = None
+    pitch_max_deg: float | None = None
+
+    @classmethod
+    def from_mapping(cls, raw: object) -> CameraControlEvidence | None:
+        if not isinstance(raw, Mapping) or not _is_nonnegative_int(raw.get("t_ms")):
+            return None
+        epoch = raw.get("connection_epoch")
+        operations = raw.get("supported_operations")
+        if (
+            not _is_nonnegative_int(epoch)
+            or epoch == 0
+            or not isinstance(operations, (list, tuple, frozenset))
+        ):
+            return None
+        if any(not isinstance(value, str) for value in operations):
+            return None
+        return cls(
+            raw["t_ms"],
+            epoch,
+            raw.get("control_authority") is True,
+            str(raw.get("watchdog_state", "unreported")),
+            frozenset(operations),
+            raw.get("pitch_min_deg") if _is_finite_number(raw.get("pitch_min_deg")) else None,
+            raw.get("pitch_max_deg") if _is_finite_number(raw.get("pitch_max_deg")) else None,
+        )
+
+    @classmethod
+    def from_node_status(cls, raw: object, epoch: int) -> CameraControlEvidence | None:
+        if not isinstance(raw, Mapping) or raw.get("connection_epoch", epoch) != epoch:
+            return None
+        custom = raw.get("device_telemetry")
+        if not isinstance(custom, Mapping):
+            return None
+        controls, gimbal = custom.get("controls"), custom.get("gimbal")
+        if not isinstance(controls, Mapping):
+            return None
+        gimbal = gimbal if isinstance(gimbal, Mapping) else {}
+        # Relay state omits transport epoch inside node_status, retaining only the
+        # registry's validated current-epoch record. Bind it to that row's epoch.
+        return cls.from_mapping(
+            {
+                "t_ms": raw.get("t"),
+                "connection_epoch": epoch,
+                "control_authority": raw.get("control_authority"),
+                "watchdog_state": raw.get("watchdog_state"),
+                "supported_operations": controls.get("supported_operations"),
+                "pitch_min_deg": gimbal.get("pitch_min_deg"),
+                "pitch_max_deg": gimbal.get("pitch_max_deg"),
+            }
+        )
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {
+            "t_ms": self.t_ms,
+            "connection_epoch": self.connection_epoch,
+            "control_authority": self.control_authority,
+            "watchdog_state": self.watchdog_state,
+            "supported_operations": sorted(self.supported_operations),
+            "pitch_min_deg": self.pitch_min_deg,
+            "pitch_max_deg": self.pitch_max_deg,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NodeControlEvidence:
+    """Validated current-epoch node lease facts, never custom actuator readings."""
+
+    t_ms: int
+    connection_epoch: int
+    control_authority: bool
+    watchdog_state: str
+
+    @classmethod
+    def from_mapping(cls, raw: object) -> NodeControlEvidence | None:
+        if (
+            not isinstance(raw, Mapping)
+            or not _is_nonnegative_int(raw.get("t_ms"))
+            or not _is_nonnegative_int(raw.get("connection_epoch"))
+            or raw["connection_epoch"] == 0
+            or type(raw.get("control_authority")) is not bool
+            or not isinstance(raw.get("watchdog_state"), str)
+            or raw.get("watchdog_state") not in {"nominal", "hold", "failsafe"}
+        ):
+            return None
+        return cls(
+            raw["t_ms"], raw["connection_epoch"], raw["control_authority"], raw["watchdog_state"]
+        )
+
+    @classmethod
+    def from_node_status(cls, raw: object, epoch: int) -> NodeControlEvidence | None:
+        if not isinstance(raw, Mapping) or raw.get("connection_epoch", epoch) != epoch:
+            return None
+        return cls.from_mapping(
+            {
+                "t_ms": raw.get("t"),
+                "connection_epoch": epoch,
+                "control_authority": raw.get("control_authority"),
+                "watchdog_state": raw.get("watchdog_state"),
+            }
+        )
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {
+            "t_ms": self.t_ms,
+            "connection_epoch": self.connection_epoch,
+            "control_authority": self.control_authority,
+            "watchdog_state": self.watchdog_state,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AircraftState:
     drone_id: int
     connection_epoch: int
@@ -280,6 +401,8 @@ class AircraftState:
     device_class: DeviceClass = DeviceClass.AIRCRAFT
     drive_state: DriveState | None = None
     unit: int | None = None
+    camera_control: CameraControlEvidence | None = None
+    node_control: NodeControlEvidence | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -427,6 +550,8 @@ class AircraftState:
             camera_ready=_boolean(raw, "camera_ready"),
             heading_deg=_optional_heading(raw.get("heading_deg")),
             capabilities=frozenset(raw.get("capabilities", ())),
+            camera_control=CameraControlEvidence.from_mapping(raw.get("camera_control")),
+            node_control=NodeControlEvidence.from_mapping(raw.get("node_control")),
             active_task_id=_optional_string(raw.get("active_task_id")),
             position_loss_since_ms=_optional_nonnegative_int(raw.get("position_loss_since_ms")),
         )
@@ -455,6 +580,8 @@ class AircraftState:
             "camera_ready": self.camera_ready,
             "heading_deg": self.heading_deg,
             "capabilities": sorted(self.capabilities),
+            **({"camera_control": self.camera_control.to_dict()} if self.camera_control else {}),
+            **({"node_control": self.node_control.to_dict()} if self.node_control else {}),
             "active_task_id": self.active_task_id,
             "position_loss_since_ms": self.position_loss_since_ms,
         }
@@ -680,6 +807,12 @@ class FleetSnapshot:
                     storage_remaining_bytes=safety.storage_remaining_bytes,
                     camera_ready=safety.camera_ready,
                     capabilities=frozenset(item.get("adapter_capabilities", ())),
+                    camera_control=CameraControlEvidence.from_node_status(
+                        item.get("node_status"), _nonnegative_int(item, "connection_epoch")
+                    ),
+                    node_control=NodeControlEvidence.from_node_status(
+                        item.get("node_status"), _nonnegative_int(item, "connection_epoch")
+                    ),
                     heading_deg=_optional_heading(
                         item.get("heading_deg")
                         if item.get("heading_deg") is not None

@@ -418,6 +418,39 @@ class RemoteBridgeAdapter:
     ) -> AdapterAcknowledgement:
         return self._command(drone_id, operation, args).acknowledgement()
 
+    def robot_peripheral(
+        self, drone_id: int, args: Mapping[str, int | str]
+    ) -> AdapterAcknowledgement:
+        from nodekit.peripherals import peripheral_arguments
+
+        return self._command(
+            drone_id, CommandOperation.ROBOT_PERIPHERAL, peripheral_arguments(args)
+        ).acknowledgement()
+
+    def camera_control(
+        self, drone_id: int, operation: CommandOperation, args: Mapping[str, int | str]
+    ) -> AdapterAcknowledgement:
+        """Return the real node ACK without inventing a retrieved media record."""
+        valid = operation is CommandOperation.CAMERA_READY and not args
+        if operation is CommandOperation.SET_GIMBAL_PITCH:
+            valid = (
+                set(args) == {"pitch_mdeg"}
+                and type(args["pitch_mdeg"]) is int
+                and -180_000 <= args["pitch_mdeg"] <= 180_000
+            )
+        elif operation is CommandOperation.CAPTURE_PHOTO:
+            capture_id = args.get("capture_id")
+            valid = (
+                set(args) == {"capture_id"}
+                and isinstance(capture_id, str)
+                and 0 < len(capture_id) <= 512
+                and capture_id.isprintable()
+                and capture_id == capture_id.strip()
+            )
+        if not valid:
+            raise AdapterError("standalone camera control arguments are outside the exact contract")
+        return self._command(drone_id, operation, args).acknowledgement()
+
     def _command(
         self, drone_id: int, operation: CommandOperation, args: Mapping[str, int | str]
     ) -> _Reply:

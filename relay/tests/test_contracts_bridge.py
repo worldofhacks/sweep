@@ -414,6 +414,7 @@ def test_node_acknowledgement_reasons_are_machine_readable_wire_values() -> None
         "authority_lost",
         "watchdog_hold",
         "watchdog_failsafe",
+        "unsupported_operation",
     }
     for reason in NodeAcknowledgementReason:
         acknowledgement = parse_adapter_acknowledgement(

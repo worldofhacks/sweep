@@ -260,7 +260,13 @@ class DeterministicPlanner:
         if class_refusal is not None:
             return class_refusal
 
-        selected = tuple(sorted(snapshot.selection))
+        selected = tuple(
+            sorted(
+                intent.selection
+                if intent.name in {IntentName.ROBOT_PERIPHERAL, IntentName.CAMERA_CONTROL}
+                else snapshot.selection
+            )
+        )
         plan_id = f"plan:{intent.intent_id}"
         builder = _CommandBuilder(intent.intent_id, snapshot, plan_id)
         selection_update: tuple[int, ...] | None = None
@@ -291,6 +297,27 @@ class DeterministicPlanner:
                     CommandOperation.TAKEOFF,
                     {"z": self.config.takeoff_altitude_m},
                 )
+
+        elif intent.name is IntentName.ROBOT_PERIPHERAL:
+            from relay.peripherals import peripheral_refusal
+
+            refusal = peripheral_refusal(
+                intent.intent_id, intent.selection, intent.args, intent.confirm, snapshot
+            )
+            if refusal is not None:
+                return refusal
+            builder.add(selected[0], CommandOperation.ROBOT_PERIPHERAL, dict(intent.args))
+
+        elif intent.name is IntentName.CAMERA_CONTROL:
+            from relay.camera_control import camera_command, camera_refusal
+
+            refusal = camera_refusal(
+                intent.intent_id, intent.selection, intent.args, intent.confirm, snapshot
+            )
+            if refusal is not None:
+                return refusal
+            operation, parameters = camera_command(intent.intent_id, intent.args)
+            builder.add(selected[0], operation, parameters)
 
         elif intent.name is IntentName.BODY_PULSE:
             if not valid_body_pulse_args(intent.args):

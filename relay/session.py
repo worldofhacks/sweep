@@ -2869,7 +2869,16 @@ def _material_drone_projection(drone: Mapping[str, object]) -> dict[str, object]
         value = projection.get(report)
         if value is None and report in _NULLABLE_DRONE_REPORTS:
             continue
-        if not isinstance(value, Mapping) or set(value) != _DRONE_REPORT_FIELDS[report]:
+        fields = _DRONE_REPORT_FIELDS[report]
+        if report == "node_status" and isinstance(value, Mapping) and "device_telemetry" in value:
+            from nodekit.telemetry import device_telemetry_payload
+
+            fields = fields | {"device_telemetry"}
+            try:
+                device_telemetry_payload(value["device_telemetry"])
+            except (ValueError, TypeError) as error:
+                raise AuditLogError("device telemetry exceeds its bounded projection") from error
+        if not isinstance(value, Mapping) or set(value) != fields:
             raise AuditLogError(f"drone {report} fields do not match the bounded projection")
         projection[report] = {key: item for key, item in value.items() if key != timestamp}
     camera = projection.get("camera_capabilities")

@@ -19,6 +19,8 @@ class IntentName(StrEnum):
     HOLD = "hold"
     TRANSLATE = "translate"
     BODY_PULSE = "body_pulse"
+    ROBOT_PERIPHERAL = "robot_peripheral"
+    CAMERA_CONTROL = "camera_control"
     ALTITUDE = "altitude"
     FORMATION_NEXT = "formation_next"
     FORMATION_SET = "formation_set"
@@ -75,6 +77,8 @@ C1_IMPLEMENTED_INTENT_NAMES = frozenset(
         IntentName.TAKEOFF,
         IntentName.TRANSLATE,
         IntentName.BODY_PULSE,
+        IntentName.ROBOT_PERIPHERAL,
+        IntentName.CAMERA_CONTROL,
         IntentName.HOLD,
         IntentName.COME_HOME,
         IntentName.LAND,

@@ -35,6 +35,8 @@ def test_c1_profile_enables_only_earned_intents() -> None:
     assert {name.value for name in C1_CAPABILITY_PROFILE.enabled_intent_names} == {
         "arm",
         "body_pulse",
+        "camera_control",
+        "robot_peripheral",
         "altitude",
         "capture_room",
         "come_home",
@@ -173,7 +175,12 @@ def test_opaque_sink_requires_an_explicit_capability_contract(tmp_path) -> None:
 
 
 def _safe_profile_cases() -> tuple[tuple[object, object], ...]:
+    from relay.tests.test_camera_control import camera_intent, camera_snapshot
+    from relay.tests.test_peripherals import peripheral_intent, peripheral_snapshot
+
     return (
+        (camera_intent(), camera_snapshot()),
+        (peripheral_intent(), peripheral_snapshot()),
         (
             make_intent(
                 IntentName.BODY_PULSE,

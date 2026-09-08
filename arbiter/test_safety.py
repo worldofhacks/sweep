@@ -104,6 +104,7 @@ def test_every_operation_has_an_explicit_stopped_state_classification(
         CommandOperation.TAKEOFF: None,
         CommandOperation.GOTO: None,
         CommandOperation.BODY_PULSE: None,
+        CommandOperation.ROBOT_PERIPHERAL: None,
         CommandOperation.ROTATE_TO: None,
         CommandOperation.HOVER: IntentName.HOLD,
         CommandOperation.LAND: IntentName.LAND_ALL,
@@ -144,7 +145,11 @@ def test_every_operation_has_an_explicit_stopped_state_classification(
 
     if stopped_intent is None:
         assert refusal is not None
-        assert refusal.reason is RefusalReason.ESTOP_ACTIVE
+        assert refusal.reason is (
+            RefusalReason.INVALID_PLAN
+            if operation is CommandOperation.ROBOT_PERIPHERAL
+            else RefusalReason.ESTOP_ACTIVE
+        )
     else:
         assert refusal is None
 

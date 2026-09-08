@@ -22,7 +22,13 @@ from relay.capabilities import IntentName
 PINNED_COMPILER_MODEL = "claude-sonnet-5"
 PROMPT_SCHEMA_VERSION = "intent-v1-compiler-9"
 _CASSETTE_LOCK = Lock()
-_COMPILER_INTENT_NAMES = tuple(name.value for name in IntentName)
+# These controls require the console's exact per-device confirmation flow.
+# Excluding them also preserves the already-qualified compiler schema bytes.
+_COMPILER_INTENT_NAMES = tuple(
+    name.value
+    for name in IntentName
+    if name not in {IntentName.ROBOT_PERIPHERAL, IntentName.CAMERA_CONTROL}
+)
 
 
 @dataclass(frozen=True, slots=True)

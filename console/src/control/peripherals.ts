@@ -12,9 +12,10 @@ export function peripheralBlockedReason(state: ControlState, device: RelayAircra
   if (!device || device.device_class !== 'ground_vehicle' || !['registered', 'ready', 'degraded'].includes(device.membership)) return 'Requires a connected robot.'
   if (!device.adapter_capabilities.includes('robot_peripheral_v1') || !device.adapter_capabilities.includes(kind)) return `${kind} is not supported by this connected adapter.`
   now = device.client_observation?.now ?? now
+  const status = device.node_status
+  if (!status || now < status.t || now - status.t > 5000 || status.watchdog_state !== 'nominal') return 'Robot controls require a fresh node report and a nominal watchdog.'
   if (kind === 'neck') {
-    const status = device.node_status
-    if (state.estop || !status || now < status.t || now - status.t > 5000 || status.watchdog_state !== 'nominal' || telemetryGroup(device, 'safety')?.motion_enabled !== true) return 'Neck movement requires fresh local enable status, a nominal watchdog and the network stop clear.'
+    if (state.estop || status.control_authority !== true || telemetryGroup(device, 'safety')?.motion_enabled !== true) return 'Neck movement requires current node control authority, local enable status and the network stop clear.'
   }
   return null
 }

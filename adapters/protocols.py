@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -73,6 +73,22 @@ class Telemetry:
             "link_quality": self.link_quality,
             "position_quality": self.position_quality,
         }
+
+
+class RobotPeripheralAdapter(Protocol):
+    """Optional non-wheel capability; acknowledgements do not imply actuator readback."""
+
+    def robot_peripheral(
+        self, drone_id: int, args: Mapping[str, int | str]
+    ) -> AdapterAcknowledgement: ...
+
+
+class StandaloneCameraAdapter(Protocol):
+    """Optional explicitly advertised camera operation with a real node acknowledgement."""
+
+    def camera_control(
+        self, drone_id: int, operation: CommandOperation, args: Mapping[str, int | str]
+    ) -> AdapterAcknowledgement: ...
 
 
 class SwarmAdapter(Protocol):

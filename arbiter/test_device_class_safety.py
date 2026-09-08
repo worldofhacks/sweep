@@ -147,6 +147,9 @@ def test_a_ground_vehicle_accepts_only_its_four_operations(
 
     if operation in supported:
         assert refusal is None or refusal.reason is not RefusalReason.UNSUPPORTED_FOR_DEVICE_CLASS
+    elif operation is CommandOperation.ROBOT_PERIPHERAL:
+        # It is supported only in a separately confirmed, exact peripheral plan.
+        assert refusal is not None and refusal.reason is RefusalReason.INVALID_PLAN
     else:
         assert refusal is not None
         assert refusal.reason is RefusalReason.UNSUPPORTED_FOR_DEVICE_CLASS

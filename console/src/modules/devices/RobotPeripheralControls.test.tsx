@@ -65,6 +65,38 @@ describe('robot peripheral controls', () => {
     await act(async () => { rig.get().confirmRequest(id) })
     expect(rig.clients.console.sent).toEqual([])
   })
+  test.each(['missing', 'stale', 'future', 'hold', 'failsafe'] as const)('all controls require a current nominal node lease: %s', async (condition) => {
+    const rig = await mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Preview screen message' }))
+    const id = rig.get().pendingRequest!.intent.intent_id
+    const status = rig.device.node_status!
+    rig.emit({ node_status: condition === 'missing' ? null : {
+      ...status,
+      t: condition === 'stale' ? t - 5001 : condition === 'future' ? t + 1 : t,
+      watchdog_state: condition === 'hold' || condition === 'failsafe' ? condition : 'nominal',
+    } })
+    for (const name of ['Preview neck tilt', 'Preview base lights', 'Preview speech', 'Preview screen message']) {
+      expect(screen.getByRole('button', { name })).toBeDisabled()
+    }
+    await act(async () => { rig.get().confirmRequest(id) })
+    expect(rig.clients.console.sent).toEqual([])
+  })
+  test('neck authority comes from the current node report and is rechecked at confirmation', async () => {
+    const rig = await mount()
+    const status = { ...rig.device.node_status!, device_telemetry: { safety: { motion_enabled: true } } }
+    rig.emit({ node_status: { ...status, control_authority: false } })
+    expect(screen.getByRole('button', { name: 'Preview neck tilt' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Preview screen message' })).toBeEnabled()
+    rig.emit({ node_status: { ...status, control_authority: true } })
+    expect(screen.getByRole('button', { name: 'Preview neck tilt' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Preview neck tilt' }))
+    const id = rig.get().pendingRequest!.intent.intent_id
+    rig.emit({ node_status: { ...status, control_authority: false } })
+    await act(async () => { rig.get().confirmRequest(id) })
+    expect(rig.clients.console.sent).toEqual([])
+    expect(rig.get().state.armed).toBe(false)
+    expect(rig.get().state.selection).toEqual([])
+  })
   test('unsupported controls remain visible and disabled; unsafe text cannot be previewed', async () => {
     const rig = await mount()
     rig.emit({ adapter_capabilities: ['robot_peripheral_v1', 'speech'] })

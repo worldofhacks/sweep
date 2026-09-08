@@ -1,0 +1,501 @@
+{
+  "acknowledgement_reasons": [
+    "authority_lost",
+    "out_of_order_command",
+    "stale_command",
+    "unsupported_operation",
+    "watchdog_failsafe",
+    "watchdog_hold"
+  ],
+  "command_args": {
+    "body_pulse": {
+      "duration_ms": 500,
+      "forward_mm_s": 250
+    },
+    "camera_capabilities": {},
+    "camera_ready": {},
+    "capture_panorama": {
+      "capture_id": "cap-0042"
+    },
+    "capture_photo": {
+      "capture_id": "cap-0042"
+    },
+    "estop": {},
+    "goto": {
+      "speed_mm_s": 500,
+      "x_mm": 1000,
+      "y_mm": 2500,
+      "z_mm": 1200
+    },
+    "hover": {},
+    "land": {},
+    "retrieve_media": {
+      "file_id": "file-7"
+    },
+    "rotate_to": {
+      "speed_mdeg_s": 30000,
+      "yaw_mdeg": 90000
+    },
+    "set_gimbal_pitch": {
+      "pitch_mdeg": -45000
+    },
+    "takeoff": {
+      "z_mm": 1200
+    }
+  },
+  "command_argument_fields": {
+    "body_pulse": {
+      "duration_ms": "integer",
+      "forward_mm_s": "integer"
+    },
+    "camera_capabilities": {},
+    "camera_ready": {},
+    "capture_panorama": {
+      "capture_id": "id"
+    },
+    "capture_photo": {
+      "capture_id": "id"
+    },
+    "estop": {},
+    "goto": {
+      "speed_mm_s": "positive",
+      "x_mm": "integer",
+      "y_mm": "integer",
+      "z_mm": "integer"
+    },
+    "hover": {},
+    "land": {},
+    "retrieve_media": {
+      "file_id": "id"
+    },
+    "robot_peripheral": {},
+    "rotate_to": {
+      "speed_mdeg_s": "positive",
+      "yaw_mdeg": "integer"
+    },
+    "set_gimbal_pitch": {
+      "pitch_mdeg": "integer"
+    },
+    "takeoff": {
+      "z_mm": "integer"
+    }
+  },
+  "command_operations": [
+    "body_pulse",
+    "camera_capabilities",
+    "camera_ready",
+    "capture_panorama",
+    "capture_photo",
+    "estop",
+    "goto",
+    "hover",
+    "land",
+    "retrieve_media",
+    "robot_peripheral",
+    "rotate_to",
+    "set_gimbal_pitch",
+    "takeoff"
+  ],
+  "device_class_capability_prefix": "class:",
+  "device_classes": [
+    "aircraft",
+    "ground_vehicle"
+  ],
+  "frames": {
+    "command": {
+      "key": "adapter-key-0123456789abcdef0123456789abcdef",
+      "wire": {
+        "args": {
+          "speed_mm_s": 500,
+          "x_mm": 1000,
+          "y_mm": 2500,
+          "z_mm": 1200
+        },
+        "command_id": "cmd-1",
+        "connection_epoch": 1,
+        "drone_id": 1,
+        "event_id": "evt-cmd-1",
+        "intent_id": "intent-1",
+        "issued_at": 4000,
+        "operation": "goto",
+        "roster_version": 3,
+        "seq": 7,
+        "session": "session-a",
+        "signature": "3b3030a0bb9f83c766af97fbad5f1134e8e994c91655a5560e9c2763f7d39189",
+        "t": 4000,
+        "ttl_ms": 1500,
+        "type": "command",
+        "v": 1
+      }
+    },
+    "control_heartbeat": {
+      "key": "adapter-key-0123456789abcdef0123456789abcdef",
+      "wire": {
+        "connection_epoch": 3,
+        "drone_id": 11,
+        "event_id": "evt-ground-heartbeat-1",
+        "roster_version": 5,
+        "seq": 12,
+        "session": "session-a",
+        "signature": "32ab5d0bf49ab86c8eb56fc802879226471c4cd627a28949c430cfe28c109c38",
+        "source": "relay",
+        "t": 8008,
+        "type": "control_heartbeat",
+        "v": 1
+      }
+    },
+    "ground_acknowledgement": {
+      "wire": {
+        "command_id": "cmd-9",
+        "connection_epoch": 3,
+        "detail": "takeoff is not available for a ground_vehicle",
+        "drone_id": 11,
+        "event_id": "evt-ground-ack-1",
+        "intent_id": "intent-9",
+        "reason": "unsupported_operation",
+        "roster_version": 5,
+        "session": "session-a",
+        "status": "failed",
+        "t": 8007,
+        "type": "acknowledgement",
+        "v": 1
+      }
+    },
+    "ground_capabilities": {
+      "wire": {
+        "aircraft_firmware": "fake",
+        "aircraft_model": "fake-ground-vehicle",
+        "android_version": "fake",
+        "connection_epoch": 3,
+        "drone_id": 11,
+        "event_id": "evt-ground-capabilities-1",
+        "gimbal_pitch_max_deg": 1.0,
+        "gimbal_pitch_min_deg": -1.0,
+        "horizontal_fov_deg": 78.0,
+        "measured_hfov_deg": null,
+        "media_retrieval": false,
+        "native_panorama_modes": [],
+        "phone_model": "fake-node",
+        "photo_capture": false,
+        "rc_firmware": "fake",
+        "sdk_version": "fake",
+        "session": "session-a",
+        "storage_remaining_bytes": 0,
+        "t": 8005,
+        "type": "capabilities",
+        "v": 1
+      }
+    },
+    "ground_graceful_leave": {
+      "key": "adapter-key-0123456789abcdef0123456789abcdef",
+      "wire": {
+        "action": "graceful_leave",
+        "connection_epoch": 3,
+        "drone_id": 11,
+        "event_id": "evt-ground-leave-1",
+        "session": "session-a",
+        "signature": "c69a1af5f2db6de83ab39e4d21b0930adc2d6ad50c7c6e4fdf891f9542a1e9fc",
+        "t": 8002,
+        "type": "membership",
+        "v": 1
+      }
+    },
+    "ground_join": {
+      "key": "adapter-key-0123456789abcdef0123456789abcdef",
+      "wire": {
+        "action": "join",
+        "adapter_id": "ohmni-1",
+        "capabilities": [
+          "ground_drive",
+          "lidar",
+          "camera",
+          "class:ground_vehicle"
+        ],
+        "drone_id": 11,
+        "event_id": "evt-ground-join-1",
+        "session": "session-a",
+        "signature": "cc57a53f08497011f1527380d0e53325817cd303457160b6b94931538b523cf7",
+        "t": 8000,
+        "type": "membership",
+        "v": 1
+      }
+    },
+    "ground_node_status": {
+      "wire": {
+        "authority_change_reason": null,
+        "connection_epoch": 3,
+        "control_authority": true,
+        "drone_id": 11,
+        "event_id": "evt-ground-status-1",
+        "phone_battery_percent": 86,
+        "phone_thermal_state": "none",
+        "session": "session-a",
+        "t": 8006,
+        "type": "node_status",
+        "v": 1,
+        "video_publish_state": "publishing",
+        "virtual_stick_enabled": false,
+        "watchdog_state": "hold"
+      }
+    },
+    "ground_readiness": {
+      "key": "adapter-key-0123456789abcdef0123456789abcdef",
+      "wire": {
+        "action": "readiness",
+        "connection_epoch": 3,
+        "control_authority": true,
+        "drone_id": 11,
+        "event_id": "evt-ground-ready-1",
+        "home_pose_confirmed": true,
+        "rc_safety_operator_present": true,
+        "session": "session-a",
+        "signature": "507d6e1ab8959ebd30582e4f9de81f124b03d1e925af9e684d5ab5c5aa733d30",
+        "t": 8001,
+        "type": "membership",
+        "v": 1
+      }
+    },
+    "ground_sensor": {
+      "wire": {
+        "angle_increment_deg": 2.0,
+        "angle_min_deg": 0.0,
+        "connection_epoch": 3,
+        "drone_id": 11,
+        "event_id": "evt-ground-sensor-1",
+        "kind": "lidar_scan",
+        "pose": {
+          "x": 1.2,
+          "y": -0.4,
+          "yaw_deg": 87.5
+        },
+        "range_max_m": 12.0,
+        "range_min_m": 0.15,
+        "ranges_cm": [
+          0,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          0,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          0,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          0,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          0,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          0,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          0,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          0,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          0,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          0,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          0,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          0,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          0,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          0,
+          170,
+          180,
+          190,
+          200,
+          210,
+          150,
+          160,
+          170,
+          180,
+          190
+        ],
+        "session": "session-a",
+        "t": 8004,
+        "type": "sensor",
+        "v": 1
+      }
+    },
+    "ground_telemetry": {
+      "wire": {
+        "battery": 0.86,
+        "connection_epoch": 3,
+        "drone": 11,
+        "event_id": "evt-ground-telemetry-1",
+        "link": 0.95,
+        "pos_quality": 0.6,
+        "session": "session-a",
+        "state": "moving",
+        "t": 8003,
+        "type": "telemetry",
+        "v": 1,
+        "vx": 0.25,
+        "vy": 0.1,
+        "vz": 0.0,
+        "x": 1.2,
+        "y": -0.4,
+        "z": 0.0
+      }
+    }
+  },
+  "key": "adapter-key-0123456789abcdef0123456789abcdef",
+  "node_settings": {
+    "command_ttl_ms": 2000,
+    "virtual_stick_hz": 10,
+    "watchdog_failsafe_ms": 10000,
+    "watchdog_hold_ms": 2000
+  },
+  "sensor_bounds": {
+    "angle_increments_deg": [
+      0.5,
+      1.0,
+      2.0
+    ],
+    "max_canonical_bytes": 8192,
+    "max_range_cm": 65535,
+    "max_ranges": 720
+  },
+  "session": "session-a"
+}

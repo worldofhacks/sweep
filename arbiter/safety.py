@@ -199,6 +199,18 @@ class SafetyArbiter:
 
     def check_intent(self, intent: IntentV1, snapshot: FleetSnapshot) -> Refusal | None:
         """Check intent-level state before the planner can create adapter work."""
+        if intent.name is IntentName.CAMERA_CONTROL:
+            from relay.camera_control import camera_refusal
+
+            return self._check_operator(intent.intent_id, snapshot) or camera_refusal(
+                intent.intent_id, intent.selection, intent.args, intent.confirm, snapshot
+            )
+        if intent.name is IntentName.ROBOT_PERIPHERAL:
+            from relay.peripherals import peripheral_refusal
+
+            return self._check_operator(intent.intent_id, snapshot) or peripheral_refusal(
+                intent.intent_id, intent.selection, intent.args, intent.confirm, snapshot
+            )
         if intent.name in SELECTION_TARGETED_INTENTS and tuple(sorted(intent.selection)) != tuple(
             sorted(snapshot.selection)
         ):
@@ -516,6 +528,22 @@ class SafetyArbiter:
         geometry_snapshot: FleetSnapshot | None = None,
     ) -> Refusal | None:
         """Validate plan-wide authorization without replaying completed command state."""
+        if plan.intent_name is IntentName.CAMERA_CONTROL:
+            from relay.camera_control import camera_plan_refusal
+
+            return (
+                self.check_plan_structure(plan, snapshot)
+                or self._check_operator(plan.intent_id, snapshot)
+                or camera_plan_refusal(plan, snapshot)
+            )
+        if plan.intent_name is IntentName.ROBOT_PERIPHERAL:
+            from relay.peripherals import peripheral_plan_refusal
+
+            return (
+                self.check_plan_structure(plan, snapshot)
+                or self._check_operator(plan.intent_id, snapshot)
+                or peripheral_plan_refusal(plan, snapshot)
+            )
         boundary = self._check_plan_boundary(plan, snapshot)
         if boundary is not None:
             return boundary
@@ -664,6 +692,35 @@ class SafetyArbiter:
         projected_positions: dict[int, Position] | None = None,
     ) -> Refusal | None:
         """Revalidate one command immediately before adapter I/O."""
+        if plan.intent_name is IntentName.CAMERA_CONTROL:
+            from relay.camera_control import camera_plan_refusal
+
+            if command not in plan.commands:
+                return self._invalid_plan_refusal(
+                    plan, snapshot, "camera command is outside its approved plan"
+                )
+            return (
+                self._check_plan_boundary(plan, snapshot)
+                or self._check_command_boundary(plan, command, snapshot)
+                or self._check_operator(plan.intent_id, snapshot)
+                or camera_plan_refusal(plan, snapshot)
+            )
+        if (
+            plan.intent_name is IntentName.ROBOT_PERIPHERAL
+            or command.operation is CommandOperation.ROBOT_PERIPHERAL
+        ):
+            from relay.peripherals import peripheral_plan_refusal
+
+            if command not in plan.commands:
+                return self._invalid_plan_refusal(
+                    plan, snapshot, "peripheral command is outside its approved plan"
+                )
+            return (
+                self._check_plan_boundary(plan, snapshot)
+                or self._check_command_boundary(plan, command, snapshot)
+                or self._check_operator(plan.intent_id, snapshot)
+                or peripheral_plan_refusal(plan, snapshot)
+            )
         boundary = self._check_command_boundary(plan, command, snapshot)
         if boundary is not None:
             return boundary
@@ -979,6 +1036,14 @@ class SafetyArbiter:
             boundary = self._check_command_boundary(plan, command, snapshot)
             if boundary is not None:
                 return boundary
+        if plan.intent_name is IntentName.ROBOT_PERIPHERAL:
+            from relay.peripherals import peripheral_plan_refusal
+
+            return peripheral_plan_refusal(plan, snapshot)
+        if plan.intent_name is IntentName.CAMERA_CONTROL:
+            from relay.camera_control import camera_plan_refusal
+
+            return camera_plan_refusal(plan, snapshot)
         update_refusal = self._check_plan_state_updates(plan, snapshot)
         if update_refusal is not None:
             return update_refusal
