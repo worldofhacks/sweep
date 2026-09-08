@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import json
+import math
+import socket
+import threading
+
 import pytest
 
-from .calibration import TICKS_PER_MM, CalibrationConfig, HostLease, _Progress
+from . import device as device_module
+from .calibration import TICKS_PER_MM, CalibrationConfig, HostLease, LeaseSocketPump, _Progress
 from .device import Config, OhmniDevice
 from .lidar import RawRevolution
 from .odometry import Pose
@@ -46,6 +52,41 @@ class RawLidar:
         return RawRevolution(
             tuple(Measurement(True, 15, float(index), 1000.0) for index in range(20)), self.clock()
         )
+
+
+@pytest.mark.parametrize(("wheel_diameter", "expected"), [(None, 150.5), ("152.4", 152.4)])
+def test_environment_wheel_diameter_reaches_the_odometry_model(
+    monkeypatch: pytest.MonkeyPatch, wheel_diameter: str | None, expected: float
+) -> None:
+    received: list[Config] = []
+
+    class EnvironmentDevice:
+        def __init__(self, config: Config, *, camera: object | None = None) -> None:
+            received.append(config)
+
+    monkeypatch.setattr(device_module, "OhmniDevice", EnvironmentDevice)
+    monkeypatch.delenv("SWEEP_MEDIA_HOST", raising=False)
+    if wheel_diameter is None:
+        monkeypatch.delenv("SWEEP_WHEEL_DIAMETER_MM", raising=False)
+    else:
+        monkeypatch.setenv("SWEEP_WHEEL_DIAMETER_MM", wheel_diameter)
+
+    device_module.from_environment()
+
+    config = received[0]
+    device = OhmniDevice(
+        config,
+        shell_factory=lambda _path: Shell(),
+        lidar_discover=lambda: None,
+        autostart=False,
+    )
+    try:
+        assert config.wheel_diameter_mm == expected
+        assert device.odometry.ticks_per_mm == pytest.approx(
+            16384 * (30 / 11) / (math.pi * expected)
+        )
+    finally:
+        device.close()
 
 
 def _device(
@@ -158,6 +199,62 @@ def test_initial_or_bad_lease_never_authorizes_calibration_motion(
     assert not lease.renew(1, b"e" * 32)
     with pytest.raises(RuntimeError, match="calibration_host_lease_expired"):
         device.calibration_drive_velocity(0.04, 0.0, 0.5, host_lease=lease.reason)
+
+
+def test_lease_diagnostics_retains_the_late_renewal_gap() -> None:
+    clock = Clock()
+    token = b"d" * 32
+    lease = HostLease(token, monotonic=clock)
+    assert lease.renew(1, token)
+    clock.value += 0.36
+    assert not lease.renew(2, token)
+
+    assert lease.diagnostics(clock()) == {
+        "termination_reason": "lease_renewal_rejected",
+        "max_received_gap_s": pytest.approx(0.36),
+        "last_renewal_age_s": pytest.approx(0.36),
+    }
+
+
+def test_lease_diagnostics_separates_last_renewal_age_from_received_gaps() -> None:
+    clock = Clock()
+    token = b"d" * 32
+    lease = HostLease(token, monotonic=clock)
+    assert lease.renew(1, token)
+    clock.value += 0.2
+
+    assert lease.diagnostics(clock()) == {
+        "termination_reason": None,
+        "max_received_gap_s": 0.0,
+        "last_renewal_age_s": pytest.approx(0.2),
+    }
+
+
+def test_lease_pump_records_a_socket_timeout() -> None:
+    token = b"d" * 32
+    lease = HostLease(token)
+    lost = threading.Event()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+
+        def server() -> None:
+            with listener.accept()[0] as connection:
+                with connection.makefile("rb") as stream:
+                    assert stream.readline(66) == token.hex().encode() + b"\n"
+                connection.sendall(b"1 " + token.hex().encode() + b"\n")
+                assert lost.wait(1.0)
+
+        thread = threading.Thread(target=server)
+        thread.start()
+        pump = LeaseSocketPump("127.0.0.1", listener.getsockname()[1], token, lease, lost.set)
+        pump.start()
+        assert lost.wait(1.0)
+        pump.close()
+        thread.join(1.0)
+
+    assert not thread.is_alive()
+    assert lease.diagnostics()["termination_reason"] == "lease_socket_timeout"
 
 
 def test_opposite_wheel_encoder_deltas_count_as_yaw_and_wheel_travel() -> None:
@@ -407,6 +504,43 @@ def test_runner_stops_and_removes_incomplete_capture_after_live_fault(
     assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]
 
 
+def test_runner_preserves_lease_expiry_when_pump_teardown_clears_active_motion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from .calibration import CalibrationError, CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch)
+    output = tmp_path / "capture.json"
+    original_sleep = simulation.sleep
+    lease_lost = False
+
+    def pump_teardown(delay: float) -> None:
+        nonlocal lease_lost
+        if simulation.units != (0, 0) and not lease_lost:
+            lease_lost = True
+            simulation.lease.close("lease_socket_eof")
+            simulation.device.disable()
+        original_sleep(delay)
+
+    with pytest.raises(CalibrationError, match="calibration_host_lease_expired"):
+        CalibrationRunner(
+            simulation.device,
+            simulation.lease,
+            output,
+            monotonic=simulation.clock,
+            sleep=pump_teardown,
+        ).run()
+
+    failure = json.loads((tmp_path / "capture.json.failed.json").read_text())
+    assert lease_lost
+    assert failure["failure"] == "calibration_host_lease_expired"
+    assert failure["device_refusal"] is None
+    assert failure["lease_diagnostics"]["termination_reason"] == "lease_socket_eof"
+    assert failure["lease_diagnostics"]["max_received_gap_s"] == pytest.approx(0.1)
+    assert failure["lease_diagnostics"]["last_renewal_age_s"] is not None
+    assert not output.exists()
+
+
 def test_runner_refuses_an_existing_output_before_enabling(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -462,14 +596,15 @@ def test_cli_rejects_missing_supervision_or_mismatched_provenance_before_opening
         calibration.main(arguments)
 
 
+@pytest.mark.parametrize("device_id", [11, 12])
 def test_cli_writes_actual_boot_and_source_pin_through_real_runner(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path, device_id: int
 ) -> None:
     import json
 
     from . import calibration
 
-    arguments = _cli_arguments(tmp_path)
+    arguments = [*_cli_arguments(tmp_path), "--device-id", str(device_id)]
     simulation = RunnerSimulation(monkeypatch)
     runner = calibration.CalibrationRunner
 
@@ -495,6 +630,11 @@ def test_cli_writes_actual_boot_and_source_pin_through_real_runner(
     )
     assert calibration.main(arguments) == 0
     capture = json.loads((tmp_path / "capture.json").read_text())
+    assert capture["device_id"] == device_id
+    if device_id == 12:
+        assert capture["mount_source"] == "unqualified_legacy_seed"
+    else:
+        assert "mount_source" not in capture
     assert capture["boot_id"] == arguments[arguments.index("--expected-boot-id") + 1]
     assert capture["executed_bundle_source_sha256"] == calibration.calibration_source_sha256()
     for stage in capture["stages"].values():
@@ -653,3 +793,92 @@ def test_capture_stops_when_encoder_drift_breaks_the_settled_stage(
     assert not output.exists()
     assert simulation.started_moving is None
     assert simulation.units == (0, 0)
+
+
+def test_multistage_runner_reaches_two_independent_translations_within_fixed_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import json
+
+    from .calibration import CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch)
+    output = tmp_path / "multistage-capture.json"
+    CalibrationRunner(
+        simulation.device,
+        simulation.lease,
+        output,
+        monotonic=simulation.clock,
+        sleep=simulation.sleep,
+        config=CalibrationConfig.multistage(),
+    ).run()
+    capture = json.loads(output.read_text())
+
+    assert set(capture["stages"]) == {
+        "baseline",
+        "after_forward",
+        "after_yaw",
+        "after_cross_forward",
+    }
+    assert capture["limits"]["max_wheel_travel_m"] == 1.05
+    assert capture["limits"]["max_yaw_degrees"] == 85.0
+    assert capture["limits"]["max_runtime_s"] == 90.0
+    cross = capture["stages"]["after_cross_forward"]["pose"]
+    turned = capture["stages"]["after_yaw"]["pose"]
+    assert cross["x_m"] - turned["x_m"] > 0.15
+    assert cross["y_m"] - turned["y_m"] > 0.25
+    assert simulation.device.motion is None
+    assert not simulation.device.enabled
+    assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]
+
+
+def test_interrupted_second_leg_preserves_three_raw_stages_and_exact_stop_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import json
+
+    from .calibration import CalibrationError, CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch)
+    output = tmp_path / "capture.json"
+
+    def interrupt_second_leg(delay: float) -> None:
+        pose = simulation.device.odometry.snapshot(simulation.clock())
+        if 55 < pose.yaw_deg < 70 and simulation.units[0] != simulation.units[1]:
+            simulation.device.stop()
+            simulation.device.last_refusal = "raw_lidar_revolution_stale"
+        simulation.sleep(delay)
+
+    with pytest.raises(CalibrationError, match="raw_lidar_revolution_stale"):
+        CalibrationRunner(
+            simulation.device,
+            simulation.lease,
+            output,
+            monotonic=simulation.clock,
+            sleep=interrupt_second_leg,
+            config=CalibrationConfig.multistage(),
+            device_id=12,
+            boot_id="unit12-test-boot",
+            executed_bundle_source_sha256="a" * 64,
+        ).run()
+    assert not output.exists()
+    failure = json.loads((tmp_path / "capture.json.failed.json").read_text())
+    assert failure["kind"] == "ohmni_lidar_calibration_failed_attempt"
+    assert failure["device_id"] == 12
+    assert failure["boot_id"] == "unit12-test-boot"
+    assert failure["device_refusal"] == "raw_lidar_revolution_stale"
+    assert set(failure["completed_stages"]) == {"baseline", "after_forward", "after_yaw"}
+    assert all(len(stage["revolutions"]) == 10 for stage in failure["completed_stages"].values())
+    assert not simulation.device.enabled
+    assert simulation.device.motion is None
+    assert simulation.units == (0, 0)
+
+
+def test_multistage_budget_keeps_motion_targets_fixed_and_rejects_mixed_limits() -> None:
+    profile = CalibrationConfig.multistage()
+    assert profile.forward_distance_m == 0.4
+    assert profile.yaw_degrees == 60
+    assert profile.forward_speed_m_s == 0.04
+    assert profile.yaw_rate_deg_s == 10
+    with pytest.raises(ValueError, match="immutable"):
+        CalibrationConfig(max_runtime_s=90)

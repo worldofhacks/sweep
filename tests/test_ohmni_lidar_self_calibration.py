@@ -7,14 +7,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import tools.ohmni_lidar_self_calibration as fitter
 from tools.ohmni_lidar_self_calibration import (
     _local_segments,
     fit_capture,
+    parse_capture,
     predicted_raw_transform,
     run,
 )
 
 MOUNT = (-0.395, 0.395, 0.18)
+OCCLUDED_MOUNT = (-0.25, 0.15)
 
 
 def _rotation(angle: float) -> np.ndarray:
@@ -105,6 +108,96 @@ def _capture(offset_deg: float = 37.3, sign: int = -1) -> dict[str, object]:
     }
 
 
+def _multistage_capture(offset_deg: float = 37.3, sign: int = -1) -> dict[str, object]:
+    rng = np.random.default_rng(9)
+    world = np.vstack(
+        (
+            np.column_stack((rng.uniform(-3, 3, 75), rng.uniform(2, 3, 75))),
+            np.column_stack((rng.uniform(-4, -3, 60), rng.uniform(-2, 3, 60))),
+            np.column_stack((rng.uniform(1, 4, 55), rng.uniform(-3, -2, 55))),
+        )
+    )
+    baseline = (1.0, -0.5, 17.0)
+    forward = (
+        1.0 + 0.4 * math.cos(math.radians(17.0)),
+        -0.5 + 0.4 * math.sin(math.radians(17.0)),
+        17.0,
+    )
+    yaw = (1.0, -0.5, 77.0)
+    cross_forward = (
+        1.0 + 0.4 * math.cos(math.radians(77.0)),
+        -0.5 + 0.4 * math.sin(math.radians(77.0)),
+        77.0,
+    )
+    capture = _capture(offset_deg, sign)
+    capture["limits"].update(
+        {
+            "forward_distance_m": 0.4,
+            "yaw_degrees": 60.0,
+            "max_wheel_travel_m": 1.05,
+            "max_yaw_degrees": 70.0,
+        }
+    )
+    capture["stages"] = {
+        "baseline": _stage(baseline, world, offset_deg, sign, (100, 100), 10.0),
+        "after_forward": _stage(forward, world, offset_deg, sign, (300, 302), 20.0),
+        "after_yaw": _stage(yaw, world, offset_deg, sign, (130, 70), 30.0),
+        "after_cross_forward": _stage(cross_forward, world, offset_deg, sign, (330, 270), 40.0),
+    }
+    return capture
+
+
+def _room_distance(sensor: np.ndarray, direction: np.ndarray) -> float:
+    distances = []
+    for axis, bound in ((0, -5.0), (0, 5.0), (1, -4.0), (1, 4.0)):
+        if abs(direction[axis]) < 1e-12:
+            continue
+        distance = (bound - sensor[axis]) / direction[axis]
+        other = sensor[1 - axis] + distance * direction[1 - axis]
+        if distance > 0.0 and (-4.0 <= other <= 4.0 if axis == 0 else -5.0 <= other <= 5.0):
+            distances.append(distance)
+    return min(distances)
+
+
+def _occluded_room_capture() -> dict[str, object]:
+    capture = _multistage_capture()
+    capture["mount"].update({"x_m": MOUNT[0], "y_m": MOUNT[1]})
+    poses = {
+        "baseline": (1.0, -0.5, 17.0),
+        "after_forward": (
+            1.0 + 0.4 * math.cos(math.radians(17.0)),
+            -0.5 + 0.4 * math.sin(math.radians(17.0)),
+            17.0,
+        ),
+        "after_yaw": (1.0, -0.5, 77.0),
+        "after_cross_forward": (
+            1.0 + 0.4 * math.cos(math.radians(77.0)),
+            -0.5 + 0.4 * math.sin(math.radians(77.0)),
+            77.0,
+        ),
+    }
+    for name, stage in capture["stages"].items():
+        x_m, y_m, yaw_deg = poses[name]
+        yaw = math.radians(yaw_deg)
+        sensor = np.array((x_m, y_m)) + np.array(OCCLUDED_MOUNT) @ _rotation(-yaw)
+        points = []
+        for angle_deg in range(360):
+            if 80 <= angle_deg < 200:
+                continue
+            bearing = yaw + math.radians(37.3 - angle_deg)
+            direction = np.array((math.cos(bearing), math.sin(bearing)))
+            points.append(
+                {
+                    "angle_deg": float(angle_deg),
+                    "distance_mm": _room_distance(sensor, direction) * 1_000.0,
+                    "quality": 1.0,
+                }
+            )
+        for revolution in stage["revolutions"]:
+            revolution["points"] = points
+    return capture
+
+
 @pytest.mark.parametrize(("offset_deg", "sign"), [(37.3, -1), (-72.4, 1)])
 def test_fits_asymmetric_synthetic_capture_for_each_angle_handedness(
     offset_deg: float, sign: int
@@ -128,6 +221,41 @@ def test_predicted_transform_uses_the_raw_to_body_inverse_and_mount_arc() -> Non
 
     assert rotation == pytest.approx(_rotation(-math.pi / 2))
     assert translation == pytest.approx(np.array((-0.5, -0.5)))
+
+
+def test_visibility_aware_multistage_fit_scores_only_supported_occluded_room_surfaces() -> None:
+    result = fit_capture(_occluded_room_capture())
+
+    assert result["approval_status"] == "unapproved_candidate"
+    assert result["candidate"]["angle_sign"] == -1
+    assert result["candidate"]["offset_deg"] == pytest.approx(37.3, abs=1.0)
+    mount = result["candidate"]["mount_xy_m"]
+    assert mount["x_m"] == pytest.approx(OCCLUDED_MOUNT[0], abs=0.03)
+    assert mount["y_m"] == pytest.approx(OCCLUDED_MOUNT[1], abs=0.03)
+    assert result["metrics"]["fit_rms_m"] < fitter.MAX_RMS_M
+    assert result["metrics"]["held_out_rms_m"] < fitter.MAX_HELD_OUT_RMS_M
+    support = result["metrics"]["visibility_support"]
+    assert support["fit"]["after_yaw"]["stage_to_baseline"]["visible_fraction"] >= 0.5
+    assert support["held_out"]["after_cross_forward"]["baseline_to_stage"]["visible_points"] >= 80
+
+
+def test_visibility_refusal_for_disjoint_multistage_scans_writes_finite_json(
+    tmp_path: Path,
+) -> None:
+    capture = _occluded_room_capture()
+    for name in ("after_yaw", "after_cross_forward"):
+        capture["stages"][name]["pose"]["x_m"] += 50.0
+    source = tmp_path / "capture.json"
+    output = tmp_path / "result.json"
+    source.write_text(json.dumps(capture))
+
+    result = run(source, output)
+
+    assert result["approval_status"] == "refused"
+    assert result["refusal_reasons"] == ["visibility_overlap_insufficient"]
+    assert "candidate" not in result
+    assert json.loads(output.read_text()) == result
+    assert result["metrics"]["registration_skipped"]
 
 
 def test_refuses_a_single_wall_even_when_nearest_neighbor_residual_is_small() -> None:
@@ -291,3 +419,138 @@ def test_rejects_noncanonical_provenance_and_modified_fixed_limits() -> None:
     capture["limits"]["max_runtime_s"] = 61.0
     with pytest.raises(ValueError, match="fixed capture bound"):
         fit_capture(capture)
+
+
+def test_multistage_profile_requires_the_second_independent_translation_stage() -> None:
+    capture = _capture()
+    capture["limits"].update(
+        {
+            "forward_distance_m": 0.4,
+            "yaw_degrees": 60.0,
+            "max_wheel_travel_m": 1.05,
+            "max_yaw_degrees": 70.0,
+        }
+    )
+
+    with pytest.raises(ValueError, match="stages schema"):
+        fit_capture(capture)
+
+
+@pytest.mark.parametrize(("max_runtime_s", "max_yaw_degrees"), ((60.0, 70.0), (90.0, 85.0)))
+def test_multistage_profiles_keep_the_legacy_and_extended_budgets_immutable(
+    max_runtime_s: float, max_yaw_degrees: float
+) -> None:
+    capture = _multistage_capture()
+    capture["limits"].update({"max_runtime_s": max_runtime_s, "max_yaw_degrees": max_yaw_degrees})
+
+    assert parse_capture(capture)["stage_names"] == (
+        "baseline",
+        "after_forward",
+        "after_yaw",
+        "after_cross_forward",
+    )
+
+
+def test_unit12_capture_propagates_an_unqualified_mount_seed_without_changing_unit11() -> None:
+    legacy = fit_capture(_capture())
+    assert "mount_source" not in legacy
+    assert "mount_initialization_only" not in legacy
+
+    capture = _multistage_capture()
+    capture["device_id"] = 12
+    capture["mount_source"] = "unqualified_legacy_seed"
+    result = fit_capture(capture)
+
+    assert result["device_id"] == 12
+    assert result["mount_source"] == "unqualified_legacy_seed"
+    assert result["mount_initialization_only"] is True
+
+    capture = _capture()
+    capture["device_id"] = 12
+    capture["mount_source"] = "unqualified_legacy_seed"
+    result = fit_capture(capture)
+    assert result["approval_status"] == "refused"
+    assert result["refusal_reasons"] == ["unit12_requires_multistage_joint_fit"]
+    assert "candidate" not in result
+
+    capture = _capture()
+    capture["mount_source"] = "unqualified_legacy_seed"
+    with pytest.raises(ValueError, match="capture schema"):
+        fit_capture(capture)
+
+
+def _geometry() -> fitter._ScanGeometry:
+    angles = np.linspace(0.0, 2 * math.pi, 72, endpoint=False)
+    points = np.column_stack((2.0 * np.cos(angles), 2.0 * np.sin(angles)))
+    return fitter._ScanGeometry(points, np.empty((0, 2)), np.empty((0, 2)), False)
+
+
+def test_joint_seed_ties_never_compare_arrays_or_score_outside_the_mount_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_mounts: list[np.ndarray] = []
+
+    def tied_score(*args: object, **_kwargs: object) -> float:
+        seen_mounts.append(np.asarray(args[3], dtype=float))
+        return 0.0
+
+    monkeypatch.setattr(fitter, "_score_offset", tied_score)
+    geometry = _geometry()
+    stage = {"pose": {"x_m": 0.0, "y_m": 0.0, "yaw_deg": 0.0}}
+    sign, offset, seed = fitter._joint_coarse_seed(
+        geometry, stage["pose"], [(stage, geometry)], (0.9, 0.9)
+    )
+    score, _, fitted_mount = fitter._refine_joint_mount(
+        geometry, stage["pose"], [(stage, geometry)], sign, offset, seed
+    )
+
+    assert score == 0.0
+    assert np.linalg.norm(seed) <= fitter.MAX_FITTED_MOUNT_RADIUS_M
+    assert np.linalg.norm(fitted_mount) <= fitter.MAX_FITTED_MOUNT_RADIUS_M
+    assert seen_mounts
+    assert all(np.linalg.norm(mount) <= fitter.MAX_FITTED_MOUNT_RADIUS_M for mount in seen_mounts)
+
+
+def test_joint_offset_uncertainty_refuses_the_actual_multistage_fitter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        fitter,
+        "_joint_mount_metrics",
+        lambda *_args: {
+            "joint_hessian_eigenvalues": [1.0, 1.0, 1.0],
+            "joint_parameter_uncertainty": {
+                "offset_deg": fitter.MAX_OFFSET_UNCERTAINTY_DEG + 0.01,
+                "mount_x_m": 0.01,
+                "mount_y_m": 0.01,
+            },
+            "joint_identifiable": True,
+        },
+    )
+
+    result = fit_capture(_multistage_capture())
+
+    assert result["approval_status"] == "refused"
+    assert "joint_offset_uncertainty_too_broad" in result["refusal_reasons"]
+    assert "candidate" not in result
+
+
+def test_joint_competing_basins_profile_distinct_mount_seeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = fitter._refine_joint_mount
+    seeds: list[tuple[float, float]] = []
+
+    def record_refinement(*args: object, **kwargs: object) -> tuple[float, float, np.ndarray]:
+        mount = np.asarray(args[5], dtype=float)
+        seeds.append((float(mount[0]), float(mount[1])))
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(fitter, "_refine_joint_mount", record_refinement)
+
+    result = fit_capture(_multistage_capture())
+
+    assert result["metrics"]["joint_competing_basin_count"] >= 2
+    assert len(seeds) >= 3
+    assert len(set(seeds)) >= 2
+    assert all(math.hypot(*seed) <= fitter.MAX_FITTED_MOUNT_RADIUS_M for seed in seeds)

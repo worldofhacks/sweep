@@ -14,6 +14,8 @@ from tools.ohmni_lidar_self_calibration import run
 
 _MOUNT_X_M = -0.3951312693270427
 _MOUNT_Y_M = 0.3951312693270427
+_MULTISTAGE_MOUNT_X_M = -0.25
+_MULTISTAGE_MOUNT_Y_M = 0.25
 _REFLECTOR_RADIUS_M = 0.002
 
 
@@ -134,8 +136,8 @@ def _wall_revolution(
     pose = simulation.device.odometry.snapshot(simulation.clock())
     yaw = math.radians(pose.yaw_deg)
     sensor = (
-        pose.x + math.cos(yaw) * _MOUNT_X_M - math.sin(yaw) * _MOUNT_Y_M,
-        pose.y + math.sin(yaw) * _MOUNT_X_M + math.cos(yaw) * _MOUNT_Y_M,
+        pose.x + math.cos(yaw) * _MULTISTAGE_MOUNT_X_M - math.sin(yaw) * _MULTISTAGE_MOUNT_Y_M,
+        pose.y + math.sin(yaw) * _MULTISTAGE_MOUNT_X_M + math.cos(yaw) * _MULTISTAGE_MOUNT_Y_M,
     )
     points = []
     for angle_deg in range(360):
@@ -156,7 +158,7 @@ def _wall_revolution(
     ("angle_sign", "offset_deg"),
     ((1, 31.4), (-1, -47.7)),
 )
-def test_longer_calibration_runner_recovers_uniform_angle_asymmetric_room_scan(
+def test_multistage_calibration_runner_fits_held_out_uniform_room_scan(
     monkeypatch: pytest.MonkeyPatch, tmp_path, angle_sign: int, offset_deg: float
 ) -> None:
     simulation = RunnerSimulation(monkeypatch)
@@ -170,11 +172,13 @@ def test_longer_calibration_runner_recovers_uniform_angle_asymmetric_room_scan(
         capture_path,
         monotonic=simulation.clock,
         sleep=simulation.sleep,
-        config=CalibrationConfig.longer(),
+        config=CalibrationConfig.multistage(),
         boot_id="simulation-boot",
         executed_bundle_source_sha256="a" * 64,
     ).run()
 
+    captured = json.loads(capture_path.read_text())
+    assert math.hypot(captured["mount"]["x_m"], captured["mount"]["y_m"]) > 0.5
     result = run(capture_path, tmp_path / "candidate.json")
 
     assert result["approval_status"] == "unapproved_candidate", json.dumps(result, indent=2)
@@ -182,3 +186,8 @@ def test_longer_calibration_runner_recovers_uniform_angle_asymmetric_room_scan(
     candidate = result["candidate"]
     assert candidate["angle_sign"] == angle_sign
     assert candidate["offset_deg"] == pytest.approx(offset_deg, abs=1.0)
+    assert candidate["mount_xy_m"] == pytest.approx(
+        {"x_m": _MULTISTAGE_MOUNT_X_M, "y_m": _MULTISTAGE_MOUNT_Y_M}, abs=0.01
+    )
+    assert result["metrics"]["joint_identifiable"]
+    assert result["metrics"]["held_out_rms_m"] < 0.01

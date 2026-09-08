@@ -572,6 +572,7 @@ class OhmniDevice:
 def from_environment(*, key: str = "") -> OhmniDevice:
     offset = os.environ.get("SWEEP_LIDAR_OFFSET_DEG")
     sign = os.environ.get("SWEEP_LIDAR_ANGLE_SIGN")
+    wheel_diameter = os.environ.get("SWEEP_WHEEL_DIAMETER_MM")
     config = Config(
         socket_path=os.environ.get("SWEEP_BOTSHELL", DEFAULT_PATH),
         paired_encoder_socket=os.environ.get("SWEEP_PAIRED_ENCODER_SOCKET", default_socket_path()),
@@ -582,6 +583,7 @@ def from_environment(*, key: str = "") -> OhmniDevice:
         lidar_angle_sign=int(sign) if sign else None,
         allow_spotted_without_lidar=os.environ.get("SWEEP_ALLOW_NO_LIDAR") == "1",
         spotter_present=os.environ.get("SWEEP_SPOTTER") == "1",
+        wheel_diameter_mm=float(wheel_diameter) if wheel_diameter else Config.wheel_diameter_mm,
     )
     media_host = os.environ.get("SWEEP_MEDIA_HOST")
     camera = camera_from_environment(media_host, key) if media_host else None

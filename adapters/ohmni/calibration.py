@@ -37,6 +37,11 @@ LONGER_FORWARD_DISTANCE_M = 0.4
 LONGER_YAW_DEGREES = 30.0
 LONGER_MAX_WHEEL_TRAVEL_M = 0.6
 LONGER_MAX_YAW_DEGREES = 40.0
+MULTISTAGE_FORWARD_DISTANCE_M = 0.4
+MULTISTAGE_YAW_DEGREES = 60.0
+MULTISTAGE_MAX_WHEEL_TRAVEL_M = 1.05
+MULTISTAGE_MAX_YAW_DEGREES = 85.0
+MULTISTAGE_MAX_RUNTIME_S = 90.0
 REVOLUTIONS_PER_STAGE = 10
 STAGE_TIMEOUT_S = 8.0
 SETTLE_TIMEOUT_S = 2.0
@@ -98,6 +103,17 @@ class CalibrationConfig:
                 LONGER_MAX_YAW_DEGREES,
                 MAX_RUNTIME_S,
             ),
+            (
+                WHEEL_DIAMETER_MM,
+                FORWARD_SPEED_M_S,
+                MULTISTAGE_FORWARD_DISTANCE_M,
+                YAW_RATE_DEG_S,
+                MULTISTAGE_YAW_DEGREES,
+                PULSE_DURATION_S,
+                MULTISTAGE_MAX_WHEEL_TRAVEL_M,
+                MULTISTAGE_MAX_YAW_DEGREES,
+                MULTISTAGE_MAX_RUNTIME_S,
+            ),
         ):
             raise ValueError("calibration limits must match an immutable capture profile")
 
@@ -110,6 +126,20 @@ class CalibrationConfig:
             max_yaw_degrees=LONGER_MAX_YAW_DEGREES,
         )
 
+    @classmethod
+    def multistage(cls) -> CalibrationConfig:
+        return cls(
+            forward_distance_m=MULTISTAGE_FORWARD_DISTANCE_M,
+            yaw_degrees=MULTISTAGE_YAW_DEGREES,
+            max_wheel_travel_m=MULTISTAGE_MAX_WHEEL_TRAVEL_M,
+            max_yaw_degrees=MULTISTAGE_MAX_YAW_DEGREES,
+            max_runtime_s=MULTISTAGE_MAX_RUNTIME_S,
+        )
+
+    @property
+    def has_second_translation(self) -> bool:
+        return self.yaw_degrees == MULTISTAGE_YAW_DEGREES
+
 
 class HostLease:
     def __init__(self, token: bytes, *, monotonic: Callable[[], float] = time.monotonic) -> None:
@@ -120,11 +150,15 @@ class HostLease:
         self._last_seq = 0
         self._renewed_at: float | None = None
         self._closed = False
+        self._max_received_gap_s = 0.0
+        self._termination_reason: str | None = None
         self._lock = threading.Lock()
 
     def renew(self, sequence: int, token: bytes) -> bool:
         now = self._monotonic()
         with self._lock:
+            if self._renewed_at is not None:
+                self._max_received_gap_s = max(self._max_received_gap_s, now - self._renewed_at)
             if (
                 self._closed
                 or self._renewed_at is not None
@@ -134,14 +168,17 @@ class HostLease:
                 or sequence <= self._last_seq
             ):
                 self._closed = True
+                self._termination_reason = self._termination_reason or "lease_renewal_rejected"
                 return False
             self._last_seq = sequence
             self._renewed_at = now
             return True
 
-    def close(self) -> None:
+    def close(self, reason: str | None = None) -> None:
         with self._lock:
             self._closed = True
+            if reason is not None and self._termination_reason is None:
+                self._termination_reason = reason
 
     def ready(self) -> bool:
         with self._lock:
@@ -155,8 +192,22 @@ class HostLease:
                 or now - self._renewed_at >= LEASE_MAX_AGE_S
             ):
                 self._closed = True
+                self._termination_reason = self._termination_reason or "lease_max_age_exceeded"
                 return "calibration_host_lease_expired"
             return None
+
+    def diagnostics(self, now: float | None = None) -> dict[str, float | str | None]:
+        with self._lock:
+            last_renewal_age_s = (
+                None
+                if now is None or self._renewed_at is None
+                else max(0.0, now - self._renewed_at)
+            )
+            return {
+                "termination_reason": self._termination_reason,
+                "max_received_gap_s": self._max_received_gap_s,
+                "last_renewal_age_s": last_renewal_age_s,
+            }
 
 
 class LeaseSocketPump:
@@ -182,31 +233,38 @@ class LeaseSocketPump:
         self._stop.set()
         if self._thread.is_alive():
             self._thread.join(timeout=LEASE_MAX_AGE_S)
-        self.lease.close()
+        self.lease.close("lease_socket_closed")
 
     def _run(self) -> None:
+        termination_reason = "lease_socket_stopped"
         try:
             with socket.create_connection(
                 (self.host, self.port), timeout=LEASE_MAX_AGE_S
             ) as connection:
+                connection.settimeout(LEASE_MAX_AGE_S)
                 connection.sendall(self.token.hex().encode() + b"\n")
                 stream = connection.makefile("rb")
                 while not self._stop.is_set():
                     line = stream.readline(80)
                     if not line:
+                        termination_reason = "lease_socket_eof"
                         return
                     try:
                         sequence_text, token_text = line.decode("ascii").strip().split(" ")
                         token = bytes.fromhex(token_text)
                         sequence = int(sequence_text)
                     except (UnicodeDecodeError, ValueError):
+                        termination_reason = "lease_socket_invalid_message"
                         return
                     if not self.lease.renew(sequence, token):
+                        termination_reason = "lease_renewal_rejected"
                         return
+        except TimeoutError:
+            termination_reason = "lease_socket_timeout"
         except OSError:
-            pass
+            termination_reason = "lease_socket_error"
         finally:
-            self.lease.close()
+            self.lease.close(termination_reason)
             self.on_lost()
 
 
@@ -250,12 +308,16 @@ class CalibrationRunner:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         config: CalibrationConfig | None = None,
+        device_id: int = 11,
         boot_id: str | None = None,
         executed_bundle_source_sha256: str | None = None,
     ) -> None:
         self.device, self.lease, self.output = device, lease, output
         self.monotonic, self.sleep = monotonic, sleep
         self.config = CalibrationConfig() if config is None else config
+        if type(device_id) is not int or device_id not in (11, 12):
+            raise ValueError("calibration device_id must be 11 or 12")
+        self.device_id = device_id
         self.boot_id = boot_id
         self.executed_bundle_source_sha256 = executed_bundle_source_sha256
         self._started = 0.0
@@ -278,10 +340,18 @@ class CalibrationRunner:
             self._yaw()
             self._settle()
             stages["after_yaw"] = self._capture_stage()
+            if self.config.has_second_translation:
+                self._forward()
+                self._settle()
+                stages["after_cross_forward"] = self._capture_stage()
             self.device.disable()
             self._write(stages, descriptor)
-        except BaseException:
+        except BaseException as error:
             self._remove_owned_output(descriptor)
+            try:
+                self.device.disable()
+            finally:
+                self._write_failure(stages, error)
             raise
         finally:
             try:
@@ -476,16 +546,20 @@ class CalibrationRunner:
                 host_lease=self._device_guard,
             )
             deadline = self.monotonic() + self.config.pulse_duration_s + LEASE_MAX_AGE_S
-            while self.device.motion_done(motion_id) is False:
+            while True:
+                completed = self.device.motion_done(motion_id)
+                if completed is not False:
+                    break
                 self._require_lease()
                 self._snapshot()
                 if self.monotonic() >= deadline:
                     self.device.stop()
                     raise CalibrationError("calibration_pulse_timeout")
                 self.sleep(0.01)
-            if self.device.motion_done(motion_id) is not True:
+            if completed is not True:
+                self._require_lease()
                 self.device.stop()
-                raise CalibrationError("calibration_pulse_failed")
+                raise CalibrationError(self.device.last_refusal or "calibration_pulse_failed")
             pose_after, _ = self._snapshot()
             pulse_progress = (
                 math.hypot(pose_after.x - pose_before.x, pose_after.y - pose_before.y)
@@ -508,11 +582,38 @@ class CalibrationRunner:
     def _yaw(self) -> None:
         self._pulse_until(0.0, self.config.yaw_rate_deg_s, self.config.yaw_degrees)
 
+    def _write_failure(self, stages: dict[str, object], error: BaseException) -> None:
+        wheel_travel, yaw = self._progress.values()
+        body = {
+            "schema_version": 1,
+            "kind": "ohmni_lidar_calibration_failed_attempt",
+            "device_id": self.device_id,
+            "boot_id": self.boot_id,
+            "executed_bundle_source_sha256": self.executed_bundle_source_sha256,
+            "failure": str(error),
+            "device_refusal": self.device.last_refusal,
+            "lease_diagnostics": self.lease.diagnostics(self.monotonic()),
+            "elapsed_s": self.monotonic() - self._started,
+            "wheel_travel_m": wheel_travel,
+            "yaw_travel_deg": yaw,
+            "limits": asdict(self.config),
+            "completed_stages": stages,
+        }
+        encoded = (json.dumps(body, separators=(",", ":"), allow_nan=False) + "\n").encode()
+        if len(encoded) > MAX_OUTPUT_BYTES:
+            raise CalibrationError("calibration_diagnostics_exceed_byte_limit")
+        path = self.output.with_name(self.output.name + ".failed.json")
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+
     def _write(self, stages: dict[str, object], descriptor: int) -> None:
         body = {
             "schema_version": 1,
             "kind": "ohmni_supervised_lidar_calibration_capture",
-            "device_id": 11,
+            "device_id": self.device_id,
             "mount": {"x_m": MOUNT_X_M, "y_m": MOUNT_Y_M, "z_m": MOUNT_Z_M},
             "wheel_diameter_mm": self.config.wheel_diameter_mm,
             "limits": asdict(self.config),
@@ -520,6 +621,8 @@ class CalibrationRunner:
             "executed_bundle_source_sha256": self.executed_bundle_source_sha256,
             "stages": stages,
         }
+        if self.device_id == 12:
+            body["mount_source"] = "unqualified_legacy_seed"
         encoded = (json.dumps(body, separators=(",", ":"), allow_nan=False) + "\n").encode()
         if len(encoded) > MAX_OUTPUT_BYTES:
             raise CalibrationError("calibration_capture_exceeds_byte_limit")
@@ -553,10 +656,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lease-port", required=True, type=int)
     parser.add_argument("--lease-token-file", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--device-id", type=int, choices=(11, 12), default=11)
     parser.add_argument("--expected-boot-id", required=True)
     parser.add_argument("--expected-source-sha256", required=True)
     parser.add_argument("--supervised-clear-space", required=True, action="store_true")
-    parser.add_argument("--longer-calibration", action="store_true")
+    profile = parser.add_mutually_exclusive_group()
+    profile.add_argument("--longer-calibration", action="store_true")
+    profile.add_argument("--multistage-calibration", action="store_true")
     args = parser.parse_args(argv)
     boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     source_sha256 = calibration_source_sha256()
@@ -591,7 +697,14 @@ def main(argv: list[str] | None = None) -> int:
             device,
             lease,
             args.output,
-            config=CalibrationConfig.longer() if args.longer_calibration else None,
+            config=(
+                CalibrationConfig.multistage()
+                if args.multistage_calibration
+                else CalibrationConfig.longer()
+                if args.longer_calibration
+                else None
+            ),
+            device_id=args.device_id,
             boot_id=boot_id,
             executed_bundle_source_sha256=source_sha256,
         ).run()
