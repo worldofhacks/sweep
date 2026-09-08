@@ -26,7 +26,36 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run pytest -vv --durations=20 -o faulthandler_timeout=60
+      - name: Run pytest with retained diagnostics
+        shell: bash
+        run: |
+          set -o pipefail
+          log=pytest.log
+          : > "$log"
+          printf 'phase=pytest_started\n' | tee -a "$log"
+          set +e
+          timeout --signal=TERM --kill-after=10s 15m uv run pytest -vv --durations=20 -o faulthandler_timeout=60 2>&1 | tee -a "$log"
+          statuses=("${PIPESTATUS[@]}")
+          command_exit=${statuses[0]}
+          tee_exit=${statuses[1]}
+          set -e
+          phase=pytest_finished
+          if [ "$command_exit" -eq 124 ]; then
+            phase=diagnostic_timeout
+          elif [ "$command_exit" -ne 0 ]; then
+            phase=pytest_failed
+          fi
+          printf 'phase=%s command_exit=%s tee_exit=%s\n' "$phase" "$command_exit" "$tee_exit" | tee -a "$log"
+          if [ "$tee_exit" -ne 0 ]; then
+            exit "$tee_exit"
+          fi
+          exit "$command_exit"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: python-pytest-diagnostics
+          path: pytest.log
+          if-no-files-found: warn
 
   console:
     name: console
