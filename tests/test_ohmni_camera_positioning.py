@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import threading
 import time
@@ -922,3 +923,18 @@ def test_inspected_forward_without_an_approval_never_starts_the_motor(
 
     assert simulation.started_moving is None
     assert simulation.device.motion is None
+
+
+def test_inspection_request_reader_refuses_nonregular_or_oversized_inputs(tmp_path: Path) -> None:
+    fifo = tmp_path / "approval.fifo"
+    os.mkfifo(fifo)
+    oversized = tmp_path / "approval.oversized"
+    oversized.write_bytes(b"x" * (capture.inspection.MAX_REQUEST_BYTES + 1))
+    target = tmp_path / "target.json"
+    target.write_text("{}")
+    link = tmp_path / "approval.link"
+    link.symlink_to(target)
+
+    for path in (fifo, oversized, link):
+        with pytest.raises(capture.inspection.InspectionError, match="request is invalid"):
+            capture.inspection._read_mapping(path)

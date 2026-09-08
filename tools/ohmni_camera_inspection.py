@@ -8,6 +8,7 @@ import json
 import math
 import os
 import secrets
+import stat
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
@@ -370,8 +371,13 @@ class InspectionAuthority:
 
 
 def _read_mapping(path: Path) -> dict[str, object]:
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError as error:
+        raise InspectionError("camera inspection request is invalid") from error
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise InspectionError("camera inspection request is invalid")
         encoded = os.read(descriptor, MAX_REQUEST_BYTES + 1)
     finally:
         os.close(descriptor)
@@ -414,6 +420,8 @@ def read_approval_request(path: Path, challenge: CaptureChallenge) -> dict[str, 
         or parse_challenge(request["challenge"]) != challenge
         or not isinstance(request["frame_record"], str)
         or not isinstance(request["manifest"], str)
+        or not Path(request["frame_record"]).is_absolute()
+        or not Path(request["manifest"]).is_absolute()
         or not isinstance(request["operator_id"], str)
         or request["accepted"] is not True
         or not isinstance(request["review_notes"], str)
@@ -435,6 +443,8 @@ def write_approval_request(
     challenge = parse_challenge(_read_mapping(challenge_path))
     if accepted is not True or not operator_id or not review_notes.strip():
         raise InspectionError("camera inspection request is invalid")
+    if not frame_record.is_absolute() or not manifest.is_absolute():
+        raise InspectionError("camera inspection request is invalid")
     evidence = FrameEvidence.load(frame_record, manifest)
     if evidence.challenge != challenge:
         raise InspectionError("camera inspection request is invalid")
@@ -449,12 +459,24 @@ def write_approval_request(
         "review_notes": review_notes,
     }
     encoded = (json.dumps(request, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if len(encoded) > MAX_REQUEST_BYTES:
+        raise InspectionError("camera inspection request is invalid")
     path = Path(str(challenge_path) + ".approval.json")
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(encoded)
-        stream.flush()
-        os.fsync(stream.fileno())
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(16)}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path, follow_symlinks=False)
+    except BaseException:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    temporary.unlink()
     return path
 
 

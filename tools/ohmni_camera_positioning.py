@@ -809,6 +809,8 @@ class CameraPoseCaptureRunner(CalibrationRunner):
         request_path = Path(str(challenge_path) + ".approval.json")
         while not request_path.exists():
             self._require_lease()
+            if int(self.monotonic() * 1_000_000_000) > challenge.expires_at_device_monotonic_ns:
+                raise CalibrationError("camera_inspection_challenge_expired")
             if self.monotonic() >= self._deadline:
                 raise CalibrationError("camera_inspection_challenge_expired")
             if self._inspection_state() != issued_state:
@@ -836,7 +838,14 @@ class CameraPoseCaptureRunner(CalibrationRunner):
         )
         if reason is not None:
             raise CalibrationError(reason)
-        self.inspection_approval = authority.approval_record(approval_id)
+        self.inspection_approval = {
+            **authority.approval_record(approval_id),
+            "frame_record_path": request["frame_record"],
+            "manifest_path": request["manifest"],
+            "raw_capture_collection": evidence.raw_capture_collection,
+            "camera": evidence.camera,
+            "frame_index": evidence.frame_index,
+        }
         if not self.device.enable():
             raise CalibrationError(self.device.last_refusal or "camera_pose_device_enable_refused")
         if self._inspection_state() != issued_state:
