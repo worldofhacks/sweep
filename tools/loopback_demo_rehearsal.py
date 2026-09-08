@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import os
 import secrets
@@ -20,6 +21,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, replace
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,7 @@ from websockets.asyncio.client import connect
 
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
 from planner.models import Geofence
+from planner.navigation import ArrivalSlot, NavigationArtifact, NavigationPermission, Pose
 from planner.navigation_deployment import NavigationDeployment, load_navigation_deployment
 from planner.navigation_runtime import navigation_configuration_digest
 from planner.test_navigation_runtime import KEY as APPROVAL_KEY
@@ -43,6 +46,9 @@ from relay.navigation_wire import wire_config_digest_candidates
 from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.test_platform_navigation_execution import _deployment
 from tests.autonomy_fixtures import planning_config, safety_config
+from tests.world_bundle_fixtures import fixture_world_draft
+from tools.map_geometry import generate
+from tools.map_validate import content_hash
 
 RELAY_HOST = "127.0.0.1"
 SESSION_PREFIX = "loopback-rehearsal"
@@ -68,10 +74,152 @@ def unused_loopback_port(*, excluded: set[int] | None = None) -> int:
             return port
 
 
+def _write_json(path: Path, value: object) -> None:
+    path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")))
+
+
+def _arrival_slots() -> tuple[ArrivalSlot, ...]:
+    return (
+        ArrivalSlot("demo-west-slot", "demo-west", Pose(-0.8, 0.0, 1.0, "level_1"), 0.05, 0.05),
+        ArrivalSlot("lobby-slot", "lobby", Pose(0.0, 0.0, 1.0, "level_1"), 0.05, 0.05),
+        ArrivalSlot("demo-east-slot", "demo-east", Pose(0.8, 0.0, 1.0, "level_1"), 0.05, 0.05),
+    )
+
+
+def _synthetic_zone(zone_id: str, polygon: list[list[float]]) -> dict[str, object]:
+    return {
+        "id": zone_id,
+        "floor_id": "level_1",
+        "polygon": polygon,
+        "z_min_m": 0.0,
+        "z_max_m": 3.0,
+    }
+
+
+def _three_destination_deployment(directory: Path) -> NavigationDeployment:
+    base = _deployment(directory)
+    document = json.loads(base.path.read_text())
+    world = directory / document["bundle_directory"]
+    zones_path = world / "zones.yaml"
+    zones = json.loads(zones_path.read_text())
+    zones["zones"] = [
+        _synthetic_zone(
+            "demo-west", [[-1.4, -0.8], [-0.3, -0.8], [-0.3, 0.8], [-1.4, 0.8], [-1.4, -0.8]]
+        ),
+        _synthetic_zone(
+            "lobby", [[-0.25, -0.8], [0.25, -0.8], [0.25, 0.8], [-0.25, 0.8], [-0.25, -0.8]]
+        ),
+        _synthetic_zone(
+            "demo-east", [[0.3, -0.8], [1.4, -0.8], [1.4, 0.8], [0.3, 0.8], [0.3, -0.8]]
+        ),
+    ]
+    _write_json(zones_path, zones)
+    manifest_path = world / "manifest.yaml"
+    manifest = json.loads(manifest_path.read_text())
+    for name in ("tags.yaml", "zones.yaml", "obstacles.yaml"):
+        manifest["files"][name] = sha256((world / name).read_bytes()).hexdigest()
+    manifest["content_sha256"] = content_hash(manifest)
+    _write_json(manifest_path, manifest)
+    accepted = {manifest["bundle_version"]: manifest["content_sha256"]}
+
+    authoring = directory / document["geometry_authoring"]
+    authoring_document = json.loads(authoring.read_text())
+    authoring_document["bundle_content_sha256"] = manifest["content_sha256"]
+    _write_json(authoring, authoring_document)
+    geometry = directory / document["geometry_directory"]
+    for child in geometry.iterdir():
+        child.unlink()
+    geometry.rmdir()
+    generate(world, authoring, geometry, accepted)
+    report_path = geometry / "geometry.json"
+    report = json.loads(report_path.read_text())
+    geometry_sha256 = sha256(report_path.read_bytes()).hexdigest()
+
+    world_path = directory / document["world_localization_file"]
+    localization = json.loads(world_path.read_text())
+    localization["accepted_versions"] = accepted
+    localization["publisher"]["drones"][0]["fuser"]["geometry_id"] = report["authoring_sha256"]
+    pins = localization["devices"][0]["pins"]
+    pins["map_content_sha256"] = manifest["content_sha256"]
+    pins["geometry_id"] = report["authoring_sha256"]
+    pins["geometry_sha256"] = geometry_sha256
+    _write_json(world_path, localization)
+
+    slots = _arrival_slots()
+    permission = NavigationPermission(frozenset(slot.zone_id for slot in slots))
+    frame = base.config.frames[0]
+    control_pins = frame.control_pins
+    if control_pins is None:
+        raise RehearsalError("the flight fixture has no control-localization pins")
+    frames = (
+        replace(frame, control_pins=replace(control_pins, geometry_id=report["authoring_sha256"])),
+    )
+    profiles = {
+        drone_id: replace(
+            profile,
+            map_sha256=manifest["content_sha256"],
+            geometry_sha256=geometry_sha256,
+        )
+        for drone_id, profile in base.wire_profiles.items()
+    }
+    config = replace(
+        base.config,
+        frames=frames,
+        wire_config_sha256=next(iter(wire_config_digest_candidates(profiles))),
+    )
+    artifact = NavigationArtifact.from_geometry_directory(
+        world, geometry, accepted, slots, authoring=authoring
+    )
+    artifact = replace(
+        artifact,
+        zones=tuple(
+            replace(zone, owner_approved=zone.zone_id in permission.permitted_zone_ids)
+            for zone in artifact.zones
+        ),
+    )
+    document["accepted_map_versions"] = accepted
+    document["arrival_slots"] = [asdict(slot) for slot in slots]
+    document["permission_zone_ids"] = sorted(permission.permitted_zone_ids)
+    document["home_zone_id"] = "lobby"
+    document["execution"] = asdict(config)
+    document["wire_profiles"] = {
+        str(drone_id): asdict(profile) for drone_id, profile in profiles.items()
+    }
+    _write_json(base.path, document)
+    approval_path = directory / document["approval_file"]
+    approval = json.loads(approval_path.read_text())
+    approval["configuration_sha256"] = navigation_configuration_digest(
+        artifact, config, permission, "lobby"
+    )
+    unsigned = {key: value for key, value in approval.items() if key != "signature"}
+    approval["signature"] = sign_event(unsigned, APPROVAL_KEY)
+    _write_json(approval_path, approval)
+    return load_navigation_deployment(base.path)
+
+
+def _catalog_draft(deployment: NavigationDeployment) -> dict[str, object]:
+    draft = fixture_world_draft()
+    draft["metadata"]["mapVersion"] = deployment.artifact().map_pin.version
+    draft["metadata"]["floorId"] = "level_1"
+    zone = next(feature for feature in draft["features"] if feature["kind"] == "zone")
+    zones = []
+    for zone_id, name, points in (
+        ("demo-west", "Demo West", [(1, 2), (3, 2), (3, 4), (1, 4), (1, 2)]),
+        ("lobby", "Lobby", [(4, 2), (6, 2), (6, 4), (4, 4), (4, 2)]),
+        ("demo-east", "Demo East", [(7, 2), (9, 2), (9, 4), (7, 4), (7, 2)]),
+    ):
+        item = copy.deepcopy(zone)
+        item.update(id=zone_id, name=name, aliases=[], points=[{"x": x, "y": y} for x, y in points])
+        zones.append(item)
+    index = draft["features"].index(zone)
+    draft["features"][index : index + 1] = zones
+    return draft
+
+
 def _rehearsal_deployment(
     directory: Path, *, session_id: str, now_ms: int, lifetime_ms: int
 ) -> tuple[NavigationDeployment, ControlLocalizationProjector, ControlLocalizationPins]:
-    base = _deployment(directory)
+    base = _three_destination_deployment(directory)
     frame = base.config.frames[0]
     original_pins = frame.control_pins
     if original_pins is None:
@@ -134,6 +282,17 @@ def _rehearsal_deployment(
         max_position_uncertainty_p95_m=0.3,
     )
     return deployment, projector, pins
+
+
+def _publish_catalog(app: Any, session_id: str, deployment: NavigationDeployment) -> None:
+    platform = app.state.platform_services
+    draft = _catalog_draft(deployment)
+    reference = platform.maps.save(session_id, draft, None, "loopback-rehearsal")
+    validation = platform.maps.validate(session_id, reference, "loopback-rehearsal")
+    if not validation["valid"]:
+        raise RehearsalError("the synthetic rehearsal map did not validate")
+    platform.maps.approve(session_id, reference, validation["validationId"], "loopback-rehearsal")
+    platform.navigation.select_map(session_id, {"reference": reference}, "loopback-rehearsal")
 
 
 class MovingControlPosePublisher:
@@ -320,6 +479,7 @@ class LoopbackDemoRehearsal:
         app, self._composition = create_autonomy_app(settings, config, clock=epoch_ms)
         self._start_relay(app)
         self._composition.session(self.session_id)
+        _publish_catalog(app, self.session_id, deployment)
         self._node = FakeNode(
             FakeNodeConfig(
                 relay_url=self.relay_url,

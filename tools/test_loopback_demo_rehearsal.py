@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from urllib.request import Request, urlopen
 
 from tools.loopback_demo_rehearsal import (
     LoopbackDemoRehearsal,
@@ -25,6 +26,18 @@ def test_rehearsal_deployment_reloads_a_signed_fresh_session(tmp_path) -> None:
     deployment.validate_projector(projector)
     assert pins.clock_mapping.relay_reference_ms == now
     assert deployment.wire_profiles[1].clock_lease_expires_at_ms == now + 60_000
+    artifact = deployment.artifact()
+    assert [zone.zone_id for zone in artifact.zones] == ["demo-east", "demo-west", "lobby"]
+    assert {
+        (zone.zone_id, slot.slot_id)
+        for zone in artifact.zones
+        for slot in zone.arrival_slots
+    } == {
+        ("demo-west", "demo-west-slot"),
+        ("lobby", "lobby-slot"),
+        ("demo-east", "demo-east-slot"),
+    }
+    assert all(zone.owner_approved for zone in artifact.zones)
 
 
 def test_loopback_rehearsal_publishes_a_fresh_signed_pose_and_private_bootstrap(tmp_path) -> None:
@@ -38,6 +51,22 @@ def test_loopback_rehearsal_publishes_a_fresh_signed_pose_and_private_bootstrap(
         payload = json.loads(bootstrap.read_text())
         assert payload["relay"]["origin"] == rehearsal.relay_url
         assert payload["relay"]["session"] == rehearsal.session_id
+        request = Request(
+            f"http://127.0.0.1:{rehearsal.relay_port}/api/sessions/"
+            f"{rehearsal.session_id}/navigation/catalog",
+            headers={"Authorization": f"Bearer {payload['relay']['token']}"},
+        )
+        with urlopen(request, timeout=3) as response:
+            catalog = json.loads(response.read())["catalog"]
+        assert [
+            destination["zoneId"]
+            for destination in catalog["destinations"]
+            if not destination["excluded"]
+        ] == [
+            "demo-west",
+            "lobby",
+            "demo-east",
+        ]
 
         runtime = rehearsal._composition.runtime
         deadline = time.monotonic() + 3
