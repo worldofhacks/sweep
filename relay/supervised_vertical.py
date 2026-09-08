@@ -97,8 +97,6 @@ class SupervisedVerticalConfig:
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
-        if self.max_local_height_age_ms > 500:
-            raise ValueError("max_local_height_age_ms must not exceed 500")
         if not 1 <= self.max_local_height_age_ms <= 500:
             raise ValueError("max_local_height_age_ms must be between 1 and 500")
 

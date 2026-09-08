@@ -1,9 +1,9 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin, type ServerOptions } from 'vite'
+import { RELAY_BOOTSTRAP_ENDPOINT, relayFromEnvironment } from './src/relay/bootstrap-endpoint.ts'
+
 const CANONICAL_CONSOLE_PORT = 5173
 const M14_BROWSER_PORT = 14173
-
-import { RELAY_BOOTSTRAP_ENDPOINT, relayFromEnvironment } from './src/relay/bootstrap-endpoint.ts'
 
 // https://vite.dev/config/
 export default defineConfig({
