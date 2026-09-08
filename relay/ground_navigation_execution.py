@@ -80,6 +80,8 @@ class GroundPlatformNavigation:
             record = by_device.get(device_id)
             if record is None or record["connectionEpoch"] != epoch:
                 raise ValueError("every admitted ground node needs a current qualified world pose")
+            if record["confidence"] <= 0:
+                raise ValueError("ground world localization confidence is unavailable")
             registration = platform.observations.registrations[record["sourceId"]]
             if (
                 record["sourceId"] != device.world_pose_source_id

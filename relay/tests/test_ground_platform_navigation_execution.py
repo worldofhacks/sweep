@@ -39,7 +39,12 @@ LOCALIZATION_KEY = b"ground-qualified-localization-test-key-32"
 
 
 @pytest.fixture
-def ground_platform(tmp_path: Path, monkeypatch, request):
+def world_confidence():
+    return [1.0]
+
+
+@pytest.fixture
+def ground_platform(tmp_path: Path, monkeypatch, request, world_confidence):
     with_aircraft = getattr(request, "param", False)
     path = deployment_file(tmp_path, now_ms=time.time_ns() // 1_000_000)
     document = json.loads(path.read_text())
@@ -200,7 +205,7 @@ def ground_platform(tmp_path: Path, monkeypatch, request):
                                 "node_type": "ground_vehicle",
                                 "t_capture": now,
                                 "frame": "world",
-                                "confidence": 1.0,
+                                "confidence": world_confidence[0],
                                 "payload": {
                                     "kind": "pose",
                                     "position": {
@@ -247,6 +252,67 @@ def ground_platform(tmp_path: Path, monkeypatch, request):
         server.should_exit = True
         thread.join(timeout=5)
         composition.close()
+
+
+def test_zero_confidence_world_pose_cannot_authorize_ground_navigation(
+    ground_platform, world_confidence
+):
+    client, headers, session, device, start_source, _, _, _, _ = ground_platform
+    world_confidence[0] = 0.0
+    start_source()
+
+    response = client.post(
+        f"/api/sessions/{SESSION}/navigation/compile",
+        headers=headers,
+        json={"intentId": "zero-confidence", "query": "lobby"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "navigation_execution_unavailable"
+    assert "confidence" in response.json()["detail"]
+    assert device.stop_confirmed()
+    assert not any(
+        row["event"].get("operation") == "ground_navigate" for row in session.replay()["events"]
+    )
+
+
+def test_world_confidence_loss_stops_a_running_ground_route(ground_platform, world_confidence):
+    client, headers, session, device, start_source, _, _, _, _ = ground_platform
+    start_source()
+    base = f"/api/sessions/{SESSION}/navigation"
+    response = client.post(
+        base + "/compile",
+        headers=headers,
+        json={"intentId": "lose-world-confidence", "query": "lobby"},
+    )
+    assert response.status_code == 200, response.text
+    envelope = response.json()
+    preview = envelope["preview"]
+    response = client.post(
+        base + "/confirm",
+        headers=headers,
+        json={
+            "previewId": preview["previewId"],
+            "intentId": preview["intentId"],
+            "previewHash": envelope["previewHash"],
+        },
+    )
+    assert response.status_code == 200 and response.json()["status"] == "accepted", response.text
+    _wait_for(lambda: device.status().state == "moving", "ground route before confidence loss")
+
+    world_confidence[0] = 0.0
+    _wait_for(
+        lambda: any(
+            row["event"].get("operation") == "hover" and row["event"].get("drone_id") == GROUND_ID
+            for row in session.replay()["events"]
+        ),
+        "STOP after world confidence loss",
+    )
+    _wait_for(device.stop_confirmed, "world-confidence STOP confirmation")
+    stopped = device.status()
+    time.sleep(0.4)
+    assert device.status().x == pytest.approx(stopped.x)
+    assert device.status().y == pytest.approx(stopped.y)
 
 
 @pytest.mark.parametrize("ground_platform", [True], indirect=True)
