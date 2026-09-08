@@ -12,6 +12,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .botshell import DEFAULT_PATH, BotShell
@@ -21,6 +22,8 @@ from .lidar import Lidar, discover
 from .models import GroundStatus, RangeScan
 from .odometry import BASE_MM, Odometry
 from .paired_encoder import PairedEncoderStream, default_socket_path
+
+MIN_CALIBRATION_RAW_POINTS = 20
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,7 @@ class Config:
     scan_max_age_s: float = 0.5
     owner_timeout_s: float = 0.35
     motion_timeout_s: float = 25.0
+    wheel_diameter_mm: float = 150.5
 
     def __post_init__(self) -> None:
         if self.allow_spotted_without_lidar is not False:
@@ -93,6 +97,8 @@ class Config:
             raise ValueError("lidar offset must be finite")
         if isinstance(self.lidar_angle_sign, bool) or self.lidar_angle_sign not in (None, -1, 1):
             raise ValueError("lidar angle sign must be -1 or 1")
+        if not math.isfinite(self.wheel_diameter_mm) or self.wheel_diameter_mm <= 0:
+            raise ValueError("wheel diameter must be finite and positive")
 
 
 @dataclass
@@ -106,6 +112,7 @@ class Motion:
     yaw_rate_deg_s: float | None = None
     ends_at: float | None = None
     phase: str = "turn"
+    calibration_guard: Callable[[float], str | None] | None = None
 
 
 class OhmniDevice:
@@ -125,7 +132,11 @@ class OhmniDevice:
         # each own a socket; no battery wait can delay wheel STOP or encoder sampling.
         self.drive_shell = shell_factory(config.socket_path)
         self.battery_shell = shell_factory(config.socket_path)
-        self.odometry = Odometry(PairedEncoderStream(config.paired_encoder_socket), config.launch)
+        self.odometry = Odometry(
+            PairedEncoderStream(config.paired_encoder_socket),
+            config.launch,
+            wheel_diameter_mm=config.wheel_diameter_mm,
+        )
         self.camera = camera
         port = lidar_discover()
         self.lidar = (
@@ -211,27 +222,40 @@ class OhmniDevice:
 
     def enable(self) -> bool:
         with self._lock:
-            reason = self.pre_enable_refusal()
-            if reason:
-                self.enabled = False
-                self.last_refusal = reason
-                return False
-            try:
-                self._flush_stop()
-                self.drive_shell.command("init")
-                if self.lidar:
-                    # The vendor detector cannot share the serial port with our reader.
-                    self.drive_shell.command("stop_collision_detection")
-                else:
-                    self.drive_shell.command("start_collision_detection")
-                self.drive_shell.command("manual_move 0 0")
-            except OSError:
-                self.last_refusal = "bot_shell_unavailable"
-                self.enabled = False
-                self._pending_stop = self._pending_sleep = True
-                return False
-            self.enabled = True
-            return True
+            return self._enable(self.pre_enable_refusal())
+
+    def enable_calibration(self) -> bool:
+        """Enable only the fixed, lease-bound calibration pulse path."""
+        with self._lock:
+            now = time.monotonic()
+            reason = self._calibration_guard_reason(now)
+            if reason is None and self.docked:
+                reason = "robot_docked"
+            if reason is None and not self.odometry.snapshot(now).quality:
+                reason = "wheel_odometry_unavailable"
+            return self._enable(reason)
+
+    def _enable(self, reason: str | None) -> bool:
+        if reason:
+            self.enabled = False
+            self.last_refusal = reason
+            return False
+        try:
+            self._flush_stop()
+            self.drive_shell.command("init")
+            if self.lidar:
+                # The vendor detector cannot share the serial port with our reader.
+                self.drive_shell.command("stop_collision_detection")
+            else:
+                self.drive_shell.command("start_collision_detection")
+            self.drive_shell.command("manual_move 0 0")
+        except OSError:
+            self.last_refusal = "bot_shell_unavailable"
+            self.enabled = False
+            self._pending_stop = self._pending_sleep = True
+            return False
+        self.enabled = True
+        return True
 
     def _finish(self, result: bool | None, reason: str | None = None) -> None:
         motion = self.motion
@@ -351,6 +375,72 @@ class OhmniDevice:
             self.last_refusal = reason
             raise RuntimeError(reason)
 
+    def _calibration_guard_reason(self, now: float) -> str | None:
+        if not self.spotter_present:
+            return "spotter_missing"
+        if self.docked:
+            return "robot_docked"
+        if self.lidar is None:
+            return "lidar_missing"
+        revolution = self.lidar.raw_revolution(now)
+        if revolution is None or now - revolution.monotonic_s > self.config.scan_max_age_s:
+            return "raw_lidar_revolution_stale"
+        usable = sum(
+            point.quality > 0 and 0 <= point.angle_deg < 360 and 150 <= point.distance_mm <= 12000
+            for point in revolution.points
+        )
+        if usable < MIN_CALIBRATION_RAW_POINTS:
+            return "raw_lidar_revolution_incomplete"
+        return None
+
+    def calibration_drive_velocity(
+        self,
+        velocity_m_s: float,
+        yaw_rate_deg_s: float,
+        duration_s: float,
+        *,
+        host_lease: Callable[[float], str | None],
+    ) -> str:
+        """Require supervised clear space: this bypasses calibrated obstacle checks.
+
+        The lease callback returns a stop reason or None on admission and each control tick.
+        """
+        if (
+            not all(math.isfinite(value) for value in (velocity_m_s, yaw_rate_deg_s, duration_s))
+            or (velocity_m_s, yaw_rate_deg_s) not in {(0.04, 0.0), (0.0, 10.0)}
+            or duration_s != 0.5
+        ):
+            raise ValueError("calibration pulse exceeds the fixed safety bounds")
+        with self._lock:
+            now = time.monotonic()
+            reason = host_lease(now) or self._calibration_guard_reason(now)
+            if not self.enabled:
+                reason = "control_authority_missing"
+            elif self._pending_stop or self._pending_sleep:
+                reason = "hardware_stop_unconfirmed"
+            elif not self.odometry.snapshot(now).quality:
+                reason = "wheel_odometry_unavailable"
+            if reason:
+                self.last_refusal = reason
+                raise RuntimeError(reason)
+            self._finish(None)
+            identity = str(uuid.uuid4())
+            self.motion = Motion(
+                identity,
+                None,
+                None,
+                max(velocity_m_s, abs(yaw_rate_deg_s)),
+                now,
+                velocity_m_s,
+                yaw_rate_deg_s,
+                now + duration_s,
+                calibration_guard=host_lease,
+            )
+            self._last_owner_tick = now
+            while len(self._results) > 64:
+                del self._results[next(iter(self._results))]
+            return identity
+
     def _start(self, target, heading, speed) -> str:
         with self._lock:
             self._admit_motion()
@@ -426,16 +516,28 @@ class OhmniDevice:
             if motion is None:
                 return
             pose = self.odometry.snapshot(now)
-            reason = self.guard_reason(now=now)
-            if not self.enabled:
+            reason = (
+                self._calibration_guard_reason(now)
+                if motion.calibration_guard is not None
+                else self.guard_reason(now=now)
+            )
+            if motion.calibration_guard is not None:
+                reason = motion.calibration_guard(now) or reason
+            if reason is None and not self.enabled:
                 reason = "control_authority_missing"
-            elif now - self._last_owner_tick > self.config.owner_timeout_s:
+            elif reason is None and now - self._last_owner_tick > self.config.owner_timeout_s:
                 reason = "owner_loop_stalled"
-            elif now - motion.started > self.config.motion_timeout_s:
+            elif reason is None and now - motion.started > self.config.motion_timeout_s:
                 reason = "motion_timeout"
-            elif not pose.quality:
+            elif reason is None and not pose.quality:
                 reason = "wheel_odometry_unavailable"
             if reason:
+                if (
+                    motion.calibration_guard is not None
+                    and reason == "calibration_host_lease_expired"
+                ):
+                    self.enabled = False
+                    self._pending_sleep = True
                 self._finish(None, reason)
                 return
             if motion.ends_at is not None:
@@ -443,10 +545,11 @@ class OhmniDevice:
                     self._finish(True)
                     return
                 if motion.velocity_m_s:
-                    reason = self.guard_reason(forward=True, now=now)
-                    if reason:
-                        self._finish(None, reason)
-                        return
+                    if motion.calibration_guard is None:
+                        reason = self.guard_reason(forward=True, now=now)
+                        if reason:
+                            self._finish(None, reason)
+                            return
                     units = max(1, int(250 * motion.velocity_m_s / 0.18))
                     self.drive_shell.command(f"manual_move {units} {-units}")
                 elif motion.yaw_rate_deg_s:

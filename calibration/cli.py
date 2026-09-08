@@ -12,6 +12,11 @@ import cv2
 
 from calibration.intrinsics import CalibrationRequest, calibrate
 from calibration.latency import summarize_latency
+from calibration.tag_intrinsics import (
+    TagCandidateRequest,
+    calibrate_tag_candidate,
+    export_tag_calibration,
+)
 
 
 def _read_json(path: Path) -> object:
@@ -84,6 +89,49 @@ def _latency_command(args: argparse.Namespace) -> None:
     _write_artifact(args.output, artifact)
 
 
+def _tag_candidate_command(args: argparse.Namespace) -> None:
+    pipeline = _read_json(args.pipeline)
+    if not isinstance(pipeline, dict):
+        raise ValueError("pipeline JSON must be an object")
+    _write_artifact(
+        args.output,
+        calibrate_tag_candidate(
+            TagCandidateRequest(
+                evidence=args.evidence,
+                tag_size_m=args.tag_size_m,
+                pipeline=pipeline,
+                minimum_frame_gap=args.minimum_frame_gap,
+                maximum_views=args.maximum_views,
+                model=args.model,
+                frames_dir=args.frames_dir,
+            )
+        ),
+    )
+
+
+def _tag_export_command(args: argparse.Namespace) -> None:
+    pipeline = _read_json(args.pipeline)
+    if not isinstance(pipeline, dict):
+        raise ValueError("pipeline JSON must be an object")
+    _write_artifact(
+        args.output,
+        export_tag_calibration(
+            TagCandidateRequest(
+                evidence=args.evidence,
+                tag_size_m=args.tag_size_m,
+                pipeline=pipeline,
+                minimum_frame_gap=args.minimum_frame_gap,
+                maximum_views=args.maximum_views,
+                model=args.model,
+                frames_dir=args.frames_dir,
+            ),
+            camera_serial=args.camera_serial,
+            evidence_kind=args.evidence_kind,
+            allow_synthetic=args.allow_synthetic,
+        ),
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Create offline calibration artifacts from decoded checkerboard image files."
@@ -104,6 +152,33 @@ def _parser() -> argparse.ArgumentParser:
     )
     intrinsics.add_argument("--output", type=Path, required=True)
     intrinsics.set_defaults(handler=_intrinsics_command)
+
+    tags = commands.add_parser(
+        "apriltag-candidate", help="fit a diagnostic intrinsics candidate from raw tag corners"
+    )
+    tags.add_argument("--evidence", type=Path, required=True)
+    tags.add_argument("--tag-size-m", type=float, required=True)
+    tags.add_argument("--model", choices=("pinhole", "fisheye"), default="pinhole")
+    tags.add_argument("--frames-dir", type=Path)
+    tags.add_argument("--pipeline", type=Path, required=True)
+    tags.add_argument("--minimum-frame-gap", type=int, default=8)
+    tags.add_argument("--maximum-views", type=int, default=30)
+    tags.add_argument("--output", type=Path, required=True)
+    tags.set_defaults(handler=_tag_candidate_command)
+
+    export = commands.add_parser("apriltag-export", help="export a qualified AprilTag calibration")
+    export.add_argument("--evidence", type=Path, required=True)
+    export.add_argument("--frames-dir", type=Path, required=True)
+    export.add_argument("--tag-size-m", type=float, required=True)
+    export.add_argument("--model", choices=("pinhole", "fisheye"), default="pinhole")
+    export.add_argument("--pipeline", type=Path, required=True)
+    export.add_argument("--camera-serial", required=True)
+    export.add_argument("--evidence-kind", choices=("recorded_live", "synthetic"), required=True)
+    export.add_argument("--allow-synthetic", action="store_true")
+    export.add_argument("--minimum-frame-gap", type=int, default=8)
+    export.add_argument("--maximum-views", type=int, default=30)
+    export.add_argument("--output", type=Path, required=True)
+    export.set_defaults(handler=_tag_export_command)
 
     latency = commands.add_parser("latency", help="summarize explicitly measured latency samples")
     latency.add_argument("--samples", type=Path, required=True)
