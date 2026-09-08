@@ -1,0 +1,229 @@
+{
+  "activation": "blocked",
+  "activationChecks": [
+    {
+      "evidence": "The retained source explicitly prohibits registry acceptance.",
+      "id": "accepted-map-and-geometry",
+      "status": "blocked"
+    },
+    {
+      "evidence": "Horizontal and vertical clearances, speed limits, and altitude offsets are unmeasured.",
+      "id": "formation-area-clearance",
+      "status": "blocked"
+    },
+    {
+      "evidence": "Register two aircraft with distinct current epochs, control-localization pins, and flight qualification; ground robots do not satisfy this check.",
+      "id": "two-qualified-aircraft",
+      "status": "blocked"
+    },
+    {
+      "evidence": "No signed execution configuration or owner approval is present in this staging package.",
+      "id": "signed-navigation-approval",
+      "status": "blocked"
+    }
+  ],
+  "formationAreaDrafts": [
+    {
+      "aliases": [
+        "atrium front"
+      ],
+      "arrivalCandidate": {
+        "basis": "measured tag-grid corner centroid; not a dispatchable arrival slot",
+        "x": 4.455680936958737,
+        "y": -0.0407310374553956
+      },
+      "cornerTagIds": [
+        32,
+        34,
+        41,
+        43
+      ],
+      "flightAuthorization": {
+        "altitudeOffsetsM": null,
+        "enabled": false,
+        "horizontalClearanceM": null,
+        "ownerApproved": false,
+        "speedMps": null,
+        "verticalClearanceM": null
+      },
+      "name": "Atrium Front",
+      "tagGridOutline": [
+        {
+          "x": 0.0019975091677686407,
+          "y": -0.6275420340894715
+        },
+        {
+          "x": 8.800985506846516,
+          "y": 0.2663287625413304
+        },
+        {
+          "x": 6.891844359512927,
+          "y": 0.2214148627965247
+        },
+        {
+          "x": 2.127896372307738,
+          "y": -0.02312574106996601
+        },
+        {
+          "x": 0.0019975091677686407,
+          "y": -0.6275420340894715
+        }
+      ],
+      "zoneId": "atrium-front"
+    },
+    {
+      "aliases": [],
+      "arrivalCandidate": {
+        "basis": "measured tag-grid corner centroid; not a dispatchable arrival slot",
+        "x": 10.564664746477998,
+        "y": 4.627531253277966
+      },
+      "cornerTagIds": [
+        0,
+        2,
+        9,
+        11
+      ],
+      "flightAuthorization": {
+        "altitudeOffsetsM": null,
+        "enabled": false,
+        "horizontalClearanceM": null,
+        "ownerApproved": false,
+        "speedMps": null,
+        "verticalClearanceM": null
+      },
+      "name": "Carpet",
+      "tagGridOutline": [
+        {
+          "x": 9.696731896754525,
+          "y": 3.229883983546109
+        },
+        {
+          "x": 11.348515962832737,
+          "y": 3.2172877988329334
+        },
+        {
+          "x": 11.456940505731268,
+          "y": 6.045564250875566
+        },
+        {
+          "x": 9.75647062059346,
+          "y": 6.017388979857255
+        },
+        {
+          "x": 9.696731896754525,
+          "y": 3.229883983546109
+        }
+      ],
+      "zoneId": "carpet"
+    }
+  ],
+  "formationBindingContract": {
+    "bindings": [
+      {
+        "shape": "line",
+        "zoneId": "atrium-front"
+      },
+      {
+        "shape": "column",
+        "zoneId": "atrium-front"
+      },
+      {
+        "shape": "line",
+        "zoneId": "carpet"
+      },
+      {
+        "shape": "column",
+        "zoneId": "carpet"
+      }
+    ],
+    "intentArgs": [
+      "name",
+      "zone_id"
+    ],
+    "selectionRule": "The signed binding must match both shape and zone_id.",
+    "selector": "zone_id"
+  },
+  "kind": "real_navigation_staging_package",
+  "schemaVersion": 1,
+  "semanticCatalogSeed": {
+    "destinations": [
+      {
+        "aliases": [
+          "atrium front"
+        ],
+        "destinationId": "atrium-front",
+        "name": "Atrium Front"
+      },
+      {
+        "aliases": [],
+        "destinationId": "carpet",
+        "name": "Carpet"
+      }
+    ],
+    "searchTargetClasses": []
+  },
+  "source": {
+    "coordinateFrame": "unit11_atrium_38_to_39_v1",
+    "intentionallyAbsentTagIds": [
+      29
+    ],
+    "path": "/var/tmp/gauntlet/sweep-production/unit12-live-camera-map-fit-20260908/final-53-tag-map.json",
+    "retainedTagIds": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53
+    ],
+    "sha256": "7f4f1f2bf3e2ba0285568a7a0a78bd25587fcba82b5b31a97b4c592b00ca2009"
+  }
+}
