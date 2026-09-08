@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test
 import org.worldofhacks.sweep.bridge.core.flight.FlightConfig
 import org.worldofhacks.sweep.bridge.core.flight.FlightReason
 import org.worldofhacks.sweep.bridge.core.flight.NavigationConfig
+import org.worldofhacks.sweep.bridge.core.flight.NavigationLocalHeightPolicy
 import org.worldofhacks.sweep.bridge.core.flight.ReportSink
 import org.worldofhacks.sweep.bridge.core.flight.StickFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
@@ -23,6 +24,7 @@ import org.worldofhacks.sweep.bridge.core.localization.LocalizationPins
 import org.worldofhacks.sweep.bridge.node.FlightStates
 import org.worldofhacks.sweep.bridge.node.LinkState
 import org.worldofhacks.sweep.bridge.node.LinkTiming
+import org.worldofhacks.sweep.bridge.node.LocalHeightMeasurement
 import org.worldofhacks.sweep.bridge.node.NodeConfig
 import org.worldofhacks.sweep.bridge.node.NavigationAdmissionConfig
 import org.worldofhacks.sweep.bridge.node.PhoneStatus
@@ -55,6 +57,9 @@ class FlightExecutorTest {
         val aircraft = FakeFlightAircraft()
         aircraft.setConnected(true)
         if (flying) aircraft.place(zUp = 1.2, flying = true)
+        if (flying && navigation) {
+            aircraft.fake.update { snapshot -> snapshot.copy(localHeight = LocalHeightMeasurement(1.2, System.currentTimeMillis())) }
+        }
         val executor = FlightExecutor(aircraft, aircraft, aircraft.fake, config = config.copy(navigation = if (navigation) navigationConfig() else null), log = { logs += it })
         val nodeConfig = NodeConfig(
             stub.url,
@@ -96,6 +101,7 @@ class FlightExecutorTest {
         geometrySha256 = NAV_HASH, cameraCalibrationSha256 = NAV_HASH, bodyExtrinsicsSha256 = NAV_HASH, worldTransformSha256 = NAV_HASH,
         controlSourceIds = listOf("tag-source"), clockLeaseId = "lease-1", clockLeaseExpiresAtMs = Long.MAX_VALUE, poseFreshnessMs = 500, authorizationLifetimeMs = 1_000, lossLandAfterMs = 300,
         arrivalHorizontalToleranceM = 0.1, arrivalVerticalToleranceM = 0.1, maxPositionUncertaintyM = 0.05,
+        localHeightPolicy = NavigationLocalHeightPolicy(maximumHeightAgeMs = 5_000),
     )
 
     private fun navigationAdmission() = NavigationAdmissionConfig(

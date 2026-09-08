@@ -44,6 +44,7 @@ class FlightControllerTest {
     private class Harness(
         private val navigationLeaseExpiresAtMs: Long = Long.MAX_VALUE,
         private val supervisedVertical: SupervisedVerticalConfig? = null,
+        private val navigationEnabled: Boolean = false,
     ) {
         val clock = FakeClock(1_000)
         val model = FakeFlightModel()
@@ -60,7 +61,7 @@ class FlightControllerTest {
             yawSettleMs = 200,
             yawMarginMs = 1_000,
             supervisedVertical = supervisedVertical,
-            navigation = if (supervisedVertical == null) NavigationConfig(
+            navigation = if (supervisedVertical == null && navigationEnabled) NavigationConfig(
                 navigationConfigId = "navigation-a",
                 navigationConfigSha256 = "a".repeat(64),
                 mapVersion = "map-v1",
@@ -85,8 +86,8 @@ class FlightControllerTest {
 
         /** The relay's signed control heartbeat keeps the deadman fed; deadman tests switch it off. */
         var relayAlive = true
-        private var localHeight: LocalHeightFacts? = null
-        private var trackLocalHeight = false
+        private var localHeight: LocalHeightFacts? = if (supervisedVertical == null && navigationEnabled) LocalHeightFacts(1.2, clock.nowMs()) else null
+        private var trackLocalHeight = supervisedVertical == null && navigationEnabled
         private var localHeightDelayMs = 0L
         private var localHeightQuantumM: Double? = null
         private val localHeightHistory = ArrayDeque<Pair<Long, Double>>()
@@ -184,6 +185,7 @@ class FlightControllerTest {
             xMm: Long = 0,
             yMm: Long = 0,
             zMm: Long = 1_200,
+            targetZMm: Long = 1_200,
             expiresAtMs: Long = clock.nowMs() + 2_000,
             freshUntilMs: Long? = clock.nowMs() + 500,
         ) {
@@ -194,7 +196,7 @@ class FlightControllerTest {
                 positionFrame = NavigationRouteAuthorization.POSITION_FRAME, clockLeaseId = "lease-1", maxClockErrorMs = 25,
                 navigationConfigId = "navigation-a", navigationConfigSha256 = "a".repeat(64), mapVersion = "map-v1", mapSha256 = "a".repeat(64),
                 geometrySha256 = "a".repeat(64), cameraCalibrationSha256 = "a".repeat(64), bodyExtrinsicsSha256 = "a".repeat(64), worldTransformSha256 = "a".repeat(64),
-                controlSourceIds = listOf("tag-source"), segments = listOf(NavigationSegment(0, 0, 1_200, 0, 2_000, 1_200, 300)),
+                controlSourceIds = listOf("tag-source"), segments = listOf(NavigationSegment(0, 0, 1_200, 0, 2_000, targetZMm, 300)),
                 maxSpeedMmS = 300, maxAccelerationMmS2 = 300, maxDecelerationMmS2 = 300, maxPositionUncertaintyMm = 100, maxCrossTrackMm = 300,
                 arrivalHorizontalToleranceMm = 200, arrivalVerticalToleranceMm = 200, poseFreshnessMs = 500, trackingTimeoutMs = 3_000,
                 flightApproved = true, signature = "0".repeat(64),
@@ -256,7 +258,7 @@ class FlightControllerTest {
 
     @Test
     fun `signed route streams a bounded velocity and stale evidence holds then lands`() {
-        val h = Harness()
+        val h = Harness(navigationEnabled = true)
         h.hovering()
         h.join()
         h.navigation()
@@ -276,8 +278,151 @@ class FlightControllerTest {
     }
 
     @Test
+    fun `navigation uses takeoff relative height instead of the map z target`() {
+        val h = Harness(navigationEnabled = true)
+        h.hovering(20.0)
+        h.localHeight(1.2)
+        h.join()
+        h.navigation(zMm = 1_200, targetZMm = 9_000)
+        val route = h.run(CommandArgs.Goto(0, 2_000, 9_000, 300, "route-1"), "route-command")
+        h.tick(2)
+
+        assertNull(route.terminal, route.events.toString())
+        assertTrue(h.frames.last().verticalThrottle > 0.0, "route should climb below the local soft ceiling: ${h.frames.last()}")
+
+        h.localHeight(2.1336)
+        h.tick(1)
+        assertEquals(0.0, h.frames.last().verticalThrottle, 1e-9, "soft ceiling must clip ascent after acceleration limiting")
+        assertEquals("navigating", h.controller.status.phase)
+    }
+
+    @Test
+    fun `navigation lands on hard or unusable local height`() {
+        fun navigating(): Pair<Harness, RecordingSink> {
+            val h = Harness(navigationEnabled = true)
+            h.hovering()
+            h.localHeight(1.2)
+            h.join()
+            h.navigation(targetZMm = 3_000)
+            val route = h.run(CommandArgs.Goto(0, 2_000, 3_000, 300, "route-1"), "route-command")
+            h.tick(1)
+            return h to route
+        }
+
+        val (hard, hardRoute) = navigating()
+        hard.localHeight(2.4384)
+        hard.tick(1)
+        assertEquals("vertical_ceiling_exceeded", hardRoute.terminal?.second, hardRoute.events.toString())
+        assertEquals("landing", hard.controller.status.phase)
+        assertEquals("vertical_ceiling_exceeded", hard.controller.status.landingReason)
+
+        val (stale, staleRoute) = navigating()
+        stale.localHeight(1.2, stale.clock.nowMs() - 501)
+        stale.tick(1)
+        assertEquals("local_height_unavailable", staleRoute.terminal?.second, staleRoute.events.toString())
+        assertEquals("landing", stale.controller.status.phase)
+
+        val (future, futureRoute) = navigating()
+        future.localHeight(1.2, future.clock.nowMs() + 200)
+        future.tick(1)
+        assertEquals("local_height_unavailable", futureRoute.terminal?.second, futureRoute.events.toString())
+        assertEquals("landing", future.controller.status.phase)
+
+        val invalid = navigating()
+        invalid.first.localHeight(-0.1)
+        invalid.first.tick(1)
+        assertEquals("local_height_unavailable", invalid.second.terminal?.second, invalid.second.events.toString())
+        assertEquals("landing", invalid.first.controller.status.phase)
+    }
+
+    @Test
+    fun `navigation local height guard continues through hover and arrival but yields to RC takeover`() {
+        val hover = Harness(navigationEnabled = true)
+        hover.hovering()
+        hover.localHeight(1.2)
+        hover.join()
+        hover.navigation(targetZMm = 3_000)
+        hover.run(CommandArgs.Goto(0, 2_000, 3_000, 300, "route-1"), "route-command")
+        hover.tick(1)
+        val hold = hover.run(CommandArgs.Hover)
+        hover.localHeight(2.4384)
+        hover.tick(1)
+        assertEquals("vertical_ceiling_exceeded", hold.terminal?.second, hold.events.toString())
+        assertEquals("landing", hover.controller.status.phase)
+
+        val arrived = Harness(navigationEnabled = true)
+        arrived.hovering()
+        arrived.localHeight(1.2)
+        arrived.join()
+        arrived.navigation(yMm = 2_000)
+        val route = arrived.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+        assertEquals("completed", route.terminal?.first, route.events.toString())
+        arrived.localHeight(2.4384)
+        arrived.tick(1)
+        assertEquals("landing", arrived.controller.status.phase)
+
+        val takeover = Harness(navigationEnabled = true)
+        takeover.hovering()
+        takeover.localHeight(1.2)
+        takeover.join()
+        takeover.navigation(targetZMm = 3_000)
+        takeover.run(CommandArgs.Goto(0, 2_000, 3_000, 300, "route-1"), "route-command")
+        takeover.tick(1)
+        takeover.controller.onTakeover("rc_takeover", "pilot stick moved")
+        takeover.localHeight(2.4384)
+        takeover.tick(1)
+        assertEquals("idle", takeover.controller.status.phase)
+        assertFalse(takeover.model.landing)
+    }
+
+    @Test
+    fun `navigation takeoff rejects tall targets and closes its climb on KeyAltitude`() {
+        val rejected = Harness(navigationEnabled = true)
+        rejected.localHeight(0.0)
+        rejected.join()
+        val aboveSoftCeiling = rejected.run(CommandArgs.Takeoff(zMm = 2_134))
+        assertEquals("vertical_ceiling_exceeded", aboveSoftCeiling.terminal?.second, aboveSoftCeiling.events.toString())
+        assertFalse(rejected.model.motorsOn, "the SDK takeoff action must not run above the local soft ceiling")
+
+        val climbing = Harness(navigationEnabled = true)
+        climbing.trackLocalHeight()
+        climbing.join()
+        val takeoff = climbing.run(CommandArgs.Takeoff(zMm = 1_800))
+        climbing.tickMs(3_500)
+        assertEquals("navigation_climb", climbing.controller.status.phase)
+        climbing.tickMs(4_000)
+        assertEquals("completed", takeoff.terminal?.first, takeoff.events.toString())
+        assertTrue(climbing.model.zUp in 1.7..1.9, "local climb reached ${climbing.model.zUp}")
+        assertFalse(climbing.model.virtualStickEnabled)
+    }
+
+    @Test
+    fun `navigation takeoff and link loss land when the node still owns the flight`() {
+        val stale = Harness(navigationEnabled = true)
+        stale.localHeight(0.0)
+        stale.join()
+        val takeoff = stale.run(CommandArgs.Takeoff(zMm = 1_800))
+        stale.clock.advance(600)
+        stale.tick(1)
+        assertEquals("local_height_unavailable", takeoff.terminal?.second, takeoff.events.toString())
+        assertEquals("landing", stale.controller.status.phase)
+
+        val disconnected = Harness(navigationEnabled = true)
+        disconnected.hovering()
+        disconnected.localHeight(1.2)
+        disconnected.join()
+        disconnected.navigation(targetZMm = 3_000)
+        disconnected.run(CommandArgs.Goto(0, 2_000, 3_000, 300, "route-1"), "route-command")
+        disconnected.tick(1)
+        disconnected.model.connected = false
+        disconnected.tick(1)
+        assertEquals("landing", disconnected.controller.status.phase)
+        assertEquals("authority_lost", disconnected.controller.status.landingReason)
+    }
+
+    @Test
     fun `route authorization expiry is enforced on each navigation tick`() {
-        val h = Harness()
+        val h = Harness(navigationEnabled = true)
         h.hovering()
         h.join()
         h.navigation(expiresAtMs = h.clock.nowMs() + 200, freshUntilMs = h.clock.nowMs() + 500)
@@ -290,7 +435,7 @@ class FlightControllerTest {
 
     @Test
     fun `signed navigation hold status neutralizes before the bounded loss landing`() {
-        val h = Harness()
+        val h = Harness(navigationEnabled = true)
         h.hovering()
         h.join()
         h.navigation()
@@ -309,7 +454,7 @@ class FlightControllerTest {
 
     @Test
     fun `signed navigation land status releases virtual stick and starts landing`() {
-        val h = Harness()
+        val h = Harness(navigationEnabled = true)
         h.hovering()
         h.join()
         h.navigation()
@@ -325,7 +470,7 @@ class FlightControllerTest {
 
     @Test
     fun `signed route rejects a different route and pose outside its 3D tube while accepting arrival`() {
-        val h = Harness()
+        val h = Harness(navigationEnabled = true)
         h.hovering()
         h.join()
         h.navigation()
@@ -342,7 +487,7 @@ class FlightControllerTest {
 
     @Test
     fun `private clock lease ends route tracking without another relay frame`() {
-        val h = Harness(navigationLeaseExpiresAtMs = 1_250)
+        val h = Harness(navigationLeaseExpiresAtMs = 1_250, navigationEnabled = true)
         h.hovering()
         h.join()
         h.navigation(expiresAtMs = 2_500, freshUntilMs = 2_000)

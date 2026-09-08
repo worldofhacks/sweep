@@ -82,6 +82,8 @@ class FlightController(
 
         data class SupervisedClimb(val targetZM: Double, val settledSinceMs: Long?) : Phase
 
+        data class NavigationClimb(val targetHeightM: Double, val settledSinceMs: Long?) : Phase
+
         data class Landing(val startedMs: Long, val reason: String, val attempts: Int, val awaitingResult: Boolean, val retryAtMs: Long?) : Phase
 
         data class Holding(val sinceMs: Long) : Phase
@@ -146,6 +148,11 @@ class FlightController(
     private var supervisedFlightLimits: SupervisedVerticalConfig? = null
     private var supervisedFlightAirborne = false
     private var supervisedTakeoffStopIssued = false
+    private var navigationFlightPolicy: NavigationLocalHeightPolicy? = null
+    private var navigationFlightAirborne = false
+    private var navigationFlightTargetHeightM: Double? = null
+    private var navigationTakeoffStopIssued = false
+    private var navigationTakeoffStopReason: String? = null
     private var stickSeq = 0L
     private val rate = RateMeter()
     private var lastFrame: StickFrame? = null
@@ -231,6 +238,11 @@ class FlightController(
         supervisedFlightLimits = null
         supervisedFlightAirborne = false
         supervisedTakeoffStopIssued = false
+        navigationFlightPolicy = null
+        navigationFlightAirborne = false
+        navigationFlightTargetHeightM = null
+        navigationTakeoffStopIssued = false
+        navigationTakeoffStopReason = null
         releaseVirtualStick()
         landingReason = null
     }
@@ -377,6 +389,7 @@ class FlightController(
                 hardCeilingM = minOf(local.hardCeilingM, (args.maximumHeightMm ?: Long.MAX_VALUE) / 1000.0),
             )
         }
+        val navigationPolicy = config.navigation?.localHeightPolicy
         if (supervised != null) {
             val softCeiling = minOf(supervised.softCeilingM, supervised.hardCeilingM)
             if (targetZ > softCeiling || targetZ >= supervised.hardCeilingM) {
@@ -413,12 +426,54 @@ class FlightController(
                 return
             }
         }
+        if (navigationPolicy != null) {
+            if (targetZ > navigationPolicy.softCeilingM) {
+                fail(
+                    sink,
+                    FlightReason.VERTICAL_CEILING_EXCEEDED,
+                    "takeoff target ${format(targetZ)} m exceeds the local soft ceiling ${format(navigationPolicy.softCeilingM)} m",
+                )
+                return
+            }
+            val height = freshLocalHeight(navigationPolicy.maximumHeightAgeMs)
+            if (height == null) {
+                fail(
+                    sink,
+                    FlightReason.LOCAL_HEIGHT_UNAVAILABLE,
+                    "takeoff requires a finite KeyAltitude callback no older than ${navigationPolicy.maximumHeightAgeMs} ms",
+                )
+                return
+            }
+            if (height >= navigationPolicy.hardCeilingM) {
+                fail(
+                    sink,
+                    FlightReason.VERTICAL_CEILING_EXCEEDED,
+                    "local height ${format(height)} m is already at the hard ceiling ${format(navigationPolicy.hardCeilingM)} m",
+                )
+                return
+            }
+            if (height >= targetZ) {
+                fail(
+                    sink,
+                    FlightReason.VERTICAL_CEILING_EXCEEDED,
+                    "local height ${format(height)} m is not below the navigation takeoff target ${format(targetZ)} m",
+                )
+                return
+            }
+        }
         active = Active(command, sink, now, "auto takeoff")
         if (supervised != null) {
             supervisedFlightTargetZM = targetZ
             supervisedFlightLimits = supervised
             supervisedFlightAirborne = false
             supervisedTakeoffStopIssued = false
+        }
+        if (navigationPolicy != null) {
+            navigationFlightPolicy = navigationPolicy
+            navigationFlightAirborne = false
+            navigationFlightTargetHeightM = targetZ
+            navigationTakeoffStopIssued = false
+            navigationTakeoffStopReason = null
         }
         transition(Phase.TakingOff(now, targetZ, null))
         val gen = generation
@@ -431,6 +486,11 @@ class FlightController(
                     supervisedFlightLimits = null
                     supervisedFlightAirborne = false
                     supervisedTakeoffStopIssued = false
+                    navigationFlightPolicy = null
+                    navigationFlightAirborne = false
+                    navigationFlightTargetHeightM = null
+                    navigationTakeoffStopIssued = false
+                    navigationTakeoffStopReason = null
                     failActive(FlightReason.TAKEOFF_FAILED, "takeoff action refused: ${result.detail}")
                     transition(Phase.Idle)
                 }
@@ -455,6 +515,8 @@ class FlightController(
                     return
                 }
                 is NavigationCheck.Ready -> {
+                    navigationFlightPolicy = config.navigation?.localHeightPolicy
+                    navigationFlightAirborne = facts.flying
                     if (route.arrived) {
                         sink.executing("within the signed route arrival tolerance")
                         sink.completed("route arrival confirmed by signed pose")
@@ -688,6 +750,7 @@ class FlightController(
         checkLink()
         checkEstop(nowMs)
         checkSupervisedFlight(nowMs)
+        checkNavigationFlight(nowMs)
         checkNavigation(nowMs)
         advancePhase(nowMs)
         streamSticks(nowMs)
@@ -763,6 +826,16 @@ class FlightController(
             }
             return
         }
+        if (navigationFlightPolicy != null && !facts.onGround && authorityLost == null) {
+            if (phase !is Phase.Landing) {
+                stopNavigationFlight(
+                    FlightReason.AUTHORITY_LOST,
+                    "$reason during navigation flight; landing",
+                    clock.nowMs(),
+                )
+            }
+            return
+        }
         if (phase == Phase.Idle && active == null && !vsEnabled) return
         event("authority lost: $reason; loop cancelled, physical RC remains primary")
         failActive(FlightReason.AUTHORITY_LOST, "$reason: the loop cancelled; physical RC remains primary")
@@ -786,7 +859,7 @@ class FlightController(
                     failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted while virtual stick was enabling")
                     releaseVirtualStick()
                 }
-                is Phase.Running, is Phase.SupervisedClimb, is Phase.Navigating, is Phase.NavigationHolding, is Phase.Bench -> {
+                is Phase.Running, is Phase.SupervisedClimb, is Phase.NavigationClimb, is Phase.Navigating, is Phase.NavigationHolding, is Phase.Bench -> {
                     failActive(FlightReason.ESTOP_ASSERTED, "relay network stop asserted: sticks neutral, hovering")
                     transition(Phase.Settling(now + config.settleMs, "network stop hover"))
                 }
@@ -795,6 +868,12 @@ class FlightController(
                         stopSupervisedFlight(
                             FlightReason.ESTOP_ASSERTED,
                             "relay network stop asserted during supervised takeoff",
+                            now,
+                        )
+                    } else if (navigationFlightPolicy != null) {
+                        stopNavigationFlight(
+                            FlightReason.ESTOP_ASSERTED,
+                            "relay network stop asserted during navigation takeoff",
                             now,
                         )
                     } else {
@@ -841,6 +920,28 @@ class FlightController(
         guardVerticalHeight(supervised, now)
     }
 
+    private fun checkNavigationFlight(now: Long) {
+        val policy = navigationFlightPolicy ?: return
+        if (facts.flying) navigationFlightAirborne = true
+        if (navigationTakeoffStopIssued && facts.flying && phase !is Phase.Landing) {
+            startLanding(now, navigationTakeoffStopReason ?: "navigation_takeoff_cancelled")
+            return
+        }
+        if (navigationFlightAirborne && facts.onGround) {
+            navigationFlightPolicy = null
+            navigationFlightAirborne = false
+            navigationFlightTargetHeightM = null
+            navigationTakeoffStopIssued = false
+            navigationTakeoffStopReason = null
+            return
+        }
+        if (authorityLost != null || phase is Phase.Landing) return
+        when (val check = navigationHeightCheck(policy)) {
+            is NavigationCheck.Ready -> Unit
+            is NavigationCheck.Invalid -> stopNavigationFlight(check.reason, check.detail, now)
+        }
+    }
+
     private fun advancePhase(now: Long) {
         when (val current = phase) {
             Phase.Idle, is Phase.Holding -> Unit
@@ -867,6 +968,7 @@ class FlightController(
             }
             is Phase.TakingOff -> advanceTakeoff(current, now)
             is Phase.SupervisedClimb -> advanceSupervisedClimb(current, now)
+            is Phase.NavigationClimb -> advanceNavigationClimb(current, now)
             is Phase.Landing -> advanceLanding(current, now)
             is Phase.Bench -> if (supervisedBenchHeightIsSafe(now)) {
                 if (now >= current.untilMs) {
@@ -889,6 +991,8 @@ class FlightController(
                     releaseVirtualStick()
                     if (facts.flying) startLanding(now, "navigation_land")
                 }
+                FlightReason.LOCAL_HEIGHT_UNAVAILABLE, FlightReason.VERTICAL_CEILING_EXCEEDED ->
+                    stopNavigationFlight(check.reason, check.detail, now)
                 else -> {
                     failActive(check.reason, check.detail)
                     event("navigation hold: ${check.detail}")
@@ -900,6 +1004,10 @@ class FlightController(
 
     private fun navigationCheck(command: FlightCommand, args: CommandArgs.Goto, now: Long): NavigationCheck {
         val local = config.navigation ?: return navigationInvalid("navigation is not configured on this node")
+        when (val height = navigationHeightCheck(local.localHeightPolicy)) {
+            is NavigationCheck.Invalid -> return height
+            is NavigationCheck.Ready -> Unit
+        }
         val authorization = navigation.authorization ?: return navigationInvalid("signed route authorization is unavailable")
         val pose = navigation.pose ?: return navigationInvalid("signed navigation pose is unavailable")
         val relayOffset = navigation.relayOffsetMs ?: return navigationInvalid("relay clock offset is unavailable")
@@ -1004,11 +1112,13 @@ class FlightController(
         val previous = lastNavigationVelocity
         val horizontalDelta = hypot(target.forwardMS - previous.forwardMS, target.rightMS - previous.rightMS)
         val horizontalScale = if (horizontalDelta > maximumChange && horizontalDelta > 0.0) maximumChange / horizontalDelta else 1.0
-        val next = config.limits.clamp(BodyVelocity(
+        val accelerated = config.limits.clamp(BodyVelocity(
             forwardMS = previous.forwardMS + (target.forwardMS - previous.forwardMS) * horizontalScale,
             rightMS = previous.rightMS + (target.rightMS - previous.rightMS) * horizontalScale,
             upMS = previous.upMS + (target.upMS - previous.upMS).coerceIn(-maximumChange, maximumChange),
         ))
+        val policy = config.navigation?.localHeightPolicy
+        val next = if (policy == null) accelerated else constrainNavigationVertical(accelerated, policy)
         rememberNavigationVelocity(next)
         return next
     }
@@ -1018,9 +1128,30 @@ class FlightController(
         lastNavigationVelocityAtMs = clock.nowMs()
     }
 
+    private fun constrainNavigationVertical(velocity: BodyVelocity, policy: NavigationLocalHeightPolicy): BodyVelocity {
+        val height = freshLocalHeight(policy.maximumHeightAgeMs) ?: return BodyVelocity.ZERO
+        if (height >= policy.hardCeilingM) return BodyVelocity.ZERO
+        return if (height >= policy.softCeilingM) velocity.copy(upMS = minOf(velocity.upMS, 0.0)) else velocity
+    }
+
     private fun navigationInvalid(detail: String): NavigationCheck.Invalid = NavigationCheck.Invalid(FlightReason.NAVIGATION_NOT_AUTHORIZED, detail)
     private fun navigationLost(detail: String): NavigationCheck.Invalid = NavigationCheck.Invalid(FlightReason.NAVIGATION_LOST, detail)
     private fun navigationLossLandAfterMs(): Long = config.navigation?.lossLandAfterMs ?: 0
+
+    private fun navigationHeightCheck(policy: NavigationLocalHeightPolicy): NavigationCheck {
+        val height = freshLocalHeight(policy.maximumHeightAgeMs)
+            ?: return NavigationCheck.Invalid(
+                FlightReason.LOCAL_HEIGHT_UNAVAILABLE,
+                "KeyAltitude is absent, invalid, future-dated, or older than ${policy.maximumHeightAgeMs} ms",
+            )
+        if (height >= policy.hardCeilingM) {
+            return NavigationCheck.Invalid(
+                FlightReason.VERTICAL_CEILING_EXCEEDED,
+                "local height ${format(height)} m reached the hard ceiling ${format(policy.hardCeilingM)} m",
+            )
+        }
+        return NavigationCheck.Ready(arrived = false, velocity = BodyVelocity.ZERO)
+    }
 
     private fun distanceToSegment(point: Triple<Double, Double, Double>, segment: NavigationSegment): Double =
         distanceToSegment(point, Triple(segment.startXMm / 1000.0, segment.startYMm / 1000.0, segment.startZMm / 1000.0), Triple(segment.endXMm / 1000.0, segment.endYMm / 1000.0, segment.endZMm / 1000.0))
@@ -1141,6 +1272,24 @@ class FlightController(
         progress(now, "supervised climb: local height ${format(height)} m, target ${format(current.targetZM)} m")
     }
 
+    private fun advanceNavigationClimb(current: Phase.NavigationClimb, now: Long) {
+        val policy = navigationFlightPolicy ?: return
+        val height = freshLocalHeight(policy.maximumHeightAgeMs) ?: return
+        if (height >= current.targetHeightM) {
+            val since = current.settledSinceMs ?: now
+            if (now - since >= config.settleMs) {
+                completeActive("local height ${format(height)} m reached the navigation takeoff target ${format(current.targetHeightM)} m for ${now - since} ms")
+                navigationFlightTargetHeightM = null
+                releaseVirtualStick()
+            } else {
+                phase = current.copy(settledSinceMs = since)
+            }
+            return
+        }
+        if (current.settledSinceMs != null) phase = current.copy(settledSinceMs = null)
+        progress(now, "navigation takeoff climb: local height ${format(height)} m, target ${format(current.targetHeightM)} m")
+    }
+
     private fun supervisedBenchHeightIsSafe(now: Long): Boolean {
         val supervised = config.supervisedVertical ?: return true
         val height = freshLocalHeight(supervised)
@@ -1157,9 +1306,32 @@ class FlightController(
     }
 
     private fun freshLocalHeight(supervised: SupervisedVerticalConfig): Double? {
+        return freshLocalHeight(supervised.maximumHeightAgeMs)
+    }
+
+    private fun freshLocalHeight(maximumHeightAgeMs: Long): Double? {
         val sample = facts.localHeight ?: return null
         val ageMs = monotonicNowMs() - sample.receivedAtMonotonicMs
-        return sample.zUpM.takeIf { it >= 0.0 && ageMs in 0..supervised.maximumHeightAgeMs }
+        return sample.zUpM.takeIf { it >= 0.0 && ageMs in 0..maximumHeightAgeMs }
+    }
+
+    private fun stopNavigationFlight(reason: FlightReason, detail: String, now: Long) {
+        failActive(reason, detail)
+        event("navigation local-height safety stop: $detail")
+        if (facts.flying && authorityLost == null) {
+            startLanding(now, reason.wire)
+            return
+        }
+        if (phase is Phase.TakingOff && !navigationTakeoffStopIssued) {
+            navigationTakeoffStopIssued = true
+            navigationTakeoffStopReason = reason.wire
+            port.stopTakeoff { result ->
+                if (result is PortResult.Failed) log("stop navigation takeoff failed: ${result.detail}")
+            }
+            transition(Phase.Idle)
+            return
+        }
+        releaseVirtualStick()
     }
 
     private fun guardVerticalHeight(supervised: SupervisedVerticalConfig, now: Long): Double? {
@@ -1209,6 +1381,22 @@ class FlightController(
             event("takeoff hover reached at z ${format(facts.zUp)} m; closing the climb on fresh KeyAltitude toward ${format(targetZM)} m")
             beginVirtualStick(now) {
                 transition(Phase.SupervisedClimb(targetZM, null))
+            }
+            return
+        }
+        val navigationTarget = navigationFlightTargetHeightM
+        val navigationPolicy = navigationFlightPolicy
+        if (navigationTarget != null && navigationPolicy != null) {
+            when (val check = navigationHeightCheck(navigationPolicy)) {
+                is NavigationCheck.Invalid -> {
+                    stopNavigationFlight(check.reason, check.detail, now)
+                    return
+                }
+                is NavigationCheck.Ready -> Unit
+            }
+            event("takeoff hover reached at z ${format(facts.zUp)} m; closing the climb on fresh KeyAltitude toward ${format(navigationTarget)} m")
+            beginVirtualStick(now) {
+                transition(Phase.NavigationClimb(navigationTarget, null))
             }
             return
         }
@@ -1269,6 +1457,11 @@ class FlightController(
             supervisedFlightLimits = null
             supervisedFlightAirborne = false
             supervisedTakeoffStopIssued = false
+            navigationFlightPolicy = null
+            navigationFlightAirborne = false
+            navigationFlightTargetHeightM = null
+            navigationTakeoffStopIssued = false
+            navigationTakeoffStopReason = null
             landingReason = null
             transition(Phase.Idle)
             return
@@ -1293,6 +1486,7 @@ class FlightController(
         val frame = when (val current = phase) {
             is Phase.Running -> frameFor(current.steps[current.index])
             is Phase.SupervisedClimb -> supervisedClimbFrame(current, now)
+            is Phase.NavigationClimb -> navigationClimbFrame(current)
             Phase.Navigating -> navigationFrame(now)
             is Phase.Bench -> current.frame
             else -> StickFrame.NEUTRAL
@@ -1314,6 +1508,13 @@ class FlightController(
         val supervised = supervisedFlightLimits ?: return StickFrame.NEUTRAL
         val height = guardVerticalHeight(supervised, now) ?: return StickFrame.NEUTRAL
         if (height >= minOf(current.targetZM, supervised.softCeilingM, supervised.hardCeilingM)) return StickFrame.NEUTRAL
+        return StickFrame.NEUTRAL.copy(verticalThrottle = config.limits.maxVerticalMS)
+    }
+
+    private fun navigationClimbFrame(current: Phase.NavigationClimb): StickFrame {
+        val policy = navigationFlightPolicy ?: return StickFrame.NEUTRAL
+        val height = freshLocalHeight(policy.maximumHeightAgeMs) ?: return StickFrame.NEUTRAL
+        if (height >= minOf(current.targetHeightM, policy.softCeilingM)) return StickFrame.NEUTRAL
         return StickFrame.NEUTRAL.copy(verticalThrottle = config.limits.maxVerticalMS)
     }
 
@@ -1480,6 +1681,7 @@ class FlightController(
         is Phase.Settling -> "settling"
         is Phase.TakingOff -> "taking_off"
         is Phase.SupervisedClimb -> "supervised_climb"
+        is Phase.NavigationClimb -> "navigation_climb"
         is Phase.Landing -> "landing"
         is Phase.Holding -> "watchdog_hold"
         Phase.Navigating -> "navigating"

@@ -1,6 +1,7 @@
 package org.worldofhacks.sweep.bridge.core.flight
 
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -26,6 +27,16 @@ class NavigationConfigTest {
     fun `navigation limits must be finite and positive`() {
         assertThrows(IllegalArgumentException::class.java) {
             config(maxPositionUncertaintyM = Double.POSITIVE_INFINITY)
+        }
+    }
+
+    @Test
+    fun `navigation local height policy defaults to seven and eight foot ceilings`() {
+        val policy = config().localHeightPolicy
+        assertEquals(2.1336, policy.softCeilingM)
+        assertEquals(2.4384, policy.hardCeilingM)
+        assertThrows(IllegalArgumentException::class.java) {
+            NavigationLocalHeightPolicy(hardCeilingM = 2.1336)
         }
     }
 

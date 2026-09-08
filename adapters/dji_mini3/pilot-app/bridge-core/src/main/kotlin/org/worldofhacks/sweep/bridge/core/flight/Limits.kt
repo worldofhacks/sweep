@@ -166,6 +166,7 @@ data class NavigationConfig(
     val arrivalHorizontalToleranceM: Double,
     val arrivalVerticalToleranceM: Double,
     val maxPositionUncertaintyM: Double,
+    val localHeightPolicy: NavigationLocalHeightPolicy = NavigationLocalHeightPolicy(),
 ) {
     init {
         require(navigationConfigId.isNotBlank() && mapVersion.isNotBlank() && clockLeaseId.isNotBlank() && clockLeaseExpiresAtMs > 0) {
@@ -206,4 +207,17 @@ data class NavigationConfig(
             positionUncertaintyM <= maxPositionUncertaintyM &&
             horizontalDistanceM + positionUncertaintyM <= arrivalHorizontalToleranceM &&
             abs(verticalDistanceM) + positionUncertaintyM <= arrivalVerticalToleranceM
+}
+
+/** Takeoff-relative height limits applied locally while the node follows a signed route. */
+data class NavigationLocalHeightPolicy(
+    val maximumHeightAgeMs: Long = 500,
+    val softCeilingM: Double = 2.1336,
+    val hardCeilingM: Double = 2.4384,
+) {
+    init {
+        require(maximumHeightAgeMs > 0) { "maximum height age must be positive" }
+        require(softCeilingM.isFinite() && softCeilingM > 0) { "soft ceiling must be positive and finite" }
+        require(hardCeilingM.isFinite() && hardCeilingM > softCeilingM) { "hard ceiling must exceed the soft ceiling" }
+    }
 }
