@@ -7,6 +7,8 @@ from adapters.ohmni.calibration import CalibrationError
 from tests.test_ohmni_camera_inspection import _producer, _state
 from tests.test_ohmni_camera_positioning import (
     _half_response_sleep,
+    _overshoot_response_sleep,
+    _reverse_response_sleep,
     _simulated_capture_runner,
 )
 from tests.test_ohmni_camera_positioning import capture as positioning
@@ -14,13 +16,31 @@ from tools import ohmni_camera_inspection as inspection
 
 
 @pytest.mark.parametrize(
-    "fault", [None, "unknown_scan", "head", "source", "lease", "moving_unknown", "moving_head"]
+    "fault",
+    [
+        None,
+        "unknown_scan",
+        "head",
+        "source",
+        "lease",
+        "moving_unknown",
+        "moving_head",
+        "moving_overshoot",
+        "moving_reverse",
+        "moving_no_motion",
+    ],
 )
 def test_capture_producer_review_request_and_owner_enforce_live_admission(
     tmp_path, monkeypatch, fault
 ):
     runner, simulation = _simulated_capture_runner(
-        monkeypatch, tmp_path, sleep_factory=_half_response_sleep
+        monkeypatch,
+        tmp_path,
+        fault="no_motion" if fault == "moving_no_motion" else None,
+        sleep_factory={
+            "moving_overshoot": _overshoot_response_sleep,
+            "moving_reverse": _reverse_response_sleep,
+        }.get(fault, _half_response_sleep),
     )
     runner.mode = "inspected-forward"
     runner.boot_id = "boot-1"
@@ -94,7 +114,20 @@ def test_capture_producer_review_request_and_owner_enforce_live_admission(
         with pytest.raises((CalibrationError, inspection.InspectionError, RuntimeError)):
             runner.run()
         assert not runner.output.exists()
-        assert runner.output.with_name(runner.output.name + ".failed.json").is_file()
+        failed = json.loads(
+            runner.output.with_name(runner.output.name + ".failed.json").read_bytes()
+        )
+        expected_failure = {
+            "moving_overshoot": "camera_pose_inspected_forward_limit",
+            "moving_reverse": "camera_pose_reverse_motion",
+            "moving_no_motion": "camera_pose_no_motion",
+        }.get(fault)
+        if expected_failure:
+            assert failed["failure"] == expected_failure
+        if fault == "moving_overshoot":
+            assert failed["motion"]["measured_distance_m"] > 0.021
+        elif fault == "moving_reverse":
+            assert failed["motion"]["measured_distance_m"] < -0.001
         if fault.startswith("moving_"):
             assert simulation.started_moving is not None
             assert len(pulses) == 1
