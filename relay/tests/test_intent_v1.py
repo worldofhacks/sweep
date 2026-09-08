@@ -4,6 +4,7 @@ from relay.capabilities import (
     C1_IMPLEMENTED_INTENT_NAMES,
     C2_CAPABILITY_PROFILE,
     IMPLEMENTED_INTENT_NAMES,
+    CapabilityProfile,
 )
 from relay.intent_v1 import (
     FORMATION_NAMES,
@@ -889,3 +890,25 @@ def test_webcam_existing_motion_profiles_require_operator_confirmation(name):
     payload = {**_c1_payload("webcam", name), "confirm": True}
     assert isinstance(validate_intent(payload), AcceptedIntent)
     assert isinstance(validate_intent({**payload, "confirm": False}), RejectedIntent)
+
+
+def test_survey_search_accepts_only_a_zone_and_explicit_survey_mode(
+    console_select_payload: dict[str, object],
+) -> None:
+    console_select_payload.update(
+        name="search", selection=[1], confirm=True, args={"zone_id": "atrium", "mode": "survey"}
+    )
+
+    profile = CapabilityProfile("search", frozenset({IntentName.SEARCH}))
+    accepted = validate_intent(console_select_payload, capability_profile=profile)
+    assert isinstance(accepted, AcceptedIntent)
+    assert accepted.intent.args == {"zone_id": "atrium", "mode": "survey"}
+
+    console_select_payload["args"] = {
+        "zone_id": "atrium",
+        "mode": "survey",
+        "target_class": "backpack",
+    }
+    assert isinstance(
+        validate_intent(console_select_payload, capability_profile=profile), RejectedIntent
+    )

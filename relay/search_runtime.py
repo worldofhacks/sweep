@@ -136,9 +136,17 @@ class SearchRuntime:
             if len(intent.selection) > self.config.maximum_drones:
                 raise ValueError("search selection exceeds configured drone limit")
             zone_id = intent.args["zone_id"]
-            target_class = intent.args["target_class"]
-            if not isinstance(zone_id, str) or not isinstance(target_class, str):
-                raise ValueError("search requires text zone_id and target_class")
+            mode = intent.args.get("mode", "search")
+            target_class = intent.args.get("target_class")
+            if (
+                not isinstance(zone_id, str)
+                or mode not in {"search", "survey"}
+                or (mode == "search" and not isinstance(target_class, str))
+                or (mode == "survey" and target_class is not None)
+            ):
+                raise ValueError(
+                    "search mode requires a configured zone and, for object search, a target class"
+                )
             area = self.config.areas[zone_id]
             positions = self.navigation._positions(snapshot)
             selected = tuple(item for item in positions if item.drone_id in intent.selection)
@@ -168,13 +176,16 @@ class SearchRuntime:
                     self.navigation.config.motion,
                     self.config.permission,
                     intent.intent_id,
+                    mode,
                 ),
                 artifact,
             )
             if isinstance(search, SearchRefusal):
                 raise ValueError(f"{search.code}: {search.detail}")
             route = self._coverage_plan(search, artifact, positions)
-            plan = self.navigation.prepare_route(intent, snapshot, route, search_route_approved=True)
+            plan = self.navigation.prepare_route(
+                intent, snapshot, route, search_route_approved=True
+            )
         except (KeyError, ValueError) as error:
             return self._refusal(intent.intent_id, snapshot, str(error))
         preview = SearchMissionPreview(search, plan)
@@ -411,6 +422,7 @@ class SearchRuntime:
             "state": self.status(intent_id).state,
             "tasks": tasks,
             "candidates": candidates,
+            "mode": mission.preview.search.mode,
         }
 
     def detection_worker(
@@ -500,6 +512,10 @@ class SearchRuntime:
                 if assignment.drone.drone.drone_id == drone_id
             )
 
+    def mode(self, intent_id: str) -> str:
+        with self._lock:
+            return self._mission(intent_id).preview.search.mode
+
     def hold(self, intent_id: str, reason: str) -> SearchMissionStatus:
         with self._lock:
             mission = self._mission(intent_id)
@@ -533,7 +549,7 @@ class SearchRuntime:
             positions,
             tuple(route.arrival_slot for route in routes),
             routes,
-            search.execution_order
+            search.execution_order,
         )
 
     def _coverage_plan(
@@ -585,7 +601,7 @@ class SearchRuntime:
             tuple(sorted(positions, key=lambda item: item.drone_id)),
             tuple(route.arrival_slot for route in routes),
             tuple(routes),
-            search.execution_order
+            search.execution_order,
         )
 
     def _coverage_leg(
@@ -720,4 +736,5 @@ class SearchRuntime:
             tuple(sorted(intent.selection)),
             intent.args.get("zone_id"),
             intent.args.get("target_class"),
+            intent.args.get("mode", "search"),
         )

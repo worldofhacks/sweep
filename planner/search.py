@@ -79,7 +79,7 @@ class SearchDrone:
 class SearchRequest:
     mission: SearchMissionIdentity
     zone: SearchArea
-    target_class: str
+    target_class: str | None
     roster_version: int
     plan_revision: int
     selected: tuple[SearchDrone, ...]
@@ -90,10 +90,15 @@ class SearchRequest:
     motion: MotionConfig
     permission: NavigationPermission
     confirmation_id: str
+    mode: str = "search"
 
     def __post_init__(self) -> None:
-        if self.target_class not in DEFAULT_TARGET_LABELS:
-            raise ValueError("target_class is not enabled by the fixed COCO detector")
+        if (
+            self.mode not in {"search", "survey"}
+            or (self.mode == "search" and self.target_class not in DEFAULT_TARGET_LABELS)
+            or (self.mode == "survey" and self.target_class is not None)
+        ):
+            raise ValueError("search mode and target_class are invalid")
         if (
             isinstance(self.roster_version, bool)
             or not isinstance(self.roster_version, int)
@@ -140,7 +145,7 @@ class DroneSearchAssignment:
 class SearchPreview:
     mission: SearchMissionIdentity
     zone: SearchArea
-    target_class: str
+    target_class: str | None
     map_pin: ArtifactPin
     geometry_pin: ArtifactPin
     roster_version: int
@@ -150,6 +155,7 @@ class SearchPreview:
     confirmation_id: str
     assignments: tuple[DroneSearchAssignment, ...]
     execution_order: tuple[int, ...]
+    mode: str = "search"
 
     def ledger(self) -> CoverageLedger:
         return CoverageLedger(
@@ -164,6 +170,7 @@ class SearchPreview:
             **self.mission.payload(),
             "zone_id": self.zone.zone_id,
             "target_class": self.target_class,
+            "mode": self.mode,
             "map": {
                 "version": self.map_pin.version,
                 "content_sha256": self.map_pin.content_sha256,
@@ -340,6 +347,7 @@ class SearchPlanner:
             request.confirmation_id,
             tuple(assignments),
             tuple(item.drone.drone.drone_id for item in assignments),
+            request.mode,
         )
 
     def _transit(

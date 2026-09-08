@@ -12,6 +12,7 @@ export function SearchModule({ controller, services }: ModuleProps) {
   const [interpretation, setInterpretation] = useState<string | null>(null)
   const [zoneId, setZoneId] = useState('')
   const [targetClass, setTargetClass] = useState('')
+  const [mode, setMode] = useState<'search' | 'survey'>('search')
   const [preview, setPreview] = useState<SearchPreview | null>(null)
   const [status, setStatus] = useState<SearchStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -64,7 +65,7 @@ export function SearchModule({ controller, services }: ModuleProps) {
     setBusy(true)
     setError(null)
     try {
-      const prepared = await prepareSearch(zoneId, targetClass)
+      const prepared = await prepareSearch(zoneId, mode === 'survey' ? undefined : targetClass)
       setPreview(prepared.preview)
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'The search could not be prepared.') }
@@ -78,12 +79,14 @@ export function SearchModule({ controller, services }: ModuleProps) {
       const resolved = await services.search.resolve(state.sessionId, query)
       setInterpretation(resolved.detail)
       if (resolved.status !== 'resolved') return
-      if (!resolved.zone_id || !resolved.target_class || !catalog.zones.includes(resolved.zone_id) || !catalog.target_classes.includes(resolved.target_class)) {
+      if (!resolved.zone_id || !catalog.zones.includes(resolved.zone_id) ||
+        (resolved.mode === 'search' && (!resolved.target_class || !catalog.target_classes.includes(resolved.target_class)))) {
         throw new Error('Search configuration changed. Reload the configured rooms and targets.')
       }
       setZoneId(resolved.zone_id)
-      setTargetClass(resolved.target_class)
-      const prepared = await prepareSearch(resolved.zone_id, resolved.target_class)
+      setMode(resolved.mode)
+      if (resolved.mode === 'search') setTargetClass(resolved.target_class!)
+      const prepared = await prepareSearch(resolved.zone_id, resolved.mode === 'survey' ? undefined : resolved.target_class!)
       setPreview(prepared.preview)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The search request could not be prepared.')
@@ -104,7 +107,7 @@ export function SearchModule({ controller, services }: ModuleProps) {
     <section className="se-module" aria-label="Visual search">
       <div className="se-panel">
         <h2>Search configuration</h2>
-        <p>Select the configured room and target class. The relay freezes both the route and coverage tasks before confirmation.</p>
+        <p>Select a configured room and either search for a class or survey camera-evidenced grid coverage. The relay freezes the route and coverage tasks before confirmation.</p>
         {!enabled && <p role="status">Search is not configured on this relay.</p>}
         {enabled && !services.search && <p role="status">The search connection is unavailable.</p>}
         {services.search?.resolve && <form className="se-query" onSubmit={(event) => { event.preventDefault(); void prepareQuery() }}>
@@ -119,7 +122,7 @@ export function SearchModule({ controller, services }: ModuleProps) {
             }} />
             <button type="submit" className="se-button" disabled={busy || !ready || !catalog || !query.trim() || !enabled}>Preview request</button>
           </div>
-          <p>Matches configured object classes and rooms. Colour and appearance filters are unavailable.</p>
+          <p>Use “find a backpack in the lobby” or “survey the lobby grid”. Object search supports configured classes only.</p>
           {interpretation && <p role="status">{interpretation}</p>}
         </form>}
         <div className="se-controls">
@@ -135,8 +138,20 @@ export function SearchModule({ controller, services }: ModuleProps) {
               {catalog?.zones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}
             </select>
           </label>
+          <label>Mode
+            <select aria-label="Visual coverage mode" value={mode} disabled={busy || !catalog || !enabled}
+              onChange={(event) => {
+                setMode(event.target.value as 'search' | 'survey')
+                setPreview(null)
+                setStatus(null)
+                if (pendingRequest?.intent.name === 'search') cancelRequest(pendingRequest.intent.intent_id)
+              }}>
+              <option value="search">Search for object</option>
+              <option value="survey">Survey coverage</option>
+            </select>
+          </label>
           <label>Target class
-            <select aria-label="Target class" value={targetClass} disabled={busy || !catalog || !enabled}
+            <select aria-label="Target class" value={targetClass} disabled={mode === 'survey' || busy || !catalog || !enabled}
               onChange={(event) => {
                 setTargetClass(event.target.value)
                 setPreview(null)
@@ -147,8 +162,8 @@ export function SearchModule({ controller, services }: ModuleProps) {
               {catalog?.target_classes.map((target) => <option key={target} value={target}>{target}</option>)}
             </select>
           </label>
-          <button type="button" className="se-button" disabled={busy || !ready || !zoneId || !targetClass || !enabled || !services.search}
-            onClick={() => { void prepare() }}>{busy ? 'Preparing search…' : 'Preview search'}</button>
+          <button type="button" className="se-button" disabled={busy || !ready || !zoneId || (mode === 'search' && !targetClass) || !enabled || !services.search}
+            onClick={() => { void prepare() }}>{busy ? 'Preparing coverage…' : mode === 'survey' ? 'Preview survey' : 'Preview search'}</button>
         </div>
         <p className="se-selection">Selected aircraft: {state.selection.length ? state.selection.map((id) => `D${id}`).join(', ') : 'none'}</p>
         {!ready && enabled && <p>Select ready aircraft with a connected console to preview a search.</p>}
@@ -165,7 +180,7 @@ function SearchPreviewView({ preview }: { preview: SearchPreview }) {
   return (
     <div className="se-panel">
       <h2>Frozen mission preview</h2>
-      <p>{preview.preview.zone_id} · {preview.preview.target_class}</p>
+      <p>{preview.preview.mode === 'survey' ? `${preview.preview.zone_id} · camera-evidenced survey` : `${preview.preview.zone_id} · ${preview.preview.target_class}`}</p>
       <SearchRoutes routes={preview.routes} />
       <table>
         <caption>Selected aircraft and coverage allocation</caption>
@@ -197,8 +212,8 @@ function SearchStatusView({ status, acknowledging, onAcknowledge }: {
         </table>
       </div>
       <div className="se-panel">
-        <h2>Findings</h2>
-        {status.candidates.length === 0 ? <p>No candidate sightings have been reported.</p> : (
+        <h2>{status.mode === 'survey' ? 'Object findings' : 'Findings'}</h2>
+        {status.candidates.length === 0 ? <p>{status.mode === 'survey' ? 'This survey does not identify objects.' : 'No candidate sightings have been reported.'}</p> : (
           <ul className="se-findings">{status.candidates.map((candidate) => <li key={candidate.sighting_id}>
             <strong>{candidate.label}</strong> · {(candidate.confidence * 100).toFixed(0)}% · {candidate.observation_count} observations
             {candidate.frame && <span> · {candidate.frame.source_id} / frame {candidate.frame.frame_id} · box {candidate.bbox_xyxy.join(', ')}</span>}

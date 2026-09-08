@@ -64,3 +64,18 @@ def test_search_query_without_telemetry_credentials_uses_the_no_op_sink(monkeypa
         correlation_id="query-opaque",
     )
     assert result.status == "resolved"
+
+
+def test_survey_query_resolves_a_configured_room_without_a_target_class() -> None:
+    result = resolve_search_query(
+        "survey the lobby grid",
+        SearchQueryFacts(("lobby",), ("backpack",)),
+        session_id="survey-session",
+        correlation_id="survey-query",
+        tracer=NoOpTraceSink(),
+    )
+
+    assert result.status == "resolved"
+    assert result.mode == "survey"
+    assert result.zone_id == "lobby"
+    assert result.target_class is None

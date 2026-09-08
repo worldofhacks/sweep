@@ -16,6 +16,7 @@ const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
 
 /** Plan-card title from the design; other intents show their name. */
 export function planTitle(intent: IntentV1): string {
+  if (intent.name === 'search' && 'mode' in intent.args) return 'Survey camera coverage'
   if (intent.name === 'body_pulse' && 'forward_mm_s' in intent.args) {
     return `${intent.args.forward_mm_s > 0 ? 'Forward' : 'Backward'} ${intent.args.duration_ms / 1000} seconds`
   }
@@ -28,10 +29,15 @@ export function planSteps(intent: IntentV1, label: DeviceLabeller = formatDroneI
   const ids = intent.selection.map(label).join(', ')
   if (intent.name === 'search') {
     const args = intent.args as SearchArgs
+    if ('mode' in args) return [
+      `Survey ${args.zone_id} using ${ids}.`,
+      'The relay must freeze the route and camera-evidenced coverage tasks before this mission can be confirmed.',
+      'A covered cell records a fresh camera frame; this survey does not identify objects.',
+    ]
     return [
-    `Search ${args.zone_id} for ${args.target_class} using ${ids}.`,
-    'The relay must freeze the route and coverage tasks before this mission can be confirmed.',
-    'Review findings as observations; acknowledging a finding does not command an aircraft.',
+      `Search ${args.zone_id} for ${args.target_class} using ${ids}.`,
+      'The relay must freeze the route and coverage tasks before this mission can be confirmed.',
+      'Review findings as observations; acknowledging a finding does not command an aircraft.',
     ]
   }
   if (intent.name === 'camera_control' && 'kind' in intent.args) return [

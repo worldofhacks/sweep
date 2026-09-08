@@ -110,3 +110,46 @@ describe('Search module', () => {
     ))
   })
 })
+
+test('previews a typed target-free survey without an object class', async () => {
+  const catalog = vi.fn(async () => ({ target_classes: ['backpack'], zones: ['lobby'] }))
+  const resolve = vi.fn(async () => ({
+    session,
+    correlation_id: 'survey-query',
+    source: 'template' as const,
+    status: 'resolved' as const,
+    detail: 'The room is configured. Preview the coverage route before confirming.',
+    zone_id: 'lobby',
+    target_class: null,
+    mode: 'survey' as const,
+  }))
+  const preview = vi.fn(async (intent: IntentV1) => ({
+    ...searchPreview(),
+    session: intent.session,
+    intent_id: intent.intent_id,
+    preview: { ...searchPreview().preview, target_class: null, mode: 'survey' as const },
+  }))
+  const clients = mount({
+    catalog,
+    resolve,
+    preview,
+    status: vi.fn(async () => ({ ...searchStatus(), mode: 'survey' as const, candidates: [] })),
+    acknowledge: vi.fn(),
+  })
+  const u = userEvent.setup()
+
+  await u.type(await screen.findByLabelText('Describe the search'), 'survey the lobby grid')
+  await u.click(screen.getByRole('button', { name: 'Preview request' }))
+
+  await waitFor(() => expect(preview).toHaveBeenCalledTimes(1))
+  expect(preview.mock.calls[0][0]).toMatchObject({
+    name: 'search',
+    args: { zone_id: 'lobby', mode: 'survey' },
+  })
+  const dock = await screen.findByRole('region', { name: 'Pending confirmation' })
+  expect(dock).toHaveTextContent('Survey camera coverage')
+  await u.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
+  await waitFor(() => expect(clients.console.sent).toHaveLength(1))
+  expect(clients.console.sent[0]).toMatchObject({ args: { zone_id: 'lobby', mode: 'survey' } })
+  expect(clients.console.sent[0].args).not.toHaveProperty('target_class')
+})

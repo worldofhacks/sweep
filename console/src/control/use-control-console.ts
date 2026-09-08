@@ -493,7 +493,7 @@ export function useControlConsole({
   )
 
   const prepareSearch = useCallback(
-    async (zoneId: string, targetClass: string): Promise<{ intent: IntentV1; preview: SearchPreview }> => {
+    async (zoneId: string, targetClass?: string): Promise<{ intent: IntentV1; preview: SearchPreview }> => {
       const current = latestState.current
       if (
         !search ||
@@ -508,7 +508,7 @@ export function useControlConsole({
       const draft = createIntent(
         {
           name: 'search',
-          args: { zone_id: zoneId, target_class: targetClass },
+          args: targetClass === undefined ? { zone_id: zoneId, mode: 'survey' } : { zone_id: zoneId, target_class: targetClass },
           selection: current.selection,
           source: 'console',
           session: current.sessionId,

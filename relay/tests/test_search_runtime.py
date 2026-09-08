@@ -17,6 +17,9 @@ from planner.models import ExecutionResult, LifecycleStatus, Plan, Position, Ref
 from planner.navigation import ArtifactPin, NavigationPermission, Pose
 from planner.search import SearchArea
 from planner.test_navigation_runtime import setup_runtime
+from relay.intent_v1 import IntentName
+from relay.search_runtime import SearchMissionPreview, SearchRuntime, SearchRuntimeConfig
+from tests.autonomy_fixtures import make_intent
 
 
 def _runtime():
@@ -25,9 +28,6 @@ def _runtime():
 
 def _snapshot():
     return setup_runtime()[1]
-from relay.intent_v1 import IntentName
-from relay.search_runtime import SearchMissionPreview, SearchRuntime, SearchRuntimeConfig
-from tests.autonomy_fixtures import make_intent
 
 
 def _search_runtime(*, map_pin: ArtifactPin | None = None) -> SearchRuntime:
@@ -46,11 +46,13 @@ def _search_runtime(*, map_pin: ArtifactPin | None = None) -> SearchRuntime:
     )
 
 
-def _intent(intent_id: str = "search-runtime"):
+def _intent(intent_id: str = "search-runtime", *, survey: bool = False):
     return make_intent(
         IntentName.SEARCH,
         selection=(1,),
-        args={"zone_id": "atrium", "target_class": "backpack"},
+        args={"zone_id": "atrium", "mode": "survey"}
+        if survey
+        else {"zone_id": "atrium", "target_class": "backpack"},
         confirm=True,
         intent_id=intent_id,
     )
@@ -123,6 +125,69 @@ def _accepted_sighting(
         1,
         "a" * 64,
     )
+
+
+def test_survey_requires_fresh_camera_frames_and_never_records_object_findings() -> None:
+    runtime = _search_runtime()
+    preview = runtime.prepare(_intent("survey-runtime", survey=True), _snapshot())
+
+    assert isinstance(preview, SearchMissionPreview)
+    assert preview.search.mode == "survey"
+    assert preview.search.target_class is None
+    assert preview.search.payload()["target_class"] is None
+    assert preview.search.payload()["mode"] == "survey"
+    runtime.start("survey-runtime")
+    task = preview.search.assignments[0].task
+    identity = FrameIdentity(task.source_id, preview.search.mission.frame_mission_id, "survey", 1)
+    frame = ProcessedFrameEvent(identity, 1.0, 1.0, 1.0, "empty", 0, ("backpack",), "a" * 64)
+
+    rejected = runtime.observe_processed_frame(
+        "survey-runtime",
+        frame,
+        FramePoseEvidence(identity, task.connection_epoch, Pose(100, 100, 1, "level_1"), 1.0, 1.0),
+        now_s=1.0,
+    )
+    assert not rejected.accepted
+
+    runtime._activate_arrived_tasks(
+        runtime._mission("survey-runtime"),
+        replace(
+            _snapshot(),
+            aircraft={
+                1: replace(
+                    _snapshot().aircraft[1],
+                    pose=Position(
+                        task.cells[0].pose.x_m, task.cells[0].pose.y_m, task.cells[0].pose.z_m
+                    ),
+                    position_last_seen_ms=_snapshot().now_ms,
+                )
+            },
+        ),
+    )
+    accepted = runtime.observe_processed_frame(
+        "survey-runtime",
+        frame,
+        FramePoseEvidence(identity, task.connection_epoch, task.cells[0].pose, 1.0, 1.0),
+        now_s=1.0,
+    )
+
+    assert accepted.accepted
+    repeated = runtime.observe_processed_frame(
+        "survey-runtime",
+        frame,
+        FramePoseEvidence(identity, task.connection_epoch, task.cells[0].pose, 1.0, 1.0),
+        now_s=1.0,
+    )
+    assert not repeated.accepted
+    assert repeated.reason == "duplicate_frame"
+    runtime.complete_execution(
+        "survey-runtime",
+        ExecutionResult("survey-runtime", 0, LifecycleStatus.COMPLETED, preview.plan),
+    )
+    status = runtime.status_payload("survey-runtime")
+    assert status["mode"] == "survey"
+    assert status["state"] == "incomplete"
+    assert status["candidates"] == []
 
 
 def test_search_prepare_pins_a_transit_plan_and_start_marks_it_running() -> None:
@@ -505,3 +570,51 @@ def test_search_preview_lease_binds_the_full_intent_and_expires() -> None:
     assert not runtime.accepts_intent(replace(intent, retry_of="prior"), expires)
     assert not runtime.accepts_intent(replace(intent, selection=(2,)), expires)
     assert not runtime.accepts_intent(intent, expires + 1)
+
+
+def test_survey_uses_camera_coverage_worker_without_loading_an_object_detector(tmp_path) -> None:
+    from relay.search_detection import (
+        CameraCalibrationConfig,
+        DetectionSourceConfig,
+        SearchDetectionConfig,
+        SearchDetectionFactory,
+    )
+
+    class Stream:
+        def start(self):
+            return None
+
+        def close(self):
+            return None
+
+        def read(self, _timeout: float):
+            return None
+
+    runtime = _search_runtime()
+    preview = runtime.prepare(_intent("survey-camera", survey=True), _snapshot())
+    assert isinstance(preview, SearchMissionPreview)
+    runtime.start("survey-camera")
+    source = DetectionSourceConfig(
+        1,
+        "camera-1",
+        "rtsp://camera.invalid/stream",
+        tmp_path / "unused.onnx",
+        "a" * 64,
+        CameraCalibrationConfig(
+            ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+            ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1)),
+        ),
+    )
+    factory = SearchDetectionFactory(
+        SearchDetectionConfig({1: source}),
+        runtime,
+        stream_factory=lambda _url: Stream(),
+        detector_factory=lambda _source: pytest.fail("survey must not load an object detector"),
+    )
+
+    factory.start()
+    assert factory.start_mission("survey-camera", object())
+    assert factory.status("survey-camera") == [
+        {"drone_id": 1, "state": "running", "failure_reason": None}
+    ]
+    factory.close()

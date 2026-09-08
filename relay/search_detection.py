@@ -12,7 +12,12 @@ from typing import Protocol
 
 import numpy as np
 
-from perception.object_detection import LiveDetectionWorker, ProcessedFrameEvent, YoloXOnnxDetector
+from perception.object_detection import (
+    DEFAULT_TARGET_LABELS,
+    LiveDetectionWorker,
+    ProcessedFrameEvent,
+    YoloXOnnxDetector,
+)
 from perception.search_events import CoverageTask, FramePoseEvidence
 from perception.search_localization import SearchCameraModel
 from perception.webcam_stream import WebcamStream
@@ -115,6 +120,15 @@ CameraProviderFactory = Callable[
 MissionFailureHandler = Callable[[str], None]
 
 
+class _CoverageOnlyDetector:
+    target_labels = DEFAULT_TARGET_LABELS
+    detector_config_sha256 = "f4b0374b5ff6fd2f0862c2ee34320be9436ad1a29a3804a4c50776d3657b6fb6"
+
+    @staticmethod
+    def detect(_frame: object) -> tuple[()]:
+        return ()
+
+
 class SearchDetectionFactory:
     """Own configured stream and detector workers for the application's lifetime."""
 
@@ -184,7 +198,11 @@ class SearchDetectionFactory:
             worker: LiveDetectionWorker | None = None
             try:
                 stream = self._stream_factory(source.stream_url)
-                detector = self._detector_factory(source)
+                detector = (
+                    _CoverageOnlyDetector()
+                    if self.search.mode(intent_id) == "survey"
+                    else self._detector_factory(source)
+                )
                 task = self.search.detection_task(intent_id, drone_id)
                 pose_provider = (
                     self._pose_provider(

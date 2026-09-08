@@ -15,7 +15,8 @@ export interface SearchPreview {
   routes: SearchRoute[]
   preview: {
     zone_id: string
-    target_class: string
+    target_class: string | null
+    mode: 'search' | 'survey'
     allocations: Array<{ drone_id: number; source_id: string; task_id: string; workload_cells: number; lane_count: number }>
   }
 }
@@ -23,8 +24,8 @@ export interface SearchPreview {
 export interface SearchCell { cell_id: string; x_m: number; y_m: number; z_m: number; floor_id: string }
 export interface SearchTaskStatus { drone_id: number; task_id: string; state: string; covered_cells: number; total_cells: number; covered_cell_ids: string[]; cells: SearchCell[] }
 export interface SearchFinding { sighting_id: string; source_id: string; acknowledged: boolean; label: string; confidence: number; bbox_xyxy: number[]; observation_count: number; frame: { frame_id: string; source_id: string; mission_id: string; worker_run_id: string | null; frame_sequence: number; decoded_at_monotonic_s: number; evaluated_at_monotonic_s: number } | null; position: { x_m: number; y_m: number; z_m: number; zone_id: string; floor_id: string } | null }
-export interface SearchStatus { session: string; intent_id: string; state: string; tasks: SearchTaskStatus[]; candidates: SearchFinding[]; detection_workers?: Array<{ drone_id: number; state: string; failure_reason?: string | null }> }
-export interface SearchResolution { session: string; correlation_id: string; source: 'template'; status: 'resolved' | 'clarify'; detail: string; zone_id: string | null; target_class: string | null }
+export interface SearchStatus { session: string; intent_id: string; state: string; mode: 'search' | 'survey'; tasks: SearchTaskStatus[]; candidates: SearchFinding[]; detection_workers?: Array<{ drone_id: number; state: string; failure_reason?: string | null }> }
+export interface SearchResolution { session: string; correlation_id: string; source: 'template'; status: 'resolved' | 'clarify'; detail: string; zone_id: string | null; target_class: string | null; mode: 'search' | 'survey' }
 export interface SearchClient { resolve?(sessionId: string, query: string): Promise<SearchResolution>; catalog(sessionId: string): Promise<SearchCatalog>; preview(intent: IntentV1): Promise<SearchPreview>; status(sessionId: string, intentId: string): Promise<SearchStatus>; acknowledge(sessionId: string, intentId: string, sightingId: string): Promise<SearchStatus> }
 
 export class HttpSearchClient implements SearchClient {
@@ -39,10 +40,10 @@ export class HttpSearchClient implements SearchClient {
     const value = await this.request(sessionId, 'resolve', { query })
     if (!record(value) || value.session !== sessionId || !text(value.correlation_id) || value.source !== 'template' ||
         !text(value.detail) || !['resolved', 'clarify'].includes(String(value.status)) ||
-        (value.status === 'resolved' ? !text(value.zone_id) || !text(value.target_class) : value.zone_id !== null || value.target_class !== null)) {
+        (value.status === 'resolved' ? !text(value.zone_id) || !['search', 'survey'].includes(String(value.mode ?? 'search')) || (value.mode !== 'survey' && !text(value.target_class)) || (value.mode === 'survey' && value.target_class !== null) : value.zone_id !== null || value.target_class !== null)) {
       throw new Error('The relay returned an invalid search interpretation.')
     }
-    return value as unknown as SearchResolution
+    return { ...value, mode: (value.mode ?? 'search') as 'search' | 'survey' } as unknown as SearchResolution
   }
   async catalog(sessionId: string): Promise<SearchCatalog> {
     const value = await this.request(sessionId, 'catalog')
@@ -53,14 +54,14 @@ export class HttpSearchClient implements SearchClient {
     if (intent.name !== 'search') throw new Error('Only search intents can be previewed.')
     const args = intent.args as SearchArgs
     const value = await this.request(intent.session, 'preview', { intent: { ...intent, confirm: true } })
-    if (!record(value) || value.session !== intent.session || value.intent_id !== intent.intent_id || !integer(value.t) || !integer(value.expires_at_ms) || !record(value.preview) || value.preview.zone_id !== args.zone_id || value.preview.target_class !== args.target_class || !Array.isArray(value.preview.allocations) || !value.preview.allocations.every(allocation) || !routes(value.routes, intent.selection)) throw new Error('The relay returned an invalid search preview.')
-    return { session: value.session as string, intent_id: value.intent_id as string, t: value.t, expiresAt: value.expires_at_ms, routes: value.routes as SearchRoute[], preview: { zone_id: value.preview.zone_id as string, target_class: value.preview.target_class as string, allocations: value.preview.allocations as SearchPreview['preview']['allocations'] } }
+    if (!record(value) || value.session !== intent.session || value.intent_id !== intent.intent_id || !integer(value.t) || !integer(value.expires_at_ms) || !record(value.preview) || value.preview.zone_id !== args.zone_id || value.preview.target_class !== ('target_class' in args ? args.target_class : null) || (value.preview.mode ?? 'search') !== ('mode' in args ? args.mode : 'search') || !Array.isArray(value.preview.allocations) || !value.preview.allocations.every(allocation) || !routes(value.routes, intent.selection)) throw new Error('The relay returned an invalid search preview.')
+    return { session: value.session as string, intent_id: value.intent_id as string, t: value.t, expiresAt: value.expires_at_ms, routes: value.routes as SearchRoute[], preview: { zone_id: value.preview.zone_id as string, target_class: value.preview.target_class as string | null, mode: (value.preview.mode ?? 'search') as 'search' | 'survey', allocations: value.preview.allocations as SearchPreview['preview']['allocations'] } }
   }
   async status(sessionId: string, intentId: string): Promise<SearchStatus> { return this.parseStatus(await this.request(sessionId, encodeURIComponent(intentId)), sessionId, intentId) }
   async acknowledge(sessionId: string, intentId: string, sightingId: string): Promise<SearchStatus> { return this.parseStatus(await this.request(sessionId, `${encodeURIComponent(intentId)}/findings/${encodeURIComponent(sightingId)}/ack`, {}), sessionId, intentId) }
   private parseStatus(value: unknown, sessionId: string, intentId: string): SearchStatus {
-    if (!record(value) || value.session !== sessionId || value.intent_id !== intentId || !text(value.state) || !Array.isArray(value.tasks) || !value.tasks.every(task) || !Array.isArray(value.candidates) || !value.candidates.every(finding) || (value.detection_workers !== undefined && (!Array.isArray(value.detection_workers) || !value.detection_workers.every(worker)))) throw new Error('The relay returned an invalid search status.')
-    return value as unknown as SearchStatus
+    if (!record(value) || value.session !== sessionId || value.intent_id !== intentId || !text(value.state) || !['search', 'survey'].includes(String(value.mode ?? 'search')) || !Array.isArray(value.tasks) || !value.tasks.every(task) || !Array.isArray(value.candidates) || !value.candidates.every(finding) || (value.detection_workers !== undefined && (!Array.isArray(value.detection_workers) || !value.detection_workers.every(worker)))) throw new Error('The relay returned an invalid search status.')
+    return { ...value, mode: (value.mode ?? 'search') as 'search' | 'survey' } as unknown as SearchStatus
   }
   private async request(session: string, action: string, body?: object): Promise<unknown> {
     const url = new URL(this.config.baseUrl)

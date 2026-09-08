@@ -265,10 +265,9 @@ export interface SweepBox {
   max_y: number
 }
 export type SweepArgs = EmptyArgs | { box: SweepBox }
-export interface SearchArgs {
-  zone_id: string
-  target_class: string
-}
+export type SearchArgs =
+  | { zone_id: string; target_class: string }
+  | { zone_id: string; mode: 'survey' }
 
 export interface CaptureRoomArgs {
   room_id: string
@@ -1843,8 +1842,9 @@ function hasValidArgs(name: ConsoleIntentName, args: Record<string, unknown>): b
     case 'navigate':
       return keys.length === 1 && isCanonicalIntentText(args.zone_id, MAX_INTENT_IDENTIFIER_CODE_POINTS)
     case 'search':
-      return keys.length === 2 && isCanonicalIntentText(args.zone_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
-        isCanonicalIntentText(args.target_class, MAX_INTENT_IDENTIFIER_CODE_POINTS)
+      return (keys.length === 2 && isCanonicalIntentText(args.zone_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) &&
+        isCanonicalIntentText(args.target_class, MAX_INTENT_IDENTIFIER_CODE_POINTS)) ||
+        (keys.length === 2 && isCanonicalIntentText(args.zone_id, MAX_INTENT_IDENTIFIER_CODE_POINTS) && args.mode === 'survey')
     case 'arm':
     case 'disarm':
     case 'estop':

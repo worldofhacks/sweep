@@ -354,6 +354,12 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
         )
 
     if name is IntentName.SEARCH:
+        if value.get("mode", "search") == "survey":
+            if set(value) != {"zone_id", "mode"} or not _is_bounded_intent_text(
+                value["zone_id"], MAX_INTENT_IDENTIFIER_CHARS
+            ):
+                raise ValueError
+            return MappingProxyType({"zone_id": value["zone_id"], "mode": "survey"})
         if set(value) != {"zone_id", "target_class"}:
             raise ValueError
         fields = ("zone_id", "target_class")

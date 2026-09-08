@@ -36,6 +36,7 @@ class SearchQueryResolution:
     detail: str
     zone_id: str | None = None
     target_class: str | None = None
+    mode: Literal["search", "survey"] = "search"
     source: Literal["template"] = "template"
 
     def to_dict(self) -> dict[str, object]:
@@ -89,6 +90,19 @@ def _resolve(query: str, facts: SearchQueryFacts) -> SearchQueryResolution:
         return SearchQueryResolution(
             "clarify", "This request stops or negates a search. No search was prepared."
         )
+    survey = re.fullmatch(r"survey (?:the )?(.+?)(?: grid)?", text)
+    if survey is not None:
+        zone = survey[1]
+        zones = [value for value in facts.zones if _words(value) == _words(zone)]
+        if len(zones) != 1:
+            return SearchQueryResolution("clarify", "Choose one of the configured survey rooms.")
+        return SearchQueryResolution(
+            "resolved",
+            "The room is configured. Preview the coverage route before confirming.",
+            zone_id=zones[0],
+            mode="survey",
+        )
+
     match = re.fullmatch(r"(?:find|look for|search for) (.+?) (?:in|inside) (.+)", text)
     if match is None:
         reverse = re.fullmatch(r"search (.+?) for (.+)", text)
