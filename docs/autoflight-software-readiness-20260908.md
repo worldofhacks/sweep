@@ -1,6 +1,6 @@
 # Autoflight software readiness, 8 September 2026
 
-This record maps each acceptance gate to the production call path and a test or evidence command that exercises it. It does not claim production readiness while #94 is under independent review or while field evidence remains outstanding.
+This record maps each acceptance gate to the production call path and a test or evidence command that exercises it. The #94 observation consolidation passed independent review at `f8555fec`; CI on the eventual main merge remains pending. Field evidence remains outstanding for every physical acceptance item below.
 
 ## Track A: Ohmni, map, and ground localization
 
@@ -11,6 +11,7 @@ This record maps each acceptance gate to the production call path and a test or 
 | #99 | `relay/survey_area.py` owns the selected-ground-robot recording lifecycle and produces candidate evidence through `tools/ohmni_scan_record.py` | `uv run pytest relay/tests/test_survey_area.py` | Teleoperate one Level 1 run, save/reload/validate its candidate, and retain session, device, frame, clock, occupancy, pose, and tag evidence |
 | #81, #82 | `tools/world_bundle.py`, `tools/map_geometry.py`, and `planner/navigation_deployment.py` bind map, route, geofence, and geometry artifacts | `uv run pytest tests/test_world_bundle.py tests/test_map_geometry.py planner/test_navigation_deployment.py` | Approve the measured Level 1 bundle, routes, and geofence |
 | #243, #84 | `perception/world_localization_runtime.py` consumes admitted observations and `relay/control_localization.py` publishes the control projection | `uv run pytest perception/test_world_localization.py perception/test_control_localization.py relay/tests/test_control_localization.py` | Measure registration, validate live hand-carried localization, and retain calibrated clock and latency evidence |
+| #94 | `POST /api/sessions/{session_id}/observations` authenticates a device-bound producer, then routes through `RelayRuntime.process_frame`, `RelaySession.process_observation`, and `ObservationIngress`. `WorldObservationService` stores only that admitted canonical record and projects its approved-map response. `tools/world_replay.py` reads canonical records and historical captures. | Independent review at `f8555fec`: `uv run pytest relay/tests/test_platform_observations.py relay/tests/test_platform_reference.py relay/tests/test_world_observation_guards.py relay/tests/test_ground_platform_navigation_execution.py tests/test_world_replay.py` (61 passed in 64.04 s) | Load the host-owned bindings, clock mappings, registrations, and measured map association for the deployed relay. Camera, localization, clock, and route performance require device evidence. |
 | #246 | Ground pose, identity, and release gates flow through `relay/ground_navigation_identity.py` and ground navigation runtime | `uv run pytest relay/tests/test_ground_release.py relay/tests/test_ground_platform_navigation_execution.py` | Exercise local and remote ground stops against the qualified robot configuration |
 
 ## Track B: Mini 3 control, routing, and flight acceptance
@@ -26,8 +27,12 @@ This record maps each acceptance gate to the production call path and a test or 
 | #97 | `relay/capabilities.py` is the shared advertised and enforced C1 profile across relay, planner, console, and language discovery | `uv run pytest relay/tests/test_capabilities.py` | Mini 3 deployment evidence from #19 and #18. This gate is independent of later multi-aircraft qualification. |
 | #20, #18, #87 | Fleet execution and selected-land coordination run through planner/relay integration | `uv run pytest relay/tests/test_platform_multi_aircraft_navigation.py planner/test_navigation_runtime.py` | Second-aircraft, walking-skeleton, and formation qualification |
 
-## Integration condition
+## #94 integration review
 
-#94 remains pending independent review. The change must make `relay.observations` the one model for ingress, localization, the Android and Ohmni producers, audit, and replay. The retained map-authoring response projection must preserve host-owned source binding, clock mapping, frame, epoch, and registration checks. A producer claim and a `world` frame do not create motion authority.
+`relay.observations` is the shared production envelope for ingress, localization, the Android and Ohmni producers, audit, and replay. The map endpoint admits an authenticated observation through the normal relay path before applying its separate host registration and approved-map checks. The retained console response remains a map-position projection with its source, epoch, capture time, ingest time, confidence, reference, and frame association.
+
+A localization world pose is kept separate from the adapter odometry identity used for ground readiness. `RelaySession.process_observation` changes that readiness identity only for an adapter principal. `ObservationIngress` also requires the configured producer role for each source binding. The independent test run above covers the map projection guards, the real positive HTTP world-pose route, ground execution confidence refusal, canonical and historical replay decoding, and the retained map/registration checks.
+
+The independent review passed on `f8555fec`. Main-branch CI has not run for the merge commit.
 
 Map authoring in #248 and navigation review in #143 are outside this record. They remain separate product work.
