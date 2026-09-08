@@ -32,10 +32,10 @@ route at zero confidence and confirmed STOP when confidence disappears during
 motion. Replay and session checks passed 71 tests, including delayed membership,
 telemetry, and acknowledgements exported through the real audit and MCAP writer.
 
-CI completed the console, browser, camera-recording, Android, and JVM jobs on
-`e7bda14d`. The Python job reached its ten-minute limit during pytest after lint
-and formatting passed. Its limit is now twenty minutes to accommodate the measured
-full-suite duration. Exact-head CI results are recorded in the pull request.
+All six CI jobs passed on the reviewed PR #332 head `105161dd`. Python completed
+with 3,653 passed and ten skipped in 11 minutes 26 seconds. The Python job now has
+a twenty-minute limit, following a measured timeout at the former ten-minute limit.
+PR #332 merged as `09a7b835`.
 
 ## Standards and correctness review
 
