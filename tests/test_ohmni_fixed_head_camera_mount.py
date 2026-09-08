@@ -8,6 +8,7 @@ import pytest
 
 from perception.tag_localization import tag_corners
 from tools.ohmni_fixed_head_camera_mount import TAG_SIZE_M, _fit, build
+from tools.ohmni_fixed_head_camera_mount import _capture_manifest as validate_capture_manifest
 
 
 def _transform(x=0.0, y=0.0, yaw=0.0):
@@ -254,3 +255,24 @@ def test_build_recovers_known_mount_from_readable_raw_rasters(tmp_path: Path) ->
     path.write_text(json.dumps(request))
     result = build(path, tmp_path, tmp_path / "out")
     np.testing.assert_allclose(result["T_body_camera"], camera, atol=0.12)
+
+
+def test_refuses_raw_capture_manifest_with_another_camera_identity(tmp_path: Path) -> None:
+    frame = _pin(tmp_path, "frame.png", b"raw-frame")
+    document = json.loads(_capture_manifest(frame, "before", "state-0", {"left": 1, "right": 1}))
+    document["camera_serial"] = "camera-elsewhere"
+    manifest = _pin(tmp_path, "capture.json", json.dumps(document).encode())
+    with pytest.raises(ValueError, match="does not bind"):
+        validate_capture_manifest(
+            tmp_path,
+            manifest,
+            frame_pin=frame,
+            identity={
+                "device_id": 11,
+                "boot_id": "boot-1",
+                "camera_serial": "camera-1",
+                "motion_chain_id": "chain-1",
+            },
+            expected_stage="before",
+            stage={"encoder": {"left": 1, "right": 1}, "state_id": "state-0"},
+        )
