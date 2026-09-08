@@ -232,6 +232,12 @@ def test_platform_confirmation_runs_the_retained_route_through_the_real_flight_w
             session, autonomy = _prepare_session(composition, deployment)
             preview = _preview(deployment)
             execution = autonomy.preview_platform_navigation(preview)
+            lifecycle: list[tuple[str, str, str, str]] = []
+            composition.set_multiview_listener(
+                lambda session_id, intent_id, name, status: lifecycle.append(
+                    (session_id, intent_id, name, status)
+                )
+            )
             with client.websocket_connect(f"/ws/{SESSION}") as adapter:
                 adapter.send_json(
                     {
@@ -244,9 +250,11 @@ def test_platform_confirmation_runs_the_retained_route_through_the_real_flight_w
                 )
                 assert adapter.receive_json()["type"] == "auth.accepted"
                 assert adapter.receive_json()["type"] == "state"
-                confirmation = autonomy.confirm_platform_navigation(
+                reserved = autonomy.reserve_platform_navigation(
                     {**preview, "execution": execution["execution"]}
                 )
+                assert reserved["status"] == "accepted"
+                confirmation = autonomy.dispatch_reserved_platform_navigation(preview["previewId"])
                 assert confirmation["status"] == "accepted"
                 command = None
                 frames = []
@@ -352,6 +360,8 @@ def test_platform_confirmation_runs_the_retained_route_through_the_real_flight_w
                 else:
                     assert terminal["status"] == "refused", json.dumps(lifecycle)
                     assert terminal["reason"] == "adapter_failure"
+                expected_status = "completed" if terminal_status == "completed" else "refused"
+                assert (SESSION, "platform-intent-1", "navigate", expected_status) in lifecycle
                 assert session.audit_log.root.exists()
     finally:
         composition.close()

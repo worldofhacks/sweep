@@ -660,6 +660,8 @@ class AutonomySession:
         self._platform_navigation: dict[str, tuple[int, PreparedExecution]] = {}
         self._platform_navigation_reservations: dict[str, PreparedExecution] = {}
         self._platform_dispatch: dict[str, PreparedExecution] = {}
+        self._platform_navigation_intents_by_preview: dict[str, str] = {}
+        self._platform_navigation_aliases: dict[str, str] = {}
         self._platform_stop_generation = 0
         self.navigation_wire = (
             NavigationWirePublisher(
@@ -965,6 +967,7 @@ class AutonomySession:
                 expires_at,
                 PreparedExecution(intent, planned, snapshot),
             )
+            self._platform_navigation_intents_by_preview[preview_id] = intent_id
         return {
             "routes": routes,
             "outcomes": [
@@ -1025,6 +1028,7 @@ class AutonomySession:
         with self._lock:
             self._prune_platform_navigation(runtime.clock())
             retained = self._platform_navigation.pop(preview_id, None)
+            self._platform_navigation_intents_by_preview.pop(preview_id, None)
             prepared = retained[1] if retained is not None else None
             if prepared is None or execution.get("planHash") != content_digest(
                 prepared.plan.to_dict()
@@ -1037,6 +1041,7 @@ class AutonomySession:
         if session is None:
             with self._lock:
                 self._platform_dispatch.pop(prepared.intent.intent_id, None)
+                self._platform_navigation_aliases.pop(prepared.intent.intent_id, None)
             raise ValueError("relay session is unavailable")
         try:
             self._publish(runtime, lambda: session.admit_platform_navigation(prepared.intent))
@@ -1081,6 +1086,7 @@ class AutonomySession:
     def discard_reserved_platform_navigation(self, preview_id: str) -> dict[str, object]:
         with self._lock:
             self._platform_navigation_reservations.pop(preview_id, None)
+            self._platform_navigation_intents_by_preview.pop(preview_id, None)
         return {"status": "discarded"}
 
     def dispatch_reserved_platform_navigation(self, preview_id: str) -> dict[str, object]:
@@ -1089,14 +1095,18 @@ class AutonomySession:
             prepared = self._platform_navigation_reservations.pop(preview_id, None)
             if prepared is None:
                 raise ValueError("reserved navigation plan is unavailable")
+            semantic_intent_id = self._platform_navigation_intents_by_preview.pop(preview_id, None)
             admitted = replace(prepared.intent, t=runtime.clock())
             prepared = PreparedExecution(admitted, prepared.plan, prepared.snapshot)
             generation = self._platform_stop_generation
             self._platform_dispatch[admitted.intent_id] = prepared
+            if semantic_intent_id is not None:
+                self._platform_navigation_aliases[admitted.intent_id] = semantic_intent_id
         session = runtime.sessions.get(self.session_id)
         if session is None:
             with self._lock:
                 self._platform_dispatch.pop(prepared.intent.intent_id, None)
+                self._platform_navigation_aliases.pop(prepared.intent.intent_id, None)
             raise ValueError("relay session is unavailable")
         try:
 
@@ -1119,6 +1129,7 @@ class AutonomySession:
         except Exception:
             with self._lock:
                 self._platform_dispatch.pop(prepared.intent.intent_id, None)
+                self._platform_navigation_aliases.pop(prepared.intent.intent_id, None)
             raise
         return {
             "status": "accepted",
@@ -1170,6 +1181,14 @@ class AutonomySession:
         for preview_id, (expires_at, _) in tuple(self._platform_navigation.items()):
             if expires_at <= now:
                 self._platform_navigation.pop(preview_id, None)
+                self._platform_navigation_intents_by_preview.pop(preview_id, None)
+
+    def multiview_execution_intent(self, intent_id: str, *, terminal: bool) -> str:
+        with self._lock:
+            alias = self._platform_navigation_aliases.get(intent_id)
+            if terminal:
+                self._platform_navigation_aliases.pop(intent_id, None)
+        return intent_id if alias is None else alias
 
     def accepted_observation(self, observation: object) -> list[dict[str, object]]:
         from relay.observations import Observation
@@ -2044,14 +2063,28 @@ class AutonomyComposition:
     ) -> None:
         listener = self._multiview_listener
         if listener is not None and result.status is not LifecycleStatus.EXECUTING:
-            listener(session_id, intent.intent_id, intent.name.value, result.status.value)
+            listener(
+                session_id,
+                self.session(session_id).multiview_execution_intent(
+                    intent.intent_id, terminal=True
+                ),
+                intent.name.value,
+                result.status.value,
+            )
 
     def report_multiview_lifecycle(
         self, session_id: str, intent_id: str, intent_name: str, status: str
     ) -> None:
         listener = self._multiview_listener
         if listener is not None:
-            listener(session_id, intent_id, intent_name, status)
+            listener(
+                session_id,
+                self.session(session_id).multiview_execution_intent(
+                    intent_id, terminal=status != "executing"
+                ),
+                intent_name,
+                status,
+            )
 
     def navigation_events(
         self, session_id: str, events: list[dict[str, object]]
