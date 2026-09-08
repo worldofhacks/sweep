@@ -653,3 +653,39 @@ def test_capture_stops_when_encoder_drift_breaks_the_settled_stage(
     assert not output.exists()
     assert simulation.started_moving is None
     assert simulation.units == (0, 0)
+
+
+def test_multistage_runner_reaches_two_independent_translations_within_fixed_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import json
+
+    from .calibration import CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch)
+    output = tmp_path / "multistage-capture.json"
+    CalibrationRunner(
+        simulation.device,
+        simulation.lease,
+        output,
+        monotonic=simulation.clock,
+        sleep=simulation.sleep,
+        config=CalibrationConfig.multistage(),
+    ).run()
+    capture = json.loads(output.read_text())
+
+    assert set(capture["stages"]) == {
+        "baseline",
+        "after_forward",
+        "after_yaw",
+        "after_cross_forward",
+    }
+    assert capture["limits"]["max_wheel_travel_m"] == 1.05
+    assert capture["limits"]["max_yaw_degrees"] == 70.0
+    cross = capture["stages"]["after_cross_forward"]["pose"]
+    turned = capture["stages"]["after_yaw"]["pose"]
+    assert cross["x_m"] - turned["x_m"] > 0.15
+    assert cross["y_m"] - turned["y_m"] > 0.25
+    assert simulation.device.motion is None
+    assert not simulation.device.enabled
+    assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]

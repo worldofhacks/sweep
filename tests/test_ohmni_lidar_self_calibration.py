@@ -291,3 +291,18 @@ def test_rejects_noncanonical_provenance_and_modified_fixed_limits() -> None:
     capture["limits"]["max_runtime_s"] = 61.0
     with pytest.raises(ValueError, match="fixed capture bound"):
         fit_capture(capture)
+
+
+def test_multistage_profile_requires_the_second_independent_translation_stage() -> None:
+    capture = _capture()
+    capture["limits"].update(
+        {
+            "forward_distance_m": 0.4,
+            "yaw_degrees": 60.0,
+            "max_wheel_travel_m": 1.05,
+            "max_yaw_degrees": 70.0,
+        }
+    )
+
+    with pytest.raises(ValueError, match="stages schema"):
+        fit_capture(capture)

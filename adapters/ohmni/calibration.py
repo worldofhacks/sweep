@@ -37,6 +37,10 @@ LONGER_FORWARD_DISTANCE_M = 0.4
 LONGER_YAW_DEGREES = 30.0
 LONGER_MAX_WHEEL_TRAVEL_M = 0.6
 LONGER_MAX_YAW_DEGREES = 40.0
+MULTISTAGE_FORWARD_DISTANCE_M = 0.4
+MULTISTAGE_YAW_DEGREES = 60.0
+MULTISTAGE_MAX_WHEEL_TRAVEL_M = 1.05
+MULTISTAGE_MAX_YAW_DEGREES = 70.0
 REVOLUTIONS_PER_STAGE = 10
 STAGE_TIMEOUT_S = 8.0
 SETTLE_TIMEOUT_S = 2.0
@@ -98,6 +102,17 @@ class CalibrationConfig:
                 LONGER_MAX_YAW_DEGREES,
                 MAX_RUNTIME_S,
             ),
+            (
+                WHEEL_DIAMETER_MM,
+                FORWARD_SPEED_M_S,
+                MULTISTAGE_FORWARD_DISTANCE_M,
+                YAW_RATE_DEG_S,
+                MULTISTAGE_YAW_DEGREES,
+                PULSE_DURATION_S,
+                MULTISTAGE_MAX_WHEEL_TRAVEL_M,
+                MULTISTAGE_MAX_YAW_DEGREES,
+                MAX_RUNTIME_S,
+            ),
         ):
             raise ValueError("calibration limits must match an immutable capture profile")
 
@@ -109,6 +124,19 @@ class CalibrationConfig:
             max_wheel_travel_m=LONGER_MAX_WHEEL_TRAVEL_M,
             max_yaw_degrees=LONGER_MAX_YAW_DEGREES,
         )
+
+    @classmethod
+    def multistage(cls) -> CalibrationConfig:
+        return cls(
+            forward_distance_m=MULTISTAGE_FORWARD_DISTANCE_M,
+            yaw_degrees=MULTISTAGE_YAW_DEGREES,
+            max_wheel_travel_m=MULTISTAGE_MAX_WHEEL_TRAVEL_M,
+            max_yaw_degrees=MULTISTAGE_MAX_YAW_DEGREES,
+        )
+
+    @property
+    def has_second_translation(self) -> bool:
+        return self.yaw_degrees == MULTISTAGE_YAW_DEGREES
 
 
 class HostLease:
@@ -278,6 +306,10 @@ class CalibrationRunner:
             self._yaw()
             self._settle()
             stages["after_yaw"] = self._capture_stage()
+            if self.config.has_second_translation:
+                self._forward()
+                self._settle()
+                stages["after_cross_forward"] = self._capture_stage()
             self.device.disable()
             self._write(stages, descriptor)
         except BaseException:
@@ -556,7 +588,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-boot-id", required=True)
     parser.add_argument("--expected-source-sha256", required=True)
     parser.add_argument("--supervised-clear-space", required=True, action="store_true")
-    parser.add_argument("--longer-calibration", action="store_true")
+    profile = parser.add_mutually_exclusive_group()
+    profile.add_argument("--longer-calibration", action="store_true")
+    profile.add_argument("--multistage-calibration", action="store_true")
     args = parser.parse_args(argv)
     boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     source_sha256 = calibration_source_sha256()
@@ -591,7 +625,13 @@ def main(argv: list[str] | None = None) -> int:
             device,
             lease,
             args.output,
-            config=CalibrationConfig.longer() if args.longer_calibration else None,
+            config=(
+                CalibrationConfig.multistage()
+                if args.multistage_calibration
+                else CalibrationConfig.longer()
+                if args.longer_calibration
+                else None
+            ),
             boot_id=boot_id,
             executed_bundle_source_sha256=source_sha256,
         ).run()
