@@ -14,9 +14,9 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from relay.auth import AuthenticationError, authenticate
-from relay.contracts import NodeType
 from relay.map_authoring import MapAuthoringError, MapAuthoringStore
 from relay.navigation_service import NavigationError, NavigationService
+from relay.observations import Observation, ObservationError
 from relay.platform_observations import WorldObservationError, WorldObservationService
 from relay.settings import SettingsError
 
@@ -96,19 +96,16 @@ class PlatformServices:
             close = getattr(self.observations, "close", None)
             if close is not None:
                 cleanup.callback(close)
-            for source in self.observations.sources.values():
-                keys = (
-                    runtime.settings.adapter_keys
-                    if source.principal_source == "adapter"
-                    else runtime.settings.localization_keys
+            configuration = runtime.settings.observation_configuration
+            configured_sources = (
+                set()
+                if configuration is None
+                else {binding.source_id for binding in configuration.bindings}
+            )
+            if not set(self.observations.registrations) <= configured_sources:
+                raise SettingsError(
+                    "World observation registrations require a canonical observation binding"
                 )
-                node_type = runtime.settings.node_types.get(source.drone_id, NodeType.AIRCRAFT)
-                device_class = "ground_vehicle" if node_type is NodeType.GROUND else "aircraft"
-                if source.drone_id not in keys or device_class != source.node_type.value:
-                    raise SettingsError(
-                        "World observation sources require configured device identity and "
-                        "a distinct credential for their producer principal"
-                    )
             cleanup.pop_all()
 
     def session(self, session: str):
@@ -284,8 +281,6 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
                 return service.observations.record(session_id, value, current, actor)
             raise MapAuthoringError("unknown_operation", "Unknown map operation.", 404)
 
-        return await call(perform)
-
     @application.get("/api/sessions/{session_id}/navigation/catalog")
     async def catalog(session_id: str, authorization: str | None = Header(default=None)):
         service = services(session_id, authorization)
@@ -293,8 +288,6 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
         def perform():
             service.require_current()
             return service.navigation.catalog(session_id)
-
-        return await call(perform)
 
     @application.post("/api/sessions/{session_id}/navigation/{operation}")
     async def navigation(
@@ -315,8 +308,6 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
             if operation not in {"preview", "resolve", "confirm", "compile"}:
                 raise MapAuthoringError("unknown_operation", "Unknown navigation operation.", 404)
             return getattr(service.navigation, operation)(session_id, value)
-
-        return await call(perform)
 
     @application.post("/api/sessions/{session_id}/observations")
     async def observation(
@@ -340,15 +331,46 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
         service: PlatformServices = application.state.platform_services
         value = await _body(request)
 
-        def perform():
+        try:
             service.require_current()
             session = service.session(session_id)
-            accepted = service.observations.ingest(
-                session_id, value, principal, session.current_state()
+            events = await runtime.process_and_publish(
+                session_id, lambda: runtime.process_frame(session, value, principal)
             )
-            registration = service.observations.registrations[accepted["source_id"]].to_dict()
+            event = next((item for item in events if item.get("type") == "observation"), None)
+            refusal = next((item for item in events if item.get("type") == "refusal"), None)
+            if refusal is not None:
+                raise WorldObservationError(refusal["reason"], refusal["detail"], 400)
+            if event is None:
+                raise WorldObservationError(
+                    "observation_not_accepted", "relay did not accept an observation", 400
+                )
+            observation = Observation.parse(event)
+            if session.observation_ingress is None:
+                raise ObservationError("source_not_configured", "observation ingress is disabled")
+            receipt_ms, capture_ms = session.observation_ingress.host_times(observation)
+            accepted = await asyncio.to_thread(
+                service.observations.ingest,
+                session_id,
+                observation,
+                receipt_ms=receipt_ms,
+                capture_ms=capture_ms,
+                state=session.current_state(),
+            )
+            registration = service.observations.registrations[
+                observation.submission.source_id
+            ].to_dict()
             approved = service.maps.approved_bundle(session_id, registration["reference"])
-            session.record_world_observation(accepted, registration, approved["bundle"]["manifest"])
-            return accepted
-
-        return await call(perform)
+            await asyncio.to_thread(
+                session.record_world_observation,
+                observation,
+                registration,
+                approved["bundle"]["manifest"],
+            )
+            return JSONResponse(accepted, headers={"Cache-Control": "no-store"})
+        except (MapAuthoringError, NavigationError, WorldObservationError) as error:
+            return JSONResponse(
+                {"code": error.code, "detail": error.detail}, status_code=error.status_code
+            )
+        except ObservationError as error:
+            return JSONResponse({"code": error.code, "detail": error.detail}, status_code=400)

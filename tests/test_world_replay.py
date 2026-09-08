@@ -30,10 +30,12 @@ from relay.tests.conftest import (
 from tools.world_replay import (
     CommittedTail,
     ReplayError,
+    channel_name,
     channel_schema,
     export_audit,
     read_replay,
 )
+from tools.world_replay_scene import scene_update
 
 
 def _schema_valid(channel: str, event: dict[str, object]) -> bool:
@@ -546,3 +548,93 @@ def test_actual_navigation_publisher_replays_exact_route_map_and_transform_pins(
     ]
     for schema, _, message in messages:
         Draft202012Validator(json.loads(schema.data)).validate(json.loads(message.data))
+
+
+@pytest.mark.parametrize(
+    ("node_type", "observation"),
+    (
+        (
+            "ground",
+            {
+                "v": 1,
+                "type": "observation",
+                "event_id": "canonical-world",
+                "session": SESSION,
+                "device_id": 9,
+                "connection_epoch": 1,
+                "source_id": "world-pose",
+                "node_type": "ground",
+                "frame": "world",
+                "confidence": 0.9,
+                "t_capture": {"clock_id": "native", "unit": "ns", "value": 100},
+                "t_source_receipt": {"clock_id": "native", "unit": "ns", "value": 101},
+                "clock_mapping_id": "native-clock",
+                "t_ingest": 1_000,
+                "payload": {
+                    "kind": "pose",
+                    "pose": {
+                        "parent_frame": "world",
+                        "child_frame": "body",
+                        "x_m": 1.0,
+                        "y_m": 2.0,
+                        "z_m": 3.0,
+                        "qx": 0.0,
+                        "qy": 0.0,
+                        "qz": 0.7071067811865476,
+                        "qw": 0.7071067811865476,
+                    },
+                },
+            },
+        ),
+        (
+            "ground_vehicle",
+            {
+                "v": 1,
+                "type": "observation",
+                "event_id": "legacy-world",
+                "session": SESSION,
+                "drone_id": 9,
+                "connection_epoch": 1,
+                "source_id": "world-pose",
+                "node_type": "ground_vehicle",
+                "frame": "world",
+                "confidence": 0.9,
+                "t_capture": 1_000,
+                "t_ingest": 1_000,
+                "frame_provenance": {},
+                "authority": "diagnostic",
+                "payload": {
+                    "kind": "pose",
+                    "position": {"frame": "world", "x_m": 1.0, "y_m": 2.0, "z_m": 3.0},
+                    "yaw_rad": 0.0,
+                },
+            },
+        ),
+    ),
+)
+def test_world_replay_accepts_canonical_and_historical_world_records(node_type, observation):
+    record = {
+        "seq": 1,
+        "event": {
+            "v": 1,
+            "type": "world_observation",
+            "event_id": "world-record",
+            "session": SESSION,
+            "t": 1_000,
+            "observation": observation,
+            "registration": {
+                "reference": {"bundleId": "map", "revision": "1", "contentHash": "a" * 64},
+                "mapVersion": "v1",
+                "floorId": "floor",
+                "sourceFrame": "survey",
+                "transformId": "transform",
+                "qualifiedWorldPose": True,
+            },
+        },
+    }
+    assert channel_name(record) == "ground"
+    assert _schema_valid("ground", record["event"])
+    scene = scene_update(record)
+    assert scene and scene["entities"][0]["frame_id"] == "world"
+    if node_type == "ground":
+        assert scene["entities"][0]["spheres"][0]["pose"]["orientation"]["z"] == 0.7071067811865476

@@ -1,9 +1,4 @@
-"""Host-qualified world observations for map display and explicit drive-over records.
-
-The shared envelope remains diagnostic. Only a separate, deployment-owned binding
-can associate an already-transformed world pose with an approved map. This module
-does not transform coordinates, grant motion authority, or consume legacy telemetry.
-"""
+"""Host registration, storage, and projection for admitted world observations."""
 
 from __future__ import annotations
 
@@ -19,19 +14,8 @@ from threading import RLock
 from types import MappingProxyType
 from uuid import uuid4
 
-from relay.auth import Principal
+from relay.observations import Observation
 from relay.platform_identity import platform_device_class
-from spatial.contracts import FrameKind, ObservationError, identifier, integer
-from spatial.observations import (
-    MAX_OBSERVATION_SOURCES,
-    PAYLOAD_MAX_HZ,
-    Observation,
-    ObservationSource,
-    ObservationSubmission,
-    PosePayload,
-    bounded_json,
-    source_registry,
-)
 
 POSITION_FRESH_MS = 1_000
 DEVICE_FRESH_MS = 5_000
@@ -55,17 +39,25 @@ def _exact(value: object, keys: set[str], name: str) -> Mapping[str, object]:
 
 
 def _text(value: object, name: str, maximum: int = 256) -> str:
-    try:
-        return identifier(value, name, maximum)
-    except ObservationError as error:
-        raise WorldObservationError("invalid_request", error.detail, 400) from error
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or not value.isprintable()
+        or len(value) > maximum
+    ):
+        raise WorldObservationError(
+            "invalid_request", f"{name} must be canonical printable text", 400
+        )
+    return value
 
 
-def _integer(value: object, name: str, minimum: int = 0, maximum: int = 2**53 - 1) -> int:
-    try:
-        return integer(value, name, minimum, maximum)
-    except ObservationError as error:
-        raise WorldObservationError("invalid_request", error.detail, 400) from error
+def _integer(value: object, name: str, minimum: int = 0, maximum: int = 2**63 - 1) -> int:
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise WorldObservationError(
+            "invalid_request", f"{name} is outside its bounded integer range", 400
+        )
+    return value
 
 
 def _json(value: object) -> str:
@@ -131,18 +123,12 @@ class WorldObservationService:
     def __init__(
         self,
         *,
-        sources: Mapping[str, ObservationSource] | None = None,
         registrations: Mapping[str, WorldRegistration | Mapping[str, object]] | None = None,
         approved_bundle: Callable[[str], Mapping[str, object]],
         database: Path,
         clock: Callable[[], int],
     ) -> None:
-        self.sources = source_registry({} if sources is None else sources)
         configured = {} if registrations is None else registrations
-        if set(configured) != set(self.sources):
-            raise WorldObservationError(
-                "invalid_configuration", "every world source needs exactly one registration", 400
-            )
         self.registrations = MappingProxyType(
             {
                 key: WorldRegistration.parse(
@@ -151,20 +137,6 @@ class WorldObservationService:
                 for key, value in configured.items()
             }
         )
-        for source in self.sources.values():
-            if (
-                source.payload_types != ("pose",)
-                or len(source.frames) != 1
-                or (
-                    source.frames[0].kind is not FrameKind.WORLD
-                    or source.frames[0].frame_id != "world"
-                )
-            ):
-                raise WorldObservationError(
-                    "unqualified_source",
-                    "map consumption requires one world frame and pose payload",
-                    400,
-                )
         self.approved_bundle, self.database, self.clock = approved_bundle, Path(database), clock
         self._lock = RLock()
         self._latest: dict[tuple[str, str], dict[str, object]] = {}
@@ -176,7 +148,7 @@ class WorldObservationService:
 
     @property
     def available(self) -> bool:
-        return bool(self.sources)
+        return bool(self.registrations)
 
     @classmethod
     def from_env(
@@ -188,7 +160,6 @@ class WorldObservationService:
         clock: Callable[[], int],
     ) -> WorldObservationService:
         raw = environment.get("SWEEP_WORLD_OBSERVATION_SOURCES", "")
-        sources: dict[str, ObservationSource] = {}
         registrations: Mapping[str, object] = {}
         if raw.strip():
             if len(raw.encode("utf-8")) > 128 * 1024:
@@ -205,28 +176,24 @@ class WorldObservationService:
                 return result
 
             try:
-                value = _exact(
-                    json.loads(raw, object_pairs_hook=unique),
+                value = json.loads(raw, object_pairs_hook=unique)
+                if not isinstance(value, Mapping) or set(value) not in (
+                    {"registrations"},
                     {"sources", "registrations"},
-                    "world sources",
-                )
-                if not isinstance(value["sources"], dict) or not isinstance(
-                    value["registrations"], dict
                 ):
-                    raise ValueError("source registries must be objects")
-                if len(value["sources"]) > MAX_OBSERVATION_SOURCES:
-                    raise ValueError("too many observation sources")
-                sources = {
-                    key: ObservationSource.parse(key, entry)
-                    for key, entry in value["sources"].items()
-                }
+                    raise ValueError("world source configuration fields are invalid")
+                if not isinstance(value["registrations"], dict) or (
+                    "sources" in value and not isinstance(value["sources"], dict)
+                ):
+                    raise ValueError("world source registrations must be objects")
+                if len(value["registrations"]) > 64:
+                    raise ValueError("too many world source registrations")
                 registrations = value["registrations"]
             except (ValueError, TypeError) as error:
                 raise WorldObservationError(
                     "invalid_configuration", "world source configuration is invalid", 400
                 ) from error
         return cls(
-            sources=sources,
             registrations=registrations,
             approved_bundle=approved_bundle,
             database=database,
@@ -301,27 +268,24 @@ class WorldObservationService:
         return _integer(self.clock(), "relay clock")
 
     def _forget_device(self, session: str, device: int) -> None:
-        for key in tuple(self._latest):
-            if key[0] == session and self.sources[key[1]].drone_id == device:
-                self._latest.pop(key, None)
+        self._latest = {
+            key: value
+            for key, value in self._latest.items()
+            if not (key[0] == session and value["observation"]["device_id"] == device)
+        }
 
     def invalidate(self, session: str) -> None:
-        """Retire live map associations immediately after a map mutation."""
         with self._lock:
             self._map_context.pop(session, None)
             self._latest = {key: value for key, value in self._latest.items() if key[0] != session}
 
     def observe_state(self, session: str, state: object) -> None:
-        """Retire disconnected/replaced device origins even without an HTTP request."""
         if not self.available:
             return
         with self._lock:
             try:
                 self._state(session, state, self._now())
             except WorldObservationError as error:
-                # HTTP reads can advance the authoritative projection before an
-                # older queued publication arrives. Retirement is monotonic;
-                # ignoring that notification cannot restore a previous origin.
                 if error.code not in {"state_changed", "state_stale"}:
                     raise
 
@@ -363,7 +327,6 @@ class WorldObservationService:
             )
         self._state_context[session] = (sequence, timestamp, roster, material)
         devices: dict[int, Mapping[str, object]] = {}
-        configured_ids = {source.drone_id for source in self.sources.values()}
         for row in rows:
             device = _integer(row.get("drone_id"), "device ID", 1, 2**31 - 1)
             if device in devices:
@@ -372,39 +335,33 @@ class WorldObservationService:
                 )
             devices[device] = row
         with self._connection() as connection:
-            for device in configured_ids:
+            for device, row in devices.items():
                 key = (session, device)
                 previous = self._contexts.get(key)
-                row = devices.get(device)
-                if row is None:
-                    context = None if previous is None else (*previous[:2], True)
+                epoch = _integer(row.get("connection_epoch"), "connection epoch", 1, 2**31 - 1)
+                node_type = platform_device_class(row)
+                if node_type not in {"aircraft", "ground_vehicle"}:
+                    node_type = "unknown"
+                retired = row.get("membership") not in {"registered", "ready", "degraded"}
+                if previous and (
+                    epoch < previous[0]
+                    or (epoch == previous[0] and (previous[2] or node_type != previous[1]))
+                ):
+                    context = (*previous[:2], True)
                 else:
-                    epoch = _integer(row.get("connection_epoch"), "connection epoch", 1, 2**31 - 1)
-                    node_type = platform_device_class(row)
-                    if node_type not in {"aircraft", "ground_vehicle"}:
-                        node_type = "unknown"
-                    retired = row.get("membership") not in {"registered", "ready", "degraded"}
-                    if previous and (
-                        epoch < previous[0]
-                        or (epoch == previous[0] and (previous[2] or node_type != previous[1]))
-                    ):
-                        context = (*previous[:2], True)
-                    else:
-                        context = (epoch, node_type, retired)
-                if context is not None and context != previous:
+                    context = (epoch, node_type, retired)
+                if context != previous:
                     self._forget_device(session, device)
                     connection.execute(
                         "INSERT OR REPLACE INTO world_device_contexts VALUES(?,?,?,?,?)",
                         (session, device, *context),
                     )
                     self._contexts[key] = context
-                if row is not None:
-                    seen = row.get("last_seen_at")
-                    if type(seen) is not int or not 0 <= now - seen <= DEVICE_FRESH_MS:
-                        self._forget_device(session, device)
+                seen = row.get("last_seen_at")
+                if type(seen) is not int or not 0 <= now - seen <= DEVICE_FRESH_MS:
+                    self._forget_device(session, device)
         if not 0 <= now - timestamp < POSITION_FRESH_MS:
-            for device in configured_ids:
-                self._forget_device(session, device)
+            self._latest = {key: value for key, value in self._latest.items() if key[0] != session}
             raise WorldObservationError("state_stale", "authoritative session state is stale")
         return devices
 
@@ -412,18 +369,12 @@ class WorldObservationService:
         try:
             approved = json.loads(_json(self.approved_bundle(session)))
             reference = _reference(approved["reference"])
-            manifest = approved["bundle"]["manifest"]
-            approval = approved["approval"]
+            manifest, approval = approved["bundle"]["manifest"], approved["approval"]
             if not isinstance(manifest, Mapping) or not isinstance(approval, Mapping):
                 raise ValueError("missing approved manifest")
             identity = _json({"reference": reference, "approval": approval})
         except (ValueError, TypeError, KeyError) as error:
-            identity = None
-            if self._map_context.get(session) != identity:
-                self._latest = {
-                    key: value for key, value in self._latest.items() if key[0] != session
-                }
-            self._map_context[session] = identity
+            self.invalidate(session)
             raise WorldObservationError(
                 "approval_unavailable", "a current approved map bundle is required"
             ) from error
@@ -452,76 +403,81 @@ class WorldObservationService:
         return {**registration.to_dict(), "approval": approved["approval"]}
 
     def ingest(
-        self, session: str, raw: object, principal: Principal, state: object
+        self,
+        session: str,
+        observation: Observation,
+        *,
+        receipt_ms: int,
+        capture_ms: int,
+        state: object,
     ) -> dict[str, object]:
         self._require_available()
-        try:
-            submission = ObservationSubmission.parse(raw)
-        except ObservationError as error:
-            raise WorldObservationError(error.code, error.detail, 400) from error
+        if not isinstance(observation, Observation):
+            raise WorldObservationError(
+                "invalid_observation",
+                "world storage requires an admitted canonical observation",
+                400,
+            )
+        accepted = observation.to_mapping()
+        submission = observation.submission
+        receipt_ms, capture_ms = (
+            _integer(receipt_ms, "source receipt"),
+            _integer(capture_ms, "capture"),
+        )
         with self._lock:
             now = self._now()
             devices = self._state(session, state, now)
-            source = self.sources.get(submission.source_id)
+            registration = self.registrations.get(submission.source_id)
             if (
-                source is None
-                or not isinstance(principal, Principal)
-                or (
-                    principal.source != source.principal_source
-                    or principal.drone_id != source.drone_id
-                    or submission.session != session
-                    or submission.drone_id != source.drone_id
-                    or submission.node_type != source.node_type
-                )
+                registration is None
+                or submission.session != session
+                or submission.frame != "world"
+                or submission.payload["kind"] != "pose"
             ):
                 raise WorldObservationError(
-                    "source_mismatch",
-                    "observation source is not bound to this authenticated device",
-                    403,
+                    "source_mismatch", "observation is not a registered canonical world pose", 403
                 )
-            row = devices.get(submission.drone_id)
-            context = self._contexts.get((session, submission.drone_id))
-            if row is None or context != (
-                submission.connection_epoch,
-                source.node_type.value,
-                False,
-            ):
+            pose = submission.payload["pose"]
+            if pose["parent_frame"] != "world":
+                raise WorldObservationError(
+                    "frame_unqualified", "world pose parent frame must be world"
+                )
+            row = devices.get(submission.device_id)
+            context = self._contexts.get((session, submission.device_id))
+            expected_node_type = (
+                "ground_vehicle" if submission.node_type == "ground" else "aircraft"
+            )
+            if row is None or context != (submission.connection_epoch, expected_node_type, False):
                 raise WorldObservationError(
                     "device_changed", "observation device class or connection epoch is not current"
                 )
             seen = row.get("last_seen_at")
             if type(seen) is not int or not 0 <= now - seen <= DEVICE_FRESH_MS:
                 raise WorldObservationError("device_stale", "observation device report is stale")
-            if submission.frame != "world" or not isinstance(submission.payload, PosePayload):
-                raise WorldObservationError(
-                    "frame_unqualified", "only an already-transformed world pose can be consumed"
-                )
-            if not 0 <= now - submission.t < POSITION_FRESH_MS or not (
-                submission.t_capture is not None
-                and 0 <= now - submission.t_capture < POSITION_FRESH_MS
+            if (
+                not 0 <= now - capture_ms < POSITION_FRESH_MS
+                or not capture_ms <= receipt_ms <= now + POSITION_FRESH_MS
             ):
                 raise WorldObservationError(
                     "observation_stale",
-                    "observation capture and transport times must be fresh relay-clock times",
+                    "mapped observation capture and receipt times must be fresh",
                 )
-            binding = self._binding(source.source_id, self._approved(session))
-            accepted = Observation(submission, now, source.frames[0]).to_dict()
+            binding = self._binding(submission.source_id, self._approved(session))
             with self._connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 cursor = connection.execute(
                     "SELECT t,capture,ingest FROM world_observations "
-                    "WHERE session=? AND source=? AND epoch=? ORDER BY seq DESC LIMIT 1",
-                    (session, source.source_id, submission.connection_epoch),
+                    "WHERE session=? AND source=? AND epoch=? "
+                    "ORDER BY seq DESC LIMIT 1",
+                    (session, submission.source_id, submission.connection_epoch),
                 ).fetchone()
-                if cursor and (
-                    submission.t <= cursor["t"] or submission.t_capture <= cursor["capture"]
-                ):
+                if cursor and (receipt_ms <= cursor["t"] or capture_ms <= cursor["capture"]):
                     raise WorldObservationError(
                         "observation_reordered", "observation source timestamps did not advance"
                     )
-                if cursor and now - cursor["ingest"] < 1000 // PAYLOAD_MAX_HZ["pose"]:
+                if cursor and observation.t_ingest - cursor["ingest"] < 50:
                     raise WorldObservationError(
-                        "observation_rate_limited", "pose observations are limited to 20 Hz", 429
+                        "observation_rate_limited", "world pose projection is limited to 20 Hz", 429
                     )
                 if (
                     connection.execute(
@@ -539,13 +495,13 @@ class WorldObservationService:
                         "VALUES(?,?,?,?,?,?,?,?,?)",
                         (
                             session,
-                            source.source_id,
+                            submission.source_id,
                             submission.connection_epoch,
                             submission.event_id,
-                            submission.t,
-                            submission.t_capture,
-                            now,
-                            bounded_json(accepted).decode(),
+                            receipt_ms,
+                            capture_ms,
+                            observation.t_ingest,
+                            observation.encode().decode(),
                             _json(binding),
                         ),
                     )
@@ -553,9 +509,10 @@ class WorldObservationService:
                     raise WorldObservationError(
                         "observation_replayed", "observation event ID was already accepted"
                     ) from error
-            self._latest[(session, source.source_id)] = {
-                "observation": json.loads(bounded_json(accepted)),
+            self._latest[(session, submission.source_id)] = {
+                "observation": accepted,
                 "binding": binding,
+                "capture_ms": capture_ms,
             }
             return accepted
 
@@ -582,51 +539,51 @@ class WorldObservationService:
             for (own_session, source_id), latest in tuple(self._latest.items()):
                 if own_session != session:
                     continue
-                source = self.sources[source_id]
                 try:
                     binding = self._binding(source_id, approved)
                 except WorldObservationError:
                     self._latest.pop((session, source_id), None)
                     continue
                 observation = latest["observation"]
-                capture, ingest = observation["t_capture"], observation["t_ingest"]
-                row = devices.get(source.drone_id)
-                context = self._contexts.get((session, source.drone_id))
+                device = observation["device_id"]
+                row = devices.get(device)
+                expected = "ground_vehicle" if observation["node_type"] == "ground" else "aircraft"
                 if (
                     latest["binding"] != binding
                     or row is None
-                    or context != (observation["connection_epoch"], source.node_type.value, False)
-                    or not 0 <= now - capture < POSITION_FRESH_MS
-                    or ingest > now
+                    or self._contexts.get((session, device))
+                    != (observation["connection_epoch"], expected, False)
+                    or not 0 <= now - latest["capture_ms"] < POSITION_FRESH_MS
+                    or observation["t_ingest"] > now
                 ):
                     self._latest.pop((session, source_id), None)
                     continue
                 if binding["mapVersion"] != map_version or binding["floorId"] != floor_id:
                     continue
-                position = observation["payload"]["position"]
+                pose = observation["payload"]["pose"]
                 value = {
                     "observationId": observation["event_id"],
                     "sourceId": source_id,
-                    "deviceId": source.drone_id,
+                    "deviceId": device,
                     "connectionEpoch": observation["connection_epoch"],
                     "sessionId": session,
                     "reference": dict(reference),
                     "frame": "world",
                     "mapVersion": map_version,
                     "floorId": floor_id,
-                    "position": {"x": position["x_m"], "y": position["y_m"]},
-                    "tCapture": capture,
-                    "tIngest": ingest,
+                    "position": {"x": pose["x_m"], "y": pose["y_m"]},
+                    "tCapture": latest["capture_ms"],
+                    "tIngest": observation["t_ingest"],
                     "confidence": observation["confidence"],
                     "frameAssociationVerified": True,
                 }
-                previous = projected.get(source.drone_id)
-                if previous is None or (capture, ingest, source_id) > (
+                previous = projected.get(device)
+                if previous is None or (value["tCapture"], value["tIngest"], source_id) > (
                     previous["tCapture"],
                     previous["tIngest"],
                     previous["sourceId"],
                 ):
-                    projected[source.drone_id] = value
+                    projected[device] = value
             return {
                 "reference": dict(reference),
                 "observations": [projected[device] for device in sorted(projected)],
@@ -639,10 +596,12 @@ class WorldObservationService:
             {"mapVersion", "floorId", "reference", "tagId", "deviceId", "connectionEpoch"},
             "record request",
         )
-        actor = _text(actor, "authenticated actor")
-        tag = _integer(request["tagId"], "tag ID", 0, 65535)
-        device = _integer(request["deviceId"], "device ID", 1, 2**31 - 1)
-        epoch = _integer(request["connectionEpoch"], "connection epoch", 1, 2**31 - 1)
+        actor, tag, device, epoch = (
+            _text(actor, "authenticated actor"),
+            _integer(request["tagId"], "tag ID", 0, 65535),
+            _integer(request["deviceId"], "device ID", 1, 2**31 - 1),
+            _integer(request["connectionEpoch"], "connection epoch", 1, 2**31 - 1),
+        )
         with self._lock:
             values = self.positions(
                 session,
@@ -663,7 +622,8 @@ class WorldObservationService:
             )
             if (
                 observation is None
-                or self.sources[observation["sourceId"]].node_type.value != "ground_vehicle"
+                or self._latest[(session, observation["sourceId"])]["observation"]["node_type"]
+                != "ground"
             ):
                 raise WorldObservationError(
                     "observation_unavailable",
@@ -725,3 +685,6 @@ class WorldObservationService:
                     "SELECT * FROM world_captures WHERE session=? ORDER BY seq", (session,)
                 )
             ]
+
+    def close(self) -> None:
+        pass
