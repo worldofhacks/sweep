@@ -491,8 +491,9 @@ def test_tracking_disagreement_terminates_the_active_platform_route(tmp_path: Pa
         composition.close()
 
 
+@pytest.mark.parametrize("failure", ["reporting", "admission", "routing"])
 def test_tracking_failure_stops_the_platform_route_when_reporting_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     deployment = _deployment(tmp_path)
     clock = MutableClock(100_000)
@@ -544,13 +545,32 @@ def test_tracking_failure_stops_the_platform_route_when_reporting_fails(
                         break
                     time.sleep(0.01)
                 assert active is not None
-                composition.set_multiview_listener(
-                    lambda *_args: (_ for _ in ()).throw(RuntimeError("listener unavailable"))
-                )
-                monkeypatch.setattr(
-                    "relay.autonomy.apply_result",
-                    lambda *_args: (_ for _ in ()).throw(RuntimeError("audit unavailable")),
-                )
+                if failure == "reporting":
+                    composition.set_multiview_listener(
+                        lambda *_args: (_ for _ in ()).throw(RuntimeError("listener unavailable"))
+                    )
+                    monkeypatch.setattr(
+                        "relay.autonomy.apply_result",
+                        lambda *_args: (_ for _ in ()).throw(RuntimeError("audit unavailable")),
+                    )
+                elif failure == "admission":
+                    admitted = session.admit_safety_stop
+                    calls = 0
+
+                    def retry_once(intent: IntentV1) -> dict[str, object]:
+                        nonlocal calls
+                        calls += 1
+                        if calls == 1:
+                            raise RuntimeError("audit unavailable")
+                        return admitted(intent)
+
+                    monkeypatch.setattr(session, "admit_safety_stop", retry_once)
+                else:
+                    monkeypatch.setattr(
+                        autonomy,
+                        "_route",
+                        lambda _job: (_ for _ in ()).throw(RuntimeError("routing unavailable")),
+                    )
                 events = autonomy.fail_navigation_tracking(
                     NavigationTrackingError(active, "control pose lost before execution wait")
                 )

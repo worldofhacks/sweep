@@ -1312,8 +1312,9 @@ class AutonomySession:
                         f"{victim.intent.name.value}; its remaining commands are not sent"
                     ),
                 )
-            except ValueError:
-                continue
+            except Exception:
+                _LOGGER.exception("could not record safety preemption")
+                event = None
             with self._lock:
                 victim.cancelled_by = reason
                 self._awaiting.pop(victim.intent.intent_id, None)
@@ -1321,10 +1322,17 @@ class AutonomySession:
                 ground = self._platform_ground_dispatch.pop(victim.intent.intent_id, None)
                 if ground is not None and self.ground_navigation is not None:
                     self.ground_navigation.deployment.cancel(ground.plan)
-            stop.publications.append(event)
-            self._composition.report_multiview_lifecycle(
-                self.session_id, victim.intent.intent_id, victim.intent.name.value, "invalidated"
-            )
+            if event is not None:
+                stop.publications.append(event)
+            try:
+                self._composition.report_multiview_lifecycle(
+                    self.session_id,
+                    victim.intent.intent_id,
+                    victim.intent.name.value,
+                    "invalidated",
+                )
+            except Exception:
+                _LOGGER.exception("multiview lifecycle reporting failed for safety preemption")
 
     def _run(self, lane: _Lane) -> None:
         while True:
@@ -1606,7 +1614,11 @@ class AutonomySession:
             )
             result = _composition_failure(intent, session, error)
         with self._lock:
-            if result.status is LifecycleStatus.EXECUTING:
+            cancelled = job.cancelled_by
+            if cancelled is not None:
+                self._awaiting.pop(intent.intent_id, None)
+                job.finished = True
+            elif result.status is LifecycleStatus.EXECUTING:
                 if dispatcher is None:
                     raise RuntimeError("ground dispatcher returned a nonterminal command result")
                 self._awaiting[intent.intent_id] = _AwaitingExecution(
@@ -1620,7 +1632,6 @@ class AutonomySession:
             else:
                 self._awaiting.pop(intent.intent_id, None)
                 job.finished = True
-            cancelled = job.cancelled_by
         if intent.name is IntentName.SEARCH and result.status is not LifecycleStatus.EXECUTING:
             if self.search_detection is not None:
                 self.search_detection.finish_mission(intent.intent_id)
@@ -1691,16 +1702,31 @@ class AutonomySession:
         else:
             result = self._tracking_failure_result(pending, error)
         session.discard_command_waiter(error.command_id)
+        navigation_wire = getattr(self, "navigation_wire", None)
+        if navigation_wire is not None:
+            navigation_wire.retire(error.command_id)
         try:
             events = apply_result(session, job.intent, result)
         except Exception:
             _LOGGER.exception("navigation tracking failure could not be published")
             events = []
+        if getattr(job.intent, "name", None) is IntentName.SEARCH:
+            search = self.search_runtime
+            if search is not None:
+                try:
+                    search.complete_execution(error.intent_id, result)
+                except Exception:
+                    _LOGGER.exception("search execution cleanup failed after navigation tracking")
+            if self.search_detection is not None:
+                try:
+                    self.search_detection.finish_mission(error.intent_id)
+                except Exception:
+                    _LOGGER.exception("search detection cleanup failed after navigation tracking")
+        events.extend(self._queue_navigation_tracking_hold(session, job.intent))
         try:
             self._composition.report_multiview_execution(self.session_id, job.intent, result)
         except Exception:
             _LOGGER.exception("multiview execution reporting failed for navigation tracking")
-        events.extend(self._queue_navigation_tracking_hold(session, job.intent))
         return events
 
     def _queue_navigation_tracking_hold(
@@ -1727,13 +1753,13 @@ class AutonomySession:
             events = [session.admit_safety_stop(safety_intent)]
         except Exception:
             _LOGGER.exception("navigation tracking safety hold could not be recorded")
-            events = []
+            try:
+                events = [session.admit_safety_stop(safety_intent)]
+            except Exception:
+                _LOGGER.exception("navigation tracking safety hold retry could not be recorded")
+                events = []
         hold_job = _Job(safety_intent, session)
-        try:
-            hold_lane = self._route(hold_job)
-        except Exception:
-            _LOGGER.exception("navigation tracking safety hold could not be routed")
-            hold_lane = self._hold
+        hold_lane = self._hold
         with hold_lane.ready:
             hold_lane.pending.append(hold_job)
             hold_lane.ready.notify()
