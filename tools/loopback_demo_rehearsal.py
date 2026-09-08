@@ -400,7 +400,7 @@ class MovingControlPosePublisher:
             sequence = 0
             while not self._stop.is_set():
                 sequence += 1
-                current_s = time.time()
+                current_s = time.time() - 0.01
                 x_m, y_m, z_m = self.position()
                 wire = ControlLocalizationWire(
                     drone_id=1,
@@ -413,9 +413,9 @@ class MovingControlPosePublisher:
                     evaluated_at_s=current_s,
                     position_map_enu_m=(x_m, y_m, z_m),
                     covariance_map_enu_m2=(
-                        (0.0001, 0.0, 0.0),
-                        (0.0, 0.0001, 0.0),
-                        (0.0, 0.0, 0.0001),
+                        (0.00000001, 0.0, 0.0),
+                        (0.0, 0.00000001, 0.0),
+                        (0.0, 0.0, 0.00000001),
                     ),
                     fix_age_s=0.0,
                     velocity_age_s=0.0,
@@ -544,6 +544,7 @@ class LoopbackDemoRehearsal:
                 home=(-20.0, 9.8, -29.0),
                 capabilities=(
                     "flight",
+                    "navigate",
                     "pano_360",
                     "reconstruct_8",
                     "single_still",
