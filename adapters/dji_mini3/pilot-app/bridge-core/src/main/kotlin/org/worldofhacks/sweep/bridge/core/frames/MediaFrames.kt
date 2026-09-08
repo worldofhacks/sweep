@@ -234,8 +234,8 @@ data class CaptureBundleFrame(
     companion object {
         const val TYPE = "capture_bundle"
         private const val CODE = "invalid_capture_bundle"
-        val PATTERNS = setOf("pano_360", "reconstruct_8")
-        val COVERAGES = setOf("full_equirectangular", "incomplete_vertical_coverage")
+        val PATTERNS = setOf("pano_360", "reconstruct_8", "single_still")
+        val COVERAGES = setOf("full_equirectangular", "incomplete_vertical_coverage", "single_view")
         const val MAX_MEDIA_RECORDS = 8
         private val FIELDS = setOf(
             "v", "t", "type", "event_id", "session", "room_id", "capture_id", "drone_id", "connection_epoch",
@@ -246,9 +246,9 @@ data class CaptureBundleFrame(
             Fields.exact(json, FIELDS, CODE)
             Fields.envelope(json, TYPE, CODE)
             val pattern = Fields.nonEmptyString(json["pattern"], "pattern", CODE)
-            if (pattern !in PATTERNS) throw ContractError(CODE, "pattern must be pano_360 or reconstruct_8")
+            if (pattern !in PATTERNS) throw ContractError(CODE, "unsupported capture pattern")
             val coverage = Fields.nonEmptyString(json["coverage"], "coverage", CODE)
-            if (coverage !in COVERAGES) throw ContractError(CODE, "coverage must be full_equirectangular or incomplete_vertical_coverage")
+            if (coverage !in COVERAGES) throw ContractError(CODE, "unsupported capture coverage")
             val status = (json["status"] as? JsonString)?.let { CaptureStatus.fromWire(it.value) }
                 ?: throw ContractError(CODE, "status must be completed, unsupported, or failed")
             val mediaRaw = json["media"] as? JsonArray ?: throw ContractError(CODE, "media must be a list")

@@ -676,6 +676,27 @@ class DeterministicPlanner:
             {"pitch": self.config.capture_gimbal_pitch_deg},
         )
 
+        if pattern == "single_still":
+            builder.add(drone_id, CommandOperation.CAMERA_READY)
+            capture_command = builder.add(
+                drone_id,
+                CommandOperation.CAPTURE_PHOTO,
+                {
+                    "capture_id": capture_id,
+                    "frame_number": 1,
+                    "pattern": pattern,
+                    "approved_pose": approved_pose.to_dict(),
+                    "pose_tolerance": self.config.capture_pose_tolerance_m,
+                    "room_id": room_id,
+                },
+            )
+            builder.add(
+                drone_id,
+                CommandOperation.RETRIEVE_MEDIA,
+                {"source_command_id": capture_command.command_id},
+            )
+            return
+
         if pattern == "pano_360":
             builder.add(drone_id, CommandOperation.CAMERA_READY)
             capture_command = builder.add(

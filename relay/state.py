@@ -30,7 +30,7 @@ MAX_PHYSICAL_GROUND = 32
 MAX_SIMULATED_AIRCRAFT = 32
 DEFAULT_MEMBERSHIP_HISTORY_LIMIT = 8
 MAX_MEMBERSHIP_HISTORY_LIMIT = 64
-_CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
+_CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8", "single_still"})
 _FORMATIONS = frozenset(FORMATION_NAMES)
 
 

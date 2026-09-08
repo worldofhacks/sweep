@@ -1923,6 +1923,14 @@ class AdapterDispatcher:
                 and media_files[0].intrinsics.horizontal_fov_deg == 360.0
             )
             coverage = CaptureCoverage.FULL_EQUIRECTANGULAR
+        elif pattern is CapturePattern.SINGLE_STILL:
+            valid = (
+                evidence_valid
+                and len(media_files) == 1
+                and len(capture_commands) == 1
+                and media_files[0].intrinsics.projection == "rectilinear"
+            )
+            coverage = CaptureCoverage.SINGLE_VIEW
         else:
             rotations = tuple(
                 command
@@ -1973,6 +1981,8 @@ class AdapterDispatcher:
         coverage = (
             CaptureCoverage.FULL_EQUIRECTANGULAR
             if pattern is CapturePattern.PANO_360
+            else CaptureCoverage.SINGLE_VIEW
+            if pattern is CapturePattern.SINGLE_STILL
             else CaptureCoverage.INCOMPLETE_VERTICAL
         )
         return CaptureBundle(

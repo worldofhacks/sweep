@@ -53,7 +53,7 @@ describe('relay captures', () => {
       ],
       'demo',
     )
-    expect(record).toEqual({
+    expect(record).toMatchObject({
       capture_id: 'cap-1',
       project: 'demo',
       room_id: 'room-1',
@@ -62,7 +62,7 @@ describe('relay captures', () => {
       coverage: 'incomplete_vertical_coverage',
       files: 2,
       captured_at: t,
-      quality: 'pass',
+      quality: 'unreviewed',
       needs_retake: false,
       checksum: null,
       pose: { x: 1.5, y: -0.25, z: 1.2, yaw_deg: 45, gimbal_pitch_deg: -15, focal_mm: null },

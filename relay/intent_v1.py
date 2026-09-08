@@ -379,7 +379,7 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
             raise ValueError
         if not _is_bounded_intent_text(value["capture_id"], MAX_INTENT_IDENTIFIER_CHARS):
             raise ValueError
-        if value["pattern"] not in ("pano_360", "reconstruct_8"):
+        if value["pattern"] not in ("pano_360", "reconstruct_8", "single_still"):
             raise ValueError
         return MappingProxyType(
             {

@@ -15,7 +15,7 @@ export type NodeType = 'aircraft' | 'ground'
 /** Mirror of planner/models.py DeviceClass; absent on the wire means aircraft. */
 export type DeviceClass = 'aircraft' | 'ground_vehicle'
 export const DEVICE_CLASSES: readonly DeviceClass[] = ['aircraft', 'ground_vehicle']
-export type CapturePattern = 'pano_360' | 'reconstruct_8'
+export type CapturePattern = 'pano_360' | 'reconstruct_8' | 'single_still'
 export type IntentSource = 'console' | 'keyboard' | 'webcam' | 'language'
 export const FORMATION_NAMES = ['line', 'column', 'wedge', 'diamond'] as const
 export type FormationName = (typeof FORMATION_NAMES)[number]
@@ -375,7 +375,7 @@ export interface RelayAircraftState {
 
 export type MediaRetrievalStatus = 'pending' | 'completed' | 'unsupported' | 'failed'
 export type CaptureBundleStatus = 'completed' | 'unsupported' | 'failed'
-export type CaptureCoverage = 'full_equirectangular' | 'incomplete_vertical_coverage'
+export type CaptureCoverage = 'full_equirectangular' | 'incomplete_vertical_coverage' | 'single_view'
 
 /** One node-authored `media_file` record as `state.captures[].files` carries it verbatim. */
 export interface RelayCaptureFile {
@@ -1038,7 +1038,7 @@ const MEMBERSHIP_STATES = new Set<MembershipState>([
   'disconnected',
   'degraded',
 ])
-const CAPTURE_PATTERNS = new Set<CapturePattern>(['pano_360', 'reconstruct_8'])
+const CAPTURE_PATTERNS = new Set<CapturePattern>(['pano_360', 'reconstruct_8', 'single_still'])
 /** Mirror of relay REGISTERED_SOURCES: operator sources bound to their own connection. */
 const INTENT_SOURCES = new Set<IntentSource>(['console', 'keyboard', 'webcam', 'language'])
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1322,7 +1322,7 @@ function isSensorEvent(value: Record<string, unknown>): boolean {
 
 const MEDIA_RETRIEVAL_STATUSES: ReadonlySet<string> = new Set(['pending', 'completed', 'unsupported', 'failed'])
 const CAPTURE_BUNDLE_STATUSES: ReadonlySet<string> = new Set(['completed', 'unsupported', 'failed'])
-const CAPTURE_COVERAGES: ReadonlySet<string> = new Set(['full_equirectangular', 'incomplete_vertical_coverage'])
+const CAPTURE_COVERAGES: ReadonlySet<string> = new Set(['full_equirectangular', 'incomplete_vertical_coverage', 'single_view'])
 
 function isNullableChoice(value: unknown, choices: ReadonlySet<string>): boolean {
   return value === null || (typeof value === 'string' && choices.has(value))

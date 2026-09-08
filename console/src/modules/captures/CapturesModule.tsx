@@ -8,7 +8,7 @@ import {
   groupCapturesByProject,
   type CatalogLink,
 } from '../../catalog/derive'
-import { closedRelayCaptures, openRelayCaptures, type OpenCapture } from '../../catalog/relay-captures'
+import { closedRelayCaptures, exportRelayCapture, openRelayCaptures, type OpenCapture } from '../../catalog/relay-captures'
 import type { CaptureRecord } from '../../catalog/types'
 import { deviceLabeller, type DeviceLabeller } from '../../control/state'
 import { Pane } from '../../shell/Pane'
@@ -18,12 +18,6 @@ import { CatalogNote, LinkNotice } from '../catalog-shared'
 import { EmptyModule } from '../shared'
 import type { ModuleProps } from '../types'
 
-/**
- * Capture library: the relay's retained captures (closed sets as records, open sets as
- * progress lines) ahead of the catalog, grouped by project, filtered by room, aircraft
- * and retake flag, newest first. Downloads and exports go through the catalog client
- * and report their outcome sentence; nothing is re-encoded here.
- */
 export function CapturesModule({ controller, catalog }: ModuleProps) {
   const [filterId, setFilterId] = useState('all')
   const [note, setNote] = useState<CatalogNoteState | null>(null)
@@ -133,7 +127,7 @@ function CaptureCatalog({
             <div data-two="1">
               {project.captures.map((capture) => (
                 <CaptureItem
-                  key={capture.capture_id}
+                  key={`${capture.drone_id}-${capture.relay?.connection_epoch ?? "catalog"}-${capture.capture_id}`}
                   capture={capture}
                   link={link}
                   client={client}
@@ -178,21 +172,22 @@ function CaptureItem({
           <p className="cap-coverage">{capture.coverage}</p>
           <p className="cap-quality">
             {filesLabel(capture.files)} · quality{' '}
-            <strong className={capture.quality === 'pass' ? 'tone-ok' : 'tone-danger'}>
+            <strong className={capture.quality === 'pass' ? 'tone-ok' : capture.quality === 'fail' ? 'tone-danger' : 'tone-muted'}>
               {capture.quality}
             </strong>
           </p>
           {capture.needs_retake && <p className="cap-retake">needs retake</p>}
         </div>
       </div>
+      {capture.relay && <p className="cap-meta">Original files are on the bridge phone. Image quality has not been reviewed.</p>}
       <p className="cap-checksum">{capture.checksum ?? 'checksum unreported'}</p>
       <p className="cap-pose">{formatPose(capture.pose)}</p>
       <div className="cap-actions">
         <button
           type="button"
           className="cat-button"
-          disabled={!link.up}
-          title={blocked}
+          disabled={!!capture.relay || !link.up}
+          title={capture.relay ? "Original files are retained on the bridge phone." : blocked}
           onClick={() => onRun(() => client.stageCaptureSet(capture.capture_id))}
         >
           Download set
@@ -200,9 +195,11 @@ function CaptureItem({
         <button
           type="button"
           className="cat-button"
-          disabled={!link.up}
-          title={blocked}
-          onClick={() => onRun(() => client.exportCaptureMetadata(capture.capture_id))}
+          disabled={!capture.relay && !link.up}
+          title={capture.relay ? undefined : blocked}
+          onClick={() => onRun(() => capture.relay
+            ? Promise.resolve(exportRelayCapture(capture.relay))
+            : client.exportCaptureMetadata(capture.capture_id))}
         >
           Export metadata
         </button>

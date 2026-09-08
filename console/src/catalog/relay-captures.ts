@@ -1,13 +1,6 @@
 import type { RelayCaptureFile, RelayCaptureRecord } from '../relay/contract'
 import type { CaptureRecord } from './types'
 
-/**
- * The relay's `state.captures` projection as the Captures module lists it. A capture the
- * relay closed with a bundle becomes a catalog record (the session id is its project; a
- * failed or unsupported bundle needs a retake); a capture with files but no bundle is
- * progress, not a record, because the relay reports no room, pattern, or quality for it.
- * Nothing here invents a field the relay did not send.
- */
 
 export interface OpenCapture {
   capture_id: string
@@ -27,6 +20,7 @@ export function closedRelayCaptures(captures: RelayCaptureRecord[], sessionId: s
     const completed = capture.files.filter((file) => file.retrieval_status === 'completed')
     return [
       {
+        relay: capture,
         capture_id: capture.capture_id,
         project: sessionId,
         room_id: capture.room_id ?? 'unreported',
@@ -35,7 +29,7 @@ export function closedRelayCaptures(captures: RelayCaptureRecord[], sessionId: s
         coverage: capture.coverage,
         files: capture.files.length,
         captured_at: first?.timestamp_ms ?? capture.updated_at,
-        quality: capture.status === 'completed' ? 'pass' : 'fail',
+        quality: capture.status === 'completed' ? 'unreviewed' : 'fail',
         needs_retake: capture.status !== 'completed',
         // One retrieved file has one checksum; a multi-file set has one per file, listed in the export.
         checksum: completed.length === 1 ? `sha256:${completed[0].checksum_sha256}` : null,
@@ -78,4 +72,15 @@ function earliestFile(files: RelayCaptureFile[]): RelayCaptureFile | null {
     (earliest, file) => (earliest === null || file.timestamp_ms < earliest.timestamp_ms ? file : earliest),
     null,
   )
+}
+
+
+export function exportRelayCapture(capture: RelayCaptureRecord): string {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(capture, null, 2)], { type: 'application/json' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `sweep-capture-${capture.drone_id}-${capture.connection_epoch}-${capture.capture_id.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`
+  anchor.click()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+  return 'Capture metadata exported. Original image files remain on the bridge phone.'
 }

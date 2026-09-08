@@ -180,8 +180,10 @@ MAX_GROUND_VELOCITY_MM_S = 180
 MAX_GROUND_YAW_MRAD_S = 785
 MAX_GROUND_VELOCITY_DURATION_MS = 500
 
-_CAPTURE_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
-_CAPTURE_COVERAGES = frozenset({"full_equirectangular", "incomplete_vertical_coverage"})
+_CAPTURE_PATTERNS = frozenset({"pano_360", "reconstruct_8", "single_still"})
+_CAPTURE_COVERAGES = frozenset(
+    {"full_equirectangular", "incomplete_vertical_coverage", "single_view"}
+)
 _CAMERA_RESULT_STATUSES = frozenset({"completed", "unsupported", "failed"})
 _MEDIA_RETRIEVAL_STATUSES = _CAMERA_RESULT_STATUSES | {"pending"}
 MEDIA_PENDING_CHECKSUM = "0" * 64

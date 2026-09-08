@@ -19,7 +19,7 @@ object AircraftVariant {
      * retrieval); `pano_360` stays unclaimed because a native panorama yaws the aircraft
      * outside the Virtual Stick loop and `capture_panorama` answers `camera_unsupported`.
      */
-    val capabilities: List<String> = listOf("flight", "reconstruct_8")
+    val capabilities: List<String> = listOf("flight", "reconstruct_8", "single_still")
 
     fun installSdk(application: Application) {
         Helper.install(application)

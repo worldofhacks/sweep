@@ -201,15 +201,15 @@ describe('Captures module', () => {
     const item = within(screen.getByRole('article', { name: 'Capture cap-relay' }))
     expect(item.getByText(`room-1 · D-01 · ${formatTime(CATALOG_CLOCK - 30_000)}`)).toBeInTheDocument()
     expect(item.getByText('reconstruct_8')).toBeInTheDocument()
-    expect(item.getByText(/1 file · quality/)).toHaveTextContent('pass')
+    expect(item.getByText(/1 file · quality/)).toHaveTextContent('unreviewed')
+    expect(item.getByRole('button', { name: 'Download set' })).toBeDisabled()
+    expect(item.getByRole('button', { name: 'Export metadata' })).toBeEnabled()
     expect(item.getByText(`sha256:${'a'.repeat(64)}`)).toBeInTheDocument()
     expect(item.getByText('x 1.50 y -0.25 z 1.20 · yaw 45.0° · gimbal −15.0° · f unreported')).toBeInTheDocument()
     expect(screen.queryByRole('article', { name: 'Capture cap-open' })).not.toBeInTheDocument()
-    // The catalog is still unreported, so the actions refuse honestly.
+    expect(item.getByText(/Original files are on the bridge phone/)).toBeInTheDocument()
     await user.click(item.getByRole('button', { name: 'Download set' }))
-    expect(screen.getByRole('status', { name: 'Capture library notice' })).toHaveTextContent(
-      'The relay reports no catalog endpoint on this console; nothing was sent.',
-    )
+    expect(screen.getByRole('status', { name: 'Capture library notice' })).toBeEmptyDOMElement()
   })
 
   test('unreported: production has no catalog endpoint, so the module says so', async () => {

@@ -53,7 +53,9 @@ export function planSteps(intent: IntentV1, label: DeviceLabeller = formatDroneI
       `Capture ${args.pattern} in room ${args.room_id} as capture ${args.capture_id}.`,
       args.pattern === 'pano_360'
         ? 'Produce one full_equirectangular set.'
-        : 'Produce eight overlapping frames with incomplete_vertical_coverage.',
+        : args.pattern === 'single_still'
+          ? 'Take one native still at this viewpoint.'
+          : 'Produce eight overlapping frames with incomplete_vertical_coverage.',
       'Download the file set to the ground station and record checksums and pose metadata.',
     ]
   }

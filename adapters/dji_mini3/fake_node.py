@@ -53,7 +53,7 @@ class FakeNodeConfig:
     token: str
     adapter_id: str
     telemetry_hz: float = 10.0
-    capabilities: tuple[str, ...] = ("flight", "pano_360", "reconstruct_8")
+    capabilities: tuple[str, ...] = ("flight", "pano_360", "reconstruct_8", "single_still")
     home: tuple[float, float, float] = (0.0, 0.0, 0.0)
     horizontal_fov_deg: float = 66.0
     gimbal_pitch_min_deg: float = -90.0

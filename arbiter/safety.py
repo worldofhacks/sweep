@@ -1261,6 +1261,30 @@ class SafetyArbiter:
                 "capture_room hold, capability, or gimbal step is malformed",
             )
         pattern = capabilities.parameters.get("pattern")
+        if pattern == "single_still":
+            expected = (
+                CommandOperation.HOVER,
+                CommandOperation.CAMERA_CAPABILITIES,
+                CommandOperation.SET_GIMBAL_PITCH,
+                CommandOperation.CAMERA_READY,
+                CommandOperation.CAPTURE_PHOTO,
+                CommandOperation.RETRIEVE_MEDIA,
+            )
+            if tuple(command.operation for command in plan.commands) != expected:
+                return self._invalid_plan_refusal(
+                    plan, snapshot, "single_still requires one stationary photo and retrieval"
+                )
+            capture = plan.commands[4]
+            if (
+                plan.commands[3].parameters
+                or not self._valid_capture_step(capabilities, capture, frame_number=1)
+                or not self._valid_retrieval_step(plan.commands[5], capture)
+            ):
+                return self._invalid_plan_refusal(
+                    plan, snapshot, "single_still metadata or retrieval is malformed"
+                )
+            return None
+
         if pattern == "pano_360":
             operations = tuple(command.operation for command in plan.commands)
             expected = (

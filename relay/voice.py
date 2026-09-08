@@ -35,7 +35,7 @@ _MEMBERSHIPS = frozenset({"registered", "ready", "leaving", "disconnected", "deg
 _FLIGHT_STATES = frozenset(
     {"disarmed", "landed", "armed", "taking_off", "airborne", "hovering", "landing", "emergency"}
 )
-_CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8"})
+_CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8", "single_still"})
 _MODES = frozenset({"indoor", "outdoor"})
 VOICE_PLAN_VERSION = 1
 VOICE_PLAN_KINDS = frozenset({"plan", "clarify", "unsupported", "refuse", "cancel_pending"})

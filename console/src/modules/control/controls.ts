@@ -840,12 +840,17 @@ export function captureFlow(
 }
 
 export interface PatternCard {
-  id: 'pano_360' | 'reconstruct_8'
+  id: 'pano_360' | 'reconstruct_8' | 'single_still'
   coverage: string
   note: string
 }
 
 export const PATTERN_CARDS: readonly PatternCard[] = [
+  {
+    id: 'single_still',
+    coverage: 'single_view',
+    note: 'One native photograph at the held viewpoint.',
+  },
   {
     id: 'pano_360',
     coverage: 'full_equirectangular',

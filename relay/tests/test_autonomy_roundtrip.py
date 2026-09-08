@@ -724,8 +724,18 @@ def _now_ms() -> int:
     return time.time_ns() // 1_000_000
 
 
-def test_capture_room_reconstruct_8_retains_media_and_a_composed_bundle_in_state(
+@pytest.mark.parametrize(
+    "pattern,count,coverage",
+    [
+        ("reconstruct_8", 8, "incomplete_vertical_coverage"),
+        ("single_still", 1, "single_view"),
+    ],
+)
+def test_capture_room_retains_media_and_a_composed_bundle_in_state(
     relay_server: RelayServer,
+    pattern: str,
+    count: int,
+    coverage: str,
 ) -> None:
     fleet = _Fleet(relay_server, {1: {}})
     fleet.start()
@@ -734,7 +744,7 @@ def test_capture_room_reconstruct_8_retains_media_and_a_composed_bundle_in_state
         capture_id, capture = fleet.run(
             "capture_room",
             selection=[1],
-            args={"room_id": "room-1", "capture_id": "cap-roundtrip", "pattern": "reconstruct_8"},
+            args={"room_id": "room-1", "capture_id": "cap-roundtrip", "pattern": pattern},
             confirm=True,
         )
         assert capture["status"] == "completed", capture
@@ -743,16 +753,16 @@ def test_capture_room_reconstruct_8_retains_media_and_a_composed_bundle_in_state
         (entry,) = [item for item in state["captures"] if item["capture_id"] == "cap-roundtrip"]
         assert (entry["room_id"], entry["pattern"], entry["coverage"], entry["status"]) == (
             "room-1",
-            "reconstruct_8",
-            "incomplete_vertical_coverage",
+            pattern,
+            coverage,
             "completed",
         )
         assert [file["file_id"] for file in entry["files"]] == [
-            f"cap-roundtrip-frame-{number:02d}" for number in range(1, 9)
+            f"cap-roundtrip-frame-{number:02d}" for number in range(1, count + 1)
         ]
         assert {file["retrieval_status"] for file in entry["files"]} == {"completed"}
         assert [file["actual_yaw_deg"] for file in entry["files"]] == [
-            float(heading) for heading in range(0, 360, 45)
+            float(heading) for heading in ([0] if count == 1 else range(0, 360, 45))
         ]
         # The console received the closed capture through the state fan-out, never the frames.
         _wait_until(
@@ -773,10 +783,11 @@ def test_capture_room_reconstruct_8_retains_media_and_a_composed_bundle_in_state
 
     operations = [operation for operation, intent in fleet.commands_for(1) if intent == capture_id]
     assert operations[:3] == ["hover", "camera_capabilities", "set_gimbal_pitch"]
-    assert operations[3:] == ["rotate_to", "camera_ready", "capture_photo", "retrieve_media"] * 8
+    expected = ["camera_ready", "capture_photo", "retrieve_media"]
+    assert operations[3:] == (expected if count == 1 else ["rotate_to", *expected] * 8)
     records = [record["event"] for record in relay_server.runtime.replay(SESSION)["events"]]
     media = [record for record in records if record["type"] == "media_file"]
-    assert len(media) == 16, "one record at capture time and one at retrieval per frame"
+    assert len(media) == count * 2, "one record at capture time and one at retrieval per frame"
     bundles = [record for record in records if record["type"] == "capture_bundle"]
     assert [bundle.get("source") for bundle in bundles] == ["autonomy"]
-    assert bundles[0]["status"] == "completed" and len(bundles[0]["media"]) == 8
+    assert bundles[0]["status"] == "completed" and len(bundles[0]["media"]) == count

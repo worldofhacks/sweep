@@ -189,11 +189,13 @@ class CameraStateCode(StrEnum):
 class CapturePattern(StrEnum):
     PANO_360 = "pano_360"
     RECONSTRUCT_8 = "reconstruct_8"
+    SINGLE_STILL = "single_still"
 
 
 class CaptureCoverage(StrEnum):
     FULL_EQUIRECTANGULAR = "full_equirectangular"
     INCOMPLETE_VERTICAL = "incomplete_vertical_coverage"
+    SINGLE_VIEW = "single_view"
 
 
 @dataclass(frozen=True, slots=True)

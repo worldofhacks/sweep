@@ -1,4 +1,4 @@
-import type { CapturePattern, DroneId, SweepBox } from '../relay/contract'
+import type { CapturePattern, DroneId, RelayCaptureRecord, SweepBox } from '../relay/contract'
 
 /**
  * Catalog records for the Captures, Worlds, Connectivity, and Configuration
@@ -7,8 +7,8 @@ import type { CapturePattern, DroneId, SweepBox } from '../relay/contract'
  * names follow the relay contract's snake_case so a future endpoint slots in.
  */
 
-export type CoverageLabel = 'full_equirectangular' | 'incomplete_vertical_coverage'
-export type CaptureQuality = 'pass' | 'fail'
+export type CoverageLabel = 'full_equirectangular' | 'incomplete_vertical_coverage' | 'single_view'
+export type CaptureQuality = 'pass' | 'fail' | 'unreviewed'
 
 export interface CapturePose {
   x: number
@@ -21,6 +21,7 @@ export interface CapturePose {
 }
 
 export interface CaptureRecord {
+  relay?: RelayCaptureRecord
   capture_id: string
   project: string
   room_id: string
