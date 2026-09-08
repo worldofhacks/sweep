@@ -234,7 +234,7 @@ class Camera:
             process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.wait()
+            process.wait(timeout=2)
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -265,7 +265,12 @@ class Camera:
             observer.start()
             while not self._stop.wait(0.5) and process.poll() is None:
                 pass
-            self._stop_process(process)
+            try:
+                self._stop_process(process)
+            except (OSError, subprocess.TimeoutExpired):
+                with self._lock:
+                    self._state = "failed"
+                return
             observer.join(timeout=1)
             with self._lock:
                 self._process = None
@@ -274,7 +279,10 @@ class Camera:
         with self._lock:
             self._state = "stopped"
 
-    def close(self) -> None:
+    def request_stop(self) -> None:
         self._stop.set()
+
+    def close(self) -> None:
+        self.request_stop()
         if self._thread.is_alive():
-            self._thread.join(timeout=3)
+            self._thread.join(timeout=6)
