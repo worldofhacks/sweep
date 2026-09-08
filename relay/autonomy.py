@@ -2215,7 +2215,9 @@ class AutonomyComposition:
     ) -> dict[str, object]:
         return self.session(session_id).reserve_platform_navigation(preview)
 
-    def discard_reserved_platform_navigation(self, session_id: str, preview_id: str) -> dict[str, object]:
+    def discard_reserved_platform_navigation(
+        self, session_id: str, preview_id: str
+    ) -> dict[str, object]:
         return self.session(session_id).discard_reserved_platform_navigation(preview_id)
 
     def dispatch_reserved_platform_navigation(
@@ -2283,9 +2285,7 @@ class AutonomyComposition:
                                 session.record_navigation_evidence(frame)
                             output.extend(frames)
                         except NavigationTrackingError as error:
-                            _LOGGER.warning(
-                                "navigation tracking refused for aircraft %s", drone_id
-                            )
+                            _LOGGER.warning("navigation tracking refused for aircraft %s", drone_id)
                             output.extend(owner.fail_navigation_tracking(error))
                         except PlanPreempted:
                             continue
