@@ -59,6 +59,10 @@ odometry or a label in the map UI cannot substitute for qualified world localiza
 
 ## Current qualification boundary
 
+The [integration reconciliation record](integration-reconciliation-2026-09-07.md)
+accounts for the older telemetry/peripheral work preserved separately. Those source
+files are not implemented capabilities of this runtime.
+
 Source integration and automated tests do not establish a fleet demonstration. The local
 composed configuration preserves the prior world-policy values, starts disarmed, and has
 no qualified navigation assets or speech allowlist. Reusing those values does not qualify

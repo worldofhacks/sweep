@@ -5,7 +5,7 @@ import { useCameraChoice } from '../../media/cameras'
 import type { MediaRuntime } from '../../media/runtime'
 import type { DroneId, RelayAircraftState } from '../../relay/contract'
 import { isReady, membershipTone } from '../../shell/derive'
-import { formatPercent } from '../../shell/format'
+import { formatDeviceLink, formatPercent } from '../../shell/format'
 import { deriveReadiness, deriveStream } from './derive-live'
 import { CameraChoice } from './CameraChoice'
 
@@ -122,7 +122,7 @@ function Tile({
       </div>
       <p className="lv-meta">
         <span className="lv-metric">bat {formatPercent(drone.battery)}</span>
-        <span className="lv-metric">link {formatPercent(drone.link)}</span>
+        <span className="lv-metric">link {formatDeviceLink(drone)}</span>
         <span className="lv-metric">pos {formatPercent(drone.pos_quality)}</span>
         <span className={`tone-${membershipTone(drone.membership, drone.pos_quality)}`}>{membershipWord(drone)}</span>
         <span className={`tone-${readiness.tone}`}>{readiness.text}</span>

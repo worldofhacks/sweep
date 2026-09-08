@@ -137,6 +137,7 @@ class PassthroughVideoEncoderFactory(private val stats: PassthroughStats, privat
                 VideoCodecInfo.H264_FMTP_LEVEL_ASYMMETRY_ALLOWED to "1",
                 VideoCodecInfo.H264_FMTP_PACKETIZATION_MODE to "1",
             ),
+            emptyList(),
         ),
     )
 

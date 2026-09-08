@@ -22,7 +22,7 @@ operations use the existing console bearer credential. Observation ingestion
 requires a separately authenticated, device-bound adapter or localization
 principal. Requests and responses are bounded; state is never supplied by a
 browser as execution authority. Discovery advertises only the available services.
-See [the navigation contract](../relay/NAVIGATION.md), [the shared observation
+See [the navigation wire contract](../relay/navigation_wire.py), [the shared observation
 contract](../spatial/README.md), and [the console workflow](../console/README.md).
 
 Map state resides under the configured relay log directory's `platform` folder.

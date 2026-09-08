@@ -3,6 +3,7 @@
 Sweep is a modular platform for aerial drones and ground robots in one console.
 
 - [Unified fleet control](unified-fleet-control.md): current integrated software, policy requirements and hardware qualification limits.
+- [September 7 integration reconciliation](integration-reconciliation-2026-09-07.md): preserved branches, remaining migration work and the software/hardware completion boundary.
 - [Modular fleet integration](modular-fleet.md): stable identities, camera and sensor inventory, and additive provisioning.
 - [Laptop console](laptop-console.md): one operator URL and explicit runtime/build identity.
 - [Map and navigation integration](platform-integration.md): authenticated map authoring and qualified destination review.

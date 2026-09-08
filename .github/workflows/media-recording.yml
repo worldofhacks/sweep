@@ -7,6 +7,7 @@ on:
       - docker-compose.recording.yml
       - media/**
       - tests/test_mediamtx_recording.py
+      - tests/test_media_configure.py
       - tests/conftest.py
       - pyproject.toml
       - uv.lock
@@ -18,6 +19,7 @@ on:
       - docker-compose.recording.yml
       - media/**
       - tests/test_mediamtx_recording.py
+      - tests/test_media_configure.py
       - tests/conftest.py
       - pyproject.toml
       - uv.lock
@@ -45,4 +47,4 @@ jobs:
       - run: uv sync --locked
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: docker compose -f docker-compose.yml pull mediamtx
-      - run: uv run --no-sync pytest -q tests/test_mediamtx_recording.py
+      - run: uv run --no-sync pytest -q tests/test_mediamtx_recording.py tests/test_media_configure.py

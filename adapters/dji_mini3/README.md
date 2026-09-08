@@ -61,6 +61,10 @@ printf 'sdk.dir=%s/Library/Android/sdk\n' "$HOME" > local.properties   # gitigno
 `settings.gradle.kts` only includes `:app` when an SDK location resolves from
 `local.properties`, `ANDROID_HOME`, or `ANDROID_SDK_ROOT`, so the JVM tasks work on a bare JDK.
 
+Both assembled flavors must pass the [16 KB native-library compatibility
+checks](../../docs/android-pixel-compatibility.md). CI verifies ELF and APK alignment;
+physical phone/RC/aircraft acceptance remains separate.
+
 ### DJI key
 
 Registration needs an app key from the DJI developer portal whose package name is exactly

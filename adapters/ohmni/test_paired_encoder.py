@@ -4,6 +4,8 @@ import json
 import socket
 import threading
 import time
+from collections.abc import Iterator
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -14,6 +16,14 @@ from .paired_encoder import (
     EncoderStreamUnavailable,
     PairedEncoderStream,
 )
+
+
+@pytest.fixture
+def encoder_socket_path() -> Iterator[str]:
+    # macOS pytest roots can exceed AF_UNIX's sun_path limit before the filename.
+    # Each test owns a short private directory; cleanup also removes the socket.
+    with TemporaryDirectory(prefix="sweep-enc-", dir="/tmp") as directory:
+        yield f"{directory}/encoder.sock"
 
 
 def _stream(path: str, events: list[object]) -> threading.Thread:
@@ -35,8 +45,10 @@ def _stream(path: str, events: list[object]) -> threading.Thread:
     return thread
 
 
-def test_paired_encoder_stream_requires_monotonic_bounded_owner_pairs(tmp_path) -> None:
-    path = str(tmp_path / "encoder.sock")
+def test_paired_encoder_stream_requires_monotonic_bounded_owner_pairs(
+    encoder_socket_path: str,
+) -> None:
+    path = encoder_socket_path
     now = time.monotonic_ns()
     thread = _stream(
         path,
@@ -67,8 +79,10 @@ def test_paired_encoder_stream_requires_monotonic_bounded_owner_pairs(tmp_path) 
     thread.join(timeout=1)
 
 
-def test_paired_encoder_stream_ignores_non_object_json_without_killing_odometry(tmp_path) -> None:
-    path = str(tmp_path / "encoder.sock")
+def test_paired_encoder_stream_ignores_non_object_json_without_killing_odometry(
+    encoder_socket_path: str,
+) -> None:
+    path = encoder_socket_path
     now = time.monotonic_ns()
     thread = _stream(
         path,
@@ -91,8 +105,10 @@ def test_paired_encoder_stream_ignores_non_object_json_without_killing_odometry(
     thread.join(timeout=1)
 
 
-def test_paired_encoder_stream_rejects_stale_future_and_reversed_receipts(tmp_path) -> None:
-    path = str(tmp_path / "encoder.sock")
+def test_paired_encoder_stream_rejects_stale_future_and_reversed_receipts(
+    encoder_socket_path: str,
+) -> None:
+    path = encoder_socket_path
     now = time.monotonic_ns()
     thread = _stream(
         path,
@@ -141,8 +157,10 @@ def test_paired_encoder_stream_rejects_stale_future_and_reversed_receipts(tmp_pa
     thread.join(timeout=1)
 
 
-def test_paired_encoder_stream_rejects_receipts_that_go_backwards_between_polls(tmp_path) -> None:
-    path = str(tmp_path / "encoder.sock")
+def test_paired_encoder_stream_rejects_receipts_that_go_backwards_between_polls(
+    encoder_socket_path: str,
+) -> None:
+    path = encoder_socket_path
     now = time.monotonic_ns()
     thread = _stream(
         path,
@@ -215,8 +233,10 @@ def test_odometry_uses_owner_receipt_time_for_freshness() -> None:
     assert odometry.snapshot(1.1 + MAX_SAMPLE_GAP_S + 0.001).quality == 0.0
 
 
-def test_paired_encoder_stream_withdraws_after_owner_reports_a_missing_reply(tmp_path) -> None:
-    path = str(tmp_path / "encoder.sock")
+def test_paired_encoder_stream_withdraws_after_owner_reports_a_missing_reply(
+    encoder_socket_path: str,
+) -> None:
+    path = encoder_socket_path
     thread = _stream(
         path,
         [

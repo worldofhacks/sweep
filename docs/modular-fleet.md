@@ -47,6 +47,10 @@ revision. Successful checks on G-02 do not qualify G-01.
 `{camera_id, label, stream}` records. Streams are safe local MediaMTX names, unique across
 the entire effective mapping. An explicit empty camera list stays empty. A robot's second
 camera needs its own publisher and permissions; the console never duplicates the first.
+Fresh MediaMTX deployments retain the primary `ground1` through `ground4` accounts.
+The [media provisioning workflow](../media/README.md#two-cameras-per-ground-robot-and-additional-units)
+generates exact additional publish/read permissions from the same explicit maps,
+including a robot's second camera and later units, with missing credentials locked.
 
 The media monitor needs successive increasing byte counts before reporting fresh source
 traffic. Each camera expires independently. Missing counters, source claims, old epochs,

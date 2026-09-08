@@ -1,4 +1,4 @@
-import type { DroneId } from '../relay/contract'
+import type { DroneId, RelayAircraftState } from '../relay/contract'
 import { formatDroneId, type DeviceLabeller } from '../control/state'
 
 export function formatTime(value: number): string {
@@ -24,6 +24,14 @@ export function formatSelection(selection: DroneId[], label: DeviceLabeller = fo
 
 export function formatPercent(value: number | null): string {
   return value === null ? '—' : `${Math.round(value * 100)}%`
+}
+
+/** Ground's legacy link field records transport receipt, not measured radio quality. */
+export function formatDeviceLink(device: Pick<RelayAircraftState, 'device_class' | 'link'>, value = device.link): string {
+  if (device.device_class === 'ground_vehicle') {
+    return `${value === null ? 'transport unreported' : 'transport receipt reported'} · radio quality unreported`
+  }
+  return formatPercent(value)
 }
 
 /** "unreported", "just now", or "N s ago" from the design's ago(); never negative. */

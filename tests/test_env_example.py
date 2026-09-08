@@ -26,6 +26,10 @@ ACTIVE_ENVIRONMENT_KEYS = {
     "SWEEP_MEDIA_DRONE2_PASSWORD",
     "SWEEP_MEDIA_DRONE3_PASSWORD",
     "SWEEP_MEDIA_DRONE4_PASSWORD",
+    "SWEEP_MEDIA_GROUND1_PASSWORD",
+    "SWEEP_MEDIA_GROUND2_PASSWORD",
+    "SWEEP_MEDIA_GROUND3_PASSWORD",
+    "SWEEP_MEDIA_GROUND4_PASSWORD",
     "SWEEP_MEDIA_HOST",
     "SWEEP_MEDIA_READ_PASSWORD",
     "SWEEP_MEDIA_READ_USERNAME",
@@ -83,4 +87,7 @@ def test_operator_template_has_no_simulator_or_guessed_motion_policy() -> None:
     assert values["SWEEP_SESSION_ID"] == ""
     for key in ("SWEEP_PLANNING_JSON", "SWEEP_SAFETY_JSON", "SWEEP_SUPERVISED_VERTICAL_JSON"):
         assert values[key] == ""
+    for key, value in values.items():
+        if key.startswith("SWEEP_MEDIA_") and key.endswith("_PASSWORD"):
+            assert value == ""
     assert not any(key.startswith("SWEEP_SIM_") for key in values)

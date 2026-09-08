@@ -51,7 +51,7 @@ describe('Devices module', () => {
     expect(row(one, 'unit')).toHaveTextContent('1 · device id 11 · epoch 1')
     expect(row(one, 'adapter')).toHaveTextContent('ohmni-01')
     expect(row(one, 'capabilities')).toHaveTextContent('class:ground_vehicle, ground_drive, camera, neck, speech, lights, screen, lidar')
-    expect(row(one, 'link')).toHaveTextContent('87% · battery 71% · position 60%')
+    expect(row(one, 'link')).toHaveTextContent('transport receipt reported · radio quality unreported · battery 71% · position 60%')
     expect(row(one, 'authority')).toHaveTextContent('Sweep · spotter present')
     expect(row(one, 'video')).toHaveTextContent('live · just now')
     expect(row(one, 'sensor')).toHaveTextContent('Lidar live · single scan plane only')

@@ -1,7 +1,7 @@
 import type { RelayAircraftState } from '../relay/contract'
 import { DEVICE_FRESH_MS } from '../control/observation'
 import { formatDeviceId } from '../control/state'
-import { formatAgo, formatPercent } from '../shell/format'
+import { formatAgo, formatDeviceLink, formatPercent } from '../shell/format'
 
 export function GroundObservation({ device, now }: { device: RelayAircraftState; now: number }) {
   const ground = device.client_observation?.ground
@@ -18,7 +18,7 @@ export function GroundObservation({ device, now }: { device: RelayAircraftState;
       <p>Authenticated ground observations · wire ID {device.drone_id} · epoch {device.connection_epoch}</p>
       <p>Last relay receipt {ground.lastReportAt === null ? 'unreported' : formatAgo(reportNow, ground.lastReportAt)}</p>
       <p>Declared pose source <code>{device.ground_readiness?.source_id ?? 'unreported'}</code> · {pose ? `${Math.round(pose.confidence * 100)}% confidence` : 'no accepted pose'} · {current(pose?.t_ingest) && ground.poseCurrent ? 'current pose report' : 'current pose unavailable'}</p>
-      {telemetry && <p>{current(ground.telemetry?.t_ingest) ? 'Current telemetry' : 'Last reported telemetry · stale'} · battery {formatPercent(telemetry.battery)} · link {formatPercent(telemetry.link)} · quality {formatPercent(telemetry.pos_quality)} · state {telemetry.state}</p>}
+      {telemetry && <p>{current(ground.telemetry?.t_ingest) ? 'Current telemetry' : 'Last reported telemetry · stale'} · battery {formatPercent(telemetry.battery)} · link {formatDeviceLink(device, telemetry.link)} · quality {formatPercent(telemetry.pos_quality)} · state {telemetry.state}</p>}
       {telemetry && <p>Local odometry · {telemetry.position.frame} · x {telemetry.position.x_m.toFixed(2)} m · y {telemetry.position.y_m.toFixed(2)} m · z {telemetry.position.z_m.toFixed(2)} m</p>}
       <p>{scan ? `${current(ground.scan?.t_ingest) ? 'Current' : 'Last reported · stale'} LiDAR · ${ground.scan?.frame} · ${ranges.length}/${scan.ranges_m.length} returns${ranges.length ? ` · closest ${Math.min(...ranges).toFixed(2)} m` : ''}` : 'LiDAR scan unreported'}</p>
       <p>Local observations do not establish a world position. Motion also requires current relay readiness, drive authority and configured safety checks.</p>
