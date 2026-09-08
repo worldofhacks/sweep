@@ -21,7 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import org.worldofhacks.sweep.bridge.core.flight.AxisProbe
 import org.worldofhacks.sweep.bridge.session.AircraftSession
 
 /**
@@ -100,14 +99,18 @@ private fun ProbesCard(flight: FlightNode) {
             Text("First-flight probes (#85)", style = MaterialTheme.typography.titleMedium)
             Text("RC operator present, guarded hover, thumbs on the sticks. Each procedure writes signed-off entries to the bench log.", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { probes.benchTakeoff() }) { Text("Takeoff 1.2 m") }
+                OutlinedButton(onClick = { probes.takeoff() }) { Text("Takeoff 1.2 m") }
                 OutlinedButton(onClick = probes::benchLand) { Text("Land") }
                 OutlinedButton(onClick = probes::stop) { Text("Stop hold") }
             }
-            Text("Axis-transpose probe: pure pitch, then pure roll, 0.3 m/s for 1.5 s in BODY frame.", style = MaterialTheme.typography.bodySmall)
+            Text("Directional probes: 0.3 m/s for 1.5 s in BODY frame.", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { probes.axisProbe(AxisProbe.Field.PITCH) }) { Text("Pure pitch") }
-                OutlinedButton(onClick = { probes.axisProbe(AxisProbe.Field.ROLL) }) { Text("Pure roll") }
+                OutlinedButton(onClick = { probes.directionalProbe(BodyDirection.FORWARD) }) { Text("Forward") }
+                OutlinedButton(onClick = { probes.directionalProbe(BodyDirection.BACKWARD) }) { Text("Backward") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { probes.directionalProbe(BodyDirection.LEFT) }) { Text("Left") }
+                OutlinedButton(onClick = { probes.directionalProbe(BodyDirection.RIGHT) }) { Text("Right") }
             }
             Text("Hover drills: neutral sticks under virtual stick; then kill the relay, move a stick, or pull the LAN.", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
