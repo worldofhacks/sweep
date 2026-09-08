@@ -153,6 +153,30 @@ def test_remote_search_preview_and_confirmed_intent_use_the_signed_control_pose(
                 "target_classes": list(DEFAULT_TARGET_LABELS),
                 "zones": ["lobby"],
             }
+            resolved = client.post(
+                f"/session/{SESSION}/search/resolve",
+                headers=headers,
+                json={"query": "find a person in the lobby"},
+            )
+            assert resolved.status_code == 200
+            assert resolved.json() | {"correlation_id": "opaque"} == {
+                "session": SESSION,
+                "correlation_id": "opaque",
+                "source": "template",
+                "status": "resolved",
+                "zone_id": "lobby",
+                "target_class": "person",
+                "detail": (
+                    "The target and room are configured. Preview the route before confirming."
+                ),
+            }
+            unsupported = client.post(
+                f"/session/{SESSION}/search/resolve",
+                headers=headers,
+                json={"query": "find a blue backpack in the lobby"},
+            )
+            assert unsupported.json()["status"] == "clarify"
+            assert not autonomy.search_runtime.has_mission(intent.intent_id)
             payload = {
                 "v": 1,
                 "t": 100_000,
@@ -172,6 +196,8 @@ def test_remote_search_preview_and_confirmed_intent_use_the_signed_control_pose(
             )
             assert preview_response.status_code == 200
             assert preview_response.json()["intent_id"] == intent.intent_id
+            assert preview_response.json()["routes"][0]["frame"] == "map_enu"
+            assert len(preview_response.json()["routes"][0]["waypoints"]) >= 2
             assert (
                 client.post(
                     f"/session/{SESSION}/search/preview", headers=headers, json={"intent": payload}
@@ -186,10 +212,15 @@ def test_remote_search_preview_and_confirmed_intent_use_the_signed_control_pose(
             assert not autonomy.search_runtime.accepts_intent(expired, 130_001)
             autonomy.submit(intent, session.current_state())
             with client.websocket_connect(f"/ws/{SESSION}") as adapter:
-                adapter.send_json({
-                    "v": 1, "type": "auth", "source": "adapter", "drone_id": 1,
-                    "token": ADAPTER_KEY.decode(),
-                })
+                adapter.send_json(
+                    {
+                        "v": 1,
+                        "type": "auth",
+                        "source": "adapter",
+                        "drone_id": 1,
+                        "token": ADAPTER_KEY.decode(),
+                    }
+                )
                 assert adapter.receive_json()["type"] == "auth.accepted"
                 frames = [adapter.receive_json() for _ in range(8)]
                 command = next((frame for frame in frames if frame.get("type") == "command"), None)

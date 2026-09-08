@@ -29,6 +29,7 @@ import logging
 import os
 import stat
 import threading
+import uuid
 from collections import deque
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -2049,6 +2050,15 @@ def create_autonomy_app(
             "session": session_id,
             "intent_id": candidate.intent.intent_id,
             "preview": result.search.payload(),
+            "routes": [
+                {
+                    "drone_id": route.drone.drone_id,
+                    "connection_epoch": route.drone.connection_epoch,
+                    "frame": "map_enu",
+                    "waypoints": [list(point.xyz) for point in route.waypoints],
+                }
+                for route in result.plan.navigation.route.routes
+            ],
             "plan": result.plan.to_dict(),
             "expires_at_ms": composition.session(session_id).search_runtime.preview_expires_at_ms(
                 candidate.intent.intent_id
@@ -2070,6 +2080,35 @@ def create_autonomy_app(
             "target_classes": list(DEFAULT_TARGET_LABELS),
             "zones": list(search.config.areas),
         }
+
+    @app.post("/session/{session_id}/search/resolve")
+    async def resolve_search(
+        session_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        search_runtime(authorization)
+        search = composition.session(session_id).search_runtime
+        if search is None:
+            raise HTTPException(status_code=404, detail="search is unavailable")
+        payload = await request.json()
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"query"}
+            or not isinstance(payload["query"], str)
+        ):
+            raise HTTPException(status_code=422, detail="a text search query is required")
+        from language.search_queries import SearchQueryFacts, resolve_search_query
+        from perception.object_detection import DEFAULT_TARGET_LABELS
+
+        correlation_id = str(uuid.uuid4())
+        result = resolve_search_query(
+            payload["query"],
+            SearchQueryFacts(tuple(search.config.areas), tuple(DEFAULT_TARGET_LABELS)),
+            session_id=session_id,
+            correlation_id=correlation_id,
+        )
+        return {"session": session_id, "correlation_id": correlation_id, **result.to_dict()}
 
     @app.get("/session/{session_id}/search/{intent_id}")
     def search_status(

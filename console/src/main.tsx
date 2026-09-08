@@ -27,7 +27,7 @@ void resolveRuntime().then((runtime) => {
     webcam: runtime.webcamClient,
     language: runtime.languageClient,
   }
-  let services = { ...runtime.platform?.getSnapshot(), transcript: runtime.transcriptClient ?? undefined }
+  let services = { ...runtime.platform?.getSnapshot(), transcript: runtime.transcriptClient ?? undefined, search: runtime.searchClient ?? undefined }
   let media: ReturnType<typeof createMediaRuntime> | undefined
   const render = () => root.render(
     <StrictMode>
@@ -37,7 +37,7 @@ void resolveRuntime().then((runtime) => {
     </StrictMode>,
   )
   runtime.platform?.subscribe((platform) => {
-    services = { ...platform, transcript: runtime.transcriptClient ?? undefined }
+    services = { ...platform, transcript: runtime.transcriptClient ?? undefined, search: runtime.searchClient ?? undefined }
     render()
   })
 

@@ -8,6 +8,8 @@ const POLL_MS = 2_000
 export function SearchModule({ controller, services }: ModuleProps) {
   const { state, pendingRequest, prepareSearch, cancelRequest } = controller
   const [catalog, setCatalog] = useState<SearchCatalog | null>(null)
+  const [query, setQuery] = useState('')
+  const [interpretation, setInterpretation] = useState<string | null>(null)
   const [zoneId, setZoneId] = useState('')
   const [targetClass, setTargetClass] = useState('')
   const [preview, setPreview] = useState<SearchPreview | null>(null)
@@ -68,6 +70,25 @@ export function SearchModule({ controller, services }: ModuleProps) {
     catch (reason) { setError(reason instanceof Error ? reason.message : 'The search could not be prepared.') }
     finally { setBusy(false) }
   }
+  const prepareQuery = async () => {
+    if (!services.search?.resolve || !catalog) return
+    setBusy(true)
+    setError(null)
+    try {
+      const resolved = await services.search.resolve(state.sessionId, query)
+      setInterpretation(resolved.detail)
+      if (resolved.status !== 'resolved') return
+      if (!resolved.zone_id || !resolved.target_class || !catalog.zones.includes(resolved.zone_id) || !catalog.target_classes.includes(resolved.target_class)) {
+        throw new Error('Search configuration changed. Reload the configured rooms and targets.')
+      }
+      setZoneId(resolved.zone_id)
+      setTargetClass(resolved.target_class)
+      const prepared = await prepareSearch(resolved.zone_id, resolved.target_class)
+      setPreview(prepared.preview)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The search request could not be prepared.')
+    } finally { setBusy(false) }
+  }
   const acknowledge = async (sightingId: string) => {
     if (!services.search || searchRequest === null) return
     setAcknowledging(sightingId)
@@ -86,6 +107,21 @@ export function SearchModule({ controller, services }: ModuleProps) {
         <p>Select the configured room and target class. The relay freezes both the route and coverage tasks before confirmation.</p>
         {!enabled && <p role="status">Search is not configured on this relay.</p>}
         {enabled && !services.search && <p role="status">The search connection is unavailable.</p>}
+        {services.search?.resolve && <form className="se-query" onSubmit={(event) => { event.preventDefault(); void prepareQuery() }}>
+          <label htmlFor="search-query">Describe the search</label>
+          <div><input id="search-query" value={query} disabled={busy || !enabled}
+            placeholder="Find a backpack in the lobby" maxLength={2000}
+            onChange={(event) => {
+              setQuery(event.target.value)
+              setInterpretation(null)
+              setPreview(null)
+              if (pendingRequest?.intent.name === 'search') cancelRequest(pendingRequest.intent.intent_id)
+            }} />
+            <button type="submit" className="se-button" disabled={busy || !ready || !catalog || !query.trim() || !enabled}>Preview request</button>
+          </div>
+          <p>Matches configured object classes and rooms. Colour and appearance filters are unavailable.</p>
+          {interpretation && <p role="status">{interpretation}</p>}
+        </form>}
         <div className="se-controls">
           <label>Room
             <select aria-label="Search room" value={zoneId} disabled={busy || !catalog || !enabled}
@@ -130,6 +166,7 @@ function SearchPreviewView({ preview }: { preview: SearchPreview }) {
     <div className="se-panel">
       <h2>Frozen mission preview</h2>
       <p>{preview.preview.zone_id} · {preview.preview.target_class}</p>
+      <SearchRoutes routes={preview.routes} />
       <table>
         <caption>Selected aircraft and coverage allocation</caption>
         <thead><tr><th>Aircraft</th><th>Camera source</th><th>Cells</th><th>Lanes</th></tr></thead>
@@ -189,4 +226,30 @@ function CoveragePlot({ cells }: { cells: Array<{ cell_id: string; x_m: number; 
     {cells.map((cell) => <span key={cell.cell_id} className={cell.covered ? 'is-covered' : undefined}
       style={{ left: `${x(cell)}%`, top: `${y(cell)}%` }} />)}
   </div>
+}
+
+
+function SearchRoutes({ routes }: { routes: SearchPreview['routes'] }) {
+  const points = routes.flatMap((route) => route.waypoints)
+  const xs = points.map((point) => point[0]), ys = points.map((point) => point[1])
+  const minX = Math.min(...xs), minY = Math.min(...ys)
+  const width = Math.max(1, Math.max(...xs) - minX), height = Math.max(1, Math.max(...ys) - minY)
+  const scale = Math.min(540 / width, 200 / height)
+  const pixel = (point: [number, number, number]) => [30 + (point[0] - minX) * scale, 220 - (point[1] - minY) * scale]
+  return <figure className="se-routes">
+    <svg viewBox="0 0 600 250" role="img" aria-label="Frozen search flight routes in map coordinates">
+      {routes.map((route, index) => <g key={route.drone_id} className={`se-route se-route-${index}`}>
+        <polyline points={route.waypoints.map((point) => pixel(point).join(',')).join(' ')} />
+        {route.waypoints.map((point, waypoint) => <circle key={waypoint} cx={pixel(point)[0]} cy={pixel(point)[1]} r={waypoint === 0 ? 5 : 3} />)}
+        <text x={pixel(route.waypoints[0])[0] + 8} y={pixel(route.waypoints[0])[1] - 8}>D{route.drone_id} start</text>
+      </g>)}
+    </svg>
+    <figcaption>Planned movement, viewed from above. Coordinates and height are in metres in the accepted map.</figcaption>
+    <details><summary>Review waypoint coordinates</summary>
+      <table><thead><tr><th>Aircraft</th><th>Waypoint</th><th>X</th><th>Y</th><th>Height</th></tr></thead>
+        <tbody>{routes.flatMap((route) => route.waypoints.map((point, index) =>
+          <tr key={`${route.drone_id}-${index}`}><td>D{route.drone_id}</td><td>{index === 0 ? 'Start' : index}</td>{point.map((value, axis) => <td key={axis}>{value.toFixed(2)}</td>)}</tr>,
+        ))}</tbody></table>
+    </details>
+  </figure>
 }

@@ -15,3 +15,21 @@
 .se-findings { display: grid; gap: 8px; padding: 0; list-style: none; }
 .se-findings li { display: grid; gap: 5px; padding: 10px 0; border-bottom: 1px solid var(--color-ground); }
 .se-findings button { width: fit-content; }
+
+.se-routes { margin: 16px 0; }
+.se-routes svg { width: 100%; max-height: 300px; border: 1px solid var(--color-border-secondary); }
+.se-route { color: var(--color-ink); }
+.se-route polyline { fill: none; stroke: currentColor; stroke-width: 2; }
+.se-route circle { fill: currentColor; }
+.se-route text { fill: currentColor; font-size: 12px; }
+.se-route-1 { color: var(--color-ok); }
+.se-route-2 { color: var(--color-warn); }
+.se-route-3 { color: var(--color-danger); }
+.se-routes figcaption, .se-routes details { margin-top: 8px; color: var(--color-ink-2); font-size: var(--text-12); }
+.se-routes td { font-variant-numeric: tabular-nums; }
+
+.se-query { margin: 16px 0; }
+.se-query > label { display: block; margin-bottom: 5px; font-size: var(--text-12); }
+.se-query > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.se-query input { min-width: 220px; flex: 1; min-height: var(--min-h-38); padding: 7px 10px; border: 1px solid var(--color-border-input); background: var(--color-surface); color: var(--color-ink); }
+.se-query p { font-size: var(--text-12); }
