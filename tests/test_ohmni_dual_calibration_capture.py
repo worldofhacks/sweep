@@ -1,4 +1,6 @@
+import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import cv2
@@ -38,7 +40,7 @@ def test_run_writes_decoded_camera_records_and_receipt_intervals(tmp_path, monke
     monkeypatch.setattr(capture.time, "monotonic_ns", lambda: 100)
 
     output = tmp_path / "capture"
-    capture.run("serial-1", output, count=1, duration_s=1)
+    capture.run("serial-1", output, expected_boot_id="boot-1", count=1, duration_s=1)
 
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["capture"]["pairing"] == "sequential main then lower; not simultaneous"
@@ -46,6 +48,9 @@ def test_run_writes_decoded_camera_records_and_receipt_intervals(tmp_path, monke
     for camera, shape in (("main", [1280, 720]), ("lower", [4, 3])):
         record = json.loads((output / camera / "frame-000000.json").read_text())
         assert record["shape_px"] == shape
+        source = output / camera / ("raw-000000.uyvy" if camera == "main" else "raw-000000.mjpg")
+        assert record["source_file"] == source.name
+        assert record["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
         assert record["capture_timing"] == {
             "status": "measured",
             "clock_domain": "capture_host_monotonic",
@@ -55,6 +60,7 @@ def test_run_writes_decoded_camera_records_and_receipt_intervals(tmp_path, monke
         }
         assert (output / camera / "frame-000000.png").exists()
     assert sum("pull" in command for command in commands) == 2
+    assert commands[-1][-1].startswith("rm -f /data/local/tmp/ohmni-cal-")
 
 
 @pytest.mark.parametrize("count,duration", [(0, 1), (61, 1), (1, 0), (1, 31)])
@@ -62,4 +68,46 @@ def test_run_refuses_capture_bounds_without_starting_adb(tmp_path, monkeypatch, 
     monkeypatch.setattr(capture.subprocess, "check_output", pytest.fail)
 
     with pytest.raises(ValueError, match="count must be 1..60 and duration at most 30s"):
-        capture.run("serial-1", tmp_path / "capture", count=count, duration_s=duration)
+        capture.run(
+            "serial-1",
+            tmp_path / "capture",
+            expected_boot_id="boot-1",
+            count=count,
+            duration_s=duration,
+        )
+
+
+def test_run_stops_before_a_capture_after_the_deadline(tmp_path, monkeypatch):
+    commands = []
+    moments = iter((0, 0, 950_000_000, 950_000_000))
+    monkeypatch.setattr(capture.time, "monotonic_ns", lambda: next(moments))
+    monkeypatch.setattr(capture.subprocess, "check_output", lambda *_args, **_kwargs: "boot-1\n")
+    monkeypatch.setattr(
+        capture.subprocess, "run", lambda command, **_kwargs: commands.append(command)
+    )
+
+    with pytest.raises(TimeoutError, match="duration elapsed"):
+        capture.run("serial-1", tmp_path / "capture", expected_boot_id="boot-1", duration_s=1)
+
+    assert not any("v4l2-ctl" in command[-1] for command in commands)
+    assert commands[-1][-1].startswith("rm -f /data/local/tmp/ohmni-cal-")
+
+
+def test_run_cleans_its_remote_prefix_when_a_pull_fails(tmp_path, monkeypatch):
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if "pull" in command:
+            raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(capture.time, "monotonic_ns", lambda: 100)
+    monkeypatch.setattr(capture.subprocess, "check_output", lambda *_args, **_kwargs: "boot-1\n")
+    monkeypatch.setattr(capture.subprocess, "run", fake_run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        capture.run(
+            "serial-1", tmp_path / "capture", expected_boot_id="boot-1", count=1, duration_s=1
+        )
+
+    assert commands[-1][-1].startswith("rm -f /data/local/tmp/ohmni-cal-")

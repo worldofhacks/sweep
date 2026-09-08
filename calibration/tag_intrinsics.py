@@ -122,7 +122,9 @@ def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
         if not isfinite(float(rms)) or rms >= _MAXIMUM_RMS_REPROJECTION_ERROR_PX:
             reasons.append("RMS reprojection error is at least 0.5 pixels")
         if not reasons:
-            report["status"] = "candidate"
+            reasons.append(
+                "fisheye fit is unqualified without held-out error, stability, and FOV validation"
+            )
         return report
     rms, camera_matrix, distortion, _, _, stddev, _, _ = cv2.calibrateCameraExtended(
         object_points, image_points, image_size, None, None

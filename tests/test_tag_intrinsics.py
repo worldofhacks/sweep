@@ -104,3 +104,39 @@ def test_tag_candidate_refuses_single_square_fisheye_fit(tmp_path: Path) -> None
                 frames_dir=tmp_path,
             )
         )
+
+
+def test_tag_fisheye_fit_remains_unqualified_without_external_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = tmp_path / "corners.json"
+    rotations = [
+        np.array([0.35 * np.sin(index), 0.35 * np.cos(index), 0.1 * index])
+        for index in range(25)
+    ]
+    _evidence(evidence, rotations)
+
+    def module_views(*_args):
+        points = np.zeros((6, 3))
+        pixels = np.zeros((6, 2))
+        return [(points, pixels)] * 25
+
+    monkeypatch.setattr("calibration.tag_intrinsics._module_views", module_views)
+    monkeypatch.setattr(
+        cv2.fisheye,
+        "calibrate",
+        lambda *_args, **_kwargs: (0.1, np.eye(3), np.zeros((4, 1)), [], []),
+    )
+
+    result = calibrate_tag_candidate(
+        TagCandidateRequest(
+            evidence=evidence,
+            tag_size_m=0.199898,
+            pipeline=_pipeline(),
+            model="fisheye",
+            frames_dir=tmp_path,
+        )
+    )
+
+    assert result["status"] == "rejected"
+    assert "fisheye fit is unqualified" in result["rejection_reasons"][0]

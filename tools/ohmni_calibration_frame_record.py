@@ -18,6 +18,7 @@ def record(
     captured_monotonic_ns: int | None,
     receipt_started_monotonic_ns: int | None = None,
     receipt_ended_monotonic_ns: int | None = None,
+    source_path: Path | None = None,
 ) -> None:
     image = cv2.imread(str(image_path))
     if image is None or frame_index < 0 or not boot_id:
@@ -30,6 +31,8 @@ def record(
         and receipt_ended_monotonic_ns < receipt_started_monotonic_ns
     ):
         raise ValueError("receipt timing must end after it starts")
+    if source_path is not None and not source_path.is_file():
+        raise ValueError("source image does not exist")
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
     detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
     corners, identifiers, _ = detector.detectMarkers(image)
@@ -47,6 +50,9 @@ def record(
             [] if identifiers is None else [item.reshape(4, 2).tolist() for item in corners]
         ),
     }
+    if source_path is not None:
+        payload["source_file"] = source_path.name
+        payload["source_sha256"] = hashlib.sha256(source_path.read_bytes()).hexdigest()
     output.write_text(json.dumps(payload, sort_keys=True) + "\n")
 
 
@@ -77,6 +83,7 @@ def main() -> None:
     parser.add_argument("--captured-monotonic-ns", type=int)
     parser.add_argument("--receipt-started-monotonic-ns", type=int)
     parser.add_argument("--receipt-ended-monotonic-ns", type=int)
+    parser.add_argument("--source", type=Path)
     args = parser.parse_args()
     record(
         args.image,
@@ -86,6 +93,7 @@ def main() -> None:
         args.captured_monotonic_ns,
         args.receipt_started_monotonic_ns,
         args.receipt_ended_monotonic_ns,
+        args.source,
     )
 
 
