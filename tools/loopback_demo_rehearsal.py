@@ -514,6 +514,9 @@ class LoopbackDemoRehearsal:
         self._node._aircraft.state = "hovering"
         self._node.start()
         self._wait_for_ready_node(app)
+        self._composition.runtime.sessions[self.session_id].update_control_projection(
+            selection=(1,), armed=True
+        )
         self._pose_publisher = MovingControlPosePublisher(
             relay_url=self.relay_url,
             session_id=self.session_id,

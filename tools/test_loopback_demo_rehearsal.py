@@ -68,6 +68,21 @@ def test_loopback_rehearsal_publishes_a_fresh_signed_pose_and_private_bootstrap(
             "lobby",
             "demo-east",
         ]
+        with urlopen(
+            Request(
+                f"http://127.0.0.1:{rehearsal.relay_port}/session/{rehearsal.session_id}",
+                headers={"Authorization": f"Bearer {payload['relay']['token']}"},
+            ),
+            timeout=3,
+        ) as response:
+            replay = json.loads(response.read())
+        state = next(
+            record["event"]
+            for record in reversed(replay["events"])
+            if record["event"]["type"] == "state"
+        )
+        assert state["armed"] is True
+        assert state["drones"][0]["telemetry"]["state"] == "hovering"
 
         runtime = rehearsal._composition.runtime
         autonomy = rehearsal._composition.session(rehearsal.session_id)
@@ -82,6 +97,6 @@ def test_loopback_rehearsal_publishes_a_fresh_signed_pose_and_private_bootstrap(
                 break
             time.sleep(0.05)
         assert pose is not None
-        state = runtime.sessions[rehearsal.session_id].current_state()
-        assert "test:synthetic" in state["drones"][0]["adapter_capabilities"]
+        relay_state = runtime.sessions[rehearsal.session_id].current_state()
+        assert "test:synthetic" in relay_state["drones"][0]["adapter_capabilities"]
     assert not bootstrap.exists()
