@@ -150,11 +150,15 @@ class HostLease:
         self._last_seq = 0
         self._renewed_at: float | None = None
         self._closed = False
+        self._max_received_gap_s = 0.0
+        self._termination_reason: str | None = None
         self._lock = threading.Lock()
 
     def renew(self, sequence: int, token: bytes) -> bool:
         now = self._monotonic()
         with self._lock:
+            if self._renewed_at is not None:
+                self._max_received_gap_s = max(self._max_received_gap_s, now - self._renewed_at)
             if (
                 self._closed
                 or self._renewed_at is not None
@@ -164,14 +168,17 @@ class HostLease:
                 or sequence <= self._last_seq
             ):
                 self._closed = True
+                self._termination_reason = self._termination_reason or "lease_renewal_rejected"
                 return False
             self._last_seq = sequence
             self._renewed_at = now
             return True
 
-    def close(self) -> None:
+    def close(self, reason: str | None = None) -> None:
         with self._lock:
             self._closed = True
+            if reason is not None and self._termination_reason is None:
+                self._termination_reason = reason
 
     def ready(self) -> bool:
         with self._lock:
@@ -185,8 +192,19 @@ class HostLease:
                 or now - self._renewed_at >= LEASE_MAX_AGE_S
             ):
                 self._closed = True
+                self._termination_reason = self._termination_reason or "lease_max_age_exceeded"
                 return "calibration_host_lease_expired"
             return None
+
+    def diagnostics(self, now: float | None = None) -> dict[str, float | str | None]:
+        with self._lock:
+            max_received_gap_s = self._max_received_gap_s
+            if now is not None and self._renewed_at is not None:
+                max_received_gap_s = max(max_received_gap_s, now - self._renewed_at)
+            return {
+                "termination_reason": self._termination_reason,
+                "max_received_gap_s": max_received_gap_s,
+            }
 
 
 class LeaseSocketPump:
@@ -212,9 +230,10 @@ class LeaseSocketPump:
         self._stop.set()
         if self._thread.is_alive():
             self._thread.join(timeout=LEASE_MAX_AGE_S)
-        self.lease.close()
+        self.lease.close("lease_socket_closed")
 
     def _run(self) -> None:
+        termination_reason = "lease_socket_stopped"
         try:
             with socket.create_connection(
                 (self.host, self.port), timeout=LEASE_MAX_AGE_S
@@ -224,19 +243,22 @@ class LeaseSocketPump:
                 while not self._stop.is_set():
                     line = stream.readline(80)
                     if not line:
+                        termination_reason = "lease_socket_eof"
                         return
                     try:
                         sequence_text, token_text = line.decode("ascii").strip().split(" ")
                         token = bytes.fromhex(token_text)
                         sequence = int(sequence_text)
                     except (UnicodeDecodeError, ValueError):
+                        termination_reason = "lease_socket_invalid_message"
                         return
                     if not self.lease.renew(sequence, token):
+                        termination_reason = "lease_renewal_rejected"
                         return
         except OSError:
-            pass
+            termination_reason = "lease_socket_error"
         finally:
-            self.lease.close()
+            self.lease.close(termination_reason)
             self.on_lost()
 
 
@@ -518,14 +540,18 @@ class CalibrationRunner:
                 host_lease=self._device_guard,
             )
             deadline = self.monotonic() + self.config.pulse_duration_s + LEASE_MAX_AGE_S
-            while self.device.motion_done(motion_id) is False:
+            while True:
+                completed = self.device.motion_done(motion_id)
+                if completed is not False:
+                    break
                 self._require_lease()
                 self._snapshot()
                 if self.monotonic() >= deadline:
                     self.device.stop()
                     raise CalibrationError("calibration_pulse_timeout")
                 self.sleep(0.01)
-            if self.device.motion_done(motion_id) is not True:
+            if completed is not True:
+                self._require_lease()
                 self.device.stop()
                 raise CalibrationError(self.device.last_refusal or "calibration_pulse_failed")
             pose_after, _ = self._snapshot()
@@ -560,6 +586,7 @@ class CalibrationRunner:
             "executed_bundle_source_sha256": self.executed_bundle_source_sha256,
             "failure": str(error),
             "device_refusal": self.device.last_refusal,
+            "lease_diagnostics": self.lease.diagnostics(self.monotonic()),
             "elapsed_s": self.monotonic() - self._started,
             "wheel_travel_m": wheel_travel,
             "yaw_travel_deg": yaw,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from .calibration import TICKS_PER_MM, CalibrationConfig, HostLease, _Progress
@@ -158,6 +160,20 @@ def test_initial_or_bad_lease_never_authorizes_calibration_motion(
     assert not lease.renew(1, b"e" * 32)
     with pytest.raises(RuntimeError, match="calibration_host_lease_expired"):
         device.calibration_drive_velocity(0.04, 0.0, 0.5, host_lease=lease.reason)
+
+
+def test_lease_diagnostics_retains_the_late_renewal_gap() -> None:
+    clock = Clock()
+    token = b"d" * 32
+    lease = HostLease(token, monotonic=clock)
+    assert lease.renew(1, token)
+    clock.value += 0.36
+    assert not lease.renew(2, token)
+
+    assert lease.diagnostics() == {
+        "termination_reason": "lease_renewal_rejected",
+        "max_received_gap_s": pytest.approx(0.36),
+    }
 
 
 def test_opposite_wheel_encoder_deltas_count_as_yaw_and_wheel_travel() -> None:
@@ -405,6 +421,42 @@ def test_runner_stops_and_removes_incomplete_capture_after_live_fault(
     assert simulation.device.motion is None
     assert not simulation.device.enabled
     assert simulation.shell.commands[-2:] == ["manual_move 0 0", "sleep"]
+
+
+def test_runner_preserves_lease_expiry_when_pump_teardown_clears_active_motion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from .calibration import CalibrationError, CalibrationRunner
+
+    simulation = RunnerSimulation(monkeypatch)
+    output = tmp_path / "capture.json"
+    original_sleep = simulation.sleep
+    lease_lost = False
+
+    def pump_teardown(delay: float) -> None:
+        nonlocal lease_lost
+        if simulation.units != (0, 0) and not lease_lost:
+            lease_lost = True
+            simulation.lease.close("lease_socket_eof")
+            simulation.device.disable()
+        original_sleep(delay)
+
+    with pytest.raises(CalibrationError, match="calibration_host_lease_expired"):
+        CalibrationRunner(
+            simulation.device,
+            simulation.lease,
+            output,
+            monotonic=simulation.clock,
+            sleep=pump_teardown,
+        ).run()
+
+    failure = json.loads((tmp_path / "capture.json.failed.json").read_text())
+    assert lease_lost
+    assert failure["failure"] == "calibration_host_lease_expired"
+    assert failure["device_refusal"] is None
+    assert failure["lease_diagnostics"]["termination_reason"] == "lease_socket_eof"
+    assert failure["lease_diagnostics"]["max_received_gap_s"] == pytest.approx(0.1)
+    assert not output.exists()
 
 
 def test_runner_refuses_an_existing_output_before_enabling(
