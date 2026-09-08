@@ -12,6 +12,7 @@ import cv2
 
 from calibration.intrinsics import CalibrationRequest, calibrate
 from calibration.latency import summarize_latency
+from calibration.tag_intrinsics import TagCandidateRequest, calibrate_tag_candidate
 
 
 def _read_json(path: Path) -> object:
@@ -84,6 +85,25 @@ def _latency_command(args: argparse.Namespace) -> None:
     _write_artifact(args.output, artifact)
 
 
+def _tag_candidate_command(args: argparse.Namespace) -> None:
+    pipeline = _read_json(args.pipeline)
+    if not isinstance(pipeline, dict):
+        raise ValueError("pipeline JSON must be an object")
+    _write_artifact(
+        args.output,
+        calibrate_tag_candidate(
+            TagCandidateRequest(
+                evidence=args.evidence,
+                tag_size_m=args.tag_size_m,
+                pipeline=pipeline,
+                minimum_frame_gap=args.minimum_frame_gap,
+                maximum_views=args.maximum_views,
+                model=args.model,
+            )
+        ),
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Create offline calibration artifacts from decoded checkerboard image files."
@@ -104,6 +124,18 @@ def _parser() -> argparse.ArgumentParser:
     )
     intrinsics.add_argument("--output", type=Path, required=True)
     intrinsics.set_defaults(handler=_intrinsics_command)
+
+    tags = commands.add_parser(
+        "apriltag-candidate", help="fit a diagnostic intrinsics candidate from raw tag corners"
+    )
+    tags.add_argument("--evidence", type=Path, required=True)
+    tags.add_argument("--tag-size-m", type=float, required=True)
+    tags.add_argument("--model", choices=("pinhole", "fisheye"), default="pinhole")
+    tags.add_argument("--pipeline", type=Path, required=True)
+    tags.add_argument("--minimum-frame-gap", type=int, default=8)
+    tags.add_argument("--maximum-views", type=int, default=30)
+    tags.add_argument("--output", type=Path, required=True)
+    tags.set_defaults(handler=_tag_candidate_command)
 
     latency = commands.add_parser("latency", help="summarize explicitly measured latency samples")
     latency.add_argument("--samples", type=Path, required=True)
