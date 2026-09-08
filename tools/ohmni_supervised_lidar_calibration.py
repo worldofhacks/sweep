@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 LEASE_PORT = 18912
-TICK_SECONDS = 0.1
+TICK_SECONDS = 0.05
 MAX_RUNTIME_SECONDS = 90.0
 
 
@@ -23,14 +23,18 @@ def serve_lease(listener: socket.socket, token: bytes, *, lifetime_s: float = 60
     connection, _ = listener.accept()
     with connection:
         connection.settimeout(0.35)
+        connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         with connection.makefile("rb") as stream:
             if not hmac.compare_digest(stream.readline(66), encoded_token + b"\n"):
                 raise ValueError("lease authentication failed")
             sequence = 0
+            next_tick = time.monotonic()
             while time.monotonic() < deadline:
                 sequence += 1
                 connection.sendall(str(sequence).encode() + b" " + encoded_token + b"\n")
-                time.sleep(min(TICK_SECONDS, max(0.0, deadline - time.monotonic())))
+                now = time.monotonic()
+                next_tick = max(next_tick + TICK_SECONDS, now)
+                time.sleep(max(0.0, min(next_tick, deadline) - now))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,8 +53,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Calibration lease listener ready on loopback.", flush=True)
         try:
             serve_lease(listener, token, lifetime_s=args.lifetime_s)
-        except (OSError, ValueError):
-            print("Calibration lease ended or was refused.", flush=True)
+        except (OSError, ValueError) as error:
+            print(f"Calibration lease ended or was refused: {type(error).__name__}.", flush=True)
             return 1
     return 0
 
