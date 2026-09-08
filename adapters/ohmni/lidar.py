@@ -72,7 +72,11 @@ class SelfReturnBinding:
             or not self.source_boot_id.isprintable()
         ):
             raise ValueError("self-return source boot ID must be bounded non-empty text")
-        if not math.isfinite(self.offset_deg) or self.angle_sign not in (-1, 1):
+        if (
+            not math.isfinite(self.offset_deg)
+            or type(self.angle_sign) is not int
+            or self.angle_sign not in (-1, 1)
+        ):
             raise ValueError("self-return calibration needs a finite offset and angle sign")
         mount = (self.mount_x_m, self.mount_y_m, self.mount_z_m)
         if not all(math.isfinite(value) for value in mount):
@@ -162,21 +166,29 @@ def robot_bins(
     Calibration describes the mounting AND angle handedness. It is never guessed from
     model documentation. Multiple points in a bin retain the closest valid return.
     """
-    if not math.isfinite(offset_deg) or angle_sign not in (-1, 1):
+    if (
+        not math.isfinite(offset_deg)
+        or type(angle_sign) is not int
+        or angle_sign not in (-1, 1)
+    ):
         raise ValueError("lidar needs a finite mounting offset and angle sign -1 or 1")
     bins = [0] * 360
+    masked_bins: set[int] = set()
     for point in points:
         if not 0 <= point.angle_deg < 360 or point.quality == 0:
             continue
+        bucket = int(round(offset_deg + angle_sign * point.angle_deg)) % 360
         if self_return_profile is not None and self_return_profile.matches(
             point, self_return_binding, now
         ):
+            masked_bins.add(bucket)
             continue
         if not 150 <= point.distance_mm <= 12000:
             continue
-        bucket = int(round(offset_deg + angle_sign * point.angle_deg)) % 360
         cm = int(round(point.distance_mm / 10))
         bins[bucket] = min(bins[bucket], cm) if bins[bucket] else cm
+    for bucket in masked_bins:
+        bins[bucket] = 0
     return bins
 
 
@@ -209,6 +221,7 @@ class Lidar:
         return (
             self.offset_deg is not None
             and math.isfinite(self.offset_deg)
+            and type(self.angle_sign) is int
             and self.angle_sign in (-1, 1)
         )
 

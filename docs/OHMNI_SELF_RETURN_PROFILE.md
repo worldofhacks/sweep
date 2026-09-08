@@ -17,7 +17,7 @@ An operator or deployment integration must pass a profile explicitly to `Config`
 - the unit ID, source boot ID, raw-angle calibration, and three-dimensional mount match the profile; and
 - the point is inside one of the profile's measured bands.
 
-A mismatch or expired qualification leaves the point in the derived scan. A filtered ray becomes an unknown scan bin. The existing full-circle ground guard refuses unknown bins, so filtering cannot create free space. A valid physical qualification must establish that the selected ray lies inside the robot's body or an occlusion region where an external return cannot be distinguished from the qualified self-return.
+A mismatch or expired qualification leaves the point in the derived scan. A filtered ray marks its rounded output bin unknown, including when another packet maps to that bin. The existing full-circle ground guard refuses unknown bins, so filtering cannot create free space. A valid physical qualification must establish that the selected ray lies inside the robot's body or an occlusion region where an external return cannot be distinguished from the qualified self-return.
 
 ## Physical acceptance pending
 

@@ -5,6 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from .botshell import BotShell
 from .device import Config, OhmniDevice
 from .lidar import UNIT12_SELF_RETURN_CANDIDATE, Lidar, SelfReturnBand, SelfReturnProfile
@@ -116,14 +118,14 @@ def test_observational_candidate_is_inactive_and_preserves_raw_returns() -> None
     assert guarded_device(lidar).guard_reason(now=NOW) == "obstacle_within_clearance"
 
 
-def test_qualified_profile_filters_only_its_measured_ray_in_production_scan() -> None:
+def test_qualified_profile_filters_its_measured_ray_and_safety_refuses_unknown() -> None:
     profile = qualified_profile()
     candidate = Measurement(False, 15, 178.921875, 181.375)
     lidar = publish(profile, candidate)
 
     assert profile.matches(candidate, profile.binding, NOW)
     assert lidar.raw_revolution(NOW).points[-1].distance_mm == 181.5
-    assert guarded_device(lidar).guard_reason(now=NOW) is None
+    assert guarded_device(lidar).guard_reason(now=NOW) == "lidar_full_circle_coverage_missing"
 
 
 def test_filtered_self_ray_stays_unknown_when_no_other_return_reaches_that_ray() -> None:
@@ -132,6 +134,29 @@ def test_filtered_self_ray_stays_unknown_when_no_other_return_reaches_that_ray()
     lidar = publish(profile, candidate, reference_at_candidate_angle=False)
 
     assert 0 in lidar.scan.ranges_cm
+    assert guarded_device(lidar).guard_reason(now=NOW) == "lidar_full_circle_coverage_missing"
+
+
+@pytest.mark.parametrize(
+    "returns",
+    [
+        (
+            Measurement(False, 15, 178.921875, 181.375),
+            Measurement(False, 15, 179.0, 1000.0),
+        ),
+        (
+            Measurement(False, 15, 179.0, 1000.0),
+            Measurement(False, 15, 178.921875, 181.375),
+        ),
+    ],
+)
+def test_matched_ray_keeps_its_rounded_body_bin_unknown_regardless_of_packet_order(returns) -> None:
+    lidar = publish(qualified_profile(), *returns)
+    binding = UNIT12_SELF_RETURN_CANDIDATE.binding
+    bucket = int(round(binding.offset_deg - 178.921875)) % 360
+
+    assert lidar.scan.ranges_cm[bucket] == 0
+    assert lidar.raw_revolution(NOW).points[-2:]
     assert guarded_device(lidar).guard_reason(now=NOW) == "lidar_full_circle_coverage_missing"
 
 
@@ -167,7 +192,9 @@ def test_room_fixed_points_and_wrong_or_stale_bindings_are_never_filtered() -> N
     assert guarded_device(publish(profile, *room)).guard_reason(now=NOW) == (
         "obstacle_within_clearance"
     )
-    assert guarded_device(publish(profile, candidate)).guard_reason(now=NOW) is None
+    assert guarded_device(publish(profile, candidate)).guard_reason(now=NOW) == (
+        "lidar_full_circle_coverage_missing"
+    )
     assert (
         guarded_device(publish(profile, candidate, binding=wrong_device)).guard_reason(now=NOW)
         == "obstacle_within_clearance"
@@ -203,4 +230,10 @@ def test_device_wires_an_explicitly_qualified_profile_to_its_lidar() -> None:
 
     assert device.lidar.self_return_profile == qualified_profile()
     assert device.lidar.self_return_binding == binding
-    assert device.guard_reason(now=NOW) is None
+    assert device.guard_reason(now=NOW) == "lidar_full_circle_coverage_missing"
+
+
+def test_boolean_angle_sign_is_not_a_calibration() -> None:
+    binding = UNIT12_SELF_RETURN_CANDIDATE.binding
+    with pytest.raises(ValueError, match="angle sign"):
+        replace(binding, angle_sign=True)
