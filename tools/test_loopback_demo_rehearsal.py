@@ -176,6 +176,7 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
         credentials = json.loads(bootstrap.read_text())["relay"]
         base = f"http://127.0.0.1:{rehearsal.relay_port}/api/sessions/{rehearsal.session_id}"
         _select_aircraft(rehearsal, credentials["token"])
+
         def ready_pose() -> bool:
             pose = rehearsal._composition.runtime.sessions[rehearsal.session_id].control_pose(1)
             return pose is not None and epoch_ms() - pose.fix_time_ms >= 2

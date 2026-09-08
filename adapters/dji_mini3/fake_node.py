@@ -290,15 +290,20 @@ class FakeNode:
                 self._pending_goto_completion = None
                 self._enqueue(self._acknowledgement(pending, "completed"))
 
-    def _navigation_pose_matches_aircraft(self, frame: dict[str, object], command: CommandFrame) -> bool:
+    def _navigation_pose_matches_aircraft(
+        self, frame: dict[str, object], command: CommandFrame
+    ) -> bool:
         if frame.get("command_id") != command.command_id:
             return False
         coordinates = (frame.get("x_mm"), frame.get("y_mm"), frame.get("z_mm"))
-        expected = tuple(round(value * 1_000) for value in (
-            self._aircraft.x,
-            self._aircraft.y,
-            self._aircraft.z,
-        ))
+        expected = tuple(
+            round(value * 1_000)
+            for value in (
+                self._aircraft.x,
+                self._aircraft.y,
+                self._aircraft.z,
+            )
+        )
         return coordinates == expected
 
     def _handle_command(self, raw: dict[str, object]) -> None:
