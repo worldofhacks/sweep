@@ -1217,7 +1217,7 @@ class AutonomySession:
             return self._hold
         return self._normal
 
-    def _route(self, job: _Job) -> _Lane:
+    def _route(self, job: _Job, *, report_multiview: bool = True) -> _Lane:
         """Choose the lane and cancel the plans this intent preempts before it queues."""
         name = job.intent.name
         if name in {IntentName.HOLD, IntentName.LAND_ALL, IntentName.ESTOP}:
@@ -1227,12 +1227,13 @@ class AutonomySession:
                     self._platform_navigation_intents_by_preview.pop(preview_id, None)
                 self._platform_navigation_reservations.clear()
                 self._platform_dispatch.clear()
-            try:
-                self._composition.report_multiview_lifecycle(
-                    self.session_id, job.intent.intent_id, name.value, "accepted"
-                )
-            except Exception:
-                _LOGGER.exception("multiview lifecycle reporting failed for safety intent")
+            if report_multiview:
+                try:
+                    self._composition.report_multiview_lifecycle(
+                        self.session_id, job.intent.intent_id, name.value, "accepted"
+                    )
+                except Exception:
+                    _LOGGER.exception("multiview lifecycle reporting failed for safety intent")
         if name is IntentName.ESTOP:
             with self._lock:
                 self._stop_requested = True
@@ -1256,7 +1257,11 @@ class AutonomySession:
                     and running.intent.name in _SAFETY_PLANS
                 )
             self._cancel(
-                job, PREEMPTED_BY_HOLD, running_on=(self._normal,), running_names=HOLD_PREEMPTS
+                job,
+                PREEMPTED_BY_HOLD,
+                running_on=(self._normal,),
+                running_names=HOLD_PREEMPTS,
+                report_multiview=report_multiview,
             )
             return self._normal if behind_safety_plan else self._hold
         return self._normal
@@ -1268,6 +1273,7 @@ class AutonomySession:
         *,
         running_on: tuple[_Lane, ...],
         running_names: frozenset[IntentName],
+        report_multiview: bool = True,
     ) -> None:
         """Invalidate the plans a stop preempts: running ones by name, queued motion ones.
 
@@ -1301,6 +1307,8 @@ class AutonomySession:
         for victim in victims:
             if self.navigation_wire is not None:
                 self.navigation_wire.retire_intent(victim.intent.intent_id)
+            if not report_multiview:
+                continue
             try:
                 event = session.record_lifecycle(
                     intent_id=victim.intent.intent_id,
@@ -1762,7 +1770,7 @@ class AutonomySession:
                 _LOGGER.exception("navigation tracking safety hold retry could not be recorded")
                 events = []
         hold_job = _Job(safety_intent, session)
-        hold_lane = self._hold
+        hold_lane = self._route(hold_job, report_multiview=False)
         with hold_lane.ready:
             hold_lane.pending.append(hold_job)
             hold_lane.ready.notify()

@@ -694,7 +694,8 @@ class RelayRuntime:
     ) -> bool:
         """Queue an event batch atomically with respect to subscription activation."""
         if self.navigation_events is not None:
-            events = [*events, *self.navigation_events(session_id, events)]
+            navigation = await asyncio.to_thread(self.navigation_events, session_id, events)
+            events = [*events, *navigation]
         if self.platform_services is not None:
             for event in events:
                 if event.get("type") == "state":
