@@ -48,8 +48,6 @@ def build_transcript_service(
     fallback. Both keys are read here, in the relay process, and never leave it.
     """
     values = os.environ if environ is None else environ
-    if config.supervised_vertical is not None:
-        return TranscriptService(transcription=transcription)
     if not values.get("OPENAI_API_KEY") and transcription is None:
         _LOGGER.warning(
             "OPENAI_API_KEY is not set: voice uploads will be refused transcription_unavailable"
@@ -63,7 +61,6 @@ def build_transcript_service(
             )
             return TranscriptService(transcription=transcription)
         transport = AnthropicTransport(api_key=api_key)
-    assert config.planning is not None
     capability_profile = runtime.capability_profile
     qualified_voice_intents = _qualified_voice_intents(values, capability_profile)
     if not qualified_voice_intents:

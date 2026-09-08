@@ -30,27 +30,68 @@ class Config:
     launch: tuple[float, float, float] = (0.0, 0.0, 0.0)
     lidar_offset_deg: float | None = None
     lidar_angle_sign: int | None = None
-    # Explicit supervised fallback, only for a robot with no kit. Missing or stale data
-    # from an installed kit never silently switches to this fallback.
+    # Retained only to reject old configurations that requested a bypass.
     allow_spotted_without_lidar: bool = False
+    footprint_radius_m: float | None = None
+    stopping_distance_m: float | None = None
+    clearance_margin_m: float | None = None
+    lidar_mount_x_m: float | None = None
+    lidar_mount_y_m: float | None = None
+    lidar_mount_z_m: float | None = None
     spotter_present: bool = False
     max_speed_m_s: float = 0.18
     max_goto_m: float = 2.0
-    obstacle_margin_m: float = 0.45
     scan_max_age_s: float = 0.5
     owner_timeout_s: float = 0.35
     motion_timeout_s: float = 25.0
 
     def __post_init__(self) -> None:
-        if not all(math.isfinite(v) for v in self.launch):
+        if self.allow_spotted_without_lidar is not False:
+            raise ValueError("LiDAR avoidance is mandatory; a no-LiDAR bypass is not supported")
+        for name in (
+            "footprint_radius_m",
+            "stopping_distance_m",
+            "clearance_margin_m",
+            "lidar_mount_x_m",
+            "lidar_mount_y_m",
+            "lidar_mount_z_m",
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(value)
+            ):
+                raise ValueError(f"{name} requires an explicit finite measurement")
+        for name in ("footprint_radius_m", "stopping_distance_m"):
+            value = getattr(self, name)
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} must be positive")
+        if self.clearance_margin_m is not None and self.clearance_margin_m < 0:
+            raise ValueError("clearance_margin_m cannot be negative")
+        if len(self.launch) != 3 or not all(
+            type(v) in (int, float) and math.isfinite(v) for v in self.launch
+        ):
             raise ValueError("launch pose must be finite")
+        for name in (
+            "max_speed_m_s",
+            "max_goto_m",
+            "scan_max_age_s",
+            "owner_timeout_s",
+            "motion_timeout_s",
+        ):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError(f"{name} must be finite")
         if not 0 < self.max_speed_m_s <= 0.18:
             raise ValueError("drive speed exceeds the measured 0.18 m/s envelope")
         if not 0 < self.max_goto_m <= 2.0 or not 0 < self.scan_max_age_s <= 0.5:
             raise ValueError("invalid motion or scan-age cap")
+        if not 0 < self.owner_timeout_s <= 0.35 or not 0 < self.motion_timeout_s <= 25:
+            raise ValueError("invalid owner or motion timeout cap")
         if self.lidar_offset_deg is not None and not math.isfinite(self.lidar_offset_deg):
             raise ValueError("lidar offset must be finite")
-        if self.lidar_angle_sign not in (None, -1, 1):
+        if isinstance(self.lidar_angle_sign, bool) or self.lidar_angle_sign not in (None, -1, 1):
             raise ValueError("lidar angle sign must be -1 or 1")
 
 
@@ -156,7 +197,7 @@ class OhmniDevice:
             link=1.0,
             pos_quality=pose.quality,
             state=state,
-            drive_authority=self.enabled,
+            drive_authority=self.enabled and pose.quality > 0 and self.guard_reason() is None,
             t_ms=int(time.monotonic() * 1_000),
             extras={
                 "battery_voltage": self.battery_voltage,
@@ -170,8 +211,10 @@ class OhmniDevice:
 
     def enable(self) -> bool:
         with self._lock:
-            if not self.spotter_present or self.docked:
+            reason = self.pre_enable_refusal()
+            if reason:
                 self.enabled = False
+                self.last_refusal = reason
                 return False
             try:
                 self._flush_stop()
@@ -194,11 +237,14 @@ class OhmniDevice:
         motion = self.motion
         self.motion = None
         if motion:
-            self._results[motion.identity] = result
+            # A failed STOP must never leave a successful terminal result behind.
+            self._results[motion.identity] = None
         if reason is not None:
             self.last_refusal = reason
         self._pending_stop = True
         self._flush_stop()
+        if motion:
+            self._results[motion.identity] = result
 
     def _flush_stop(self) -> None:
         """Persist failed safety writes across ticks, including when motion is None."""
@@ -238,20 +284,60 @@ class OhmniDevice:
         now = time.monotonic() if now is None else now
         if not self.spotter_present:
             return "spotter_missing"
+        if self.docked:
+            return "robot_docked"
+        measured = (
+            self.config.footprint_radius_m,
+            self.config.stopping_distance_m,
+            self.config.clearance_margin_m,
+            self.config.lidar_mount_x_m,
+            self.config.lidar_mount_y_m,
+            self.config.lidar_mount_z_m,
+        )
+        if any(value is None for value in measured):
+            return "ground_clearance_unconfigured"
         if self.lidar is None:
-            return None if self.config.allow_spotted_without_lidar else "lidar_missing"
+            return "lidar_missing"
         if not self.lidar.calibrated:
             return "lidar_calibration_required"
         scan = self.lidar.scan
-        if scan is None or now - self.lidar.updated > self.config.scan_max_age_s:
+        if scan is None or not 0 <= now - self.lidar.updated <= self.config.scan_max_age_s:
             return "lidar_stale"
-        values = [scan.ranges_cm[offset % 360] for offset in range(-20, 21)]
-        # A scan with no forward returns cannot establish clear space.
-        if len([value for value in values if value > 0]) < 3:
-            return "lidar_forward_coverage_missing"
-        if forward and any(0 < value <= self.config.obstacle_margin_m * 100 for value in values):
-            return "obstacle_ahead"
+        values = scan.ranges_cm
+        if (
+            scan.angle_min_deg != 0.0
+            or scan.angle_increment_deg != 1.0
+            or len(values) != 360
+            or any(type(value) is not int or value <= 0 for value in values)
+        ):
+            return "lidar_full_circle_coverage_missing"
+        # Ranges originate at the sensor. Enclose the body about that origin,
+        # including measured braking clearance and bounded travel during scan
+        # age, owner timeout and one hardware-loop tick. Unknown bins stay blocked.
+        radius, stopping, margin, mount_x, mount_y, _ = measured
+        clearance = (
+            radius
+            + stopping
+            + margin
+            + math.hypot(mount_x, mount_y)
+            + self.config.max_speed_m_s
+            * (self.config.scan_max_age_s + self.config.owner_timeout_s + 0.1)
+        )
+        if any(value <= math.ceil(clearance * 100) for value in values):
+            return "obstacle_within_clearance"
         return None
+
+    def pre_enable_refusal(self) -> str | None:
+        reason = self.guard_reason()
+        if reason:
+            return reason
+        if not self.odometry.snapshot().quality:
+            return "wheel_odometry_unavailable"
+        return None
+
+    def stop_confirmed(self) -> bool:
+        """Local STOP writes completed; physical braking is separately qualified."""
+        return self.motion is None and not self._pending_stop and not self._pending_sleep
 
     def _admit_motion(self) -> None:
         reason = self.guard_reason()
@@ -437,7 +523,7 @@ class OhmniDevice:
             self._stop.wait(10)
 
     def latest_scan(self) -> RangeScan | None:
-        if self.lidar and time.monotonic() - self.lidar.updated <= self.config.scan_max_age_s:
+        if self.lidar and 0 <= time.monotonic() - self.lidar.updated <= self.config.scan_max_age_s:
             return self.lidar.scan
         return None
 
@@ -484,6 +570,13 @@ class OhmniDevice:
 def from_environment(*, key: str = "") -> OhmniDevice:
     offset = os.environ.get("SWEEP_LIDAR_OFFSET_DEG")
     sign = os.environ.get("SWEEP_LIDAR_ANGLE_SIGN")
+    if os.environ.get("SWEEP_ALLOW_NO_LIDAR", "0") not in ("", "0"):
+        raise ValueError("LiDAR avoidance is mandatory; SWEEP_ALLOW_NO_LIDAR is not supported")
+
+    def measurement(name: str) -> float | None:
+        raw = os.environ.get(name)
+        return None if raw is None or not raw.strip() else float(raw)
+
     config = Config(
         socket_path=os.environ.get("SWEEP_BOTSHELL", DEFAULT_PATH),
         paired_encoder_socket=os.environ.get("SWEEP_PAIRED_ENCODER_SOCKET", default_socket_path()),
@@ -492,7 +585,12 @@ def from_environment(*, key: str = "") -> OhmniDevice:
         ),
         lidar_offset_deg=float(offset) if offset else None,
         lidar_angle_sign=int(sign) if sign else None,
-        allow_spotted_without_lidar=os.environ.get("SWEEP_ALLOW_NO_LIDAR") == "1",
+        footprint_radius_m=measurement("SWEEP_GROUND_FOOTPRINT_RADIUS_M"),
+        stopping_distance_m=measurement("SWEEP_GROUND_STOPPING_DISTANCE_M"),
+        clearance_margin_m=measurement("SWEEP_GROUND_CLEARANCE_MARGIN_M"),
+        lidar_mount_x_m=measurement("SWEEP_LIDAR_MOUNT_X_M"),
+        lidar_mount_y_m=measurement("SWEEP_LIDAR_MOUNT_Y_M"),
+        lidar_mount_z_m=measurement("SWEEP_LIDAR_MOUNT_Z_M"),
         spotter_present=os.environ.get("SWEEP_SPOTTER") == "1",
     )
     media_host = os.environ.get("SWEEP_MEDIA_HOST")

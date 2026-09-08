@@ -165,6 +165,7 @@ def test_confirmed_come_home_releases_only_the_configured_ground_return() -> Non
                 "selectable": True,
                 "control_authority": True,
                 "adapter_capabilities": ["ground_drive"],
+                "ground_readiness": {"source_id": "ohmni-pose"},
             }
         ],
     }
