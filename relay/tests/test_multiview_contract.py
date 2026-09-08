@@ -52,6 +52,10 @@ class _Navigation:
         }
         return {"preview": preview, "previewHash": "f" * 64}
 
+    def preview_from_trusted_start(self, session, request, trusted_start):
+        self.trusted_starts = getattr(self, "trusted_starts", []) + [deepcopy(trusted_start)]
+        return self.preview(session, request)
+
     def reserve(self, session, request):
         self.reserved = getattr(self, "reserved", []) + [deepcopy(request)]
         return {"status": "accepted", "code": "navigation_accepted", "detail": "accepted"}
@@ -87,6 +91,13 @@ def test_multiview_freezes_individual_route_reviews_and_confirms_the_first_only(
 
     assert preview["views"][0]["capture"] == {"roomId": "north-zone", "pattern": "single_still"}
     assert preview["views"][1]["route"]["arrivalSlot"]["slotId"] == "slot-south-zone"
+    assert navigation.trusted_starts == [
+        {
+            "target": {"id": 1, "deviceClass": "aircraft", "epoch": 2},
+            "position": {},
+        }
+    ]
+    assert preview["serverNowMs"] == navigation.now
     accepted = service.confirm(
         "s",
         {key: preview[key] for key in ("previewId", "intentId", "previewHash")},

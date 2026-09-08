@@ -725,8 +725,22 @@ class NavigationService:
                 },
             }
 
+    def preview_from_trusted_start(
+        self, session: str, raw: object, trusted_start: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Create an internal sequential review from a prior qualified arrival."""
+        if not isinstance(trusted_start, Mapping):
+            _fail("invalid_request", "The trusted navigation start is invalid.")
+        return self._preview(session, raw, _copy(trusted_start))
+
     @_storage_errors
     def preview(self, session: str, raw: object) -> dict[str, object]:
+        return self._preview(session, raw)
+
+    @_storage_errors
+    def _preview(
+        self, session: str, raw: object, trusted_start: dict[str, object] | None = None
+    ) -> dict[str, object]:
         request = _exact(
             _copy(raw),
             {
@@ -807,7 +821,10 @@ class NavigationService:
             )
         ):
             try:
-                execution = _copy(self.flight_execution.preview(session, _copy(preview)))
+                execution_preview = _copy(preview)
+                if trusted_start is not None:
+                    execution_preview["trustedStart"] = trusted_start
+                execution = _copy(self.flight_execution.preview(session, execution_preview))
                 routes, outcomes, execution = validate_flight_execution_preview(
                     execution, selected, destination, preview["map"]
                 )

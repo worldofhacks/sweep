@@ -521,6 +521,49 @@ class NavigationRuntime:
         except (ValueError, KeyError) as error:
             return self._refusal(intent.intent_id, snapshot, str(error))
 
+    def prepare_from_trusted_start(
+        self, intent: IntentV1, snapshot: FleetSnapshot, trusted_start: DronePose
+    ) -> Plan | Refusal:
+        """Plan a sequential route from a prior qualified arrival, after live validation."""
+        try:
+            if intent.name is not IntentName.NAVIGATE:
+                raise ValueError("trusted starts only support navigation")
+            if trusted_start.drone_id not in intent.selection:
+                raise ValueError("trusted navigation start is not selected")
+            positions = self._positions(snapshot)
+            current = next(
+                (item for item in positions if item.drone_id == trusted_start.drone_id), None
+            )
+            if current is None or current.connection_epoch != trusted_start.connection_epoch:
+                raise ValueError("trusted navigation start identity is stale")
+            destination = intent.args.get("zone_id")
+            if not isinstance(destination, str) or not destination:
+                raise ValueError("navigation requires a server-selected destination")
+            artifact = self._validate(snapshot)
+            positions = tuple(
+                trusted_start if item.drone_id == trusted_start.drone_id else item
+                for item in positions
+            )
+            route = self.planner.plan(
+                NavigationRequest(
+                    destination,
+                    snapshot.roster_version,
+                    intent.t,
+                    tuple(item for item in positions if item.drone_id in intent.selection),
+                    positions,
+                    self.config.motion,
+                    self.permission,
+                ),
+                artifact,
+            )
+            if isinstance(route, NavigationRefusal):
+                raise ValueError(f"{route.code}: {route.detail}")
+            self._require_tag_destination(route)
+            self._require_precision_return(route)
+            return self.prepare_route(intent, snapshot, route)
+        except (ValueError, KeyError) as error:
+            return self._refusal(intent.intent_id, snapshot, str(error))
+
     def prepare_route(
         self,
         intent: IntentV1,

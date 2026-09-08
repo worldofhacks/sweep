@@ -63,6 +63,7 @@ from planner.models import (
     RelayAircraftSafetyEnrichment,
     RelaySnapshotEnrichment,
 )
+from planner.navigation import DronePose, Pose
 from planner.navigation_authorization import content_digest
 from planner.navigation_deployment import NavigationDeployment, load_navigation_deployment
 from planner.navigation_runtime import navigation_capability_profile
@@ -835,6 +836,34 @@ class AutonomySession:
             or selected[0].get("epoch") != precision_return.connection_epoch
         ):
             raise ValueError("precision return requires its marked aircraft identity")
+        trusted_start = preview.get("trustedStart")
+        trusted_pose = None
+        if trusted_start is not None:
+            if not isinstance(trusted_start, Mapping):
+                raise ValueError("trusted navigation start is invalid")
+            target = trusted_start.get("target")
+            position = trusted_start.get("position")
+            if (
+                not isinstance(target, Mapping)
+                or target not in selected
+                or not isinstance(position, Mapping)
+                or set(position) != {"xM", "yM", "zM", "floorId", "frame"}
+                or position.get("frame") != "world"
+                or type(position.get("xM")) not in {int, float}
+                or type(position.get("yM")) not in {int, float}
+                or type(position.get("zM")) not in {int, float}
+                or not isinstance(position.get("floorId"), str)
+            ):
+                raise ValueError("trusted navigation start is invalid")
+            try:
+                trusted_pose = DronePose(
+                    target["id"],
+                    target["epoch"],
+                    Pose(position["xM"], position["yM"], position["zM"], position["floorId"]),
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError("trusted navigation start is invalid") from error
+
         intent = IntentV1(
             v=1,
             t=now,
@@ -855,7 +884,11 @@ class AutonomySession:
         refusal = self.arbiter.check_intent(intent, snapshot)
         if refusal is not None:
             raise ValueError(refusal.detail)
-        planned = runtime.prepare(intent, snapshot)
+        planned = (
+            runtime.prepare(intent, snapshot)
+            if trusted_pose is None
+            else runtime.prepare_from_trusted_start(intent, snapshot, trusted_pose)
+        )
         if isinstance(planned, Refusal):
             raise ValueError(planned.detail)
         refusal = self.arbiter.check_plan(planned, snapshot)

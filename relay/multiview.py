@@ -87,6 +87,7 @@ class MultiviewService:
         seen_viewpoints: set[str] = set()
         seen_captures: set[str] = set()
         roster_version = context["rosterVersion"]
+        trusted_start: dict[str, object] | None = None
         for ordinal, item in enumerate(viewpoints, start=1):
             if not isinstance(item, Mapping) or set(item) != {"viewpointId", "zoneId", "captureId"}:
                 raise NavigationError(
@@ -102,19 +103,21 @@ class MultiviewService:
             seen_viewpoints.add(viewpoint_id)
             seen_captures.add(capture_id)
             child_intent = f"mv-{_digest([intent_id, viewpoint_id])[:24]}-{ordinal}"
-            result = self.navigation.preview(
-                session,
-                {
-                    "session": session,
-                    "intentId": child_intent,
-                    "zoneId": zone_id,
-                    "rosterVersion": roster_version,
-                    "selected": selected,
-                    **{
-                        key: context[key]
-                        for key in ("catalogVersion", "map", "configVersion", "motionConfig")
-                    },
+            request = {
+                "session": session,
+                "intentId": child_intent,
+                "zoneId": zone_id,
+                "rosterVersion": roster_version,
+                "selected": selected,
+                **{
+                    key: context[key]
+                    for key in ("catalogVersion", "map", "configVersion", "motionConfig")
                 },
+            }
+            result = (
+                self.navigation.preview(session, request)
+                if trusted_start is None
+                else self.navigation.preview_from_trusted_start(session, request, trusted_start)
             )
             preview = result["preview"]
             if not isinstance(preview, dict) or preview.get("dispatchEligible") is not True:
@@ -122,6 +125,11 @@ class MultiviewService:
                     "multiview_route_unavailable", "Every multiview route must be qualified."
                 )
             views.append(_View(viewpoint_id, zone_id, capture_id, preview, result["previewHash"]))
+            route = preview["routes"][0]
+            trusted_start = {
+                "target": route["target"],
+                "position": route["arrivalSlot"]["position"],
+            }
         expires_at = min(int(view.review["expiresAt"]) for view in views)
         preview_id = str(uuid.uuid4())
         response = self._preview_response(preview_id, intent_id, expires_at, views)
@@ -130,7 +138,11 @@ class MultiviewService:
             self._workflows[preview_id] = _Workflow(
                 session, intent_id, preview_hash, expires_at, views
             )
-        return {**response, "previewHash": preview_hash}
+        return {
+            **response,
+            "previewHash": preview_hash,
+            "serverNowMs": self.navigation.clock_ms(),
+        }
 
     def confirm(self, session: str, raw: object) -> dict[str, object]:
         if not isinstance(raw, Mapping) or set(raw) != {"previewId", "intentId", "previewHash"}:
