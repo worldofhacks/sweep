@@ -74,11 +74,7 @@ class RelayNodeLink:
             self._navigation_publisher.retire_other_epochs(
                 request.drone_id, request.connection_epoch
             )
-            if request.operation in {
-                CommandOperation.HOVER,
-                CommandOperation.LAND,
-                CommandOperation.ESTOP,
-            }:
+            if request.operation in {CommandOperation.LAND, CommandOperation.ESTOP}:
                 self._navigation_publisher.retire_epoch(request.drone_id, request.connection_epoch)
             try:
                 navigation_frames = self._navigation_publisher.prepare_request(request)
@@ -150,7 +146,8 @@ class RelayNodeLink:
             and acknowledgement.status.value in {"completed", "failed", "invalidated", "refused"}
             and self._navigation_publisher is not None
         ):
-            self._navigation_publisher.retire(command_id)
+            if acknowledgement.status.value != "completed" or not self._navigation_publisher.retain_arrival(command_id):
+                self._navigation_publisher.retire(command_id)
         return acknowledgement
 
     def camera_capabilities(self, drone_id: int) -> CapabilitiesFrame | None:

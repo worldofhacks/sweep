@@ -96,6 +96,7 @@ class _ActiveCommand:
     command: Command
     snapshot: SnapshotProvider
     profile: NavigationWireConfig
+    issued_at_ms: int
     expires_at_ms: int
 
 
@@ -144,6 +145,7 @@ class NavigationWirePublisher:
             f"navigation_wire_scope_{id(self)}", default=None
         )
         self._active: dict[str, _ActiveCommand] = {}
+        self._retained: dict[str, _ActiveCommand] = {}
         self._pending: dict[str, _ActiveCommand] = {}
         self._sequences: dict[tuple[int, int], int] = {}
         self._lock = RLock()
@@ -245,7 +247,7 @@ class NavigationWirePublisher:
         with self._lock:
             self._retire_drone(command.drone_id, command.connection_epoch)
             self._pending[command.command_id] = _ActiveCommand(
-                plan, command, self._scope_snapshot(plan), profile, expires_at_ms
+                plan, command, self._scope_snapshot(plan), profile, now_ms, expires_at_ms
             )
         return frames
 
@@ -265,7 +267,8 @@ class NavigationWirePublisher:
             active = next(
                 (
                     item
-                    for item in self._active.values()
+                    for commands in (self._active, self._retained)
+                    for item in commands.values()
                     if item.command.drone_id == pose.drone_id
                     and item.command.connection_epoch == pose.connection_epoch
                 ),
@@ -275,8 +278,7 @@ class NavigationWirePublisher:
             return []
         now_ms = self._now()
         if now_ms >= active.expires_at_ms:
-            with self._lock:
-                self._active.pop(active.command.command_id, None)
+            self.retire(active.command.command_id)
             return []
         retained = self.runtime.control_pose
         if retained is None or retained(active.command.drone_id) != pose:
@@ -287,11 +289,13 @@ class NavigationWirePublisher:
                 raise ValueError("navigation runtime does not provide current-segment tracking")
             refusal = checker(active.plan, active.command, active.snapshot(), pose=pose)
             if refusal is not None:
-                with self._lock:
-                    self._active.pop(active.command.command_id, None)
+                self.retire(active.command.command_id)
                 raise ValueError(f"navigation wire refused: {refusal.detail}")
         with self._lock:
-            if self._active.get(active.command.command_id) != active:
+            if (
+                self._active.get(active.command.command_id) != active
+                and self._retained.get(active.command.command_id) != active
+            ):
                 return []
             sequence = self._next_sequence(pose.drone_id, pose.connection_epoch)
         return [
@@ -305,14 +309,42 @@ class NavigationWirePublisher:
             )
         ]
 
+    def retain_arrival(self, command_id: str) -> bool:
+        with self._lock:
+            if command_id in self._retained:
+                return True
+            active = self._active.get(command_id)
+        if active is None or active.command.operation is not CommandOperation.GOTO:
+            return False
+        if self._now() >= active.expires_at_ms:
+            self.retire(command_id)
+            return False
+        refusal = self.runtime.check(
+            active.plan,
+            active.command,
+            active.snapshot(),
+            completed=True,
+            issued_at_ms=active.issued_at_ms,
+        )
+        if refusal is not None:
+            self.retire(command_id)
+            return False
+        with self._lock:
+            if self._active.get(command_id) != active:
+                return self._retained.get(command_id) == active
+            self._active.pop(command_id)
+            self._retained[command_id] = active
+            return True
+
     def retire(self, command_id: str) -> None:
         with self._lock:
             self._active.pop(command_id, None)
+            self._retained.pop(command_id, None)
             self._pending.pop(command_id, None)
 
     def retire_intent(self, intent_id: str) -> None:
         with self._lock:
-            for commands in (self._active, self._pending):
+            for commands in (self._active, self._retained, self._pending):
                 for command_id, active in tuple(commands.items()):
                     if active.command.intent_id == intent_id:
                         commands.pop(command_id)
@@ -323,7 +355,7 @@ class NavigationWirePublisher:
 
     def retire_other_epochs(self, drone_id: int, connection_epoch: int) -> None:
         with self._lock:
-            for commands in (self._active, self._pending):
+            for commands in (self._active, self._retained, self._pending):
                 for command_id, active in tuple(commands.items()):
                     if (
                         active.command.drone_id == drone_id
@@ -332,7 +364,7 @@ class NavigationWirePublisher:
                         commands.pop(command_id)
 
     def _retire_drone(self, drone_id: int, connection_epoch: int) -> None:
-        for commands in (self._active, self._pending):
+        for commands in (self._active, self._retained, self._pending):
             for command_id, active in tuple(commands.items()):
                 if (
                     active.command.drone_id == drone_id

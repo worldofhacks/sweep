@@ -285,6 +285,43 @@ def test_phone_wire_binds_a_flight_approved_frozen_segment_and_fresh_pose() -> N
     assert publisher.update(hold) == []
 
 
+def test_completed_arrival_retains_fresh_pose_until_the_original_authorization_expires() -> None:
+    publisher, plan, snapshots, poses, clock = _publisher()
+    request = _request(plan)
+    with publisher.command_scope(plan, lambda: snapshots[0]):
+        publisher.prepare_request(request)
+    publisher.activate(request.command_id)
+
+    clock.advance(100)
+    snapshots[0] = replace_aircraft(
+        replace(snapshots[0], now_ms=100_100), 1, pose=Position(6.5, 1.5, 1.0)
+    )
+    poses[0] = _control_pose(timestamp_ms=100_050, x_mm=6_500)
+    assert publisher.retain_arrival(request.command_id)
+
+    poses[0] = replace(poses[0], t=100_150, pose_time_ms=100_150, fix_time_ms=100_150)
+    snapshots[0] = replace(snapshots[0], now_ms=100_200)
+    clock.advance(100)
+    updates = publisher.update(poses[0])
+    assert len(updates) == 1
+    assert updates[0]["command_id"] == request.command_id
+    assert updates[0]["x_mm"] == 6_500
+
+    clock.advance(900)
+    assert publisher.update(poses[0]) == []
+
+
+def test_arrival_retention_requires_confirmed_current_arrival() -> None:
+    publisher, plan, snapshots, _, _ = _publisher()
+    request = _request(plan)
+    with publisher.command_scope(plan, lambda: snapshots[0]):
+        publisher.prepare_request(request)
+    publisher.activate(request.command_id)
+
+    assert not publisher.retain_arrival(request.command_id)
+    assert publisher.update(_control_pose()) == []
+
+
 def test_phone_wire_requires_exact_bound_goto_and_flight_approval() -> None:
     publisher, plan, snapshot, _, _ = _publisher()
     request = _request(plan)

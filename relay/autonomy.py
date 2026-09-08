@@ -1886,8 +1886,9 @@ class AutonomyComposition:
                 command_id = event.get("command_id")
                 intent_id = event.get("intent_id")
                 if isinstance(command_id, str):
-                    publisher.retire(command_id)
-                elif isinstance(intent_id, str):
+                    if event.get("status") != "completed" or not publisher.retain_arrival(command_id):
+                        publisher.retire(command_id)
+                elif isinstance(intent_id, str) and event.get("status") != "completed":
                     publisher.retire_intent(intent_id)
         return output
 
