@@ -495,6 +495,12 @@ class OhmniRuntime:
                 and self._pose_event_id is not None
                 and self.device.enable()
             )
+            if self._ready and self.config.navigation is not None:
+                try:
+                    self.device.stop()
+                    self._ready = self.device.stop_confirmed()
+                except Exception:
+                    self._ready = False
             if not self._ready:
                 self._local_stop(refusal or "ground_guard_not_ready", disable=True)
             else:
@@ -866,20 +872,21 @@ class OhmniRuntime:
                     confidence=confidence,
                 )
             )
-        self._enqueue(
-            self._observation(
-                self.config.status_source_id,
-                self.config.odom_frame,
-                receipt,
-                {
-                    "kind": "status",
-                    "code": "ground_runtime",
-                    "detail": status.state,
-                    "capabilities": list(self.device.capabilities),
-                },
-                confidence=confidence,
+        else:
+            self._enqueue(
+                self._observation(
+                    self.config.status_source_id,
+                    self.config.odom_frame,
+                    receipt,
+                    {
+                        "kind": "status",
+                        "code": "ground_runtime",
+                        "detail": status.state,
+                        "capabilities": list(self.device.capabilities),
+                    },
+                    confidence=confidence,
+                )
             )
-        )
         scan = self.device.latest_scan()
         if scan is not None and self._lidar_mount_configured and scan.t_ms != self._last_scan_t_ms:
             self._last_scan_t_ms = scan.t_ms

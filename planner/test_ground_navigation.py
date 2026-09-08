@@ -168,3 +168,84 @@ def test_signed_route_is_rechecked_by_the_nodes_independently_loaded_map(tmp_pat
             roster_version=1,
             now_ms=NOW,
         )
+
+
+def test_active_robot_can_advance_while_waiting_robots_keep_their_reserved_positions(tmp_path):
+    deployment = GroundNavigationDeployment.load(deployment_file(tmp_path), KEY)
+    plan = deployment.prepare(
+        "lobby",
+        (pose(9), pose(10, 1.0, 2.0)),
+        (9, 10),
+        session="session-a",
+        roster_version=1,
+        now_ms=NOW,
+    )
+    first, second = plan.routes
+    start, end = first.points[:2]
+    moving = pose(9, (start.x_m + end.x_m) / 2, (start.y_m + end.y_m) / 2)
+    deployment.revalidate(
+        plan,
+        (moving, pose(10, 1.0, 2.0)),
+        (9, 10),
+        session="session-a",
+        roster_version=1,
+        now_ms=NOW,
+        active_device_id=9,
+    )
+    arrived = pose(9, first.points[-1].x_m, first.points[-1].y_m)
+    start, end = second.points[:2]
+    deployment.revalidate(
+        plan,
+        (arrived, pose(10, (start.x_m + end.x_m) / 2, (start.y_m + end.y_m) / 2)),
+        (9, 10),
+        session="session-a",
+        roster_version=1,
+        now_ms=NOW,
+        completed=(9,),
+        active_device_id=10,
+    )
+    with pytest.raises(ValueError, match="stationary"):
+        deployment.revalidate(
+            plan,
+            (pose(9, 1.0, 1.0), pose(10, 1.0, 2.0)),
+            (9, 10),
+            session="session-a",
+            roster_version=1,
+            now_ms=NOW,
+            completed=(9,),
+            active_device_id=10,
+        )
+
+
+@pytest.mark.parametrize("changed", ["roster", "epoch", "stale", "selection", "configuration"])
+def test_changed_execution_authority_permanently_retires_a_review(tmp_path, changed):
+    path = deployment_file(tmp_path)
+    deployment = GroundNavigationDeployment.load(path, KEY)
+    plan = deployment.prepare(
+        "lobby", (pose(),), (9,), session="session-a", roster_version=1, now_ms=NOW
+    )
+    if changed == "configuration":
+        path.write_text(path.read_text() + " ")
+    with pytest.raises(ValueError):
+        deployment.revalidate(
+            plan,
+            (replace(pose(), connection_epoch=2) if changed == "epoch" else pose(),),
+            () if changed == "selection" else (9,),
+            session="session-a",
+            roster_version=2 if changed == "roster" else 1,
+            now_ms=NOW + 501 if changed == "stale" else NOW,
+        )
+    if changed == "configuration":
+        path.write_text(path.read_text().rstrip())
+    with pytest.raises(ValueError, match="retired"):
+        deployment.revalidate(
+            plan, (pose(),), (9,), session="session-a", roster_version=1, now_ms=NOW
+        )
+
+
+def test_blocked_wall_prevents_a_named_destination_route(tmp_path):
+    deployment = GroundNavigationDeployment.load(deployment_file(tmp_path, blocked=True), KEY)
+    with pytest.raises(ValueError, match="route|reachable"):
+        deployment.prepare(
+            "lobby", (pose(),), (9,), session="session-a", roster_version=1, now_ms=NOW
+        )

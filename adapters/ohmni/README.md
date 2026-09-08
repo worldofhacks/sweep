@@ -98,6 +98,61 @@ At command admission, the controller checks the approved session, device ID, con
 
 The adapter acknowledges completion after the final pose is inside the approved arrival tolerance. `accepted` and `executing` acknowledgements do not complete a return. A local stop remains in effect after arrival; no return outcome clears an estop latch or reenables a stopped robot.
 
+## Named ground navigation
+
+Named navigation needs the same externally signed deployment on the relay host and
+each selected ground node. Set `SWEEP_GROUND_NAVIGATION_CONFIG` to that JSON file
+and `SWEEP_GROUND_NAVIGATION_KEY_FILE` to its separate approval key. The key file
+must have mode 600. The node also requires `SWEEP_ODOM_ORIGIN_ID`; its local pose
+source, status source, odometry frame, and origin must match the deployment.
+An unconfigured node does not advertise `navigate`.
+
+The signed document contains these fields:
+
+- `v: 1`, `approval_id`, `approved_by`, and `expires_at` in relay Unix milliseconds;
+- `approved_map`, the complete `{reference, approval, bundle}` returned by the map
+  authoring store's `approved_bundle()` API;
+- `devices`, one record per ground device with `device_id`, `pose_source_id`,
+  `world_pose_source_id`, `identity_source_id`, `registration_id`, `odom_origin_id`,
+  `odom_frame`, `world_to_odom`, and `limits`;
+- `signature`, produced by `relay.auth.sign_event()` over the other fields.
+
+`world_to_odom` carries measured `x_m`, `y_m`, `yaw_deg`, and `registration_id`.
+The three sources have distinct roles: `pose_source_id` identifies local odometry,
+`world_pose_source_id` identifies the host's qualified world projection, and
+`identity_source_id` identifies the node's canonical status observation. The latter
+publishes `ground_navigation_identity` with the origin, local pose source,
+registration, and deployment hash. Raw odometry alone cannot establish a robot's
+position on the approved map.
+
+`limits` contains measured `footprint_radius_m`, `position_uncertainty_m`, and
+`stopping_distance_m`, plus `speed_m_s`, `yaw_rate_deg_s`, `pulse_s`,
+`arrival_tolerance_m`, `pose_max_age_ms`, and `route_timeout_ms`. Software ceilings
+are 0.18 m/s, 45 degrees/s, 0.2 seconds per pulse, 500 ms pose age, and ten minutes
+per route. These ceilings do not establish safe physical values for a robot.
+
+The planner treats only image pixels equal to 255 as free. Unknown pixels,
+obstacles, and cells outside the geofence block travel. It reserves the footprint,
+position uncertainty, stopping distance, one pulse of travel, and arrival tolerance
+around every segment. Arrival tolerance also bounds tracking deviation. Waiting
+robots and earlier arrivals occupy reserved space; selected robots execute in
+order and receive distinct arrival positions within the named zone.
+
+Confirmation freezes the map revision, deployment hash, selected IDs, roster,
+epochs, pose bindings, starts, and routes. Any invalidation retires the review.
+The node independently verifies each signed route against its pinned deployment
+before converting world points to local odometry. During execution, current pose,
+full scan clearance, local authority, configuration integrity, and route expiry
+remain required. Arrival needs a fresh measured pose and confirmed STOP. HOLD,
+failure, and reconnection require a fresh review; heartbeat recovery cannot resume
+the consumed route.
+
+Navigation-enabled node payloads need the planner's NumPy and OpenCV dependencies
+for independent image validation. The fake-device integration exercises the real
+relay transport and node controller, but hardware qualification still requires
+measured source registration, clearance, stopping distance, and supervised motion
+evidence for the installed robot.
+
 ## Qualification record
 
 Before enabling ground motion, record the following alongside the device/session evidence:

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from websockets.sync.client import connect
 
 from planner.ground_navigation import GroundNavigationDeployment
-from planner.models import LifecycleStatus
+from planner.models import CommandOperation, LifecycleStatus
 from planner.test_ground_navigation import KEY, deployment_file, pose
 from relay.bridge import RelayNodeLink
 from relay.intent_v1 import IntentName
@@ -16,7 +18,7 @@ from tests.autonomy_fixtures import make_intent
 from .dispatcher import GroundCommandDispatcher
 from .fake import FakeGroundDevice
 from .runtime import GroundRuntimeConfig, OhmniRuntime, parse_args
-from .test_runtime import GROUND_ID, GROUND_KEY, _receive_until, _wait_for
+from .test_runtime import GROUND_ID, GROUND_KEY, _deliver, _receive_until, _wait_for
 from .test_runtime import relay_server as relay_server
 
 
@@ -47,8 +49,9 @@ def test_node_cli_loads_the_signed_navigation_deployment_and_source_binding(tmp_
     assert config.navigation.device(9).identity_source_id == "ohmni-status"
 
 
-def test_confirmed_named_route_reaches_real_node_runtime_and_fresh_stopped_pose(
-    relay_server, tmp_path
+@pytest.mark.parametrize("hold_during_motion", [False, True])
+def test_named_route_requires_fresh_arrival_and_stop_and_cannot_resume_or_replay(
+    relay_server, tmp_path, hold_during_motion
 ):
     now_ms = time.time_ns() // 1_000_000
     path = deployment_file(tmp_path, now_ms=now_ms)
@@ -128,22 +131,68 @@ def test_confirmed_named_route_reaches_real_node_runtime_and_fresh_stopped_pose(
                 acknowledgement_timeout_ms=8000,
                 command_deadline_ms=10_000,
             )
-            result = dispatcher.dispatch_navigation(
+            intent = make_intent(
+                IntentName.NAVIGATE,
+                selection=(9,),
+                args={"zone_id": "lobby"},
+                intent_id="ground-navigation",
+                confirm=True,
+            )
+            route_id = f"{plan.plan_id}:9"
+            record = host.route_record(plan, 9, now_ms=now_ms)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    dispatcher.dispatch_navigation,
+                    intent,
+                    state,
+                    route_id=route_id,
+                    navigation_route=record,
+                )
+                if hold_during_motion:
+                    _wait_for(lambda: device.status().state == "moving", "navigation motion")
+                    hold = session.issue_command(
+                        command_id="hold-navigation",
+                        intent_id="hold-navigation",
+                        roster_version=state["roster_version"],
+                        drone_id=GROUND_ID,
+                        connection_epoch=ground["connection_epoch"],
+                        operation=CommandOperation.HOVER,
+                        args={},
+                        signing_key=GROUND_KEY,
+                    )
+                    assert _deliver(relay_server, hold)
+                result = future.result(timeout=12)
+            expected = LifecycleStatus.FAILED if hold_during_motion else LifecycleStatus.COMPLETED
+            assert result.status is expected, result
+            assert device.stop_confirmed()
+            assert device.status().t_ms is not None
+            if not hold_during_motion:
+                assert device.status().y >= -0.80
+                assert session.current_state()["roster_version"] == state["roster_version"]
+            _wait_for(
+                lambda: (
+                    session.registry.ready_ground_identity(GROUND_ID, time.time_ns() // 1_000_000)
+                    is not None
+                ),
+                "fresh heartbeat after route ended",
+            )
+            stopped_pose = device.status()
+            replay = dispatcher.dispatch_navigation(
                 make_intent(
                     IntentName.NAVIGATE,
                     selection=(9,),
                     args={"zone_id": "lobby"},
-                    intent_id="ground-navigation",
+                    intent_id="ground-navigation-replay",
                     confirm=True,
                 ),
-                state,
-                route_id=f"{plan.plan_id}:9",
-                navigation_route=host.route_record(plan, 9, now_ms=now_ms),
+                session.current_state(),
+                route_id=route_id,
+                navigation_route=record,
             )
-            assert result.status is LifecycleStatus.COMPLETED, result
+            assert replay.status is LifecycleStatus.FAILED, replay
+            time.sleep(0.3)
             assert device.stop_confirmed()
-            assert device.status().y >= -0.80
-            assert device.status().t_ms is not None
-            assert session.current_state()["roster_version"] == state["roster_version"]
+            assert device.status().x == pytest.approx(stopped_pose.x)
+            assert device.status().y == pytest.approx(stopped_pose.y)
     finally:
         node.stop()
