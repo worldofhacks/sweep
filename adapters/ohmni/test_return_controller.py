@@ -225,6 +225,46 @@ def test_return_rejects_stale_pose_and_future_scan(tmp_path: Path) -> None:
     assert device.stopped
 
 
+def test_return_keeps_missing_invalid_and_obstacle_scan_failures_distinct(tmp_path: Path) -> None:
+    route = ApprovedReturnRoute.load(_record(tmp_path), APPROVAL_KEY)
+    device = _Device()
+
+    device.scan = lambda: RangeScan(  # type: ignore[method-assign]
+        0, (device.x, device.y, device.yaw), 0.0, 1.0, 0.15, 12.0, [0] * 360
+    )
+    assert asyncio.run(_controller(route, device).run()).reason == "return_lidar_coverage_missing"
+
+    device.scan = lambda: RangeScan(  # type: ignore[method-assign]
+        0, (device.x, device.y, device.yaw), 0.0, 1.0, 0.15, 12.0, [400] * 359 + [0]
+    )
+    assert asyncio.run(_controller(route, device).run()).reason == "return_lidar_coverage_sparse"
+
+    device.scan = lambda: RangeScan(  # type: ignore[method-assign]
+        0, (device.x, device.y, device.yaw), 0.0, 1.0, 0.15, 12.0, [400] * 359 + [float("nan")]
+    )
+    assert asyncio.run(_controller(route, device).run()).reason == "return_lidar_invalid"
+
+    device.scan = lambda: RangeScan(  # type: ignore[method-assign]
+        0, (device.x, device.y, device.yaw), 0.0, 1.0, 0.15, 12.0, [400] * 359 + [20]
+    )
+    assert (
+        asyncio.run(_controller(route, device).run()).reason == "return_obstacle_within_clearance"
+    )
+
+
+def test_return_refuses_a_partial_scan_even_when_each_observed_bin_is_clear(tmp_path: Path) -> None:
+    route = ApprovedReturnRoute.load(_record(tmp_path), APPROVAL_KEY)
+    device = _Device()
+    device.scan = lambda: RangeScan(  # type: ignore[method-assign]
+        0, (device.x, device.y, device.yaw), 0.0, 2.0, 0.15, 12.0, [400] * 180
+    )
+
+    outcome = asyncio.run(_controller(route, device).run())
+
+    assert outcome.reason == "return_lidar_geometry_invalid"
+    assert device.drives == []
+
+
 def test_return_rejects_concave_footprint_that_cuts_the_fixed_segment(tmp_path: Path) -> None:
     path = _record(tmp_path)
 

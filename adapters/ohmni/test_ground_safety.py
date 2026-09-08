@@ -1,6 +1,7 @@
 """Offline safety regressions: no hardware sockets, threads or motor writes."""
 
 import asyncio
+import json
 import math
 import time
 from dataclasses import replace
@@ -13,7 +14,7 @@ from relay.auth import sign_event
 from relay.contracts import command_event, parse_command
 
 from . import device as device_module
-from .device import Config, Motion, OhmniDevice
+from .device import Config, LidarCoverage, Motion, OhmniDevice
 from .fake import FakeGroundDevice
 from .models import RangeScan
 from .odometry import Pose
@@ -57,6 +58,7 @@ def configured(**overrides):
         calibrated=True,
         updated=time.monotonic(),
         scan=RangeScan(int(time.monotonic() * 1000), (0, 0, 0), 0, 1, 0.15, 12, [400] * 360),
+        error=None,
     )
     return device
 
@@ -89,17 +91,149 @@ def test_missing_measured_clearance_refuses_before_enable(field):
     assert device.drive_shell.commands == []
 
 
-@pytest.mark.parametrize("invalid", [0, -1, True])
-def test_unknown_or_invalid_scan_bin_cannot_be_inferred_clear(invalid):
+@pytest.mark.parametrize("invalid", [-1, True, float("nan")])
+def test_invalid_scan_bin_cannot_be_inferred_clear(invalid):
     device = configured()
     device.lidar.scan.ranges_cm[181] = invalid
-    assert device.guard_reason() == "lidar_full_circle_coverage_missing"
+    evidence = device.lidar_guard_evidence()
+    assert evidence.coverage is LidarCoverage.INVALID
+    assert evidence.reason == "lidar_scan_invalid"
+    assert evidence.invalid_bins == (181,)
+    assert evidence.raw_ranges_cm[181] is invalid
+
+
+def test_empty_and_sparse_scan_coverage_stay_stopped_with_their_raw_bins():
+    device = configured()
+    device.lidar.scan.ranges_cm[:] = [0] * 360
+    missing = device.lidar_guard_evidence()
+    assert missing.coverage is LidarCoverage.MISSING
+    assert missing.reason == "lidar_scan_coverage_missing"
+    assert missing.valid_bins == 0
+    assert missing.missing_bins == tuple(range(360))
+    assert missing.raw_ranges_cm == (0,) * 360
+    assert not device.enable()
+
+    device.lidar.scan.ranges_cm[:] = [400] * 360
+    device.lidar.scan.ranges_cm[180] = 0
+    sparse = device.lidar_guard_evidence()
+    assert sparse.coverage is LidarCoverage.SPARSE
+    assert sparse.reason == "lidar_scan_coverage_sparse"
+    assert sparse.valid_bins == 359
+    assert sparse.missing_bins == (180,)
+    assert not device.enable()
 
 
 @pytest.mark.parametrize("age", [-0.01, 0.51])
 def test_scan_from_future_or_past_refuses(age):
     device = configured()
-    assert device.guard_reason(now=device.lidar.updated + age) == "lidar_stale"
+    evidence = device.lidar_guard_evidence(now=device.lidar.updated + age)
+    assert evidence.coverage is LidarCoverage.STALE
+    assert evidence.reason == "lidar_scan_stale"
+
+
+def test_lidar_read_error_is_distinct_from_missing_scan_coverage():
+    device = configured()
+    device.lidar.error = "lidar_disconnected"
+    evidence = device.lidar_guard_evidence()
+    assert evidence.coverage is LidarCoverage.READ_ERROR
+    assert evidence.reason == "lidar_read_error"
+    assert evidence.read_error == "lidar_disconnected"
+    assert not device.enable()
+
+
+def test_new_complete_scan_needs_fresh_validation_after_a_guard_stop():
+    device = configured()
+    assert device.enable()
+    motion = device.drive_velocity(0.1, 0, 0.5)
+    device.lidar.scan.ranges_cm[0] = 0
+    device.step()
+    assert device.motion_done(motion) is None
+    assert device.status().state == "idle"
+    fault = device.last_lidar_guard_fault
+    assert fault is not None
+    assert fault.reason == "lidar_scan_coverage_sparse"
+    assert fault.raw_ranges_cm[0] == 0
+
+    device.lidar.scan.ranges_cm[:] = [400] * 360
+    device.lidar.updated = time.monotonic()
+    assert device.guard_reason() is None
+    assert device.lidar_guard_evidence().coverage is LidarCoverage.CLEAR
+    resumed = device.drive_velocity(0.1, 0, 0.5)
+    assert resumed != motion
+    device.stop()
+
+    device.lidar.updated = time.monotonic() - device.config.scan_max_age_s - 0.01
+    assert device.guard_reason() == "lidar_scan_stale"
+    with pytest.raises(RuntimeError, match="lidar_scan_stale"):
+        device.drive_velocity(0.1, 0, 0.5)
+
+
+def test_runtime_preserves_guard_reason_and_operator_evidence_for_a_sparse_scan():
+    device = configured()
+    assert device.enable()
+    device.lidar.scan.ranges_cm[7] = 0
+    node = node_for(device)
+    node._ready = True
+    node._watchdog_state = "nominal"
+    node._last_heartbeat_expires_at = node._relay_now_ms() + 1_000
+    now = int(time.time() * 1_000)
+    frame = command_event(
+        t=now,
+        event_id="sparse-scan-command",
+        session="offline-safety",
+        command_id="sparse-scan-command",
+        intent_id="sparse-scan-intent",
+        roster_version=2,
+        drone_id=11,
+        connection_epoch=1,
+        seq=1,
+        issued_at=now,
+        ttl_ms=1_000,
+        operation=CommandOperation.GROUND_VELOCITY,
+        args={"linear_mm_s": 100, "angular_mrad_s": 0, "duration_ms": 250},
+    )
+    frame["signature"] = sign_event(frame, KEY.encode())
+    node._on_command(frame)
+    events = [node._outbound.get_nowait() for _ in range(node._outbound.qsize())]
+    acknowledgement = [event for event in events if event["type"] == "acknowledgement"][-1]
+    status = next(event for event in events if event["type"] == "node_status")
+    assert acknowledgement["reason"] == "lidar_scan_coverage_sparse"
+    assert acknowledgement["detail"] == "local guard stopped the ground pulse"
+    assert status["authority_change_reason"] == "lidar_scan_coverage_sparse"
+
+    node._publish_observations()
+    reports = [
+        event["payload"]
+        for event in (node._outbound.get_nowait() for _ in range(node._outbound.qsize()))
+        if event["type"] == "observation" and event["payload"]["kind"] == "status"
+    ]
+    report = next(event for event in reports if event["code"] == "ground_lidar_guard")
+    assert json.loads(report["detail"]) == {
+        "coverage": "sparse",
+        "invalid_bin_count": 0,
+        "invalid_bins": [],
+        "missing_bin_count": 1,
+        "missing_bins": [7],
+        "read_error": None,
+        "reason": "lidar_scan_coverage_sparse",
+        "scan_age_ms": pytest.approx(json.loads(report["detail"])["scan_age_ms"], abs=1),
+        "scan_t_ms": device.lidar.scan.t_ms,
+        "scan_updated_ms": pytest.approx(int(device.lidar.updated * 1_000), abs=1),
+        "valid_bins": 359,
+    }
+
+    device.lidar.scan.ranges_cm[:] = [0] * 360
+    node._publish_observations()
+    reports = [
+        event["payload"]
+        for event in (node._outbound.get_nowait() for _ in range(node._outbound.qsize()))
+        if event["type"] == "observation" and event["payload"]["kind"] == "status"
+    ]
+    empty_report = next(event for event in reports if event["code"] == "ground_lidar_guard")
+    detail = json.loads(empty_report["detail"])
+    assert len(empty_report["detail"]) <= 512
+    assert detail["missing_bin_count"] == 360
+    assert detail["missing_bins"] == list(range(32))
 
 
 def test_sensor_offset_expands_required_clearance():

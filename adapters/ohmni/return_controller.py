@@ -434,10 +434,38 @@ class ReturnController:
             return ReturnOutcome(
                 False, "return_lidar_pose_mismatch", "scan does not match current pose"
             )
-        required_cm = math.ceil(self.route.required_clearance_m * 100)
-        if any(type(value) is not int or value < required_cm for value in scan.ranges_cm):
+        values = scan.ranges_cm
+        if scan.angle_min_deg != 0.0 or scan.angle_increment_deg != 1.0 or len(values) != 360:
             return ReturnOutcome(
-                False, "return_footprint_blocked", "scan cannot clear body and stopping distance"
+                False, "return_lidar_geometry_invalid", "scan must contain 360 body-aligned bins"
+            )
+        missing = [index for index, value in enumerate(values) if type(value) is int and value == 0]
+        invalid = [
+            index
+            for index, value in enumerate(values)
+            if type(value) is not int or value < 0
+        ]
+        if invalid:
+            return ReturnOutcome(
+                False,
+                "return_lidar_invalid",
+                f"scan has invalid bins: {','.join(map(str, invalid))}",
+            )
+        if missing:
+            reason = (
+                "return_lidar_coverage_missing"
+                if len(missing) == len(values)
+                else "return_lidar_coverage_sparse"
+            )
+            return ReturnOutcome(
+                False, reason, f"scan is missing bins: {','.join(map(str, missing))}"
+            )
+        required_cm = math.ceil(self.route.required_clearance_m * 100)
+        if any(value <= required_cm for value in values):
+            return ReturnOutcome(
+                False,
+                "return_obstacle_within_clearance",
+                "scan cannot clear body and stopping distance",
             )
         return None
 
