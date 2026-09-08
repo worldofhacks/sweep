@@ -80,7 +80,7 @@ export function MultiviewCapture({ controller, services, now }: Pick<ModuleProps
 
   return <section className="mv-capture" aria-label="Multiple viewpoints">
     <h3>Photograph from multiple positions</h3>
-    <p>Choose approved stops in order. The aircraft holds each arrival position, takes one native photograph, and retrieves it before continuing.</p>
+    <p>Choose approved stops in order. The aircraft holds each arrival position, takes one native photograph, and retrieves it before continuing. The camera keeps its current heading.</p>
     {!client && <p role="status">The photo-route connection is unavailable.</p>}
     {client && <>
       <ol className="mv-stops">{zones.map((zone, index) => <li key={index}>

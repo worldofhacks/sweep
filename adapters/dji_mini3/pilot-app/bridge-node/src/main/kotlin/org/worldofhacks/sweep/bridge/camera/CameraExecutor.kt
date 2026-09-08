@@ -360,7 +360,7 @@ class CameraExecutor(
             it.copy(
                 phase = CapturePhase.Capturing(
                     frameNumber,
-                    maxOf(frameNumber, config.framesPerCapture),
+                    null,
                 ),
             )
         }

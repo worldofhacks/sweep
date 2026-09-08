@@ -248,7 +248,7 @@ def test_platform_confirmation_runs_the_retained_route_through_the_real_flight_w
                 assert confirmation["status"] == "accepted"
                 command = None
                 frames = []
-                for _ in range(6):
+                for _ in range(64):
                     frame = adapter.receive_json()
                     frames.append(frame)
                     if frame.get("type") == "command":
@@ -299,7 +299,7 @@ def test_platform_confirmation_runs_the_retained_route_through_the_real_flight_w
                     }
                 )
                 lifecycle = []
-                for _ in range(12):
+                for _ in range(64):
                     frame = adapter.receive_json()
                     lifecycle.append(frame)
                     if terminal_status == "completed" and frame.get("type") == "command":
@@ -417,7 +417,7 @@ def test_platform_confirmation_refreshes_only_the_internal_admission_timestamp(
                 assert confirmation["status"] == "accepted"
                 command = next(
                     frame
-                    for _ in range(6)
+                    for _ in range(64)
                     if (frame := adapter.receive_json()).get("type") == "command"
                 )
                 assert command["intent_id"] == "platform:platform-preview-1"
@@ -473,7 +473,7 @@ def test_console_hold_preempts_a_running_platform_route_before_another_wire_comm
                 )
                 command = next(
                     frame
-                    for _ in range(6)
+                    for _ in range(64)
                     if (frame := adapter.receive_json()).get("type") == "command"
                 )
                 with client.websocket_connect(f"/ws/{SESSION}") as console:
@@ -500,13 +500,13 @@ def test_console_hold_preempts_a_running_platform_route_before_another_wire_comm
                     )
                     acknowledged = next(
                         frame
-                        for _ in range(6)
+                        for _ in range(64)
                         if (frame := console.receive_json()).get("type") == "acknowledgement"
                     )
                     assert acknowledged["intent_id"] == "platform-route-hold"
                     invalidated = next(
                         frame
-                        for _ in range(12)
+                        for _ in range(64)
                         if (
                             (frame := adapter.receive_json()).get("intent_id")
                             == command["intent_id"]

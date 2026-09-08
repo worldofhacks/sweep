@@ -65,6 +65,7 @@ class FlightOverlayTest {
     @Test
     fun `progress labels`() {
         assertNull(FlightOverlay.derive(inputs()).progressLabel)
+        assertEquals("frame 1", FlightOverlay.derive(inputs(capture = CaptureProgress(phase = CapturePhase.Capturing(1, null)))).progressLabel)
         assertEquals("3 of 8", FlightOverlay.derive(inputs(capture = CaptureProgress(phase = CapturePhase.Capturing(3, 8)))).progressLabel)
         assertEquals("42%", FlightOverlay.derive(inputs(capture = CaptureProgress(phase = CapturePhase.Capturing(42, 100, percent = true)))).progressLabel)
         assertEquals("file 2 of 8", FlightOverlay.derive(inputs(capture = CaptureProgress(phase = CapturePhase.Downloading(2, 8)))).progressLabel)

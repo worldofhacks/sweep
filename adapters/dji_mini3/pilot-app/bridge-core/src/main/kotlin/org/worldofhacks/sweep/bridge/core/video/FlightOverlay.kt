@@ -27,7 +27,7 @@ sealed interface CapturePhase {
     data object Idle : CapturePhase
 
     /** `done of total` steps, or a percentage when [percent] is set (panorama progress). */
-    data class Capturing(val done: Int, val total: Int, val percent: Boolean = false) : CapturePhase
+    data class Capturing(val done: Int, val total: Int?, val percent: Boolean = false) : CapturePhase
 
     data class Downloading(val file: Int, val of: Int) : CapturePhase
 
@@ -206,7 +206,11 @@ object FlightOverlay {
 
     private fun progressLabel(phase: CapturePhase): String? = when (phase) {
         CapturePhase.Idle -> null
-        is CapturePhase.Capturing -> if (phase.percent) "${phase.done}%" else "${phase.done} of ${phase.total}"
+        is CapturePhase.Capturing -> when {
+            phase.percent -> "${phase.done}%"
+            phase.total != null -> "${phase.done} of ${phase.total}"
+            else -> "frame ${phase.done}"
+        }
         is CapturePhase.Downloading -> "file ${phase.file} of ${phase.of}"
         is CapturePhase.NeedsRetake -> when {
             phase.missingHeadingsDeg.isEmpty() -> "missing coverage"
