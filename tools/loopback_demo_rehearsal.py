@@ -441,7 +441,7 @@ class MovingControlPosePublisher:
                     signing_key=self.token,
                 )
                 await websocket.send(json.dumps(frame))
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.02)
 
 
 class LoopbackDemoRehearsal:

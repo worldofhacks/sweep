@@ -25,6 +25,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
+from math import dist
 
 from websockets.asyncio.client import connect
 
@@ -111,6 +112,7 @@ class FakeNode:
         self._navigation_route: dict[str, object] | None = None
         self._navigation_pose: dict[str, object] | None = None
         self._pending_goto_start: CommandFrame | None = None
+        self._active_goto: CommandFrame | None = None
         self._pending_goto_completion: CommandFrame | None = None
         self._outbound: asyncio.Queue[dict[str, object]] | None = None
         self._stop: asyncio.Event | None = None
@@ -286,6 +288,9 @@ class FakeNode:
             ):
                 self._pending_goto_start = None
                 self._start_goto(pending_start)
+            active = self._active_goto
+            if active is not None and self._navigation_pose_matches_aircraft(frame, active):
+                self._advance_goto()
             pending = self._pending_goto_completion
             if pending is not None and self._navigation_pose_matches_aircraft(frame, pending):
                 self._pending_goto_completion = None
@@ -333,8 +338,13 @@ class FakeNode:
             )
             return
         self._last_seq = frame.seq
-        if frame.operation in {CommandOperation.HOVER, CommandOperation.LAND, CommandOperation.ESTOP}:
+        if frame.operation in {
+            CommandOperation.HOVER,
+            CommandOperation.LAND,
+            CommandOperation.ESTOP,
+        }:
             self._pending_goto_start = None
+            self._active_goto = None
             self._pending_goto_completion = None
         self._enqueue(self._acknowledgement(frame, "accepted"))
         self._enqueue(self._acknowledgement(frame, "executing"))
@@ -359,11 +369,31 @@ class FakeNode:
         self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
 
     def _start_goto(self, frame: CommandFrame) -> None:
-        status, reason, detail = self._execute(frame)
-        if status != "completed":
-            self._enqueue(self._acknowledgement(frame, status, reason=reason, detail=detail))
+        self._active_goto = frame
+        self._advance_goto()
+
+    def _advance_goto(self) -> None:
+        frame = self._active_goto
+        if frame is None:
             return
-        self._pending_goto_completion = frame
+        aircraft = self._aircraft
+        target = tuple(int(frame.args[f"{axis}_mm"]) / 1_000 for axis in ("x", "y", "z"))
+        current = (aircraft.x, aircraft.y, aircraft.z)
+        remaining = dist(current, target)
+        if remaining <= 0.004:
+            next_position = target
+            self._active_goto = None
+            self._pending_goto_completion = frame
+        else:
+            fraction = 0.004 / remaining
+            next_position = tuple(
+                coordinate + (destination - coordinate) * fraction
+                for coordinate, destination in zip(current, target, strict=True)
+            )
+        aircraft.x, aircraft.y, aircraft.z = next_position
+        aircraft.state = "hovering"
+        self._enqueue(self._telemetry_frame())
+        self._enqueue(self._node_status_frame())
 
     def _admission_refusal(
         self, frame: CommandFrame
