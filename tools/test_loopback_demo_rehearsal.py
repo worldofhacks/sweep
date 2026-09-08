@@ -387,7 +387,7 @@ def test_loopback_rehearsal_hold_prevents_a_future_multiview_leg(tmp_path) -> No
         )
         workflow_id = accepted["workflowId"]
         assert isinstance(workflow_id, str)
-        first_goto = _wait_for(
+        _wait_for(
             lambda: next(
                 (
                     event
