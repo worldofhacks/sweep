@@ -47,6 +47,11 @@ from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.test_platform_navigation_execution import _deployment
 from tests.autonomy_fixtures import planning_config, safety_config
 from tests.world_bundle_fixtures import fixture_world_draft
+from tools.loopback_search_fixture import (
+    SyntheticFrameStream,
+    synthetic_detector,
+    synthetic_lobby_search_configuration,
+)
 from tools.map_geometry import generate
 from tools.map_validate import content_hash
 
@@ -466,6 +471,7 @@ class LoopbackDemoRehearsal:
             adapter_backend=AdapterBackend.REMOTE,
             console_origins=(self.console_url.removesuffix("/"),),
         )
+        search, search_detection = synthetic_lobby_search_configuration(deployment)
         config = AutonomyConfig(
             planning=replace(planning_config(), flight_speed_m_s=0.2),
             safety=replace(
@@ -475,8 +481,16 @@ class LoopbackDemoRehearsal:
             ),
             control_localization_projector=projector,
             navigation=deployment,
+            search=search,
+            search_detection=search_detection,
         )
-        app, self._composition = create_autonomy_app(settings, config, clock=epoch_ms)
+        app, self._composition = create_autonomy_app(
+            settings,
+            config,
+            clock=epoch_ms,
+            detection_stream_factory=SyntheticFrameStream,
+            detection_detector_factory=synthetic_detector,
+        )
         self._start_relay(app)
         self._composition.session(self.session_id)
         _publish_catalog(app, self.session_id, deployment)

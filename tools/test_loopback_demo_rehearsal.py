@@ -9,6 +9,7 @@ from tools.loopback_demo_rehearsal import (
     _rehearsal_deployment,
     epoch_ms,
 )
+from tools.loopback_search_fixture import SYNTHETIC_SOURCE_ID
 
 
 def test_rehearsal_deployment_reloads_a_signed_fresh_session(tmp_path) -> None:
@@ -69,6 +70,10 @@ def test_loopback_rehearsal_publishes_a_fresh_signed_pose_and_private_bootstrap(
         ]
 
         runtime = rehearsal._composition.runtime
+        autonomy = rehearsal._composition.session(rehearsal.session_id)
+        assert autonomy.search_runtime is not None
+        assert autonomy.search_runtime.config.source_by_drone == {1: SYNTHETIC_SOURCE_ID}
+        assert autonomy.search_detection is not None
         deadline = time.monotonic() + 3
         pose = None
         while time.monotonic() < deadline:
