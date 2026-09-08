@@ -30,6 +30,16 @@ through `NavigationRuntime` with simulated aircraft state:
 - Line and column plans execute their sequential routes. Each refuses a live
   state where two aircraft overlap their motion envelopes.
 
+Visual search reports detector classes, confidence, and image coordinates. A map
+position remains unavailable until a configured provider supplies fresh calibrated
+camera attitude and transform evidence. Control poses establish aircraft position;
+they do not establish camera orientation.
+
+Software completion requires integrated production paths, meaningful automated
+checks, and a repeatable simulation/browser rehearsal. A test that only reads a
+fixture does not demonstrate the implementation. Keep failures visible when a
+camera, route, selected aircraft, or calibration is unavailable.
+
 Run the route rehearsal with:
 
 ```sh

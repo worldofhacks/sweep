@@ -61,7 +61,13 @@ def synthetic_lobby_search_configuration(
 ) -> tuple[SearchRuntimeConfig, SearchDetectionConfig]:
     artifact = deployment.artifact()
     lobby = next((zone for zone in artifact.zones if zone.zone_id == "lobby"), None)
-    if lobby is None or not lobby.owner_approved or 1 not in deployment.wire_profiles:
+    pins = deployment.config.frame(1).control_pins
+    if (
+        lobby is None
+        or not lobby.owner_approved
+        or 1 not in deployment.wire_profiles
+        or pins is None
+    ):
         raise ValueError("the loopback search fixture requires its approved lobby and drone 1")
     source = DetectionSourceConfig(
         1,
@@ -78,7 +84,7 @@ def synthetic_lobby_search_configuration(
         {"lobby": SearchArea("lobby", lobby.floor_id, lobby.polygon_xy, lobby.z_min_m)},
         artifact.map_pin,
         CameraPolicy(90, 90, 1, -90, -90, 0, 0.25),
-        "synthetic-loopback-camera-calibration-v1",
+        pins.camera_calibration_id,
         {1: SYNTHETIC_SOURCE_ID},
         NavigationPermission(frozenset({"lobby"})),
         maximum_drones=1,

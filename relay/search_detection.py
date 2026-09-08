@@ -21,7 +21,6 @@ from perception.object_detection import (
 from perception.search_events import CoverageTask, FramePoseEvidence
 from perception.search_localization import SearchCameraModel
 from perception.webcam_stream import WebcamStream
-from planner.navigation import Pose
 from relay.search_runtime import SearchRuntime
 from relay.session import RelaySession
 
@@ -353,8 +352,10 @@ class SearchDetectionFactory:
         self, session: RelaySession, drone_id: int, connection_epoch: int, floor_id: str
     ) -> Callable[[ProcessedFrameEvent], FramePoseEvidence | None]:
         artifact = self.search.navigation.artifact()
-        map_id = artifact.map_pin.version
-        geometry_id = artifact.geometry_pin.version
+        frame = self.search.navigation.config.frame(drone_id)
+        pins = frame.control_pins
+        map_id = artifact.map_pin.version if pins is None else pins.map_id
+        geometry_id = artifact.geometry_pin.version if pins is None else pins.geometry_id
         calibration_id = self.search.config.calibration_id
 
         def provide(event: ProcessedFrameEvent) -> FramePoseEvidence | None:
@@ -371,10 +372,13 @@ class SearchDetectionFactory:
             ):
                 return None
             observed_at_s = self._monotonic_clock()
+            world_pose = frame.world(
+                (pose.x_mm / 1000, pose.y_mm / 1000, pose.z_mm / 1000), floor_id
+            )
             return FramePoseEvidence(
                 event.identity,
                 connection_epoch,
-                Pose(pose.x_mm / 1000, pose.y_mm / 1000, pose.z_mm / 1000, floor_id),
+                world_pose,
                 observed_at_s,
                 observed_at_s,
             )
