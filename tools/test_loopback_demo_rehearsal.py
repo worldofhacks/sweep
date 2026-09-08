@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import asdict
+from hashlib import sha256
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -149,6 +150,11 @@ def test_rehearsal_deployment_reloads_a_signed_fresh_session(tmp_path) -> None:
     deployment.validate_projector(projector)
     assert pins.clock_mapping.relay_reference_ms == now
     assert deployment.wire_profiles[1].clock_lease_expires_at_ms == now + 60_000
+    assert deployment.config.segment_timeout_ms == 12_000
+    profile = deployment.wire_profiles[1]
+    assert profile.max_authorization_lifetime_ms == profile.tracking_timeout_ms == 12_000
+    tuning = deployment.path.parent / "device-1-navigation.json"
+    assert sha256(tuning.read_bytes()).hexdigest() == profile.navigation_config_sha256
     artifact = deployment.artifact()
     assert [zone.zone_id for zone in artifact.zones] == ["demo-east", "demo-west", "lobby"]
     assert {
@@ -300,10 +306,11 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
             status = _wait_for(terminal_status, timeout_s=15)
         except AssertionError as error:
             raise AssertionError(last_status) from error
-        assert status["status"] == "completed", {
-            "workflow": status,
-            **_navigation_diagnostics(rehearsal),
-        }
+        if status["status"] != "completed":
+            diagnostics = {"workflow": status, **_navigation_diagnostics(rehearsal)}
+            (tmp_path / "navigation-diagnostics.json").write_text(json.dumps(diagnostics))
+            print(json.dumps(diagnostics, sort_keys=True))
+            raise AssertionError(diagnostics)
         assert [view["state"] for view in status["views"]] == ["completed", "completed"]
         captures = rehearsal._composition.runtime.sessions[rehearsal.session_id].current_state()[
             "captures"

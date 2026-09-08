@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
@@ -232,6 +233,20 @@ def _rehearsal_deployment(
     directory: Path, *, session_id: str, now_ms: int, lifetime_ms: int
 ) -> tuple[NavigationDeployment, ControlLocalizationProjector, ControlLocalizationPins]:
     base = _three_destination_deployment(directory)
+    artifact = base.artifact()
+    document = json.loads(base.path.read_text())
+    tuning_path = directory / document["wire_navigation_files"]["1"]
+    tuning = json.loads(tuning_path.read_text())
+    tuning["limits"]["tracking_timeout_ms"] = 12_000
+    encoded_tuning = json.dumps(tuning, sort_keys=True, separators=(",", ":")).encode()
+    tuning_path.write_bytes(encoded_tuning)
+    tuning_digest = sha256(encoded_tuning).hexdigest()
+    profile_document = document["wire_profiles"]["1"]
+    profile_document.update(
+        max_authorization_lifetime_ms=12_000,
+        tracking_timeout_ms=12_000,
+        navigation_config_sha256=tuning_digest,
+    )
     frame = base.config.frames[0]
     original_pins = frame.control_pins
     if original_pins is None:
@@ -244,15 +259,21 @@ def _rehearsal_deployment(
     pins = replace(original_pins, clock_mapping=mapping)
     frames = (replace(frame, control_pins=pins),)
     profiles = {
-        drone_id: replace(profile, clock_lease_expires_at_ms=now_ms + lifetime_ms)
+        drone_id: replace(
+            profile,
+            clock_lease_expires_at_ms=now_ms + lifetime_ms,
+            max_authorization_lifetime_ms=12_000,
+            tracking_timeout_ms=12_000,
+            navigation_config_sha256=tuning_digest,
+        )
         for drone_id, profile in base.wire_profiles.items()
     }
     config = replace(
         base.config,
         frames=frames,
+        segment_timeout_ms=12_000,
         wire_config_sha256=next(iter(wire_config_digest_candidates(profiles))),
     )
-    artifact = base.artifact()
     world_path = directory / "world-localization.json"
     world = json.loads(world_path.read_text())
     world["publisher"]["session"] = session_id
@@ -261,7 +282,6 @@ def _rehearsal_deployment(
     publisher_clock.update(capture_reference_s=now_ms / 1_000, relay_reference_ms=now_ms)
     publisher_drone["live_capture_clock"]["capture_reference_s"] = now_ms / 1_000
     world_path.write_text(json.dumps(world))
-    document = json.loads(base.path.read_text())
     document["execution"] = asdict(config)
     document["wire_profiles"] = {
         str(drone_id): asdict(profile) for drone_id, profile in profiles.items()
@@ -398,15 +418,19 @@ class MovingControlPosePublisher:
             await websocket.recv()
             self._ready.set()
             sequence = 0
-            while not self._stop.is_set():
-                sequence += 1
-                current_s = time.time()
-                position = self.position()
-                if position is None:
-                    await asyncio.sleep(0.05)
-                    continue
-                x_m, y_m, z_m = position
-                wire = ControlLocalizationWire(
+            reader = asyncio.create_task(self._drain(websocket))
+            try:
+                while not self._stop.is_set():
+                    if reader.done():
+                        reader.result()
+                    sequence += 1
+                    current_s = time.time()
+                    position = self.position()
+                    if position is None:
+                        await asyncio.sleep(0.05)
+                        continue
+                    x_m, y_m, z_m = position
+                    wire = ControlLocalizationWire(
                     drone_id=1,
                     connection_epoch=1,
                     map_id=self.pins.map_id,
@@ -433,15 +457,24 @@ class MovingControlPosePublisher:
                     source_ids=self.pins.source_ids,
                     clock_mapping=self.pins.clock_mapping,
                 )
-                frame = sign_localization_frame(
-                    wire,
-                    timestamp_ms=epoch_ms(),
-                    event_id=f"loopback-pose-{sequence}",
-                    session=self.session_id,
-                    signing_key=self.token,
-                )
-                await websocket.send(json.dumps(frame))
-                await asyncio.sleep(0.02)
+                    frame = sign_localization_frame(
+                        wire,
+                        timestamp_ms=epoch_ms(),
+                        event_id=f"loopback-pose-{sequence}",
+                        session=self.session_id,
+                        signing_key=self.token,
+                    )
+                    await websocket.send(json.dumps(frame))
+                    await asyncio.sleep(0.02)
+            finally:
+                reader.cancel()
+                with suppress(asyncio.CancelledError):
+                    await reader
+
+    @staticmethod
+    async def _drain(websocket: Any) -> None:
+        while True:
+            await websocket.recv()
 
 
 class LoopbackDemoRehearsal:
