@@ -386,6 +386,15 @@ remains visibly unavailable. See [platform integration](../docs/platform-integra
 
 ## Shared map authoring — issue #248
 
+Map › Captured map displays private capture previews installed with this console release.
+It labels every preview provisional and offers image layers and zoom. It has no map approval
+or motion actions. To install a capture, place `manifest.json` and its PNGs under the ignored
+`console/public/mapping-preview/` directory before building. The manifest has `version: 1`,
+`title`, `description`, and an `images` array of `{file, caption}` entries. Image filenames
+must be lowercase letters, digits, and hyphens with a `.png` extension. Keep these artifacts
+inside the deployment's authenticated console; they are private evidence and stay out of git.
+Without an installed capture, the pane reports that no captured map is available.
+
 Map › Map authoring edits operator-supplied occupancy images and measured map metadata in the existing
 console. Enter the actual resolution, bottom-left origin, map version, floor and registered `world`
 frame before drawing, then supply metric units, creation provenance and measured registration
