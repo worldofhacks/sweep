@@ -26,6 +26,7 @@ def record(
     capture_pipeline_sha256: str | None = None,
     source_device_sha256: str | None = None,
     source_device_size_bytes: int | None = None,
+    inspection_challenge: dict[str, object] | None = None,
 ) -> None:
     image = cv2.imread(str(image_path))
     if image is None or frame_index < 0 or not boot_id:
@@ -80,6 +81,8 @@ def record(
         payload["raw_capture_collection"] = raw_capture_collection
         payload["camera"] = camera
         payload["capture_pipeline_sha256"] = capture_pipeline_sha256
+    if inspection_challenge is not None:
+        payload["inspection_challenge"] = inspection_challenge
     output.write_text(json.dumps(payload, sort_keys=True) + "\n")
 
 

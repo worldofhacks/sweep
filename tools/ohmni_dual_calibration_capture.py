@@ -17,8 +17,10 @@ import numpy as np
 
 if __package__:
     from tools.ohmni_calibration_frame_record import record
+    from tools.ohmni_camera_inspection import CaptureChallenge, InspectionError, parse_challenge
 else:
     from ohmni_calibration_frame_record import record
+    from ohmni_camera_inspection import CaptureChallenge, InspectionError, parse_challenge
 
 ADB = "/var/tmp/gauntlet/sweep-android-sdk/platform-tools/adb"
 MAIN_SHAPE = (720, 1280, 2)
@@ -51,6 +53,10 @@ def _remaining_timeout(deadline_ns: int) -> float:
 
 def _hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _capture_tool_sha256() -> str:
+    return _hash(Path(__file__))
 
 
 def _pipeline_sha256(pipeline: dict[str, object]) -> str:
@@ -260,6 +266,7 @@ def _write_manifest(
     collection: str,
     pipeline: dict[str, object],
     cleanup: dict[str, object],
+    inspection_challenge: CaptureChallenge | None,
 ) -> None:
     payload = {
         "schema_version": "ohmni-dual-calibration-capture/v2",
@@ -278,6 +285,8 @@ def _write_manifest(
         },
         "cameras": pipeline,
     }
+    if inspection_challenge is not None:
+        payload["inspection_challenge"] = inspection_challenge.to_mapping()
     (output / "manifest.json").write_text(json.dumps(payload, sort_keys=True) + "\n")
 
 
@@ -325,6 +334,8 @@ def run(
     camera: str = "both",
     interval_s: float = 0,
     warmup_frames: int = 3,
+    inspection_challenge: dict[str, object] | None = None,
+    device_id: int | None = None,
 ) -> None:
     if not 1 <= count <= 60 or not 0 < duration_s <= 30:
         raise ValueError("count must be 1..60 and duration at most 30s")
@@ -337,6 +348,11 @@ def run(
     cameras = tuple(item for item in CAMERAS if camera == "both" or item[1] == camera)
     if not expected_boot_id:
         raise ValueError("an expected boot ID is required")
+    challenge = None if inspection_challenge is None else parse_challenge(inspection_challenge)
+    if challenge is not None and challenge.capture_tool_sha256 != _capture_tool_sha256():
+        raise InspectionError("camera inspection capture tool differs")
+    if challenge is not None and device_id != challenge.device_id:
+        raise InspectionError("camera inspection device differs")
     output.mkdir(parents=True, exist_ok=False)
     (output / "INCOMPLETE").write_text("capture in progress\n")
     started_ns = time.monotonic_ns()
@@ -374,6 +390,8 @@ def run(
         boot = boot_id()
         if boot != expected_boot_id:
             raise ValueError("device boot ID differs from the expected boot ID")
+        if challenge is not None and challenge.source_boot_id != boot:
+            raise InspectionError("camera inspection source boot differs")
         pipeline = _camera_pipeline(serial, cameras, deadline_ns)
         pipeline_sha256 = _pipeline_sha256(pipeline)
         for _, name, _, _, _, _, _, _ in cameras:
@@ -431,6 +449,7 @@ def run(
                     capture_pipeline_sha256=pipeline_sha256,
                     source_device_sha256=remote_sha256,
                     source_device_size_bytes=remote_size,
+                    inspection_challenge=None if challenge is None else challenge.to_mapping(),
                 )
                 cleanup_remote_raw.append(remote)
         phase = "postflight-boot"
@@ -479,7 +498,13 @@ def run(
             collection,
             pipeline,
             cleanup_status,
+            challenge,
         )
+        if challenge is not None:
+            manifest_path = output / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["device_id"] = device_id
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n")
         phase = "bind-manifest"
         manifest_path = output / "manifest.json"
         for _, name, _, _, _, _, _, _ in cameras:
@@ -503,7 +528,12 @@ def main() -> None:
     parser.add_argument("--camera", choices=("both", "main", "lower"), default="both")
     parser.add_argument("--interval-s", type=float, default=0)
     parser.add_argument("--warmup-frames", type=int, default=3)
+    parser.add_argument("--inspection-challenge-file", type=Path)
+    parser.add_argument("--device-id", type=int)
     args = parser.parse_args()
+    challenge = None
+    if args.inspection_challenge_file is not None:
+        challenge = json.loads(args.inspection_challenge_file.read_text())
     run(
         args.serial,
         args.output,
@@ -513,6 +543,8 @@ def main() -> None:
         camera=args.camera,
         interval_s=args.interval_s,
         warmup_frames=args.warmup_frames,
+        inspection_challenge=challenge,
+        device_id=args.device_id,
     )
 
 
