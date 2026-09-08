@@ -329,7 +329,7 @@ def test_zero_confidence_world_pose_cannot_authorize_ground_navigation(
     )
 
     assert response.status_code == 409, response.text
-    assert response.json()["code"] == "motion_config_unavailable"
+    assert response.json()["code"] == "navigation_execution_unavailable"
     assert "confidence" in response.json()["detail"]
     assert device.stop_confirmed()
     assert not any(

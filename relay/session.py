@@ -1042,6 +1042,8 @@ class RelaySession:
                 if (
                     submission.node_type == NodeType.GROUND.value
                     and submission.payload["kind"] == "pose"
+                    # World localization must not replace the adapter odometry readiness pair.
+                    and principal.source == "adapter"
                 ):
                     if submission.confidence > 0:
                         self.registry.apply_ground_pose_observation(

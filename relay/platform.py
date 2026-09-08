@@ -74,14 +74,14 @@ class PlatformServices:
         self.maps = MapAuthoringStore(directory / "maps.sqlite3", clock_ms=runtime.clock)
         # Configuration comes from the same loaded composition as the motion
         # arbiter, never from a browser request or guessed dataclass defaults.
-        configuration = json.loads(json.dumps(motion_configuration))
+        motion_config = json.loads(json.dumps(motion_configuration))
         with ExitStack() as cleanup:
             self.navigation = NavigationService(
                 directory / "navigation.sqlite3",
                 clock_ms=runtime.clock,
                 approved_bundle=self.maps.approved_bundle,
                 state=lambda session: self.session(session).current_state(),
-                motion_config=lambda _session: configuration,
+                motion_config=lambda _session: motion_config,
                 flight_execution=(
                     None if flight_execution is None else _FlightExecutionAdapter(flight_execution)
                 ),
@@ -96,11 +96,11 @@ class PlatformServices:
             close = getattr(self.observations, "close", None)
             if close is not None:
                 cleanup.callback(close)
-            configuration = runtime.settings.observation_configuration
+            observation_configuration = runtime.settings.observation_configuration
             configured_sources = (
                 set()
-                if configuration is None
-                else {binding.source_id for binding in configuration.bindings}
+                if observation_configuration is None
+                else {binding.source_id for binding in observation_configuration.bindings}
             )
             if not set(self.observations.registrations) <= configured_sources:
                 raise SettingsError(
@@ -281,6 +281,8 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
                 return service.observations.record(session_id, value, current, actor)
             raise MapAuthoringError("unknown_operation", "Unknown map operation.", 404)
 
+        return await call(perform)
+
     @application.get("/api/sessions/{session_id}/navigation/catalog")
     async def catalog(session_id: str, authorization: str | None = Header(default=None)):
         service = services(session_id, authorization)
@@ -288,6 +290,8 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
         def perform():
             service.require_current()
             return service.navigation.catalog(session_id)
+
+        return await call(perform)
 
     @application.post("/api/sessions/{session_id}/navigation/{operation}")
     async def navigation(
@@ -308,6 +312,8 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
             if operation not in {"preview", "resolve", "confirm", "compile"}:
                 raise MapAuthoringError("unknown_operation", "Unknown navigation operation.", 404)
             return getattr(service.navigation, operation)(session_id, value)
+
+        return await call(perform)
 
     @application.post("/api/sessions/{session_id}/observations")
     async def observation(
@@ -349,14 +355,26 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
             if session.observation_ingress is None:
                 raise ObservationError("source_not_configured", "observation ingress is disabled")
             receipt_ms, capture_ms = session.observation_ingress.host_times(observation)
-            accepted = await asyncio.to_thread(
-                service.observations.ingest,
-                session_id,
-                observation,
-                receipt_ms=receipt_ms,
-                capture_ms=capture_ms,
-                state=session.current_state(),
-            )
+            try:
+                accepted = await asyncio.to_thread(
+                    service.observations.ingest,
+                    session_id,
+                    observation,
+                    receipt_ms=receipt_ms,
+                    capture_ms=capture_ms,
+                    state=session.current_state(),
+                )
+            except WorldObservationError as error:
+                if error.code != "state_changed":
+                    raise
+                accepted = await asyncio.to_thread(
+                    service.observations.ingest,
+                    session_id,
+                    observation,
+                    receipt_ms=receipt_ms,
+                    capture_ms=capture_ms,
+                    state=session.current_state(),
+                )
             registration = service.observations.registrations[
                 observation.submission.source_id
             ].to_dict()
