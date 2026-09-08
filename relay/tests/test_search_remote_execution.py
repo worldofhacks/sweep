@@ -248,6 +248,51 @@ def test_remote_search_preview_and_confirmed_intent_use_the_signed_control_pose(
                 except TimeoutError as error:
                     raise AssertionError(frames) from error
                 assert command["intent_id"] == intent.intent_id
+                assert command["operation"] == "goto", frames
+                route_index = next(
+                    index
+                    for index, frame in enumerate(frames)
+                    if frame.get("type") == "navigation_route_authorization"
+                )
+                pose_index = next(
+                    index
+                    for index, frame in enumerate(frames)
+                    if frame.get("type") == "navigation_pose"
+                )
+                assert route_index < pose_index < len(frames) - 1
+                for status in ("accepted", "executing"):
+                    adapter.send_json(
+                        {
+                            "v": 1,
+                            "t": 100_000,
+                            "type": "acknowledgement",
+                            "event_id": f"remote-search-goto-{status}",
+                            "session": SESSION,
+                            "intent_id": command["intent_id"],
+                            "command_id": command["command_id"],
+                            "status": status,
+                            "drone_id": 1,
+                            "connection_epoch": 1,
+                            "roster_version": command["roster_version"],
+                            "reason": None,
+                            "detail": None,
+                        }
+                    )
+                deadline = time.monotonic() + 2
+                while (
+                    not any(
+                        record["event"].get("command_id") == command["command_id"]
+                        and record["event"].get("status") == "executing"
+                        for record in composition.runtime.replay(SESSION)["events"]
+                    )
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+                assert any(
+                    record["event"].get("command_id") == command["command_id"]
+                    and record["event"].get("status") == "executing"
+                    for record in composition.runtime.replay(SESSION)["events"]
+                )
                 factory = autonomy.search_detection
                 assert factory is not None
                 worker = factory._workers[("remote-search", 1)][1]
@@ -309,15 +354,22 @@ def test_remote_search_preview_and_confirmed_intent_use_the_signed_control_pose(
                     ).status_code
                     == 404
                 )
+                deadline = time.monotonic() + 5
+                while "remote-search" not in autonomy._awaiting and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert "remote-search" in autonomy._awaiting
                 worker._set_failure("test_failure")
                 deadline = time.monotonic() + 2
                 while "remote-search" in autonomy._awaiting and time.monotonic() < deadline:
                     time.sleep(0.01)
                 assert "remote-search" not in autonomy._awaiting
-                deadline = time.monotonic() + 2
+                deadline = time.monotonic() + 5
                 while (
                     not any(
                         record["event"].get("operation") == "hover"
+                        and record["event"]
+                        .get("intent_id", "")
+                        .startswith("safety:search-detection:")
                         for record in composition.runtime.replay(SESSION)["events"]
                     )
                     and time.monotonic() < deadline
@@ -325,6 +377,7 @@ def test_remote_search_preview_and_confirmed_intent_use_the_signed_control_pose(
                     time.sleep(0.01)
                 assert any(
                     record["event"].get("operation") == "hover"
+                    and record["event"].get("intent_id", "").startswith("safety:search-detection:")
                     for record in composition.runtime.replay(SESSION)["events"]
                 )
     finally:
