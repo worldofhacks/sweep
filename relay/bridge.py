@@ -15,6 +15,7 @@ from adapters.sim.camera import SimCamera, SimCameraConfig
 from adapters.sim.flight import SimFlightAdapter
 from arbiter.safety import SafetyArbiter
 from planner.models import CommandOperation, FleetSnapshot
+from planner.navigation_runtime import NavigationRuntime
 from relay.app import RelayRuntime
 from relay.contracts import AdapterAcknowledgement, CapabilitiesFrame, MediaFileRecord
 from relay.session import RelaySession
@@ -239,6 +240,7 @@ def build_dispatcher(
     sim_camera_config: SimCameraConfig | None = None,
     link_wrapper: LinkWrapper | None = None,
     navigation_publisher: NavigationWirePublisher | None = None,
+    navigation_runtime: NavigationRuntime | None = None,
 ) -> AdapterDispatcher:
     """Construct a session's ``AdapterDispatcher`` on the configured backend."""
     adapters = build_adapters(
@@ -249,7 +251,12 @@ def build_dispatcher(
         link_wrapper=link_wrapper,
         navigation_publisher=navigation_publisher,
     )
-    return AdapterDispatcher(flight=adapters.flight, camera=adapters.camera, arbiter=arbiter)
+    return AdapterDispatcher(
+        flight=adapters.flight,
+        camera=adapters.camera,
+        arbiter=arbiter,
+        navigation_runtime=navigation_runtime,
+    )
 
 
 def _refuse_loop_thread(loop: asyncio.AbstractEventLoop) -> None:

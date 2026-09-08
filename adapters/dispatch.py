@@ -70,6 +70,9 @@ class AdapterDispatcher:
         self.current_altitude_grounding: Callable[[], AltitudeGrounding | None] | None = None
         self.navigation_runtime = navigation_runtime
         self._navigation_issued_at: dict[str, int] = {}
+        self.on_navigation_command_completed: (
+            Callable[[Plan, Command, FleetSnapshot], None] | None
+        ) = None
         self._command_observer: ContextVar[Callable[[Command], None] | None] = ContextVar(
             f"command_observer_{id(self)}", default=None
         )
@@ -557,6 +560,8 @@ class AdapterDispatcher:
                         media_files=media_files,
                         degraded=degraded,
                     )
+                if plan.navigation is not None and self.on_navigation_command_completed is not None:
+                    self.on_navigation_command_completed(plan, command, provider())
                 target = self.arbiter.command_position(command, current.aircraft[command.drone_id])
                 if target is not None:
                     projected[command.drone_id] = target

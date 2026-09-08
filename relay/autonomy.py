@@ -22,6 +22,7 @@ the intent operation.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -36,7 +37,7 @@ from enum import Enum
 from pathlib import Path
 from typing import get_origin, get_type_hints
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Request
 
 from adapters.dispatch import AdapterDispatcher
 from adapters.dji_mini3.remote import CommandRequest, NodeLink
@@ -82,8 +83,12 @@ from relay.control_localization import (
     ControlLocalizationProjector,
 )
 from relay.ground_navigation_execution import GroundPlatformNavigation, PreparedGroundNavigation
-from relay.intent_v1 import IntentName, IntentV1, Mode
+from relay.intent_v1 import AcceptedIntent, IntentName, IntentV1, Mode, validate_intent
 from relay.navigation_wire import NavigationWirePublisher
+from relay.search_deployment import load_search_config
+from relay.search_detection import SearchDetectionConfig, SearchDetectionFactory
+from relay.search_detection_deployment import load_search_detection_config
+from relay.search_runtime import SearchRuntime, SearchRuntimeConfig
 from relay.session import Clock, EventIdFactory, IntentSink, LeaveAuthorizer, RelaySession
 from relay.settings import AdapterBackend, RelaySettings, SettingsError
 from relay.supervised_vertical import (
@@ -107,6 +112,7 @@ HOLD_PREEMPTS = frozenset(
         IntentName.SWEEP,
         IntentName.COME_HOME,
         IntentName.NAVIGATE,
+        IntentName.SEARCH,
         IntentName.CAPTURE_ROOM,
         IntentName.GROUND_VELOCITY,
     }
@@ -153,6 +159,8 @@ class AutonomyConfig:
     control_localization_projector: ControlLocalizationProjector | None = None
     navigation: NavigationDeployment | None = None
     ground_navigation: GroundNavigationDeployment | None = None
+    search: SearchRuntimeConfig | None = None
+    search_detection: SearchDetectionConfig | None = None
 
     def __post_init__(self) -> None:
         world = self.planning is not None or self.safety is not None
@@ -164,6 +172,8 @@ class AutonomyConfig:
             self.control_localization_projector is not None
             or self.navigation is not None
             or self.ground_navigation is not None
+            or self.search is not None
+            or self.search_detection is not None
         ):
             raise ValueError("supervised_vertical does not accept world localization or navigation")
 
@@ -205,6 +215,8 @@ class AutonomyConfig:
                     else _config_from_json(SimCameraConfig, camera_raw, "SWEEP_SIM_CAMERA_JSON")
                 ),
             )
+        navigation = None if not navigation_path else load_navigation_deployment(navigation_path)
+        search = load_search_config(values, navigation)
         return cls(
             planning=_config_from_json(
                 PlanningConfig, values.get("SWEEP_PLANNING_JSON", ""), "SWEEP_PLANNING_JSON"
@@ -224,10 +236,12 @@ class AutonomyConfig:
                     localization_raw, "SWEEP_CONTROL_LOCALIZATION_JSON"
                 )
             ),
-            navigation=None if not navigation_path else load_navigation_deployment(navigation_path),
+            navigation=navigation,
             ground_navigation=(
                 None if not ground_path else _load_ground_navigation(ground_path, ground_key_path)
             ),
+            search=search,
+            search_detection=load_search_detection_config(values, search),
         )
 
 
@@ -614,6 +628,18 @@ class AutonomySession:
             )
         )
         self.navigation_runtime = navigation_runtime
+        self.search_runtime = (
+            None
+            if composition.config.search is None or navigation_runtime is None
+            else SearchRuntime(composition.config.search, navigation_runtime)
+        )
+        self.search_detection = (
+            None
+            if composition.config.search_detection is None or self.search_runtime is None
+            else SearchDetectionFactory(composition.config.search_detection, self.search_runtime)
+        )
+        if self.search_detection is not None:
+            self.search_detection.start()
         self.ground_navigation = (
             None
             if composition.config.ground_navigation is None
@@ -737,6 +763,19 @@ class AutonomySession:
             capture_readiness=capture_readiness,
             landing_recovery=recovery,
         )
+
+    def preview_search(self, intent: IntentV1, state: Mapping[str, object]) -> object:
+        if intent.name is not IntentName.SEARCH or self.search_runtime is None:
+            return Refusal(
+                intent.intent_id,
+                0,
+                None,
+                None,
+                RefusalReason.UNSUPPORTED,
+                "search is unavailable",
+            )
+        snapshot = self.snapshot(state)
+        return self.search_runtime.prepare(intent, snapshot)
 
     def preview_platform_navigation(self, preview: Mapping[str, object]) -> dict[str, object]:
         selected = preview.get("selected")
@@ -982,6 +1021,8 @@ class AutonomySession:
         return []
 
     def close(self, timeout_s: float) -> None:
+        if self.search_detection is not None:
+            self.search_detection.close()
         for lane in self._lanes:
             with lane.ready:
                 lane.closed = True
@@ -1223,6 +1264,7 @@ class AutonomySession:
                             sim_camera_config=self._composition.config.sim_camera,
                             link_wrapper=gate,
                             navigation_publisher=self.navigation_wire,
+                            navigation_runtime=self.navigation_runtime,
                         )
                         controller = AutonomyController(
                             planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
@@ -1264,51 +1306,99 @@ class AutonomySession:
                         sim_camera_config=self._composition.config.sim_camera,
                         link_wrapper=gate,
                         navigation_publisher=self.navigation_wire,
+                        navigation_runtime=self.navigation_runtime,
                     )
                     controller = AutonomyController(
                         planner=self.planner, arbiter=self.arbiter, dispatcher=dispatcher
                     )
-                    with self._lock:
-                        prepared = self._platform_dispatch.pop(intent.intent_id, None)
-                    if prepared is not None:
-                        if prepared.intent != intent:
-                            raise RuntimeError(
-                                "platform navigation intent does not match its frozen plan"
-                            )
-                        refusal = self.arbiter.check_intent(intent, snapshot)
-                        if refusal is not None:
+                    if intent.name is IntentName.SEARCH:
+                        search = self.search_runtime
+                        if search is None or not search.accepts_intent(intent, snapshot.now_ms):
                             result = ExecutionResult(
                                 intent_id=intent.intent_id,
                                 roster_version=snapshot.roster_version,
                                 status=LifecycleStatus.REFUSED,
-                                refusal=refusal,
+                                refusal=Refusal(
+                                    intent_id=intent.intent_id,
+                                    roster_version=snapshot.roster_version,
+                                    drone_id=None,
+                                    connection_epoch=None,
+                                    reason=RefusalReason.INVALID_PLAN,
+                                    detail="search intent has no matching frozen preview",
+                                ),
                             )
                         else:
-                            scope = (
-                                self.navigation_wire.command_scope(prepared.plan, current)
-                                if self.navigation_wire is not None
-                                and prepared.plan.navigation is not None
-                                else nullcontext()
+                            detection_started = (
+                                self.search_detection is None
+                                or self.search_detection.start_mission(intent.intent_id, session)
                             )
-                            with scope:
-                                result = controller.dispatch_prepared(
-                                    prepared, current_snapshot=current
+                            if not detection_started:
+                                search.hold(intent.intent_id, "detection_worker_start_failed")
+                                result = ExecutionResult(
+                                    intent_id=intent.intent_id,
+                                    roster_version=snapshot.roster_version,
+                                    status=LifecycleStatus.FAILED,
+                                    refusal=Refusal(
+                                        intent_id=intent.intent_id,
+                                        roster_version=snapshot.roster_version,
+                                        drone_id=None,
+                                        connection_epoch=None,
+                                        reason=RefusalReason.INVALID_PLAN,
+                                        detail="search detection worker failed to start",
+                                        status=LifecycleStatus.FAILED,
+                                    ),
+                                )
+                            else:
+                                result = search.execute(
+                                    intent.intent_id,
+                                    dispatcher,
+                                    snapshot,
+                                    current_snapshot=current,
                                 )
                     else:
-                        prepared = controller.prepare(intent, snapshot, current_snapshot=current)
-                        if isinstance(prepared, PreparedExecution):
-                            scope = (
-                                self.navigation_wire.command_scope(prepared.plan, current)
-                                if self.navigation_wire is not None
-                                and prepared.plan.navigation is not None
-                                else nullcontext()
-                            )
-                            with scope:
-                                result = controller.dispatch_prepared(
-                                    prepared, current_snapshot=current
+                        with self._lock:
+                            prepared = self._platform_dispatch.pop(intent.intent_id, None)
+                        if prepared is not None:
+                            if prepared.intent != intent:
+                                raise RuntimeError(
+                                    "platform navigation intent does not match its frozen plan"
                                 )
+                            refusal = self.arbiter.check_intent(intent, snapshot)
+                            if refusal is not None:
+                                result = ExecutionResult(
+                                    intent_id=intent.intent_id,
+                                    roster_version=snapshot.roster_version,
+                                    status=LifecycleStatus.REFUSED,
+                                    refusal=refusal,
+                                )
+                            else:
+                                scope = (
+                                    self.navigation_wire.command_scope(prepared.plan, current)
+                                    if self.navigation_wire is not None
+                                    and prepared.plan.navigation is not None
+                                    else nullcontext()
+                                )
+                                with scope:
+                                    result = controller.dispatch_prepared(
+                                        prepared, current_snapshot=current
+                                    )
                         else:
-                            result = prepared
+                            prepared = controller.prepare(
+                                intent, snapshot, current_snapshot=current
+                            )
+                            if isinstance(prepared, PreparedExecution):
+                                scope = (
+                                    self.navigation_wire.command_scope(prepared.plan, current)
+                                    if self.navigation_wire is not None
+                                    and prepared.plan.navigation is not None
+                                    else nullcontext()
+                                )
+                                with scope:
+                                    result = controller.dispatch_prepared(
+                                        prepared, current_snapshot=current
+                                    )
+                            else:
+                                result = prepared
         except PlanPreempted as preempted:
             _LOGGER.info("intent %s stopped: %s", intent.intent_id, preempted.reason)
             return
@@ -1335,6 +1425,9 @@ class AutonomySession:
                 self._awaiting.pop(intent.intent_id, None)
                 job.finished = True
             cancelled = job.cancelled_by
+        if intent.name is IntentName.SEARCH and result.status is not LifecycleStatus.EXECUTING:
+            if self.search_detection is not None:
+                self.search_detection.finish_mission(intent.intent_id)
         if cancelled is not None:
             return  # a stop already recorded this plan's terminal lifecycle
         self._report(runtime, session, job, result)
@@ -1612,6 +1705,10 @@ class AutonomyComposition:
                 )
             if config.navigation is not None:
                 profile = navigation_capability_profile(profile, config.navigation.config)
+            if config.search is not None:
+                profile = CapabilityProfile(
+                    f"{profile.name}.search", profile.enabled_intent_names | {IntentName.SEARCH}
+                )
         if (
             config.supervised_vertical is not None
             and node_types is not None
@@ -1805,6 +1902,75 @@ def create_autonomy_app(
             ),
         ),
     )
+
+    def search_runtime(authorization: str | None) -> RelayRuntime:
+        runtime: RelayRuntime = app.state.relay_runtime
+        expected = runtime.credential_resolver.resolve("console", None)
+        supplied = (
+            None
+            if authorization is None or not authorization.startswith("Bearer ")
+            else authorization.removeprefix("Bearer ")
+        )
+        if expected is None or supplied is None or not hmac.compare_digest(supplied, expected):
+            raise HTTPException(status_code=401, detail="authentication required")
+        return runtime
+
+    @app.post("/session/{session_id}/search/preview")
+    async def search_preview(
+        session_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        runtime = search_runtime(authorization)
+        try:
+            candidate = validate_intent(await request.json(), composition.capability_profile)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="search intent is invalid") from None
+        if (
+            not isinstance(candidate, AcceptedIntent)
+            or candidate.intent.name is not IntentName.SEARCH
+            or candidate.intent.source != "console"
+            or candidate.intent.session != session_id
+        ):
+            raise HTTPException(
+                status_code=422, detail="a configured console search intent is required"
+            )
+        session = await runtime.activate_session(session_id)
+        result = composition.session(session_id).preview_search(
+            candidate.intent, session.current_state()
+        )
+        if isinstance(result, Refusal):
+            raise HTTPException(status_code=422, detail=result.detail)
+        return {
+            "v": 1,
+            "t": runtime.clock(),
+            "type": "search_preview",
+            "session": session_id,
+            "intent_id": candidate.intent.intent_id,
+            "preview": result.search.payload(),
+            "plan": result.plan.to_dict(),
+            "expires_at_ms": composition.session(session_id).search_runtime.preview_expires_at_ms(
+                candidate.intent.intent_id
+            ),
+        }
+
+    @app.get("/session/{session_id}/search/{intent_id}")
+    def search_status(
+        session_id: str,
+        intent_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        search_runtime(authorization)
+        search = composition.session(session_id).search_runtime
+        if search is None or not search.belongs_to_session(intent_id, session_id):
+            raise HTTPException(status_code=404, detail="search is unavailable")
+        try:
+            status = search.status_payload(intent_id)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="search mission is unknown") from None
+        status["session"] = session_id
+        return status
+
     composition.bind(app)
     return app, composition
 

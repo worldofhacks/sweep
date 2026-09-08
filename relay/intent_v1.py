@@ -353,6 +353,18 @@ def _parse_args(name: IntentName, value: object) -> Mapping[str, object]:
             }
         )
 
+    if name is IntentName.SEARCH:
+        if set(value) != {"zone_id", "target_class"}:
+            raise ValueError
+        fields = ("zone_id", "target_class")
+        if not all(
+            _is_bounded_intent_text(value[key], MAX_INTENT_IDENTIFIER_CHARS) for key in fields
+        ):
+            raise ValueError
+        return MappingProxyType(
+            {"zone_id": value["zone_id"], "target_class": value["target_class"]}
+        )
+
     if name in {IntentName.SURVEY_AREA, IntentName.MAP_AREA}:
         if set(value) != {"area_id"} or not _is_bounded_intent_text(
             value["area_id"], MAX_INTENT_IDENTIFIER_CHARS

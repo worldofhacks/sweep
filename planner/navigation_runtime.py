@@ -275,6 +275,7 @@ class NavigationExecution:
     approval_id: str
     configuration_sha256: str
     formation: MappedFormationPlan | None = None
+    search_route_approved: bool = False
 
     def to_dict(self) -> dict[str, object]:
         value = _json_safe(asdict(self))
@@ -314,8 +315,10 @@ class NavigationExecution:
                 IntentName.FORMATION_NEXT,
                 IntentName.FORMATION_SET,
                 IntentName.NAVIGATE,
+                IntentName.SEARCH,
             }
             and plan.intent_name is self.intent_name
+            and (self.intent_name is not IntentName.SEARCH or self.search_route_approved)
             and plan.formation_update
             == (
                 self.formation.shape
@@ -524,6 +527,8 @@ class NavigationRuntime:
         snapshot: FleetSnapshot,
         route: NavigationPlan,
         formation: MappedFormationPlan | None = None,
+        *,
+        search_route_approved: bool = False,
     ) -> Plan:
         artifact = self._validate(snapshot)
         self._require_tag_destination(route)
@@ -539,6 +544,7 @@ class NavigationRuntime:
                 artifact, self.config, self.permission, self.home_zone_id
             ),
             formation,
+            search_route_approved,
         )
         epochs = {drone.drone_id: drone.connection_epoch for drone in route.selected}
         commands = tuple(
@@ -649,7 +655,7 @@ class NavigationRuntime:
             self._require_tag_destination(route_plan)
             self._require_precision_return(route_plan)
             destination = self.home_zone_id
-            if plan.intent_name is IntentName.NAVIGATE:
+            if plan.intent_name in {IntentName.NAVIGATE, IntentName.SEARCH}:
                 destination = route_plan.destination_zone_id
             elif plan.intent_name in {IntentName.FORMATION_NEXT, IntentName.FORMATION_SET}:
                 if execution.formation is not None:

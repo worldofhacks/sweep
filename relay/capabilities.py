@@ -29,6 +29,7 @@ class IntentName(StrEnum):
     MAP_AREA = "map_area"
     GROUND_VELOCITY = "ground_velocity"
     NAVIGATE = "navigate"
+    SEARCH = "search"
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +106,7 @@ IMPLEMENTED_INTENT_NAMES = (
     | C2_ADDITIONAL_INTENT_NAMES
     | GROUND_ADDITIONAL_INTENT_NAMES
     | SURVEY_ADDITIONAL_INTENT_NAMES
+    | frozenset({IntentName.NAVIGATE, IntentName.SEARCH})
 )
 
 
