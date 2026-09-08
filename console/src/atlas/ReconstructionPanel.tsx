@@ -19,6 +19,7 @@ export function ReconstructionPanel({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const processing = !['not_started', 'ready', 'failed'].includes(job.status)
+  const textured = job.representation === 'textured_mesh'
   const start = async () => {
     setBusy(true)
     setError('')
@@ -57,11 +58,11 @@ export function ReconstructionPanel({
             </dd>
           </div>
           <div>
-            <dt>Observed 3D points</dt>
-            <dd>{job.points?.toLocaleString()}</dd>
+            <dt>{textured ? 'Surface triangles' : 'Observed 3D points'}</dt>
+            <dd>{(textured ? job.faces : job.points)?.toLocaleString()}</dd>
           </div>
           <div>
-            <dt>Mean reprojection error</dt>
+            <dt>Camera fit · reprojection</dt>
             <dd>{job.mean_reprojection_error_px?.toFixed(2)} px</dd>
           </div>
           <div>
@@ -70,6 +71,7 @@ export function ReconstructionPanel({
           </div>
         </dl>
       )}
+      {job.experimental && <p className="atlas-fine">Experimental local reconstruction · not production-qualified.</p>}
       {(job.components ?? 0) > 1 && (
         <p className="atlas-fine">
           The views formed {job.components} separate components. The largest is shown; add
@@ -106,8 +108,10 @@ export function ReconstructionPanel({
         </p>
       )}
       <p className="atlas-fine">
-        {job.source_count} originals preserved. This stage solves image-based camera poses and a
-        sparse point cloud. It does not create dense surfaces or establish geographic measurements.
+        {job.source_count} originals preserved. {textured
+          ? 'Photo-textured surfaces are estimates from overlapping views. Gaps remain; camera fit is not a surface-accuracy score.'
+          : 'Camera poses and sparse points come from matching image features. Detailed surfaces require a configured dense worker.'}
+        {' '}Relative scale only; this model does not establish geographic measurements or prove complete coverage.
       </p>
     </div>
   )

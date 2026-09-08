@@ -1,0 +1,76 @@
+{
+  "date": "2026-09-08",
+  "scope": "Experimental local photo-to-textured-mesh integration; not full product or hardware acceptance",
+  "source": "11 original photographs from the official COLMAP Strecha Fountain example",
+  "ground_truth_geometry_or_camera_poses_used": false,
+  "space_id": "7fa157a0-6011-4706-81bd-f246da70b25c",
+  "job_id": "b3e3213e-6323-4ab7-bb1f-00895571774f",
+  "representation": "textured_mesh",
+  "registered_views": 11,
+  "prepared_views": 11,
+  "components": 1,
+  "filtered_sparse_points": 14993,
+  "dense_points": 539046,
+  "render_vertices": 61025,
+  "surface_triangles": 98895,
+  "camera_mean_reprojection_error_px": 0.22608358152433933,
+  "camera_error_is_surface_accuracy": false,
+  "artifact_bytes": 9793456,
+  "artifact_sha256": "7cfb5eb2914f1ded803a9877ae37e2d733ec6498aaa66df2b3a8218219fc0330",
+  "textures": [
+    { "width": 2048, "height": 2048, "bytes": 4315799, "sha256": "c931953a354749427c65005559c896b65fd83ea26f5e920ec13991ee746ea6b6" },
+    { "width": 2048, "height": 2048, "bytes": 3067713, "sha256": "3687683fd1c1762c3b485f818df9f8767b6ea025833cf3a52b1bb8869ddc13f8" }
+  ],
+  "engine": "COLMAP 4.2.0 / OpenMVS 2.4.0 macOS arm64",
+  "engine_binary_hashes": "Four individual executable hashes are preserved in the authenticated job manifest's dense_engines list",
+  "settings": {
+    "threads": 4, "dense_max_resolution": 1280, "agreement_views": 3,
+    "target_faces": 100000, "max_texture_size": 2048,
+    "hole_filling": false, "depth_gap_interpolation": false,
+    "artificial_tower_points": false, "mesh_smoothing": false,
+    "texture_sharpening": false, "global_seam_leveling": false, "local_seam_leveling": false
+  },
+  "authenticated_http_verification": {
+    "artifact_checksum": "pass",
+    "static_triangle_profile_and_buffer_bounds": "pass",
+    "embedded_texture_checksums": "pass",
+    "source_view_checksums_match_original_captures": "pass",
+    "gps_capture_coverage_remains_zero": "pass"
+  },
+  "rejected_diagnostic_job": {
+    "id": "60910de6-ef5b-42db-8000-d2c5922cd263",
+    "reason": "Format-valid but visually unacceptable black/neon patches with default seam leveling. A separate texture experiment and fresh complete build verified the no-seam-leveling correction."
+  },
+  "browser_verification": {
+    "desktop_web_viewports": [[1440, 1000], [768, 1024], [390, 844], [320, 568]],
+    "document_overflow": false,
+    "desktop_tablet_panel_gaps_px": [24, 16],
+    "android_asset_origin_viewports": [[390, 844], [320, 568]],
+    "android_navigation_bottom_px": [844, 568],
+    "new_android_texture_or_page_errors": 0,
+    "keyboard_view_control_changes_rendered_pixels": true,
+    "phone_3d_selection_reveals_viewer": true,
+    "android_native_message_port": "simulated read-only transport to real local Atlas HTTP",
+    "screenshots": "Ignored local output/playwright/atlas-dense-final-*.png and atlas-dense-native-*.png"
+  },
+  "regressions": {
+    "console_test_files": 84, "console_tests_passed": 1201,
+    "relay_and_spatial_tests_passed": 1179,
+    "console_lint": "pass", "desktop_and_android_web_builds": "pass",
+    "isolated_m14_browser_control_and_speech_mission": "pass",
+    "android_fake_unit_tests": 63, "android_probe_unit_tests": 83,
+    "android_unit_failures_errors_skips": 0,
+    "android_both_assemble_and_lint": "pass",
+    "android_16k_alignment": "pass: 4 fake and 66 probe native libraries",
+    "fake_apk_sha256": "eb10391d0b07a144759b9678878e42bfb849a544711a64a19a562f12151696bd",
+    "probe_apk_sha256": "771d411989b641cf306a9583f11665d8b8f7b02c6b30a5d27ed3b55a6c979914"
+  },
+  "unproven": [
+    "Actual Android WebView, camera, microphone, sensors, and fleet hardware acceptance",
+    "Geographic alignment and metric scale",
+    "Surface accuracy across varied real phone photo/video sets",
+    "Reconstruction-aware missing-area guidance and contributor notifications",
+    "Production engine licensing and deployment qualification",
+    "Production resource quotas and failed-job intermediate cleanup"
+  ]
+}

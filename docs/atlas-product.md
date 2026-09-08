@@ -48,7 +48,7 @@ with a durable SQLite/media store. Heavy map rendering is loaded only when Space
 
 The first implementation uses the existing console, relay authentication and FastAPI service.
 It adds no second web application or motion-control authority. MapLibre is loaded on demand;
-the Three.js point viewer is loaded only for a completed 3D model. COLMAP is a pinned optional
+the Three.js viewer is loaded only for a completed 3D model. COLMAP is a pinned optional
 Python extra, not a dependency of the core relay installation.
 
 - Real browser checks found and fixed an incorrectly bound native `fetch`, a collapsed map
@@ -118,6 +118,41 @@ playback releases hidden sessions and reopens the current roster on return. Thes
 rules preserve functionality without keeping unused capture or playback resources alive.
 Physical-device acceptance and unfinished Atlas capabilities below remain outstanding.
 
+### Experimental photo-textured surfaces
+
+The optional local worker can now continue calibrated camera reconstruction through dense depth,
+triangle meshing, and photographic texturing. A fresh 11-photo Fountain build produced 539,046
+dense points and a **98,895-triangle / 61,025-render-vertex** mesh. Its two 2048×2048 texture
+atlases are embedded in one **9,793,456-byte GLB**, below the existing 16 MiB web/native limit.
+Authenticated HTTP verification checks the geometry, artifact and texture checksums, and original
+source provenance. No reference mesh, reference camera poses, or synthetic scene is used.
+
+The shared viewer supports both the existing sparse format and bounded embedded-PNG meshes.
+It checks geometry/resource references before loading, treats missing texture decodes as failure,
+releases textures and decoded bitmaps on navigation, and frames both axes on tablet layouts.
+The Android CSP permits local texture-blob reads without allowing arbitrary network origins.
+The UI distinguishes surface triangles from sparse points and camera fit from surface accuracy.
+
+Visual inspection rejected the first integrated build: default seam-leveling color adjustments
+produced black/neon patches in this macOS engine. Disabling both global and local seam leveling
+restored photographic colors; a new complete build verified the correction. Hole filling,
+artificial tower points, depth-gap interpolation, mesh smoothing, and texture sharpening remain
+disabled. Visible gaps are retained rather than filled for presentation. See the
+[dense evidence](evidence/atlas-dense-2026-09-08.json) for the accepted local build and limits.
+
+**Deployment gate:** OpenMVS 2.4.0 is operator-provided and experimental, not bundled, downloaded,
+or enabled automatically. Its [copyright notices](https://raw.githubusercontent.com/cdcseacave/openMVS/v2.4.0/COPYRIGHT.md)
+include AGPL and a research-only IBFS component; the pinned
+[mesh source enables IBFS](https://github.com/cdcseacave/openMVS/blob/v2.4.0/libs/MVS/SceneReconstruct.cpp#L55-L57).
+Production use requires a reviewed engine/build and license compliance. This local experiment
+does not resolve that gate or qualify phone performance, geometric accuracy, or geographic scale.
+
+Current local regressions: **84 console files / 1,201 tests**, **1,179 relay/spatial tests**, full
+ESLint and targeted Ruff, both web builds, both Android assemble/unit/lint variants (63 / 83 unit
+tests), and the isolated M14 control/speech browser mission pass. Both APKs pass 16 KiB alignment.
+The model was visually inspected at desktop/tablet/phone sizes and under the Android asset CSP;
+selecting 3D reveals it on the short phone layout. Actual Android hardware is still unverified.
+
 ## Repeat locally
 
 From the repository root:
@@ -140,6 +175,19 @@ In a second terminal, start the optional worker:
 .venv/bin/python -m tools.atlas_worker --data-dir .sweep/atlas-preview/atlas
 ```
 
+For the explicit **local dense experiment**, supply an existing OpenMVS 2.4.0 directory containing
+`InterfaceCOLMAP`, `DensifyPointCloud`, `ReconstructMesh`, and `TextureMesh`:
+
+```sh
+.venv/bin/python -m tools.atlas_worker --data-dir .sweep/atlas-preview/atlas --openmvs-bin /absolute/path/to/openmvs --once
+```
+
+Review the deployment gate above before using this dependency. The worker verifies its version,
+records individual binary hashes and processing settings, and uses its own supervised process
+group so timeout/cancellation cannot leave an engine child running. A dense failure is reported
+as failure, never silently passed off as a successful sparse result. With no dense option, the
+existing sparse worker remains available. A completed build cleans its large temporary files.
+
 Create a space, upload overlapping photos or a walking video, and select **3D atlas → Build
 3D atlas**. The UI reports queue, feature extraction, matching, mapping, completion or failure.
 Workers process one job at a time with four CPU threads and a 20-minute job timeout. Jobs
@@ -159,10 +207,11 @@ with `--verify-space SPACE_ID`. The tool targets only the local preview.
 1. Verify the implemented Android-native camera/location/sensor integration and durable upload
    recovery on the actual Android runtime; native permission, lifecycle, storage and real device tests.
    No Android handset was detected by ADB on this host; the charging iPhone is excluded.
-2. Dense, detailed reconstruction. The delivered model is an actual **sparse point cloud**,
-   not a textured mesh, Gaussian scene, or dense surface model. Its scale is relative and it
-   is not georeferenced. Geographic alignment must be supported by sufficient measured evidence;
-   a space's map pin is not proof of a 3D transform.
+2. Qualify the experimental detailed reconstruction for production: license-reviewed engine,
+   diverse real phone photo/video sets, surface accuracy, resource quotas/failed-job cleanup,
+   and actual Android performance. The Fountain build is now a real photo-textured mesh, but
+   its scale is relative and it is not georeferenced. Geographic alignment requires sufficient
+   measured evidence; a space's map pin is not proof of a 3D transform.
 3. Reconstruction-aware surface gaps and targeted capture guidance. Current gray cells represent
    qualified camera positions, not which surfaces have been reconstructed. Viewpoint requests
    are visible in the shared space; proactive contributor notifications are not implemented.
@@ -174,5 +223,5 @@ with `--verify-space SPACE_ID`. The tool targets only the local preview.
    Benchmark map and viewer startup on an actual Android device; do not hide bundle-size warnings
    as a substitute for performance work.
 
-Completion still requires the full product objective above, not just passing this sparse-model
+Completion still requires the full product objective above, not just passing a reconstruction
 milestone. Existing fleet control and the original dirty scaffold must remain intact.

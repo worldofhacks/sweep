@@ -7,7 +7,6 @@ or unregistered image is passed off as reconstructed geometry.
 import hashlib
 import json
 import os
-import struct
 import tempfile
 from pathlib import Path
 
@@ -18,6 +17,7 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
 from relay.atlas import AtlasStore  # noqa: E402
+from spatial.atlas_assets import write_glb  # noqa: E402
 
 MAX_IMAGES = 120
 MAX_POINTS = 120_000
@@ -68,15 +68,7 @@ def write_cloud_glb(path: Path, xyz: np.ndarray, colors: np.ndarray) -> str:
             "coordinate_frame": "COLMAP local relative; not georeferenced",
         },
     }
-    encoded = json.dumps(document, separators=(",", ":"), allow_nan=False).encode()
-    encoded += b" " * (-len(encoded) % 4)
-    payload = struct.pack("<4sII", b"glTF", 2, 12 + 8 + len(encoded) + 8 + len(binary))
-    payload += struct.pack("<I4s", len(encoded), b"JSON") + encoded
-    payload += struct.pack("<I4s", len(binary), b"BIN\x00") + binary
-    staged = path.with_suffix(".pending")
-    staged.write_bytes(payload)
-    staged.replace(path)
-    return hashlib.sha256(payload).hexdigest()
+    return write_glb(path, document, binary)
 
 
 def prepare_images(store: AtlasStore, job: dict, directory: Path) -> list[dict]:
@@ -145,9 +137,13 @@ def prepare_images(store: AtlasStore, job: dict, directory: Path) -> list[dict]:
     return images
 
 
-def reconstruct(store: AtlasStore, job: dict) -> None:
+def reconstruct(store: AtlasStore, job: dict, openmvs_bin: Path | None = None) -> None:
     import pycolmap
 
+    store.progress_reconstruction(
+        job["id"], representation="textured_mesh" if openmvs_bin else "sparse_point_cloud",
+        experimental=openmvs_bin is not None,
+    )
     output = store.root / "reconstructions" / job["id"]
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="processing-", dir=output) as temporary:
@@ -250,17 +246,30 @@ def reconstruct(store: AtlasStore, job: dict) -> None:
             "mean_reprojection_error_px": float(np.mean([p.error for p in shown])),
             "artifact_sha256": checksum,
         }
-        (output / "manifest.json").write_text(json.dumps(provenance, allow_nan=False))
-        # Retain the real COLMAP camera/track solution for later dense reconstruction.
+        # Retain the calibrated camera/track solution for densification and provenance.
         model.write(output)
+        detail = ("Sparse 3D geometry reconstructed from matching image features. "
+                  "Dense surfaces are not reconstructed yet.")
+        if openmvs_bin is not None:
+            from spatial.atlas_dense import dense_mesh
+
+            dense = dense_mesh(store, job["id"], images, output, root, output, openmvs_bin)
+            provenance.update(dense)
+            checksum = dense["artifact_sha256"]
+            detail = ("Photo-textured surfaces reconstructed from overlapping images. "
+                      "Experimental local build; gaps remain and scale is not geographic.")
+        (output / "manifest.json").write_text(json.dumps(provenance, allow_nan=False))
         store.progress_reconstruction(
             job["id"],
             status="ready",
             progress=100,
-            detail=(
-                "Sparse 3D geometry reconstructed from matching image features. "
-                "Dense surfaces are not reconstructed yet."
-            ),
+            detail=detail,
+            representation=provenance["representation"],
+            engine=provenance["engine"],
+            experimental=provenance.get("experimental", False),
+            faces=provenance.get("faces"),
+            vertices=provenance.get("vertices"),
+            dense_points=provenance.get("dense_points"),
             artifact_sha256=checksum,
             artifact_bytes=(output / "cloud.glb").stat().st_size,
             registered_views=model.num_reg_images(),

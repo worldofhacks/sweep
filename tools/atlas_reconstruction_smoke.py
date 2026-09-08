@@ -7,11 +7,12 @@ Run the worker separately, then use --verify-space SPACE_ID to verify the artifa
 import argparse
 import hashlib
 import json
-import struct
 import time
 from pathlib import Path
 
 import httpx
+
+from spatial.atlas_assets import decode_glb, mesh_stats
 
 
 def main():
@@ -37,8 +38,30 @@ def main():
             )
             artifact.raise_for_status()
             assert hashlib.sha256(artifact.content).hexdigest() == job["artifact_sha256"]
-            magic, version, length = struct.unpack("<4sII", artifact.content[:12])
-            assert (magic, version, length) == (b"glTF", 2, len(artifact.content))
+            document, binary = decode_glb(artifact.content)
+            manifest_response = client.get(
+                f"{base}/{args.verify_space}/reconstruction/{job['id']}/manifest.json"
+            )
+            manifest_response.raise_for_status()
+            manifest = manifest_response.json()
+            assert manifest["job_id"] == job["id"]
+            assert manifest["artifact_sha256"] == job["artifact_sha256"]
+            assert manifest["representation"] == job["representation"]
+            assert manifest["metric_scale"] is False
+            originals = {capture["id"]: capture["sha256"] for capture in detail["captures"]}
+            assert all(originals[view["capture_id"]] == view["source_sha256"]
+                       for view in manifest["source_views"])
+            if job["representation"] == "textured_mesh":
+                stats = mesh_stats(document, binary)
+                assert stats == {key: job[key] for key in ("vertices", "faces")}
+                assert manifest["hole_filling"] is False
+                for image, expected in zip(document["images"], manifest["textures"], strict=True):
+                    view = document["bufferViews"][image["bufferView"]]
+                    start = view.get("byteOffset", 0)
+                    texture = binary[start:start + view["byteLength"]]
+                    assert hashlib.sha256(texture).hexdigest() == expected["sha256"]
+            else:
+                assert document["meshes"][0]["primitives"][0]["mode"] == 0
             print(json.dumps(job, indent=2))
             return
         if not args.images:

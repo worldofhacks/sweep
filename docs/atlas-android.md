@@ -106,6 +106,19 @@ use an explicitly configured development connection or the deployed HTTPS relay.
 Local visual artifacts are ignored under `output/playwright/`. The read-only
 visual fixture is local test setup, not a shipped fallback or simulated upload implementation.
 
+### Shared dense-viewer follow-up
+
+The bundled viewer now supports validated photo-textured meshes as well as sparse points, with
+the same 16 MiB media-interceptor limit. A real 9.8 MB image-derived Fountain mesh renders under
+the shipped Android asset origin/CSP in Chromium. Embedded textures require `blob:` in
+`connect-src` as well as `img-src`; a regression fixes that and rejects a scene whose texture
+decoding failed. Geometry, materials, textures, and shared decoded bitmaps are released on exit.
+Phone-sized browser checks exercise keyboard view controls and 390×844 / 320×568 layouts.
+The native message port is simulated; these checks do not establish Android runtime acceptance.
+The engine runs off-device as an explicit local experiment and is not bundled into either APK.
+See [the product ledger](atlas-product.md#experimental-photo-textured-surfaces) for its evidence
+and unresolved licensing/production qualification.
+
 ## Still required
 
 - Actual Android permission, CameraX photo/video/scan, Android Keystore, location-sharing lifecycle,
@@ -118,6 +131,6 @@ visual fixture is local test setup, not a shipped fallback or simulated upload i
 - Remaining lint warnings include locked orientation, target/dependency updates, existing
   wake-lock handling, and the deliberate JavaScript-enabled bundled WebView. A passing lint
   task is not proof that these follow-ups or physical-device qualification are complete.
-- Dense detailed reconstruction, evidence-backed geographic alignment, reconstructed-surface gaps,
+- Production-qualified dense reconstruction, evidence-backed geographic alignment, reconstructed-surface gaps,
   targeted capture guidance, contributor notifications, and HTTPS deployment remain on the full
   [product completion ledger](atlas-product.md). This Android milestone does not complete the goal.

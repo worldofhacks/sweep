@@ -4,6 +4,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { AtlasClient } from './client'
 import { Icon } from './Icon'
+import { validateAtlasGlb, type AtlasGeometry } from './glb'
+import { assertPhotoTextures, disposeModel, framingDistance } from './model'
 
 interface Props {
   client: AtlasClient
@@ -17,10 +19,18 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
   const reset = useRef<() => void>(() => {})
   const [error, setError] = useState('')
   const [loaded, setLoaded] = useState(false)
+  const [geometry, setGeometry] = useState<AtlasGeometry | null>(null)
   useEffect(() => {
     const element = container.current
     if (!element) return
+    // The phone's tabs sit below the canvas; selecting 3D must reveal the new view,
+    // not leave it above the scroll position inherited from the detail panel.
+    if (window.innerWidth <= 600) element.parentElement?.scrollIntoView({ block: 'start', inline: 'nearest' })
     const abort = new AbortController()
+    reset.current = () => {}
+    queueMicrotask(() => {
+      if (!abort.signal.aborted) { setLoaded(false); setError(''); setGeometry(null) }
+    })
     let renderer: THREE.WebGLRenderer
     try {
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
@@ -34,7 +44,7 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
     renderer.setClearColor('#172b26')
     renderer.domElement.setAttribute(
       'aria-label',
-      'Image-reconstructed 3D point cloud. Drag to orbit, pinch or scroll to zoom.',
+      'Image-reconstructed 3D space. Drag to orbit, pinch or scroll to zoom.',
     )
     renderer.domElement.tabIndex = 0
     element.appendChild(renderer.domElement)
@@ -43,22 +53,20 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.listenToKeyEvents(renderer.domElement)
     const render = () => renderer.render(scene, camera)
+    let frameRadius: number | null = null
     controls.addEventListener('change', render)
     const resize = new ResizeObserver(() => {
       renderer.setSize(element.clientWidth, element.clientHeight)
-      camera.aspect = element.clientWidth / Math.max(1, element.clientHeight)
+      const aspect = element.clientWidth / Math.max(1, element.clientHeight)
+      if (frameRadius !== null) {
+        const factor = framingDistance(frameRadius, aspect, camera.fov) / framingDistance(frameRadius, camera.aspect, camera.fov)
+        camera.position.sub(controls.target).multiplyScalar(factor).add(controls.target)
+      }
+      camera.aspect = aspect
       camera.updateProjectionMatrix()
       render()
     })
     resize.observe(element)
-    const disposeModel = (root: THREE.Object3D) =>
-      root.traverse((object) => {
-        if (object instanceof THREE.Points || object instanceof THREE.Mesh) {
-          object.geometry.dispose()
-          const materials = Array.isArray(object.material) ? object.material : [object.material]
-          materials.forEach((material) => material.dispose())
-        }
-      })
     void (async () => {
       try {
         const data = await client.world(spaceId, jobId, abort.signal)
@@ -67,25 +75,16 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
           byte.toString(16).padStart(2, '0'),
         ).join('')
         if (actual !== checksum) throw new Error('The 3D artifact failed its checksum check.')
-        const header = new DataView(data)
-        if (
-          data.byteLength < 20 ||
-          header.getUint32(0, true) !== 0x46546c67 ||
-          header.getUint32(8, true) !== data.byteLength
-        )
-          throw new Error('The 3D artifact is not a complete GLB file.')
-        const jsonLength = header.getUint32(12, true)
-        const document = JSON.parse(new TextDecoder().decode(data.slice(20, 20 + jsonLength)))
-        if (
-          document.buffers?.some((buffer: { uri?: string }) => buffer.uri) ||
-          document.images?.length ||
-          document.extensionsRequired?.length
-        )
-          throw new Error('Only self-contained reconstructed geometry can be displayed.')
+        const geometry = validateAtlasGlb(data)
+        if (abort.signal.aborted) return
         const gltf = await new GLTFLoader().parseAsync(data, '')
         if (abort.signal.aborted) {
           disposeModel(gltf.scene)
           return
+        }
+        if (geometry.representation === 'textured_mesh') {
+          try { assertPhotoTextures(gltf.scene) }
+          catch (error) { disposeModel(gltf.scene); throw error }
         }
         gltf.scene.rotation.x = Math.PI
         gltf.scene.traverse((object) => {
@@ -106,7 +105,7 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
         const axes: number[][] = [[], [], []]
         const point = new THREE.Vector3()
         gltf.scene.traverse(object => {
-          if (!(object instanceof THREE.Points)) return
+          if (!(object instanceof THREE.Points || object instanceof THREE.Mesh)) return
           const positions = object.geometry.getAttribute('position')
           for (let index = 0; index < positions.count; index++) {
             point.fromBufferAttribute(positions, index).applyMatrix4(object.matrixWorld)
@@ -123,6 +122,7 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
         const wholeRadius = box.getSize(new THREE.Vector3()).length() / 2
         if (!Number.isFinite(radius) || radius <= 0)
           throw new Error('The reconstructed bounds are invalid.')
+        frameRadius = radius
         camera.near = Math.max(0.0001, radius / 1000)
         camera.far = wholeRadius * 100
         controls.minDistance = radius / 100
@@ -131,12 +131,13 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
           controls.target.copy(center)
           camera.position
             .copy(center)
-            .add(new THREE.Vector3(radius * 0.6, radius * 0.35, radius * 2.6))
+            .add(new THREE.Vector3(.6, .35, 2.6).normalize().multiplyScalar(framingDistance(radius, camera.aspect, camera.fov)))
           camera.updateProjectionMatrix()
           controls.update()
           render()
         }
         reset.current()
+        setGeometry(geometry)
         setLoaded(true)
       } catch (value) {
         if (!abort.signal.aborted)
@@ -174,7 +175,7 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
         {error ||
           (!loaded
             ? 'Loading verified geometry…'
-            : 'Drag to orbit · pinch to zoom · sparse points, relative scale')}
+            : `Drag to orbit · pinch to zoom · ${geometry?.representation === 'textured_mesh' ? 'photo-textured surface' : 'sparse points'}, relative scale`)}
       </p>
     </div>
   )

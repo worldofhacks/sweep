@@ -74,6 +74,11 @@ export interface Reconstruction {
   artifact_sha256?: string
   artifact_bytes?: number
   components?: number
+  representation?: 'sparse_point_cloud' | 'textured_mesh'
+  faces?: number
+  vertices?: number
+  dense_points?: number
+  experimental?: boolean
 }
 export interface SpaceDetail {
   space: Space

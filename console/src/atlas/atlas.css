@@ -5,6 +5,8 @@
   --atlas-accent: var(--color-accent);
   --atlas-soft: var(--color-accent-soft);
   --atlas-paper: var(--color-surface);
+  --atlas-detail-width: 392px;
+  --atlas-panel-inset: 24px;
   color: var(--atlas-ink);
   background: #f7f9f5;
   min-width: 0;
@@ -499,7 +501,7 @@
   padding: 8px 0;
 }
 .atlas-detail {
-  width: 392px;
+  width: var(--atlas-detail-width);
   padding: 24px;
 }
 .atlas-detail-toolbar {
@@ -1035,7 +1037,7 @@
 }
 .atlas-world-canvas {
   position: absolute;
-  inset: 0 0 0 440px;
+  inset: 0 0 0 calc(var(--atlas-detail-width) + 2 * var(--atlas-panel-inset));
 }
 .atlas-world-canvas canvas {
   display: block;
@@ -1061,7 +1063,7 @@
 .atlas-world-help {
   position: absolute;
   bottom: 24px;
-  left: 464px;
+  left: calc(var(--atlas-detail-width) + 2 * var(--atlas-panel-inset) + 24px);
   right: 24px;
   color: #c0d1c8;
   font-size: 12px;
@@ -1368,17 +1370,16 @@
   background: #f5f8ef;
 }
 @media (min-width: 1400px) {
+  .atlas-workspace { --atlas-detail-width: 424px; }
   .atlas-feed {
     width: 376px;
   }
   .atlas-map-caption {
     left: 448px;
   }
-  .atlas-detail {
-    width: 424px;
-  }
 }
 @media (max-width: 900px) {
+  .atlas-workspace { --atlas-detail-width: 360px; --atlas-panel-inset: 16px; }
   .atlas-topbar {
     padding: 20px 24px;
   }
@@ -1392,7 +1393,6 @@
     bottom: 16px;
   }
   .atlas-detail {
-    width: 360px;
     left: 16px;
     top: 16px;
     bottom: 16px;
