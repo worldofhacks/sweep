@@ -22,6 +22,8 @@ MAX_REQUEST_BYTES = 256 * 1024
 MAX_INPUT_BYTES = 10 * 1024 * 1024
 MAX_OUTPUT_BYTES = 1024 * 1024
 MAX_OBSERVATIONS = 1024
+# A multi-archive caller has already validated each archive before invoking fusion.
+MAX_MULTI_ARCHIVE_OBSERVATIONS = 32 * 1024
 MAX_TAGS = 64
 MAX_IDENTIFIER_CHARS = 128
 MAX_SESSION_CHARS = 512
@@ -835,10 +837,15 @@ def fuse_observations(
     mount: Mapping[str, object],
     registration: Mapping[str, object] | None,
     input_pins: Mapping[str, Mapping[str, str] | None],
+    maximum_observations: int = MAX_OBSERVATIONS,
 ) -> dict[str, object]:
     """Fuse only typed, captured canonical observations into an unapproved candidate."""
     _require(
-        1 <= len(observations) <= MAX_OBSERVATIONS, "observation count is outside the fusion bound"
+        maximum_observations in {MAX_OBSERVATIONS, MAX_MULTI_ARCHIVE_OBSERVATIONS},
+        "fusion observation limit is not approved",
+    )
+    _require(
+        1 <= len(observations) <= maximum_observations, "observation count is outside the fusion bound"
     )
     candidate_mode = request.get("candidate_mode", "world_registered")
     _require(
