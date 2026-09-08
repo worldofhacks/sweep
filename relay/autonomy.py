@@ -1639,6 +1639,8 @@ class AutonomySession:
             else:
                 self._awaiting.pop(intent.intent_id, None)
                 job.finished = True
+        if cancelled is not None:
+            return  # a stop already recorded this plan's terminal lifecycle
         if intent.name is IntentName.SEARCH and result.status is not LifecycleStatus.EXECUTING:
             if self.search_detection is not None:
                 self.search_detection.finish_mission(intent.intent_id)
@@ -1651,8 +1653,6 @@ class AutonomySession:
                 intent.intent_id,
                 lambda reason: self._fail_search_detection(intent.intent_id, session, reason),
             )
-        if cancelled is not None:
-            return  # a stop already recorded this plan's terminal lifecycle
         self._report(runtime, session, job, result)
 
     def fail_navigation_tracking(self, error: NavigationTrackingError) -> list[dict[str, object]]:
@@ -1733,11 +1733,37 @@ class AutonomySession:
                 except Exception:
                     _LOGGER.exception("search detection cleanup failed after navigation tracking")
         events.extend(self._queue_navigation_tracking_hold(session, job.intent))
+        self._defer_navigation_tracking_report(job.intent, result)
+        return events
+
+    def _defer_navigation_tracking_report(
+        self, intent: IntentV1, result: ExecutionResult
+    ) -> None:
+        runtime = self._composition.runtime_if_bound()
+        loop = None if runtime is None else runtime.loop
+        if loop is None or loop.is_closed():
+            threading.Thread(
+                target=self._report_navigation_tracking_failure,
+                args=(intent, result),
+                daemon=True,
+            ).start()
+            return
+
+        def schedule() -> None:
+            task = asyncio.create_task(
+                asyncio.to_thread(self._report_navigation_tracking_failure, intent, result)
+            )
+            runtime._track_background_operation(task)
+
+        loop.call_soon_threadsafe(schedule)
+
+    def _report_navigation_tracking_failure(
+        self, intent: IntentV1, result: ExecutionResult
+    ) -> None:
         try:
-            self._composition.report_multiview_execution(self.session_id, job.intent, result)
+            self._composition.report_multiview_execution(self.session_id, intent, result)
         except Exception:
             _LOGGER.exception("multiview execution reporting failed for navigation tracking")
-        return events
 
     def _queue_navigation_tracking_hold(
         self, session: RelaySession, failed_intent: IntentV1
