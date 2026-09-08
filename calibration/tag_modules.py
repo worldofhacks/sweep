@@ -13,6 +13,7 @@ _CELLS = 8
 _CANONICAL_SIZE = 800
 _MINIMUM_PATTERN_MATCH = 0.95
 _MAXIMUM_OUTER_REFINEMENT_PX = 2.0
+_MINIMUM_PATTERN_CONTRAST = 40.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,8 +50,12 @@ def extract_module_corners(
     warped = cv2.warpPerspective(
         gray, homography, (_CANONICAL_SIZE, _CANONICAL_SIZE), flags=cv2.WARP_INVERSE_MAP
     )
-    expected = _cells(cv2.aruco.generateImageMarker(dictionary, identifier, _CANONICAL_SIZE))
-    actual = _cells(warped)
+    expected = _pattern_cells(
+        cv2.aruco.generateImageMarker(dictionary, identifier, _CANONICAL_SIZE)
+    )
+    actual = _pattern_cells(warped)
+    if expected is None or actual is None:
+        return None
     pattern_match = float(np.mean(actual == expected))
     if pattern_match < _MINIMUM_PATTERN_MATCH:
         return None
@@ -110,21 +115,30 @@ def _refine_outer_corners(gray: np.ndarray, corners: np.ndarray) -> np.ndarray |
     return refined
 
 
-def _cells(image: np.ndarray) -> np.ndarray:
+def _pattern_cells(image: np.ndarray) -> np.ndarray | None:
     step = _CANONICAL_SIZE // _CELLS
-    return np.array(
+    means = np.array(
         [
             [
                 image[
                     y * step + step // 4 : (y + 1) * step - step // 4,
                     x * step + step // 4 : (x + 1) * step - step // 4,
                 ].mean()
-                < 128
                 for x in range(_CELLS)
             ]
             for y in range(_CELLS)
         ]
     )
+    threshold, _ = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    dark = means[means <= threshold]
+    light = means[means > threshold]
+    if (
+        not len(dark)
+        or not len(light)
+        or float(light.mean() - dark.mean()) < _MINIMUM_PATTERN_CONTRAST
+    ):
+        return None
+    return means <= threshold
 
 
 def _alternating_coordinates(cells: np.ndarray) -> np.ndarray:

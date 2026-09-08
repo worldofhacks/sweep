@@ -11,6 +11,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from calibration.fisheye import rectification_maps
 from calibration.intrinsics import (
     _FISHEYE_CALIBRATION_FLAGS,
     _FISHEYE_CRITERIA,
@@ -86,6 +87,7 @@ def export_tag_calibration(
         raise ValueError("source images are not distinct")
     if evidence_kind == "recorded_live":
         _validate_recorded_live_provenance(document, request, frames, hashes)
+        _require_reviewed_real_position_groups(candidate)
     model = candidate["model"]
     artifact = {
         "schema_version": 2 if model == "fisheye" else 1,
@@ -772,7 +774,22 @@ def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
         if not stability["passes"]:
             reasons.append("fisheye parameters are unstable after withholding views")
         bounds = pipeline.get("fov_bounds_deg")
-        if not _fov_within_bounds(fov, bounds):
+        if bounds is None:
+            qualification = _unknown_fov_qualification(
+                document,
+                request.evidence,
+                [view[0] for view in module_views],
+                objects,
+                pixels,
+                camera_matrix,
+                distortion,
+                image_size,
+                request.tag_size_m,
+            )
+            report["quality"]["unknown_fov_qualification"] = qualification
+            if not qualification["passes"]:
+                reasons.append("unknown-FOV fisheye qualification failed")
+        elif not _fov_within_bounds(fov, bounds):
             reasons.append("estimated fisheye FOV lacks valid independent bounds")
         if not reasons:
             report["status"] = "candidate"
@@ -1003,6 +1020,369 @@ def _fisheye_stability(
         "maximum_distortion_relative_drift": _MAXIMUM_FISHEYE_DISTORTION_DRIFT,
         "passes": bool(passes),
     }
+
+
+def _unknown_fov_qualification(
+    document: dict[str, object],
+    evidence_path: Path,
+    selected_indices: list[int],
+    objects: list[np.ndarray],
+    pixels: list[np.ndarray],
+    camera_matrix: np.ndarray,
+    distortion: np.ndarray,
+    image_size: tuple[int, int],
+    tag_size_m: float,
+) -> dict[str, object]:
+    coverage = _fisheye_observation_coverage(pixels, camera_matrix, image_size)
+    qualification: dict[str, object] = {
+        "kind": "unknown_fov_fisheye_qualification",
+        "full_sensor_radial_invertibility": {
+            "domain": "full_sensor_ray_domain",
+            "passes": False,
+        },
+        "observation_coverage": coverage,
+        "passes": False,
+    }
+    try:
+        rectification_maps(camera_matrix, distortion, image_size)
+    except ValueError as error:
+        qualification["full_sensor_radial_invertibility"] = {
+            "domain": "full_sensor_ray_domain",
+            "passes": False,
+            "error": str(error),
+        }
+        return qualification
+    qualification["full_sensor_radial_invertibility"] = {
+        "domain": "full_sensor_ray_domain",
+        "passes": True,
+    }
+    try:
+        ratio = _fisheye_undistorted_pose_ratio(pixels, camera_matrix, distortion, tag_size_m)
+    except cv2.error as error:
+        qualification["post_undistorted_pose_constraint_ratio"] = {
+            "passes": False,
+            "error": str(error),
+        }
+        return qualification
+    qualification["post_undistorted_pose_constraint_ratio"] = {
+        "value": ratio,
+        "minimum": _MINIMUM_POSE_CONSTRAINT_RATIO,
+        "passes": bool(isfinite(ratio) and ratio >= _MINIMUM_POSE_CONSTRAINT_RATIO),
+    }
+    if not isfinite(ratio) or ratio < _MINIMUM_POSE_CONSTRAINT_RATIO:
+        return qualification
+    groups = _selected_declared_physical_position_groups(document, evidence_path, selected_indices)
+    if groups is None:
+        qualification["empirical_leave_declared_physical_position_out_stability"] = {
+            "passes": False,
+            "error": (
+                "unknown-FOV qualification requires declared physical position groups "
+                "with verified bindings"
+            ),
+        }
+        return qualification
+    position_groups, descriptor = groups
+    stability = _leave_declared_physical_position_out_stability(
+        objects, pixels, position_groups, camera_matrix, distortion, image_size
+    )
+    qualification["physical_position_groups"] = descriptor
+    qualification["empirical_leave_declared_physical_position_out_stability"] = stability
+    qualification["passes"] = bool(stability["passes"])
+    return qualification
+
+
+def _selected_declared_physical_position_groups(
+    document: dict[str, object], evidence_path: Path, selected_indices: list[int]
+) -> tuple[list[str], dict[str, object]] | None:
+    provenance = document.get("recorded_live_provenance")
+    if not isinstance(provenance, dict):
+        return None
+    session_name, session_hash = provenance.get("session_file"), provenance.get("session_sha256")
+    if (
+        not isinstance(session_name, str)
+        or Path(session_name).name != session_name
+        or not isinstance(session_hash, str)
+    ):
+        return None
+    session_path = evidence_path.parent / session_name
+    if not session_path.is_file() or _sha256(session_path) != session_hash:
+        return None
+    try:
+        session = json.loads(session_path.read_text())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(session, dict) or not isinstance(session.get("sources"), list):
+        return None
+    source_bindings: dict[int, tuple[str, str]] = {}
+    for source in session["sources"]:
+        if (
+            not isinstance(source, dict)
+            or type(source.get("source_session_index")) is not int
+            or not isinstance(source.get("raw_capture_collection"), str)
+            or not source["raw_capture_collection"]
+            or not isinstance(source.get("manifest_sha256"), str)
+        ):
+            return None
+        source_index = source["source_session_index"]
+        binding = (source["raw_capture_collection"], source["manifest_sha256"])
+        if source_index in source_bindings:
+            return None
+        source_bindings[source_index] = binding
+    raw_groups = session.get("physical_position_groups")
+    if not isinstance(raw_groups, list):
+        return None
+    source_groups: dict[int, str] = {}
+    source_descriptors: dict[int, dict[str, object]] = {}
+    group_descriptors: dict[str, dict[str, object]] = {}
+    for raw_group in raw_groups:
+        if (
+            not isinstance(raw_group, dict)
+            or not isinstance(raw_group.get("position_group_id"), str)
+            or not raw_group["position_group_id"]
+            or raw_group.get("evidence_kind") not in {"reviewed_real", "synthetic"}
+            or not isinstance(raw_group.get("base_pose_evidence_file"), str)
+            or Path(raw_group["base_pose_evidence_file"]).name
+            != raw_group["base_pose_evidence_file"]
+            or not isinstance(raw_group.get("base_pose_evidence_sha256"), str)
+            or not isinstance(raw_group.get("sources"), list)
+            or not raw_group["sources"]
+        ):
+            return None
+        position_group_id = raw_group["position_group_id"]
+        if position_group_id in group_descriptors:
+            return None
+        evidence_path_for_group = session_path.parent / raw_group["base_pose_evidence_file"]
+        if (
+            not evidence_path_for_group.is_file()
+            or _sha256(evidence_path_for_group) != raw_group["base_pose_evidence_sha256"]
+        ):
+            return None
+        descriptor: dict[str, object] = {
+            "position_group_id": position_group_id,
+            "evidence_kind": raw_group["evidence_kind"],
+            "base_pose_evidence_file": raw_group["base_pose_evidence_file"],
+            "base_pose_evidence_sha256": raw_group["base_pose_evidence_sha256"],
+        }
+        if raw_group["evidence_kind"] == "reviewed_real":
+            review = raw_group.get("review")
+            if (
+                not isinstance(review, dict)
+                or not isinstance(review.get("reviewer"), str)
+                or not review["reviewer"].strip()
+                or review.get("decision") != "independent_physical_position"
+            ):
+                return None
+            descriptor["review"] = {
+                "reviewer": review["reviewer"],
+                "decision": review["decision"],
+            }
+        group_descriptors[position_group_id] = descriptor
+        for raw_source in raw_group["sources"]:
+            if (
+                not isinstance(raw_source, dict)
+                or type(raw_source.get("source_session_index")) is not int
+                or not isinstance(raw_source.get("raw_capture_collection"), str)
+                or not isinstance(raw_source.get("manifest_sha256"), str)
+            ):
+                return None
+            source_index = raw_source["source_session_index"]
+            source_descriptor = {
+                "source_session_index": source_index,
+                "raw_capture_collection": raw_source["raw_capture_collection"],
+                "manifest_sha256": raw_source["manifest_sha256"],
+            }
+            if source_index in source_groups or source_bindings.get(source_index) != (
+                source_descriptor["raw_capture_collection"],
+                source_descriptor["manifest_sha256"],
+            ):
+                return None
+            source_groups[source_index] = position_group_id
+            source_descriptors[source_index] = source_descriptor
+    frames: dict[int, dict[str, object]] = {}
+    raw_frames = document.get("frames")
+    if not isinstance(raw_frames, list):
+        return None
+    for frame in raw_frames:
+        if not isinstance(frame, dict) or type(frame.get("frame_index")) is not int:
+            return None
+        frames[frame["frame_index"]] = frame
+    position_groups = []
+    selected_sources: dict[int, dict[str, object]] = {}
+    for index in selected_indices:
+        frame = frames.get(index)
+        if not isinstance(frame, dict) or type(frame.get("source_session_index")) is not int:
+            return None
+        source_index = frame["source_session_index"]
+        binding = source_bindings.get(source_index)
+        position_group = source_groups.get(source_index)
+        source_descriptor = source_descriptors.get(source_index)
+        if (
+            binding is None
+            or position_group is None
+            or source_descriptor is None
+            or frame.get("raw_capture_collection") != binding[0]
+        ):
+            return None
+        position_groups.append(position_group)
+        selected_sources[source_index] = source_descriptor
+    selected_group_ids = set(position_groups)
+    selected_groups = []
+    for position_group_id, descriptor in group_descriptors.items():
+        if position_group_id not in selected_group_ids:
+            continue
+        group = dict(descriptor)
+        group["sources"] = [
+            source
+            for source_index, source in selected_sources.items()
+            if source_groups[source_index] == position_group_id
+        ]
+        selected_groups.append(group)
+    selected_evidence_kinds = {group["evidence_kind"] for group in selected_groups}
+    descriptor = {
+        "review_assertion_scope": "trusted_operator_attestation",
+        "parser_verification": {
+            "session_sha256": True,
+            "base_pose_evidence_sha256": True,
+            "selected_source_bindings": True,
+            "physical_position_independence": "operator_attested",
+        },
+        "session_file": session_name,
+        "session_sha256": session_hash,
+        "group_count": len(selected_groups),
+        "selected_position_group_ids": [group["position_group_id"] for group in selected_groups],
+        "evidence_kinds": sorted(selected_evidence_kinds),
+        "all_reviewed_real": selected_evidence_kinds == {"reviewed_real"},
+        "groups": selected_groups,
+    }
+    return (position_groups, descriptor) if len(position_groups) == len(selected_indices) else None
+
+
+def _require_reviewed_real_position_groups(candidate: dict[str, object]) -> None:
+    quality = candidate.get("quality")
+    if not isinstance(quality, dict):
+        return
+    qualification = quality.get("unknown_fov_qualification")
+    if not isinstance(qualification, dict):
+        return
+    descriptor = qualification.get("physical_position_groups")
+    if not isinstance(descriptor, dict) or descriptor.get("all_reviewed_real") is not True:
+        raise ValueError("unknown-FOV recorded-live export requires reviewed real position groups")
+
+
+def _fisheye_undistorted_pose_ratio(
+    pixels: list[np.ndarray], camera_matrix: np.ndarray, distortion: np.ndarray, tag_size_m: float
+) -> float:
+    undistorted = [
+        cv2.fisheye.undistortPoints(view[:4], camera_matrix, distortion).reshape(-1, 2)
+        for view in pixels
+    ]
+    return _pose_constraint_ratio(tag_corners(tag_size_m), undistorted)
+
+
+def _fisheye_observation_coverage(
+    pixels: list[np.ndarray], camera_matrix: np.ndarray, image_size: tuple[int, int]
+) -> dict[str, object]:
+    outer = np.vstack([view[:4].reshape(-1, 2) for view in pixels])
+    centers = [np.mean(view[:4].reshape(-1, 2), axis=0) for view in pixels]
+    cells = {_grid_cell(center.reshape(1, 2), image_size) for center in centers}
+    principal = camera_matrix[:2, 2]
+    focal = camera_matrix.diagonal()[:2]
+    observed_radius = float(np.max(np.linalg.norm((outer - principal) / focal, axis=1)))
+    width, height = image_size
+    sensor_corners = np.asarray([[0, 0], [width, 0], [0, height], [width, height]], dtype=float)
+    sensor_radius = float(np.max(np.linalg.norm((sensor_corners - principal) / focal, axis=1)))
+    return {
+        "grid_cells_covered": len(cells),
+        "grid_cell_count": _GRID_COLUMNS * _GRID_ROWS,
+        "maximum_observed_normalized_radius": observed_radius,
+        "full_sensor_normalized_radius": sensor_radius,
+        "maximum_observed_radius_fraction": observed_radius / sensor_radius,
+    }
+
+
+def _leave_declared_physical_position_out_stability(
+    objects: list[np.ndarray],
+    pixels: list[np.ndarray],
+    position_groups: list[str],
+    full_matrix: np.ndarray,
+    full_distortion: np.ndarray,
+    image_size: tuple[int, int],
+) -> dict[str, object]:
+    families = sorted(set(position_groups))
+    report: dict[str, object] = {
+        "kind": "empirical_leave_declared_physical_position_out_stability",
+        "physical_position_group_count": len(families),
+        "fold_count": 0,
+        "minimum_training_view_count": 0,
+        "maximum_heldout_rms_reprojection_error_px": float("inf"),
+        "maximum_focal_relative_drift": float("inf"),
+        "maximum_principal_point_relative_drift": float("inf"),
+        "maximum_distortion_relative_drift": float("inf"),
+        "passes": False,
+    }
+    if len(families) < 5:
+        report["error"] = "at least five declared physical position groups are required"
+        return report
+    minimum_training = min(
+        sum(position_group != family for position_group in position_groups) for family in families
+    )
+    report["minimum_training_view_count"] = minimum_training
+    if minimum_training < _MINIMUM_FISHEYE_VIEWS:
+        report["error"] = (
+            "each leave-declared-physical-position-out fit requires at least 25 training views"
+        )
+        return report
+    heldout_errors = []
+    stability_reports = []
+    try:
+        for family in families:
+            training = [
+                index
+                for index, position_group in enumerate(position_groups)
+                if position_group != family
+            ]
+            heldout = [
+                index
+                for index, position_group in enumerate(position_groups)
+                if position_group == family
+            ]
+            _, matrix, distortion = _fit_fisheye(
+                [objects[index] for index in training],
+                [pixels[index] for index in training],
+                image_size,
+            )
+            heldout_errors.append(
+                _fisheye_heldout_rms(
+                    [objects[index] for index in heldout],
+                    [pixels[index] for index in heldout],
+                    matrix,
+                    distortion,
+                )
+            )
+            stability_reports.append(
+                _fisheye_stability(full_matrix, full_distortion, matrix, distortion, image_size)
+            )
+    except cv2.error as error:
+        report["error"] = f"leave-declared-physical-position-out fit is ill-conditioned: {error}"
+        return report
+    report.update(
+        fold_count=len(families),
+        maximum_heldout_rms_reprojection_error_px=max(heldout_errors),
+        maximum_focal_relative_drift=max(
+            float(item["focal_relative_drift"]) for item in stability_reports
+        ),
+        maximum_principal_point_relative_drift=max(
+            float(item["principal_point_relative_drift"]) for item in stability_reports
+        ),
+        maximum_distortion_relative_drift=max(
+            float(item["distortion_relative_drift"]) for item in stability_reports
+        ),
+    )
+    report["passes"] = bool(
+        all(isfinite(error) and error < _MAXIMUM_FISHEYE_HELDOUT_RMS_PX for error in heldout_errors)
+        and all(bool(item["passes"]) for item in stability_reports)
+    )
+    return report
 
 
 def _fisheye_fov(

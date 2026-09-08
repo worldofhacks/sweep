@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pytest
 
 from calibration.tag_modules import extract_module_corners
 
@@ -35,6 +36,32 @@ def test_module_intersections_are_observed_features_not_homography_points(monkey
 def test_module_intersections_reject_a_tag_with_wrong_payload() -> None:
     image, corners = _render(0)
     assert extract_module_corners(image, 1, corners, 0.199898) is None
+
+
+@pytest.mark.parametrize(("alpha", "beta"), [(0.5, 130.0), (0.4, 140.0)])
+def test_module_intersections_accept_brightness_shifted_exposures(
+    alpha: float, beta: float
+) -> None:
+    image, corners = _render(0)
+    shifted = np.clip(image.astype(float) * alpha + beta, 0, 255).astype(np.uint8)
+
+    result = extract_module_corners(shifted, 0, corners, 0.199898)
+
+    assert result is not None
+    assert result.pattern_match == 1.0
+
+
+def test_module_intersections_reject_an_inverted_payload() -> None:
+    image, corners = _render(0)
+
+    assert extract_module_corners(np.bitwise_not(image), 0, corners, 0.199898) is None
+
+
+def test_module_intersections_reject_inadequate_pattern_contrast() -> None:
+    image, corners = _render(0)
+    low_contrast = np.where(image < 128, 120, 150).astype(np.uint8)
+
+    assert extract_module_corners(low_contrast, 0, corners, 0.199898) is None
 
 
 def test_module_outer_corners_are_refined_from_raster_pixels() -> None:
