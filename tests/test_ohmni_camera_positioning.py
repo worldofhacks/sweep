@@ -723,6 +723,30 @@ def _wait_for(path: Path) -> None:
         time.sleep(0.001)
 
 
+def test_pause_artifact_is_visible_only_after_all_bytes_are_synced(tmp_path, monkeypatch):
+    path = tmp_path / "paused.json"
+    body = {"pause_reason": "obstacle_within_clearance"}
+    original_sync = os.fsync
+    checked = False
+
+    def sync(descriptor):
+        nonlocal checked
+        assert not path.exists()
+        checked = True
+        original_sync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    encoded = capture._write_new(path, body)
+    assert checked
+    assert path.read_bytes() == encoded
+    assert json.loads(encoded) == body
+    monkeypatch.setattr(os, "fsync", original_sync)
+    with pytest.raises(FileExistsError):
+        capture._write_new(path, {"replacement": True})
+    assert path.read_bytes() == encoded
+    assert list(tmp_path.iterdir()) == [path]
+
+
 def _live_resume_args(tmp_path: Path, paused: Path, boot_id: str, source_sha256: str) -> list[str]:
     return [
         "--lease-port",
