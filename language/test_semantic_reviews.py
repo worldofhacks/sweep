@@ -20,7 +20,7 @@ from language.transport import (
     ModelResponse,
     _anthropic_body,
 )
-from relay.voice import parse_voice_plan
+from relay.voice import VoiceOutcome, parse_voice_outcome, parse_voice_plan
 
 
 class CapturingTransport:
@@ -239,6 +239,20 @@ def test_review_preview_is_display_only_and_round_trips_on_the_voice_wire() -> N
     assert plan.steps == ()
     assert plan.plan_digest is None
     assert parse_voice_plan(plan.to_dict()) == plan
+
+
+def test_typed_review_outcome_round_trips_on_the_voice_wire() -> None:
+    outcome = VoiceOutcome("transcribed", "typed", None, "Navigate to the atrium.")
+    wire = outcome.to_dict(session_id="provider-contract", correlation_id="semantic-review")
+
+    assert (
+        parse_voice_outcome(
+            wire,
+            session_id="provider-contract",
+            correlation_id="semantic-review",
+        )
+        == outcome
+    )
 
 
 def test_provider_schema_separates_review_from_intent_v1_commands() -> None:
