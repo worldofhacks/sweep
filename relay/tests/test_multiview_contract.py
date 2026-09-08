@@ -1,10 +1,17 @@
 from copy import deepcopy
 
+import pytest
+
 from relay.capabilities import IntentName
 from relay.multiview import MultiviewService
 
 
 class _Navigation:
+    now = 10_000
+
+    def clock_ms(self):
+        return self.now
+
     def multiview_context(self, session):
         assert session == "s"
         return {
@@ -171,3 +178,27 @@ def test_multiview_stops_after_a_preempted_navigation() -> None:
     assert status["status"] == "failed"
     assert status["views"][0]["state"] == "failed"
     assert execution.captures == []
+
+
+def test_multiview_confirmation_refuses_an_expired_parent_review() -> None:
+    navigation = _Navigation()
+    service = MultiviewService(navigation)
+    preview = service.preview(
+        "s",
+        {
+            "intentId": "multiview-expired",
+            "selected": [{"id": 1, "deviceClass": "aircraft", "epoch": 2}],
+            "viewpoints": [
+                {"viewpointId": "north", "zoneId": "north-zone", "captureId": "capture-north"}
+            ],
+        },
+    )
+    navigation.now = 10_100
+
+    from relay.navigation_service import NavigationError
+
+    with pytest.raises(NavigationError, match="no longer current") as error:
+        service.confirm(
+            "s", {key: preview[key] for key in ("previewId", "intentId", "previewHash")}
+        )
+    assert error.value.code == "preview_expired"

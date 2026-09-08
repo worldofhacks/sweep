@@ -150,6 +150,10 @@ class MultiviewService:
                 raise NavigationError(
                     "confirmation_consumed", "This multiview review has already been consumed."
                 )
+            if workflow.expires_at_ms <= self.navigation.clock_ms():
+                raise NavigationError(
+                    "preview_expired", "The captured review is no longer current."
+                )
             workflow.state = "navigating"
             view = workflow.views[0]
             views = tuple(workflow.views)
