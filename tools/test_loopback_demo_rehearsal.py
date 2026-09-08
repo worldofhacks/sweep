@@ -107,7 +107,9 @@ def _submit_console_intent(
         for _ in range(32):
             event = json.loads(socket.recv(timeout=10))
             if event.get("intent_id") == intent_id and event.get("source") == "autonomy":
-                assert event["status"] in {"accepted", "completed"}, json.dumps(event, sort_keys=True)
+                assert event["status"] in {"accepted", "completed"}, json.dumps(
+                    event, sort_keys=True
+                )
                 return
         raise AssertionError(f"{intent_id} was not admitted")
 
