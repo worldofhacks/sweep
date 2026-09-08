@@ -1734,26 +1734,18 @@ class AutonomySession:
                 except Exception:
                     _LOGGER.exception("search detection cleanup failed after navigation tracking")
         events.extend(self._queue_navigation_tracking_hold(session, job.intent))
-        self._defer_navigation_tracking_report(job.intent, result)
+        self._defer_tracking_callback(self._report_navigation_tracking_failure, job.intent, result)
         return events
 
-    def _defer_navigation_tracking_report(
-        self, intent: IntentV1, result: ExecutionResult
-    ) -> None:
+    def _defer_tracking_callback(self, callback: Callable[..., None], *args: object) -> None:
         runtime = self._composition.runtime_if_bound()
         loop = None if runtime is None else runtime.loop
         if loop is None or loop.is_closed():
-            threading.Thread(
-                target=self._report_navigation_tracking_failure,
-                args=(intent, result),
-                daemon=True,
-            ).start()
+            threading.Thread(target=callback, args=args, daemon=True).start()
             return
 
         def schedule() -> None:
-            task = asyncio.create_task(
-                asyncio.to_thread(self._report_navigation_tracking_failure, intent, result)
-            )
+            task = asyncio.create_task(asyncio.to_thread(callback, *args))
             runtime._track_background_operation(task)
 
         loop.call_soon_threadsafe(schedule)
@@ -1805,7 +1797,16 @@ class AutonomySession:
             hold_lane.pending.append(hold_job)
             hold_lane.ready.notify()
         events.extend(hold_job.publications)
+        self._defer_tracking_callback(self._report_navigation_tracking_hold, safety_intent)
         return events
+
+    def _report_navigation_tracking_hold(self, intent: IntentV1) -> None:
+        try:
+            self._composition.report_multiview_lifecycle(
+                self.session_id, intent.intent_id, intent.name.value, "accepted"
+            )
+        except Exception:
+            _LOGGER.exception("multiview lifecycle reporting failed for navigation tracking hold")
 
     @staticmethod
     def _tracking_failure_result(
