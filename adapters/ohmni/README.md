@@ -23,7 +23,7 @@ python3 adapters/ohmni/tools/build_payload.py /private/ohmni-artifacts /private/
 adapters/ohmni/install.sh "$ADB_SERIAL" /private/ohmni-runtime.tar
 ```
 
-The builder produces an uncompressed tar because the measured robot’s Toybox extraction path is reliable for that format. It omits tests, tools, Git data, caches, logs, and environment files. The payload contains no keys, map artifacts, or approval records.
+The builder produces an uncompressed tar because the measured robot’s Toybox extraction path is reliable for that format. It omits tests, development scripts, Git data, caches, logs, and environment files. The payload contains no keys, map artifacts, or approval records.
 
 Create `/data/local/sweep/node.env` locally with mode 600. The example names the configuration values but contains no real endpoint or credential:
 
@@ -131,7 +131,8 @@ position on the approved map.
 are 0.18 m/s, 45 degrees/s, 0.2 seconds per pulse, 500 ms pose age, and ten minutes
 per route. These ceilings do not establish safe physical values for a robot.
 
-The planner treats only image pixels equal to 255 as free. Unknown pixels,
+Ground navigation accepts opaque 8-bit grayscale, non-interlaced PNG occupancy
+maps, capped at 262,144 pixels. The planner treats only image pixels equal to 255 as free. Unknown pixels,
 obstacles, and cells outside the geofence block travel. It reserves the footprint,
 position uncertainty, stopping distance, one pulse of travel, and arrival tolerance
 around every segment. Arrival tolerance also bounds tracking deviation. Waiting
@@ -147,8 +148,11 @@ remain required. Arrival needs a fresh measured pose and confirmed STOP. HOLD,
 failure, and reconnection require a fresh review; heartbeat recovery cannot resume
 the consumed route.
 
-Navigation-enabled node payloads need the planner's NumPy and OpenCV dependencies
-for independent image validation. The fake-device integration exercises the real
+The node verifies image checksums, bounded decompression, and pixels using the
+Python standard library. The payload builder includes the portable map validators
+and smoke-imports navigation under the packaged musl interpreter. The PNG decoder
+implements the five [PNG filter types](https://www.w3.org/TR/png-3/#9Filters).
+The fake-device integration exercises the real
 relay transport and node controller, but hardware qualification still requires
 measured source registration, clearance, stopping distance, and supervised motion
 evidence for the installed robot.

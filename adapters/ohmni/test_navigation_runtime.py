@@ -7,18 +7,19 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from websockets.sync.client import connect
 
+from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
 from planner.ground_navigation import GroundNavigationDeployment
 from planner.models import CommandOperation, LifecycleStatus
 from planner.test_ground_navigation import KEY, deployment_file, pose
 from relay.bridge import RelayNodeLink
 from relay.intent_v1 import IntentName
-from relay.tests.conftest import CONSOLE_KEY, SESSION
+from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION
 from tests.autonomy_fixtures import make_intent
 
 from .dispatcher import GroundCommandDispatcher
 from .fake import FakeGroundDevice
 from .runtime import GroundRuntimeConfig, OhmniRuntime, parse_args
-from .test_runtime import GROUND_ID, GROUND_KEY, _deliver, _receive_until, _wait_for
+from .test_runtime import AIRCRAFT_ID, GROUND_ID, GROUND_KEY, _deliver, _receive_until, _wait_for
 from .test_runtime import relay_server as relay_server
 
 
@@ -49,9 +50,9 @@ def test_node_cli_loads_the_signed_navigation_deployment_and_source_binding(tmp_
     assert config.navigation.device(9).identity_source_id == "ohmni-status"
 
 
-@pytest.mark.parametrize("hold_during_motion", [False, True])
+@pytest.mark.parametrize("interruption", [None, "hold", "roster"])
 def test_named_route_requires_fresh_arrival_and_stop_and_cannot_resume_or_replay(
-    relay_server, tmp_path, hold_during_motion
+    relay_server, tmp_path, interruption
 ):
     now_ms = time.time_ns() // 1_000_000
     path = deployment_file(tmp_path, now_ms=now_ms)
@@ -74,6 +75,15 @@ def test_named_route_requires_fresh_arrival_and_stop_and_cannot_resume_or_replay
             lidar_mount_yaw_deg=0.0,
         ),
         device,
+    )
+    aircraft = FakeNode(
+        FakeNodeConfig(
+            relay_url=relay_server.url,
+            session=SESSION,
+            drone_id=AIRCRAFT_ID,
+            token=ADAPTER_KEY.decode(),
+            adapter_id="late-join-aircraft",
+        )
     )
     node.start()
     try:
@@ -148,8 +158,15 @@ def test_named_route_requires_fresh_arrival_and_stop_and_cannot_resume_or_replay
                     route_id=route_id,
                     navigation_route=record,
                 )
-                if hold_during_motion:
+                if interruption is not None:
                     _wait_for(lambda: device.status().state == "moving", "navigation motion")
+                if interruption == "roster":
+                    aircraft.start()
+                    _wait_for(
+                        lambda: session.current_state()["roster_version"] > state["roster_version"],
+                        "changed roster while navigation is active",
+                    )
+                elif interruption == "hold":
                     hold = session.issue_command(
                         command_id="hold-navigation",
                         intent_id="hold-navigation",
@@ -162,11 +179,11 @@ def test_named_route_requires_fresh_arrival_and_stop_and_cannot_resume_or_replay
                     )
                     assert _deliver(relay_server, hold)
                 result = future.result(timeout=12)
-            expected = LifecycleStatus.FAILED if hold_during_motion else LifecycleStatus.COMPLETED
+            expected = LifecycleStatus.FAILED if interruption else LifecycleStatus.COMPLETED
             assert result.status is expected, result
             assert device.stop_confirmed()
             assert device.status().t_ms is not None
-            if not hold_during_motion:
+            if not interruption:
                 assert device.status().y >= -0.80
                 assert session.current_state()["roster_version"] == state["roster_version"]
             _wait_for(
@@ -196,3 +213,5 @@ def test_named_route_requires_fresh_arrival_and_stop_and_cannot_resume_or_replay
             assert device.status().y == pytest.approx(stopped_pose.y)
     finally:
         node.stop()
+        if interruption == "roster":
+            aircraft.stop()

@@ -21,6 +21,13 @@ _RUNTIME_RELAY_MODULES = (
     "intent_v1.py",
     "observations.py",
 )
+_RUNTIME_TOOL_MODULES = (
+    "console_world_bundle.py",
+    "geometry_math.py",
+    "map_common.py",
+    "map_validate.py",
+    "occupancy_png.py",
+)
 
 
 def build(artifacts: Path, output: Path) -> None:
@@ -104,10 +111,12 @@ def _smoke_import(stage: Path, loader: Path) -> None:
             [
                 str(loader),
                 str(interpreter),
+                "-B",
                 "-I",
                 "-c",
                 "import sys; sys.path.insert(0, " + repr(str(stage)) + "); "
-                "import adapters.ohmni.runtime; import relay.contracts",
+                "import adapters.ohmni.runtime; import relay.contracts; "
+                "import planner.ground_navigation",
             ],
             cwd=stage,
             check=True,
@@ -137,11 +146,14 @@ def _copy_runtime(root: Path, stage: Path) -> None:
     shutil.copy2(root / "adapters" / "__init__.py", stage / "adapters" / "__init__.py")
     shutil.copytree(root / "adapters" / "ohmni", stage / "adapters" / "ohmni", ignore=ignored)
     (stage / "planner").mkdir()
-    for name in ("__init__.py", "models.py"):
+    for name in ("__init__.py", "models.py", "ground_navigation.py"):
         shutil.copy2(root / "planner" / name, stage / "planner" / name)
     (stage / "relay").mkdir()
     for name in _RUNTIME_RELAY_MODULES:
         shutil.copy2(root / "relay" / name, stage / "relay" / name)
+    (stage / "tools").mkdir()
+    for name in _RUNTIME_TOOL_MODULES:
+        shutil.copy2(root / "tools" / name, stage / "tools" / name)
     shutil.copy2(root / "adapters" / "ohmni" / "run.sh", stage / "run.sh")
 
 

@@ -13,9 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
-import cv2
-import numpy as np
-
 from adapters.ohmni.return_controller import (
     ApprovedReturnRoute,
     ReturnPoint,
@@ -25,6 +22,7 @@ from adapters.ohmni.return_controller import (
 from relay.auth import sign_event, verify_event_signature
 from tools.console_world_bundle import canonical_json, content_hash, validate_world_bundle
 from tools.geometry_math import distance_to_segment, polygon_cell_intersects, rect_inside_polygon
+from tools.occupancy_png import decode_occupancy_png
 
 MAX_ROUTE_BYTES = 32_768
 MAX_ROUTE_POINTS = 128
@@ -247,7 +245,7 @@ class GroundNavigationDeployment:
         ):
             raise ValueError("ground map approval does not bind the saved revision")
         bundle = approved["bundle"]
-        if validate_world_bundle(bundle):
+        if validate_world_bundle(bundle, occupancy_only=True):
             raise ValueError("ground navigation map bundle is invalid")
         result.map_reference = MappingProxyType(dict(reference))
         manifest = bundle["manifest"]
@@ -258,24 +256,29 @@ class GroundNavigationDeployment:
         result._resolution = image["resolutionM"]
         result._origin = (image["originXM"], image["originYM"])
         payload = base64.b64decode(bundle["image"]["dataUrl"].split(",", 1)[1], validate=True)
-        pixels = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
-        if pixels is None or pixels.shape != (image["height"], image["width"]):
+        pixels = decode_occupancy_png(payload)
+        if (len(pixels), len(pixels[0])) != (image["height"], image["width"]):
             raise ValueError("ground grid image cannot be decoded")
-        result._blocked = pixels != 255
-        result._height, result._width = pixels.shape
+        blocked = [bytearray(value != 255 for value in row) for row in pixels]
+        result._height, result._width = image["height"], image["width"]
         geofence = [(point["x"], point["y"]) for point in bundle["geofence"]["points"]]
         obstacles = [
             [(point["x"], point["y"]) for point in item["points"]] for item in bundle["obstacles"]
         ]
-        if sum(len(poly) for poly in [geofence, *obstacles]) * pixels.size > 4_000_000:
+        if (
+            sum(len(poly) for poly in [geofence, *obstacles]) * result._height * result._width
+            > 4_000_000
+        ):
             raise ValueError("ground polygon/grid validation exceeds its work bound")
-        for row, column in np.argwhere(~result._blocked):
-            rect = result._cell_rect(int(column), int(row))
-            if not rect_inside_polygon(rect, geofence) or any(
-                polygon_cell_intersects(poly, rect) for poly in obstacles
-            ):
-                result._blocked[row, column] = True
-        result._blocked.flags.writeable = False
+        for row, values in enumerate(blocked):
+            for column, occupied in enumerate(values):
+                if not occupied:
+                    rect = result._cell_rect(column, row)
+                    if not rect_inside_polygon(rect, geofence) or any(
+                        polygon_cell_intersects(poly, rect) for poly in obstacles
+                    ):
+                        values[column] = 1
+        result._blocked = tuple(bytes(row) for row in blocked)
         result._zones = MappingProxyType(
             {
                 item["id"]: tuple((point["x"], point["y"]) for point in item["points"])
@@ -680,7 +683,7 @@ class GroundNavigationDeployment:
         return (
             0 <= c0 <= c1 < self._width
             and 0 <= r0 <= r1 < self._height
-            and not np.any(self._blocked[r0 : r1 + 1, c0 : c1 + 1])
+            and not any(any(row[c0 : c1 + 1]) for row in self._blocked[r0 : r1 + 1])
         )
 
     def _plan_route(self, start, zone_id, clearance, reservations=()):

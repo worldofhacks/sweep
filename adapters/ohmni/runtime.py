@@ -660,6 +660,7 @@ class OhmniRuntime:
             stop=self.device.stop,
             grant_active=lambda: (
                 generation == self._navigation_generation
+                and command.roster_version == self._roster_version
                 and self._return_grant_active()
                 and navigation.check_active(admission, now_ms=self._relay_now_ms())
             ),

@@ -4,6 +4,8 @@ import hashlib
 import io
 import json
 import os
+import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -11,6 +13,54 @@ from pathlib import Path
 import pytest
 
 from .tools import build_payload
+
+
+def test_payload_can_verify_a_navigation_deployment_without_native_python_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from planner.ground_navigation import GroundNavigationDeployment
+    from planner.test_ground_navigation import KEY, NOW, deployment_file, pose
+
+    module = build_payload.__file__
+    artifacts = _fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(build_payload, "__file__", module)
+    output = tmp_path / "navigation-runtime.tar"
+    build_payload.build(artifacts, output)
+    stage = tmp_path / "unpacked"
+    with tarfile.open(output) as archive:
+        archive.extractall(stage, filter="data")
+    path = deployment_file(tmp_path)
+    host = GroundNavigationDeployment.load(path, KEY)
+    plan = host.prepare("lobby", (pose(),), (9,), session="session-a", roster_version=1, now_ms=NOW)
+    script = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from planner.ground_navigation import GroundNavigationDeployment
+node = GroundNavigationDeployment.load(Path(sys.argv[2]), bytes.fromhex(sys.argv[3]))
+admission = node.admit_route(sys.argv[4], route_id=sys.argv[5], session='session-a',
+    device_id=9, connection_epoch=1, roster_version=1, now_ms=100000)
+assert admission.route.world_to_odom.point(admission.route.start).x_m == 9.0
+assert node.check_active(admission, now_ms=100000)
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            script,
+            str(stage),
+            str(path),
+            KEY.hex(),
+            host.route_record(plan, 9, now_ms=NOW),
+            f"{plan.plan_id}:9",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _archive(path: Path, entries: dict[str, bytes]) -> None:
@@ -33,11 +83,14 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         )
     (root / "adapters" / "ohmni" / "run.sh").chmod(0o700)
     (root / "planner").mkdir()
-    for name in ("__init__.py", "models.py"):
+    for name in ("__init__.py", "models.py", "ground_navigation.py"):
         (root / "planner" / name).write_text("# runtime\n")
     (root / "relay").mkdir()
     for name in build_payload._RUNTIME_RELAY_MODULES:
         (root / "relay" / name).write_text("# runtime\n")
+    (root / "tools").mkdir()
+    for name in build_payload._RUNTIME_TOOL_MODULES:
+        (root / "tools" / name).write_text("# runtime\n")
     monkeypatch.setattr(build_payload, "__file__", str(module))
     monkeypatch.setattr(build_payload, "_smoke_import", lambda _stage, _loader: None)
     artifacts = tmp_path / "artifacts"
@@ -128,10 +181,12 @@ def test_payload_smoke_import_uses_the_packaged_musl_python(
             [
                 str(loader),
                 str(interpreter),
+                "-B",
                 "-I",
                 "-c",
                 "import sys; sys.path.insert(0, " + repr(str(stage)) + "); "
-                "import adapters.ohmni.runtime; import relay.contracts",
+                "import adapters.ohmni.runtime; import relay.contracts; "
+                "import planner.ground_navigation",
             ],
             stage,
         )

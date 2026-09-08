@@ -4,6 +4,10 @@ import base64
 import hashlib
 import json
 import math
+import struct
+import subprocess
+import sys
+import zlib
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,17 +19,26 @@ from planner.ground_navigation import GroundNavigationDeployment, GroundNavigati
 from relay.auth import sign_event
 from relay.map_authoring import MapAuthoringStore
 from tests.world_bundle_fixtures import fixture_world_draft
+from tools.console_world_bundle import validate_image
 
 KEY = b"ground-navigation-fixture-signing-key-32-bytes"
 NOW = 100_000
 
 
-def deployment_file(tmp_path: Path, *, blocked: bool = False, now_ms: int = NOW) -> Path:
+def deployment_file(
+    tmp_path: Path,
+    *,
+    blocked: bool = False,
+    now_ms: int = NOW,
+    png_filter: int | None = None,
+    wall_value: int = 0,
+) -> Path:
     draft = fixture_world_draft()
     pixels = np.full((100, 100), 255, dtype=np.uint8)
     if blocked:
-        pixels[:, 18:22] = 0
-    _, encoded = cv2.imencode(".png", pixels)
+        pixels[:, 18:22] = wall_value
+    parameters = [] if png_filter is None else [cv2.IMWRITE_PNG_FILTER, png_filter]
+    _, encoded = cv2.imencode(".png", pixels, parameters)
     payload = encoded.tobytes()
     draft["image"]["sha256"] = hashlib.sha256(payload).hexdigest()
     draft["image"]["dataUrl"] = "data:image/png;base64," + base64.b64encode(payload).decode()
@@ -249,3 +262,130 @@ def test_blocked_wall_prevents_a_named_destination_route(tmp_path):
         deployment.prepare(
             "lobby", (pose(),), (9,), session="session-a", roster_version=1, now_ms=NOW
         )
+
+
+@pytest.mark.parametrize("filter_name", ["NONE", "SUB", "UP", "AVG", "PAETH"])
+def test_every_png_filter_preserves_unknown_cells_as_a_navigation_barrier(tmp_path, filter_name):
+    deployment = GroundNavigationDeployment.load(
+        deployment_file(
+            tmp_path,
+            blocked=True,
+            wall_value=127,
+            png_filter=getattr(cv2, f"IMWRITE_PNG_FILTER_{filter_name}"),
+        ),
+        KEY,
+    )
+    with pytest.raises(ValueError, match="unreachable"):
+        deployment.prepare(
+            "lobby", (pose(),), (9,), session="session-a", roster_version=1, now_ms=NOW
+        )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "checksum",
+        "decompression_bomb",
+        "truncated_stream",
+        "extra_stream",
+        "transparency",
+        "interlace",
+        "color",
+        "unknown_critical",
+        "trailing",
+        "unknown_filter",
+        "chunk_bound",
+    ],
+)
+def test_portable_map_image_admission_rejects_damaged_or_unbounded_pixels(damage):
+    def chunk(kind, value):
+        return (
+            struct.pack(">I", len(value))
+            + kind
+            + value
+            + struct.pack(">I", zlib.crc32(kind + value))
+        )
+
+    rows = b"\x00\xff\x00\x00\x7f\xff"
+    if damage == "decompression_bomb":
+        rows += b"\xff" * 1_000_000
+    if damage == "unknown_filter":
+        rows = b"\x05" + rows[1:]
+    compressed = zlib.compress(rows)
+    if damage == "truncated_stream":
+        compressed = compressed[:-1]
+    if damage == "extra_stream":
+        compressed += zlib.compress(b"\xff")
+    header = struct.pack(
+        ">IIBBBBB",
+        2,
+        2,
+        8,
+        2 if damage == "color" else 0,
+        0,
+        0,
+        1 if damage == "interlace" else 0,
+    )
+    extra = {
+        "transparency": chunk(b"tRNS", b"\x00\xff"),
+        "unknown_critical": chunk(b"ABCD", b""),
+        "chunk_bound": chunk(b"tEXt", b"x\0y") * 4096,
+    }.get(damage, b"")
+    payload = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + extra
+        + chunk(b"IDAT", compressed)
+        + chunk(b"IEND", b"")
+    )
+    if damage == "checksum":
+        payload = payload[:-1] + bytes([payload[-1] ^ 1])
+    if damage == "trailing":
+        payload += b"unapproved trailing bytes"
+    with pytest.raises(ValueError, match="PNG|grayscale"):
+        validate_image(
+            {
+                "name": "grid.png",
+                "dataUrl": "data:image/png;base64," + base64.b64encode(payload).decode(),
+                "width": 2,
+                "height": 2,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            },
+            occupancy_only=True,
+        )
+
+
+def test_node_independently_admits_the_signed_map_with_only_the_python_standard_library(tmp_path):
+    path = deployment_file(tmp_path)
+    host = GroundNavigationDeployment.load(path, KEY)
+    plan = host.prepare("lobby", (pose(),), (9,), session="session-a", roster_version=1, now_ms=NOW)
+    script = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from planner.ground_navigation import GroundNavigationDeployment
+node = GroundNavigationDeployment.load(Path(sys.argv[2]), bytes.fromhex(sys.argv[3]))
+admission = node.admit_route(sys.argv[4], route_id=sys.argv[5], session='session-a',
+    device_id=9, connection_epoch=1, roster_version=1, now_ms=100000)
+assert admission.route.start.x_m == 1.0
+assert admission.route.world_to_odom.point(admission.route.start).x_m == 9.0
+assert node.check_active(admission, now_ms=100000)
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            script,
+            str(Path(__file__).resolve().parents[1]),
+            str(path),
+            KEY.hex(),
+            host.route_record(plan, 9, now_ms=NOW),
+            f"{plan.plan_id}:9",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
