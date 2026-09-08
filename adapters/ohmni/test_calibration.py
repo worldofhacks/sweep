@@ -462,14 +462,15 @@ def test_cli_rejects_missing_supervision_or_mismatched_provenance_before_opening
         calibration.main(arguments)
 
 
+@pytest.mark.parametrize("device_id", [11, 12])
 def test_cli_writes_actual_boot_and_source_pin_through_real_runner(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path, device_id: int
 ) -> None:
     import json
 
     from . import calibration
 
-    arguments = _cli_arguments(tmp_path)
+    arguments = [*_cli_arguments(tmp_path), "--device-id", str(device_id)]
     simulation = RunnerSimulation(monkeypatch)
     runner = calibration.CalibrationRunner
 
@@ -495,6 +496,11 @@ def test_cli_writes_actual_boot_and_source_pin_through_real_runner(
     )
     assert calibration.main(arguments) == 0
     capture = json.loads((tmp_path / "capture.json").read_text())
+    assert capture["device_id"] == device_id
+    if device_id == 12:
+        assert capture["mount_source"] == "unqualified_legacy_seed"
+    else:
+        assert "mount_source" not in capture
     assert capture["boot_id"] == arguments[arguments.index("--expected-boot-id") + 1]
     assert capture["executed_bundle_source_sha256"] == calibration.calibration_source_sha256()
     for stage in capture["stages"].values():

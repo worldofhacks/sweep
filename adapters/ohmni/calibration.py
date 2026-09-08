@@ -278,12 +278,16 @@ class CalibrationRunner:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         config: CalibrationConfig | None = None,
+        device_id: int = 11,
         boot_id: str | None = None,
         executed_bundle_source_sha256: str | None = None,
     ) -> None:
         self.device, self.lease, self.output = device, lease, output
         self.monotonic, self.sleep = monotonic, sleep
         self.config = CalibrationConfig() if config is None else config
+        if type(device_id) is not int or device_id not in (11, 12):
+            raise ValueError("calibration device_id must be 11 or 12")
+        self.device_id = device_id
         self.boot_id = boot_id
         self.executed_bundle_source_sha256 = executed_bundle_source_sha256
         self._started = 0.0
@@ -544,7 +548,7 @@ class CalibrationRunner:
         body = {
             "schema_version": 1,
             "kind": "ohmni_supervised_lidar_calibration_capture",
-            "device_id": 11,
+            "device_id": self.device_id,
             "mount": {"x_m": MOUNT_X_M, "y_m": MOUNT_Y_M, "z_m": MOUNT_Z_M},
             "wheel_diameter_mm": self.config.wheel_diameter_mm,
             "limits": asdict(self.config),
@@ -552,6 +556,8 @@ class CalibrationRunner:
             "executed_bundle_source_sha256": self.executed_bundle_source_sha256,
             "stages": stages,
         }
+        if self.device_id == 12:
+            body["mount_source"] = "unqualified_legacy_seed"
         encoded = (json.dumps(body, separators=(",", ":"), allow_nan=False) + "\n").encode()
         if len(encoded) > MAX_OUTPUT_BYTES:
             raise CalibrationError("calibration_capture_exceeds_byte_limit")
@@ -585,6 +591,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lease-port", required=True, type=int)
     parser.add_argument("--lease-token-file", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--device-id", type=int, choices=(11, 12), default=11)
     parser.add_argument("--expected-boot-id", required=True)
     parser.add_argument("--expected-source-sha256", required=True)
     parser.add_argument("--supervised-clear-space", required=True, action="store_true")
@@ -632,6 +639,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.longer_calibration
                 else None
             ),
+            device_id=args.device_id,
             boot_id=boot_id,
             executed_bundle_source_sha256=source_sha256,
         ).run()
