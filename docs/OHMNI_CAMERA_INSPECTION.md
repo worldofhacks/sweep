@@ -6,4 +6,4 @@ The live owner first issues an unpredictable challenge with a device-local monot
 
 An approval binds the challenge, Unit ID, source boot, positioning source digest, capture-tool digest, exact frame-record digest, PNG and raw-source digests, camera pipeline and collection, current qualified pose, head state, and pulse. It requires an explicit boolean `accepted: true`, is usable for at most one second, and is consumed once. Pose, head, source, unit, boot, pulse, deadline, or challenge changes refuse it.
 
-The owner calls `InspectionAuthority.consume` only after its lease, head, and full-circle LiDAR checks. It calls the same LiDAR guard on every control tick. Missing, sparse, stale, invalid, or obstacle scans continue to stop motion. Camera approval has no effect on those results.
+The owner consumes the approval once, then rechecks live state, lease, and full-circle LiDAR before sending the pulse. A refusal still spends that approval. It calls the same LiDAR guard on every control tick. Missing, sparse, stale, invalid, or obstacle scans continue to stop motion. Camera approval has no effect on those results.
