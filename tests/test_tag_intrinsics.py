@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+import subprocess
 from pathlib import Path
 
 import cv2
@@ -15,6 +18,7 @@ from calibration.tag_intrinsics import (
 from calibration.tag_modules import ModuleCorners
 from perception.camera_tags import CameraTagDetector
 from perception.tag_localization import tag_corners
+from tools import ohmni_dual_calibration_capture as dual_capture
 
 
 def _pipeline() -> dict[str, object]:
@@ -284,3 +288,211 @@ def test_exported_apriltag_pinhole_calibration_loads_and_detects(tmp_path: Path)
     observations = detector.detect(image)
 
     assert observations[0]["tag_id"] == 7
+
+
+def test_recorded_live_export_revalidates_rendered_raw_capture_provenance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    camera = np.array([[850.0, 0.0, 640.0], [0.0, 830.0, 360.0], [0.0, 0.0, 1.0]])
+    marker = cv2.aruco.generateImageMarker(
+        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11), 14, 1200
+    )
+    marker_corners = np.float32([[0, 0], [1199, 0], [1199, 1199], [0, 1199]])
+    marker_points = np.array(
+        [[0, 0, 0], [0.199898, 0, 0], [0.199898, 0.199898, 0], [0, 0.199898, 0]],
+        np.float32,
+    )
+    raws = []
+    for index in range(26):
+        pixels, _ = cv2.projectPoints(
+            marker_points,
+            np.array([0.35 * np.sin(index * 0.7), 0.35 * np.cos(index * 0.45), 0.1 * index]),
+            np.array([(index % 5 - 2) * 0.08, (index % 4 - 1.5) * 0.06, 1.4 + index * 0.02]),
+            camera,
+            None,
+        )
+        image = np.full((720, 1280), 255, np.uint8)
+        image = cv2.warpPerspective(
+            marker,
+            cv2.getPerspectiveTransform(marker_corners, pixels.reshape(4, 2).astype(np.float32)),
+            (1280, 720),
+            dst=image,
+            borderMode=cv2.BORDER_TRANSPARENT,
+        )
+        raws.append(
+            cv2.cvtColor(cv2.cvtColor(image, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2YUV_UYVY).tobytes()
+        )
+
+    def check_output(command, **_kwargs):
+        if "boot_id" in command[-1]:
+            return "boot-1\n"
+        _, _, _, name, pixel_format, shape, vendor, product = dual_capture.CAMERAS[0]
+        return (
+            "usb_parent=/sys/devices/usb/video0\n"
+            f"id_vendor={vendor}\n"
+            f"id_product={product}\n"
+            f"name={name}\n"
+            "Format Video Capture:\n"
+            f"\tWidth/Height : {shape[0]}/{shape[1]}\n"
+            f"\tPixel Format : '{pixel_format}'\n"
+        )
+
+    def run(command, **_kwargs):
+        if "pull" in command:
+            path = Path(command[-1])
+            index = int(re.search(r"raw-(\d+)", path.name)[1])
+            path.write_bytes(raws[index])
+        return subprocess.CompletedProcess(command, 0)
+
+    def fingerprint(_serial, remote, _deadline_ns):
+        index = int(re.search(r"-(\d+)-main", remote)[1])
+        return len(raws[index]), hashlib.sha256(raws[index]).hexdigest()
+
+    monkeypatch.setattr(dual_capture.subprocess, "check_output", check_output)
+    monkeypatch.setattr(dual_capture.subprocess, "run", run)
+    monkeypatch.setattr(dual_capture, "_remote_raw_fingerprint", fingerprint)
+    monkeypatch.setattr(dual_capture.time, "monotonic_ns", lambda: 100)
+    capture = tmp_path / "capture"
+    dual_capture.run(
+        "serial-1",
+        capture,
+        expected_boot_id="boot-1",
+        count=len(raws),
+        duration_s=30,
+        camera="main",
+    )
+
+    manifest = json.loads((capture / "manifest.json").read_text())
+    pipeline = manifest["cameras"]["main"]["calibration_pipeline"] | {
+        "capture_pipeline_sha256": manifest["capture_pipeline_sha256"],
+        "fov_bounds_deg": {"horizontal": [70, 80], "vertical": [40, 55]},
+    }
+    request = TagCandidateRequest(
+        evidence=capture / "main" / "result.json",
+        tag_size_m=0.199898,
+        pipeline=pipeline,
+        frames_dir=capture / "main",
+        minimum_frame_gap=1,
+        maximum_views=len(raws),
+    )
+
+    artifact = export_tag_calibration(
+        request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+    )
+
+    assert artifact["accepted_image_count"] == len(raws)
+
+    raw = capture / "main" / "raw-000000.uyvy"
+    raw_bytes = raw.read_bytes()
+    raw.write_bytes(b"\0" + raw_bytes[1:])
+    with pytest.raises(ValueError, match="raw source changed"):
+        export_tag_calibration(
+            request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+        )
+    raw.write_bytes(raw_bytes)
+
+    png = capture / "main" / "frame-000000.png"
+    png_bytes = png.read_bytes()
+    png.write_bytes(b"\0" + png_bytes[1:])
+    with pytest.raises(ValueError, match="source image|raster"):
+        export_tag_calibration(
+            request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+        )
+    png.write_bytes(png_bytes)
+
+    evidence_bytes = request.evidence.read_bytes()
+    frame_record = capture / "main" / "frame-000000.json"
+    frame_record_bytes = frame_record.read_bytes()
+    changed_raw = bytearray(raw_bytes)
+    changed_raw[0] = 0 if changed_raw[0] else 255
+    raw.write_bytes(changed_raw)
+    changed_hash = hashlib.sha256(changed_raw).hexdigest()
+    for document_path, document_bytes in (
+        (request.evidence, evidence_bytes),
+        (frame_record, frame_record_bytes),
+    ):
+        document = json.loads(document_bytes)
+        frame = document["frames"][0] if document_path == request.evidence else document
+        frame["source_sha256"] = changed_hash
+        frame["source_device_sha256"] = changed_hash
+        document_path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="does not decode"):
+        export_tag_calibration(
+            request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+        )
+    raw.write_bytes(raw_bytes)
+    request.evidence.write_bytes(evidence_bytes)
+    frame_record.write_bytes(frame_record_bytes)
+
+    evidence = json.loads(evidence_bytes)
+    evidence["frames"][0]["corners_px"][0][0][0] += 0.1
+    request.evidence.write_text(json.dumps(evidence))
+    with pytest.raises(ValueError, match="corners"):
+        export_tag_calibration(
+            request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+        )
+    request.evidence.write_bytes(evidence_bytes)
+
+    bad_pipeline = pipeline | {"camera_mode": "/dev/video0 1x1"}
+    with pytest.raises(ValueError, match="pipeline"):
+        export_tag_calibration(
+            TagCandidateRequest(
+                evidence=request.evidence,
+                tag_size_m=request.tag_size_m,
+                pipeline=bad_pipeline,
+                frames_dir=request.frames_dir,
+                minimum_frame_gap=request.minimum_frame_gap,
+                maximum_views=request.maximum_views,
+            ),
+            camera_serial="fixture-camera",
+            evidence_kind="recorded_live",
+        )
+
+    bad_device = pipeline | {"android_device_id": "different-serial"}
+    with pytest.raises(ValueError, match="pipeline"):
+        export_tag_calibration(
+            TagCandidateRequest(
+                evidence=request.evidence,
+                tag_size_m=request.tag_size_m,
+                pipeline=bad_device,
+                frames_dir=request.frames_dir,
+                minimum_frame_gap=request.minimum_frame_gap,
+                maximum_views=request.maximum_views,
+            ),
+            camera_serial="fixture-camera",
+            evidence_kind="recorded_live",
+        )
+
+    evidence = json.loads(evidence_bytes)
+    evidence["frames"][0]["boot_id"] = "different-boot"
+    request.evidence.write_text(json.dumps(evidence))
+    with pytest.raises(ValueError, match="capture boot"):
+        export_tag_calibration(
+            request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+        )
+    request.evidence.write_bytes(evidence_bytes)
+
+    snapshot = capture / "main" / "manifest.json"
+    snapshot_bytes = snapshot.read_bytes()
+    manifest = json.loads(snapshot_bytes)
+    manifest["capture_pipeline"]["main"]["usb_parent"] = "/different"
+    snapshot.write_text(json.dumps(manifest))
+    evidence = json.loads(evidence_bytes)
+    evidence["recorded_live_provenance"]["manifest_sha256"] = hashlib.sha256(
+        snapshot.read_bytes()
+    ).hexdigest()
+    request.evidence.write_text(json.dumps(evidence))
+    with pytest.raises(ValueError, match="pipeline binding"):
+        export_tag_calibration(
+            request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+        )
+    snapshot.write_bytes(snapshot_bytes)
+    request.evidence.write_bytes(evidence_bytes)
+
+    evidence = json.loads(evidence_bytes)
+    evidence.pop("recorded_live_provenance")
+    request.evidence.write_text(json.dumps(evidence))
+    with pytest.raises(ValueError, match="capture provenance"):
+        export_tag_calibration(
+            request, camera_serial="fixture-camera", evidence_kind="recorded_live"
+        )

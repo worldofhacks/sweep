@@ -42,6 +42,21 @@ resolution, codec, FPS, camera mode, decoder path, device identity, and independ
 horizontal and vertical FOV bounds. Record the tag ID, family, the black-edge value,
 its source, and the extraction time for each selected frame.
 
+## Recorded capture provenance
+
+`tools.ohmni_dual_calibration_capture` checks each selected camera's USB identity
+and negotiated mode before acquiring frames. It retains the raw UYVY or MJPEG,
+decoded PNG, detected corners, device-side byte count and SHA-256, boot ID, and
+capture collection. The per-stream `calibration-pipeline.json` contains the source
+pipeline fields to use in a calibration request. Each result includes a hashed
+snapshot of the completed capture manifest.
+
+A recorded-live export verifies those bindings, decodes the retained raw bytes
+again, compares the PNG pixels, and redetects the tag corners. Changing the request's
+camera pipeline or editing a corner record invalidates the export. Captures without
+this provenance remain available for diagnostic fits. Synthetic exports require
+an explicit option and retain their synthetic label.
+
 ## Acceptance
 
 Fit only raw decoded corner positions. A pose computed from assumed intrinsics is
@@ -79,8 +94,14 @@ and distortion by 53.01%, exceeding all three stability limits. Both candidates
 remain rejected, and independent FOV bounds for the installed lens are unavailable.
 Their homography condition metrics passed; these results show insufficient evidence
 for the fitted models, without proving that every head-only sequence is degenerate.
-A rigidly backed tag shown at different plane orientations and image locations is
-the next acquisition to test.
+The next acquisition uses the fixed floor tags and controlled robot views. Once
+the robot is powered, search with bounded, feedback-checked head steps for a tag
+in the top image region, then change settled base position and range to cover the
+centre and both sides at multiple head pitches. Capture at least 25 distinct poses
+and reserve separate base positions for validation. The existing floor tags stay
+in place; no operator-held target is required for this attempt. These motions can
+improve image coverage, but acceptance still depends on the measured conditioning,
+held-out residuals, and parameter stability.
 
 ## Current directional clip
 
@@ -88,8 +109,9 @@ The 615-frame directional clip is useful for showing that the printed tags decod
 for choosing a usable range, and for a diagnostic candidate fit. It does contain raw
 corner samples. The candidate rejects 29 separated observations: its 1.829-pixel RMS
 exceeds the 0.5-pixel limit, focal standard deviations are 28.8 and 24.8 percent,
-and its inferred 48.7-degree horizontal FOV falls outside the independent 60 to
-100-degree bound. The homography condition ratio is 0.0279, above the 0.005 floor,
+and its inferred 48.7-degree horizontal FOV falls outside the configured 60 to
+100-degree diagnostic interval. That interval is not a measured bound for the
+installed replacement lens. The homography condition ratio is 0.0279, above the 0.005 floor,
 so sharper tilted holds are the missing evidence rather than simply more copies of
 these frames. Its 0.323-pixel median residual under the earlier assumed-intrinsics
 pose calculation still coexists with a 0.188-m median camera-tag position change

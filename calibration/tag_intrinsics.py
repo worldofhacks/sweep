@@ -58,6 +58,7 @@ def export_tag_calibration(
         evidence_kind == "synthetic" and not allow_synthetic
     ):
         raise ValueError("recorded live evidence is required; synthetic export must be explicit")
+    document = _evidence_document(request.evidence)
     candidate = calibrate_tag_candidate(request)
     if candidate["status"] != "candidate":
         raise ValueError("AprilTag candidate did not meet calibration quality requirements")
@@ -83,6 +84,8 @@ def export_tag_calibration(
         raise ValueError("fewer than 20 distinct source images")
     if len(set(hashes.values())) != count:
         raise ValueError("source images are not distinct")
+    if evidence_kind == "recorded_live":
+        _validate_recorded_live_provenance(document, request, frames, hashes)
     model = candidate["model"]
     artifact = {
         "schema_version": 2 if model == "fisheye" else 1,
@@ -123,6 +126,209 @@ def export_tag_calibration(
             "fisheye_fov_deg": candidate["fisheye_fov_deg"],
         }
     return artifact
+
+
+def _evidence_document(path: Path) -> dict[str, object]:
+    try:
+        document = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read tag evidence: {error}") from error
+    if not isinstance(document, dict) or not isinstance(document.get("frames"), list):
+        raise ValueError("tag evidence must contain a frames array")
+    return document
+
+
+def _validate_recorded_live_provenance(
+    document: dict[str, object],
+    request: TagCandidateRequest,
+    selected: list[object],
+    hashes: dict[str, str],
+) -> None:
+    provenance = document.get("recorded_live_provenance")
+    if not isinstance(provenance, dict) or request.frames_dir is None:
+        raise ValueError("recorded live export requires capture provenance")
+    manifest_name = provenance.get("manifest_file")
+    manifest_hash = provenance.get("manifest_sha256")
+    stream = provenance.get("stream_id")
+    if (
+        not isinstance(manifest_name, str)
+        or Path(manifest_name).name != manifest_name
+        or not isinstance(manifest_hash, str)
+        or not isinstance(stream, str)
+    ):
+        raise ValueError("recorded live provenance is invalid")
+    manifest_path = request.evidence.parent / manifest_name
+    if not manifest_path.is_file() or _sha256(manifest_path) != manifest_hash:
+        raise ValueError("capture manifest is missing or changed")
+    manifest = json.loads(manifest_path.read_text())
+    if not isinstance(manifest, dict):
+        raise ValueError("capture manifest is invalid")
+    cameras = manifest.get("cameras")
+    if (
+        manifest.get("status") != "complete"
+        or not isinstance(cameras, dict)
+        or stream not in cameras
+    ):
+        raise ValueError("capture manifest is incomplete or stream is absent")
+    collection = manifest.get("raw_capture_collection")
+    boot = manifest.get("boot_id")
+    pipeline_hash = manifest.get("capture_pipeline_sha256")
+    pipeline = manifest.get("capture_pipeline")
+    if (
+        manifest.get("schema_version") != "ohmni-dual-calibration-capture/v2"
+        or not all(
+            isinstance(value, str) and value.strip()
+            for value in (collection, boot, manifest.get("serial"))
+        )
+        or not isinstance(pipeline, dict)
+        or pipeline != cameras
+        or hashlib.sha256(
+            json.dumps(pipeline, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        != pipeline_hash
+    ):
+        raise ValueError("capture manifest lacks a valid collection or pipeline binding")
+    if request.pipeline.get("capture_pipeline_sha256") != pipeline_hash:
+        raise ValueError("requested pipeline is not bound to the capture manifest")
+    stream_pipeline = pipeline[stream]
+    if not isinstance(stream_pipeline, dict):
+        raise ValueError("capture stream pipeline is invalid")
+    recorded_pipeline = stream_pipeline.get("calibration_pipeline")
+    if not isinstance(recorded_pipeline, dict) or any(
+        request.pipeline.get(key) != recorded_pipeline.get(key) or not recorded_pipeline.get(key)
+        for key in (
+            "resolution_px",
+            "codec",
+            "decoder_path",
+            "camera_mode",
+            "camera_identity",
+            "android_device_id",
+            "network_id",
+        )
+    ):
+        raise ValueError("requested pipeline differs from the recorded camera pipeline")
+    expected_modes = {
+        "main": ("/dev/video0", "UYVY", [1280, 720], "raw UYVY", "2560", "c1d1", "See3CAM_CU135"),
+        "lower": ("/dev/video1", "MJPG", [640, 480], "MJPEG", "32e4", "9230", "HD USB Camera"),
+    }
+    mode = expected_modes.get(stream)
+    if mode is None:
+        raise ValueError("unsupported recorded camera stream")
+    device, pixel_format, shape, codec, vendor, product, name = mode
+    identity = f"{vendor}:{product} {name}"
+    if stream_pipeline.get("usb_serial"):
+        identity += f" serial={stream_pipeline['usb_serial']}"
+    if (
+        any(
+            stream_pipeline.get(key) != value
+            for key, value in (
+                ("device", device),
+                ("pixel_format", pixel_format),
+                ("shape_px", shape),
+                ("usb_vendor_id", vendor),
+                ("usb_product_id", product),
+                ("device_name", name),
+            )
+        )
+        or not isinstance(stream_pipeline.get("usb_parent"), str)
+        or not stream_pipeline["usb_parent"].startswith("/")
+        or recorded_pipeline
+        != {
+            "resolution_px": shape,
+            "codec": codec,
+            "decoder_path": "tools.ohmni_dual_calibration_capture._decode",
+            "camera_mode": f"{device} {shape[0]}x{shape[1]}",
+            "camera_identity": identity,
+            "android_device_id": manifest["serial"],
+            "network_id": "ADB",
+        }
+    ):
+        raise ValueError("recorded camera identity or decode mode is unsupported")
+    source_frames = {}
+    for item in document["frames"]:
+        if not isinstance(item, dict) or type(item.get("frame_index")) is not int:
+            raise ValueError("source frame index is invalid")
+        index = item["frame_index"]
+        if index in source_frames:
+            raise ValueError("source frame indices are duplicated")
+        source_frames[index] = item
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+    detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
+    for index in selected:
+        frame = source_frames.get(index)
+        if (
+            not isinstance(frame, dict)
+            or frame.get("boot_id") != boot
+            or frame.get("camera") != stream
+            or frame.get("shape_px") != shape
+            or frame.get("raw_capture_collection") != collection
+            or frame.get("capture_pipeline_sha256") != pipeline_hash
+        ):
+            raise ValueError("selected frame is not bound to the capture boot and stream")
+        image_name, raw_name = frame.get("image_file"), frame.get("source_file")
+        image_hash, raw_hash = frame.get("image_sha256"), frame.get("source_sha256")
+        if not all(
+            isinstance(value, str) and value
+            for value in (image_name, raw_name, image_hash, raw_hash)
+        ):
+            raise ValueError("selected frame lacks raw and raster hashes")
+        if (
+            image_name != f"frame-{index:06}.png"
+            or Path(raw_name).name != raw_name
+            or raw_name in {".", ".."}
+        ):
+            raise ValueError("selected frame paths are unsafe or mismatched")
+        image = request.frames_dir / image_name
+        raw = request.frames_dir / raw_name
+        if not raw.is_file() or hashes.get(image_name) != image_hash or _sha256(raw) != raw_hash:
+            raise ValueError("selected raster or raw source changed")
+        if (
+            frame.get("source_device_sha256") != raw_hash
+            or type(frame.get("source_device_size_bytes")) is not int
+            or frame["source_device_size_bytes"] != raw.stat().st_size
+        ):
+            raise ValueError("selected raw source differs from the device fingerprint")
+        packed = np.frombuffer(raw.read_bytes(), dtype=np.uint8)
+        if pixel_format == "UYVY":
+            if packed.size != shape[0] * shape[1] * 2:
+                raise ValueError("selected raw UYVY source has an invalid size")
+            raster = cv2.cvtColor(packed.reshape(shape[1], shape[0], 2), cv2.COLOR_YUV2BGR_UYVY)
+        else:
+            raster = cv2.imdecode(packed, cv2.IMREAD_COLOR)
+        decoded = cv2.imread(str(image))
+        if raster is None or not np.array_equal(raster, decoded):
+            raise ValueError("selected raster does not decode from the retained raw source")
+        corners, identifiers, _ = detector.detectMarkers(decoded)
+        observed = (
+            {}
+            if identifiers is None
+            else {
+                int(tag): corner.reshape(4, 2)
+                for tag, corner in zip(identifiers.reshape(-1), corners, strict=True)
+            }
+        )
+        tags, pixels = frame.get("tag_ids"), frame.get("corners_px")
+        if (
+            not isinstance(tags, list)
+            or not isinstance(pixels, list)
+            or not tags
+            or len(tags) != len(pixels)
+            or any(type(tag) is not int for tag in tags)
+            or len(set(tags)) != len(tags)
+        ):
+            raise ValueError("selected tag corners are invalid")
+        for tag, points in zip(tags, pixels, strict=True):
+            points = np.asarray(points, dtype=float)
+            if (
+                tag not in observed
+                or points.shape != (4, 2)
+                or not np.array_equal(observed[tag], points)
+            ):
+                raise ValueError("selected tag corners do not match the hashed raster")
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def calibrate_tag_candidate(request: TagCandidateRequest) -> dict[str, object]:
