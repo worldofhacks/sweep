@@ -1194,6 +1194,9 @@ class AutonomySession:
             )
             return self._estop
         if name is IntentName.HOLD:
+            self._composition.report_multiview_lifecycle(
+                self.session_id, job.intent.intent_id, name.value, "accepted"
+            )
             with self._lock:
                 running = self._normal.running
                 behind_safety_plan = (

@@ -317,7 +317,12 @@ class MultiviewService:
             ):
                 return
             self._children[child_intent] = (workflow_id, index, "navigation")
-            response = self.navigation.dispatch_reserved(session, str(view.review["previewId"]))
+        response = self.navigation.dispatch_reserved(session, str(view.review["previewId"]))
+        with self._lock:
+            workflow = self._workflows.get(workflow_id)
+            if workflow is None or workflow.state != "navigating" or workflow.current != index:
+                self._children.pop(child_intent, None)
+                return
             if response["status"] != "accepted":
                 self._children.pop(child_intent, None)
                 workflow.state = "failed"
