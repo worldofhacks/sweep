@@ -244,7 +244,7 @@ internal class SdkSession(private val application: Application) :
         probe,
         fallback = probe,
         config = FlightConfig(
-            supervisedVertical = if (BuildConfig.SUPERVISED_VERTICAL) SupervisedVerticalConfig(hardCeilingM = 1.7) else null,
+            supervisedVertical = if (BuildConfig.SUPERVISED_VERTICAL) SupervisedVerticalConfig() else null,
         ),
         monotonicNowMs = SystemClock::elapsedRealtime,
         log = { line -> model.event("Flight", line) },

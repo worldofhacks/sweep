@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import org.worldofhacks.sweep.bridge.core.admission.FakeClock
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
@@ -59,7 +60,7 @@ class FlightControllerTest {
             yawSettleMs = 200,
             yawMarginMs = 1_000,
             supervisedVertical = supervisedVertical,
-            navigation = NavigationConfig(
+            navigation = if (supervisedVertical == null) NavigationConfig(
                 navigationConfigId = "navigation-a",
                 navigationConfigSha256 = "a".repeat(64),
                 mapVersion = "map-v1",
@@ -77,7 +78,7 @@ class FlightControllerTest {
                 arrivalHorizontalToleranceM = 0.2,
                 arrivalVerticalToleranceM = 0.2,
                 maxPositionUncertaintyM = 0.1,
-            ),
+            ) else null,
         )
         val controller = FlightController(model, clock, config) { log += it }
         private var link = LinkFacts()
@@ -971,6 +972,56 @@ class FlightControllerTest {
     }
 
     @Test
+    fun `supervised vertical excludes navigation commands`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            FlightConfig(
+                navigation = NavigationConfig(
+                    navigationConfigId = "navigation-a", navigationConfigSha256 = "a".repeat(64),
+                    mapVersion = "map-v1", mapSha256 = "a".repeat(64), geometrySha256 = "a".repeat(64),
+                    cameraCalibrationSha256 = "a".repeat(64), bodyExtrinsicsSha256 = "a".repeat(64),
+                    worldTransformSha256 = "a".repeat(64), controlSourceIds = listOf("tag-source"),
+                    clockLeaseId = "lease-1", clockLeaseExpiresAtMs = 1, poseFreshnessMs = 1,
+                    authorizationLifetimeMs = 1, lossLandAfterMs = 1, arrivalHorizontalToleranceM = 0.1,
+                    arrivalVerticalToleranceM = 0.1, maxPositionUncertaintyM = 0.1,
+                ),
+                supervisedVertical = SupervisedVerticalConfig(),
+            )
+        }
+    }
+
+    @Test
+    fun `supervised vertical refuses targets above the 7 foot soft ceiling`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+        h.localHeight(0.0)
+        h.join()
+
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 2_134))
+
+        assertEquals("vertical_ceiling_exceeded", takeoff.terminal?.second, takeoff.events.toString())
+        assertTrue(takeoff.terminal!!.third!!.contains("soft ceiling 2.13 m"), takeoff.terminal!!.third!!)
+        assertFalse(h.model.motorsOn, "a target above the soft ceiling must not reach the SDK takeoff action")
+    }
+
+    @Test
+    fun `supervised climb holds at the 7 foot soft ceiling without landing`() {
+        val h = Harness(supervisedVertical = SupervisedVerticalConfig())
+        h.trackLocalHeight()
+        h.join()
+        val takeoff = h.run(CommandArgs.Takeoff(zMm = 2_133))
+        h.tickMs(3_500)
+        assertEquals("supervised_climb", h.controller.status.phase)
+        assertTrue(h.frames.any { it.verticalThrottle > 0.0 })
+
+        val framesAtSoftCeiling = h.frames.size
+        h.localHeight(2.1336)
+        h.tick(1)
+
+        assertTrue(h.frames.drop(framesAtSoftCeiling).all { it.verticalThrottle <= 0.0 })
+        assertEquals("supervised_climb", h.controller.status.phase)
+        assertFalse(h.model.landing)
+    }
+
+    @Test
     fun `supervised vertical takeoff closes the climb on local height without horizontal motion`() {
         val h = Harness(supervisedVertical = SupervisedVerticalConfig())
         h.trackLocalHeight()
@@ -1108,7 +1159,7 @@ class FlightControllerTest {
         ceiling.localHeight(1.8)
         ceiling.tick(1)
         assertEquals("idle", ceiling.controller.status.phase)
-        ceiling.localHeight(2.5908)
+        ceiling.localHeight(2.4384)
         ceiling.tick(1)
         assertEquals("landing", ceiling.controller.status.phase)
         assertEquals("vertical_ceiling_exceeded", ceiling.controller.status.landingReason)
@@ -1140,6 +1191,9 @@ class FlightControllerTest {
         val h = Harness(supervisedVertical = SupervisedVerticalConfig(hardCeilingM = 1.7))
         h.trackLocalHeight()
         h.join()
+        val overTighterHardCeiling = h.run(CommandArgs.Takeoff(zMm = 1_700))
+        assertEquals("vertical_ceiling_exceeded", overTighterHardCeiling.terminal?.second, overTighterHardCeiling.events.toString())
+        assertFalse(h.model.motorsOn)
         val qualification = RecordingSink()
         h.controller.qualifyGroundedAuthority(qualification)
         h.tick(1)
@@ -1255,7 +1309,7 @@ class FlightControllerTest {
         val missingHeight = RecordingSink()
         assertFalse(h.controller.startBench("height", StickFrame.NEUTRAL.copy(roll = 0.3), 1_500, missingHeight))
         assertEquals("local_height_unavailable", missingHeight.terminal?.second)
-        h.localHeight(2.5908)
+        h.localHeight(2.4384)
         val ceiling = RecordingSink()
         assertFalse(h.controller.startBench("ceiling", StickFrame.NEUTRAL.copy(roll = 0.3), 1_500, ceiling))
         assertEquals("vertical_ceiling_exceeded", ceiling.terminal?.second)
@@ -1311,7 +1365,7 @@ class FlightControllerTest {
         val faults = listOf<(Harness) -> Unit>(
             { it.localHeight(null) },
             { it.localHeight(0.2) },
-            { it.localHeight(2.5908) },
+            { it.localHeight(2.4384) },
         )
         for (fault in faults) {
             val (h, sink) = admittedBench()
@@ -1340,12 +1394,12 @@ class FlightControllerTest {
         val missing = h.run(CommandArgs.Takeoff(zMm = 1_800))
         assertEquals("local_height_unavailable", missing.terminal?.second)
         h.localHeight(0.0)
-        val overCeiling = h.run(CommandArgs.Takeoff(zMm = 2_591))
+        val overCeiling = h.run(CommandArgs.Takeoff(zMm = 2_439))
         assertEquals("vertical_ceiling_exceeded", overCeiling.terminal?.second)
         h.localHeight(1.8)
         val alreadyAtTarget = h.run(CommandArgs.Takeoff(zMm = 1_800))
         assertEquals("vertical_ceiling_exceeded", alreadyAtTarget.terminal?.second)
-        h.localHeight(2.5908)
+        h.localHeight(2.4384)
         val alreadyAtCeiling = h.run(CommandArgs.Takeoff(zMm = 1_800))
         assertEquals("vertical_ceiling_exceeded", alreadyAtCeiling.terminal?.second)
         h.hovering()
@@ -1381,7 +1435,7 @@ class FlightControllerTest {
         assertEquals("idle", commandCapped.controller.status.phase)
 
         val (capped, cappedTakeoff) = climbingHarness()
-        capped.localHeight(2.5908)
+        capped.localHeight(2.4384)
         capped.tick(1)
         assertEquals("vertical_ceiling_exceeded", cappedTakeoff.terminal?.second, cappedTakeoff.events.toString())
         assertEquals("landing", capped.controller.status.phase)

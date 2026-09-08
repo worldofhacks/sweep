@@ -370,11 +370,12 @@ class FlightController(
         }
         val targetZ = args.zMm / 1000.0
         config.supervisedVertical?.let { supervised ->
-            if (targetZ >= supervised.hardCeilingM) {
+            val softCeiling = minOf(supervised.softCeilingM, supervised.hardCeilingM)
+            if (targetZ > softCeiling || targetZ >= supervised.hardCeilingM) {
                 fail(
                     sink,
                     FlightReason.VERTICAL_CEILING_EXCEEDED,
-                    "takeoff target ${format(targetZ)} m is at or above the local hard ceiling ${format(supervised.hardCeilingM)} m",
+                    "takeoff target ${format(targetZ)} m exceeds the local soft ceiling ${format(softCeiling)} m",
                 )
                 return
             }
@@ -1299,7 +1300,7 @@ class FlightController(
     private fun supervisedClimbFrame(current: Phase.SupervisedClimb, now: Long): StickFrame {
         val supervised = config.supervisedVertical ?: return StickFrame.NEUTRAL
         val height = guardVerticalHeight(supervised, now) ?: return StickFrame.NEUTRAL
-        if (height >= current.targetZM) return StickFrame.NEUTRAL
+        if (height >= minOf(current.targetZM, supervised.softCeilingM, supervised.hardCeilingM)) return StickFrame.NEUTRAL
         return StickFrame.NEUTRAL.copy(verticalThrottle = config.limits.maxVerticalMS)
     }
 
