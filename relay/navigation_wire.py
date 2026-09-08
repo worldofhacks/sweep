@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from math import isfinite
 from threading import RLock
 from types import MappingProxyType
@@ -202,14 +202,16 @@ class NavigationWirePublisher:
     def prepare(
         self, plan: Plan, command: Command, snapshot: FleetSnapshot
     ) -> list[dict[str, object]]:
-        refusal = self.runtime.check(plan, command, snapshot)
+        now_ms = self._now()
+        pose = self._control_pose(command, now_ms)
+        snapshot = replace(snapshot, now_ms=now_ms)
+        refusal = self.runtime.check(plan, command, snapshot, _tracking_pose=pose)
         if refusal is not None:
             raise ValueError(f"navigation wire refused: {refusal.detail}")
         self._validate_artifact_pins()
         segment = self._segment(plan, command)
         if segment is None:
             return []
-        now_ms = self._now()
         profile = self._profile(command.drone_id)
         expires_at_ms = min(
             profile.clock_lease_expires_at_ms,
@@ -218,7 +220,6 @@ class NavigationWirePublisher:
         )
         if expires_at_ms <= now_ms:
             raise ValueError("navigation route authorization has expired")
-        pose = self._control_pose(command, now_ms)
         route_id = plan.navigation.route_id
         route_sequence = self._next_sequence(command.drone_id, command.connection_epoch)
         key = self._key(command.drone_id)
