@@ -222,6 +222,28 @@ def test_publishes_the_validated_archive_manifest_snapshot(
     assert result["archive"]["manifest"]["sha256"] == hashlib.sha256(validated).hexdigest()
 
 
+@pytest.mark.parametrize("artifact", ("grid", "tags"))
+def test_refuses_generated_artifacts_in_another_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact: str
+) -> None:
+    archive, config, request, evidence, output = _write_candidate_inputs(tmp_path)
+    name = "build_grid" if artifact == "grid" else "run"
+    original = getattr(ohmni_local_map_candidate, name)
+
+    def produce_then_change_frame(*args: object, **kwargs: object) -> dict[str, object]:
+        result = original(*args, **kwargs)  # type: ignore[arg-type]
+        if artifact == "grid":
+            return {**result, "grid": {**result["grid"], "frame": "other_odom"}}
+        return {**result, "candidate_frame": "other_odom"}
+
+    monkeypatch.setattr(ohmni_local_map_candidate, name, produce_then_change_frame)
+
+    with pytest.raises(ValueError, match="do not match archive odometry frame"):
+        build(archive, config, "lidar-measured", request, evidence, output)
+
+    assert not output.exists()
+
+
 def test_refuses_a_fusion_scope_from_another_epoch(tmp_path: Path) -> None:
     archive, config, request_path, evidence, output = _write_candidate_inputs(tmp_path)
     request = json.loads(request_path.read_text())

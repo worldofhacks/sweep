@@ -1,7 +1,5 @@
 """Build one unapproved local Ohmni map candidate from an accepted mapper archive."""
 
-# ruff: noqa: E501
-
 from __future__ import annotations
 
 import argparse
@@ -366,7 +364,10 @@ def build(
             "approval_status": "unapproved",
             "candidate_mode": "local_odom",
             "candidate_frame": frames["odom"],
-            "claim_scope": "Offline local occupancy and tag estimates. This candidate does not approve control, flight, or autonomous movement.",
+            "claim_scope": (
+                "Offline local occupancy and tag estimates. This candidate does not approve "
+                "control, flight, or autonomous movement."
+            ),
             "archive": {
                 "manifest": {
                     "path": "inputs/archive-manifest.json",
