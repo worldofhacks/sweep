@@ -336,7 +336,7 @@ class FakeNode:
         self._finish_command(frame)
 
     def _finish_command(self, frame: CommandFrame) -> None:
-        if frame.operation is CommandOperation.GOTO:
+        if frame.operation is CommandOperation.GOTO and "navigate" in self.config.capabilities:
             if self._navigation_pose is not None and self._navigation_pose_matches_aircraft(
                 self._navigation_pose, frame
             ):
