@@ -660,6 +660,7 @@ class AutonomySession:
         self._platform_navigation: dict[str, tuple[int, PreparedExecution]] = {}
         self._platform_navigation_reservations: dict[str, PreparedExecution] = {}
         self._platform_dispatch: dict[str, PreparedExecution] = {}
+        self._platform_stop_generation = 0
         self.navigation_wire = (
             NavigationWirePublisher(
                 navigation_runtime,
@@ -1083,6 +1084,7 @@ class AutonomySession:
                 raise ValueError("reserved navigation plan is unavailable")
             admitted = replace(prepared.intent, t=runtime.clock())
             prepared = PreparedExecution(admitted, prepared.plan, prepared.snapshot)
+            generation = self._platform_stop_generation
             self._platform_dispatch[admitted.intent_id] = prepared
         session = runtime.sessions.get(self.session_id)
         if session is None:
@@ -1090,13 +1092,22 @@ class AutonomySession:
                 self._platform_dispatch.pop(prepared.intent.intent_id, None)
             raise ValueError("relay session is unavailable")
         try:
-            self._publish(runtime, lambda: session.admit_platform_navigation(prepared.intent))
-            self._publish(
-                runtime,
-                lambda: session.execute_pending_intent(
-                    prepared.intent.intent_id, defer_resume=True
-                ),
-            )
+            def still_current() -> bool:
+                with self._lock:
+                    return self._platform_stop_generation == generation
+
+            def admit() -> list[dict[str, object]]:
+                if not still_current():
+                    raise ValueError("hold cancelled the reserved navigation route")
+                return session.admit_platform_navigation(prepared.intent)
+
+            def execute() -> list[dict[str, object]]:
+                if not still_current():
+                    raise ValueError("hold cancelled the reserved navigation route")
+                return session.execute_pending_intent(prepared.intent.intent_id, defer_resume=True)
+
+            self._publish(runtime, admit)
+            self._publish(runtime, execute)
         except Exception:
             with self._lock:
                 self._platform_dispatch.pop(prepared.intent.intent_id, None)
@@ -1194,6 +1205,10 @@ class AutonomySession:
             )
             return self._estop
         if name is IntentName.HOLD:
+            with self._lock:
+                self._platform_stop_generation += 1
+                self._platform_navigation_reservations.clear()
+                self._platform_dispatch.clear()
             self._composition.report_multiview_lifecycle(
                 self.session_id, job.intent.intent_id, name.value, "accepted"
             )
