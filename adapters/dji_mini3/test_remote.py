@@ -661,3 +661,25 @@ def test_bound_navigation_goto_carries_its_frozen_route_id() -> None:
         "speed_mm_s": 200,
         "navigation_route_id": "frozen-route-1",
     }
+
+
+def test_supervised_takeoff_rejects_a_ceiling_above_eight_feet() -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    adapter = _adapter(ScriptedLink(epochs={1: 1}))
+    command = Command(
+        command_id="supervised-takeoff-above-ceiling",
+        intent_id="intent-supervised-takeoff",
+        roster_version=snapshot.roster_version,
+        drone_id=1,
+        connection_epoch=1,
+        operation=CommandOperation.TAKEOFF,
+        parameters={
+            "z": 1.2,
+            "maximum_height_mm": 2_439,
+            "max_local_height_age_ms": 500,
+        },
+    )
+
+    with pytest.raises(AdapterError, match="exceeds the supported limits"):
+        with adapter.for_commands(command.intent_id, command.roster_version, (command,)):
+            pass

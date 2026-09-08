@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Literal
+from typing import Final, Literal
 
 from planner.models import CommandOperation
 
@@ -132,6 +132,7 @@ MAX_STORAGE_REMAINING_BYTES = (1 << 63) - 1
 # Signed command arguments carry integers only (millimetres, millimetres per second,
 # millidegrees, millidegrees per second) so the canonical JSON never depends on a
 # cross-language float representation, the same rule signed membership claims follow.
+MAX_SUPERVISED_TAKEOFF_HEIGHT_MM: Final = 2_438
 COMMAND_ARGUMENT_FIELDS: Mapping[CommandOperation, Mapping[str, str]] = MappingProxyType(
     {
         CommandOperation.TAKEOFF: MappingProxyType(
@@ -1658,7 +1659,10 @@ def _command_arguments(
         present = policy & set(result)
         if present and (
             present != policy
-            or not 0 < result["z_mm"] <= result["maximum_height_mm"] <= 2590
+            or not 0
+            < result["z_mm"]
+            <= result["maximum_height_mm"]
+            <= MAX_SUPERVISED_TAKEOFF_HEIGHT_MM
             or result["max_local_height_age_ms"] > 500
         ):
             raise ContractError(code, "takeoff requires paired bounded supervised height policy")

@@ -380,9 +380,9 @@ def test_supervised_vertical_takeoff_requires_fresh_local_height() -> None:
     assert refusal.reason.value == "local_height_unavailable"
 
 
-def test_supervised_vertical_rejects_a_ceiling_above_eight_and_a_half_feet() -> None:
-    with pytest.raises(ValueError, match="8.5 foot"):
-        SupervisedVerticalConfig(**(asdict(_vertical_config()) | {"maximum_height_m": 2.5909}))
+def test_supervised_vertical_rejects_a_ceiling_above_eight_feet() -> None:
+    with pytest.raises(ValueError, match="8 foot"):
+        SupervisedVerticalConfig(**(asdict(_vertical_config()) | {"maximum_height_m": 2.4385}))
 
 
 def _ready_with_height(server: RelayServer) -> bool:
