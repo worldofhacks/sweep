@@ -185,6 +185,22 @@ def test_isolated_autonomy_fixture_values_are_the_ci_fixtures() -> None:
     assert config.sim_camera == camera_config()
 
 
+def test_blank_optional_search_settings_allow_world_navigation_startup() -> None:
+    config = AutonomyConfig.from_env(
+        _env_example() | {"SWEEP_SEARCH_CONFIG": "", "SWEEP_SEARCH_DETECTION_CONFIG": ""}
+    )
+
+    assert config.planning is not None
+    assert config.search is None
+    assert config.search_detection is None
+
+
+@pytest.mark.parametrize("key", ("SWEEP_SEARCH_CONFIG", "SWEEP_SEARCH_DETECTION_CONFIG"))
+def test_configured_search_still_requires_its_navigation_dependencies(key: str) -> None:
+    with pytest.raises(SettingsError, match=f"{key} requires"):
+        AutonomyConfig.from_env(_env_example() | {key: "missing-config.json"})
+
+
 def test_missing_sim_camera_is_allowed_only_off_the_sim_backend(tmp_path: Path) -> None:
     environment = {
         key: value for key, value in _env_example().items() if key != AUTONOMY_VARIABLES[2]

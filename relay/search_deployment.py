@@ -22,7 +22,7 @@ def load_search_config(
     env: Mapping[str, str], navigation: NavigationDeployment | None
 ) -> SearchRuntimeConfig | None:
     configured = env.get("SWEEP_SEARCH_CONFIG")
-    if configured is None:
+    if not configured:
         return None
     if navigation is None:
         raise SettingsError("SWEEP_SEARCH_CONFIG requires SWEEP_NAVIGATION_CONFIG")

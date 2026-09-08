@@ -20,7 +20,7 @@ def load_search_detection_config(
     env: Mapping[str, str], search: SearchRuntimeConfig | None
 ) -> SearchDetectionConfig | None:
     configured = env.get("SWEEP_SEARCH_DETECTION_CONFIG")
-    if configured is None:
+    if not configured:
         return None
     if search is None:
         raise SettingsError("SWEEP_SEARCH_DETECTION_CONFIG requires SWEEP_SEARCH_CONFIG")
