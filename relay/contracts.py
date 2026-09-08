@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -1367,8 +1368,17 @@ def acknowledgement_event(
         "detail": detail,
     }
     if result is not None:
-        if set(result) != {"run_id", "connection_epoch"}:
-            raise ValueError("acknowledgement result must contain survey run identity")
+        expected = {"run_id", "connection_epoch"}
+        if status is LifecycleStatus.COMPLETED:
+            expected.add("candidate_id")
+        if (
+            source != "survey_area"
+            or status not in {LifecycleStatus.EXECUTING, LifecycleStatus.COMPLETED}
+            or command_id is not None
+            or drone_id is None
+            or set(result) != expected
+        ):
+            raise ValueError("acknowledgement result must contain exact survey lifecycle identity")
         run_id = result["run_id"]
         epoch = result["connection_epoch"]
         if (
@@ -1380,9 +1390,19 @@ def acknowledgement_event(
             or not isinstance(epoch, int)
             or isinstance(epoch, bool)
             or not 1 <= epoch <= 2_147_483_647
+            or epoch != connection_epoch
         ):
             raise ValueError("acknowledgement result is not a bounded survey run identity")
-        event["result"] = {"run_id": run_id, "connection_epoch": epoch}
+        validated_result: dict[str, object] = {"run_id": run_id, "connection_epoch": epoch}
+        if status is LifecycleStatus.COMPLETED:
+            candidate_id = result["candidate_id"]
+            if (
+                not isinstance(candidate_id, str)
+                or re.fullmatch(r"candidate-[0-9a-f]{32}", candidate_id) is None
+            ):
+                raise ValueError("acknowledgement result candidate identity is invalid")
+            validated_result["candidate_id"] = candidate_id
+        event["result"] = validated_result
     return event
 
 

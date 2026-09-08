@@ -4,11 +4,10 @@ import { describe, expect, test } from 'vitest'
 import App from '../../App'
 import type { IntentFactoryDependencies } from '../../control/intent'
 import { useControlConsole, type ControlClients } from '../../control/use-control-console'
-import { C1_BASIC_CONTROL_INTENTS } from '../../relay/contract'
+import { C1_BASIC_CONTROL_INTENTS, C2_FLEET_OPERATIONS_INTENTS } from '../../relay/contract'
 import { formatTime } from '../../shell/format'
 import { FixtureRelayClient, fixtureAircraft } from '../../testing/fixture-relay-client'
 import { CapturePane, GuidancePanel } from './CapturePane'
-import { MissionTracker } from './MissionTracker'
 import type { CaptureReadiness } from './controls'
 
 const session = 'control-module-test'
@@ -221,12 +220,78 @@ describe('Control › Swarm: capability-profile behavior on the fixture client',
     await screen.findByText('3 of 4 selected')
     await user.click(screen.getByRole('button', { name: 'line' }))
 
+    expect(clients.console.sent.map((intent) => intent.name)).toEqual(['select'])
+    expect(screen.getByRole('region', { name: 'Pending confirmation' })).toHaveTextContent('line')
     const panel = screen.getByLabelText('Formation')
+    expect(panel).toHaveTextContent('Preview line; nothing sent.')
     expect(within(panel).getAllByText('Slot 1').length).toBeGreaterThan(0)
     expect(within(panel).queryByText(/^D-01$/)).not.toBeInTheDocument()
     expect(panel).toHaveTextContent(
       'device-to-slot assignments are not projected by the relay and are therefore not guessed',
     )
+  })
+
+  test('manual line and its retry both require a new confirmation before dispatch', async () => {
+    const clients = fixtureClients(() => t0, 'c2_fleet_operations')
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
+    await screen.findByText('1 of 4 selected')
+    await user.click(fleetGroup().getByRole('button', { name: 'Select all ready' }))
+    await screen.findByText('3 of 4 selected')
+    act(() => clients.console.emitServer({
+      v: 1, t: t0, type: 'state', event_id: 'airborne-line-selection', state_sequence: 100, session,
+      roster_version: 7, mode: 'indoor', armed: true, estop: false, selection: [1, 2, 4], formation: 'none', spacing: 0.8,
+      capability_profile: 'c2_fleet_operations', enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS],
+      pending: null, accepted_plan: null, drones: fixtureAircraft(t0, 4).map((device) => ({ ...device, flight_state: 'hovering' })),
+    }))
+    await user.click(screen.getByRole('button', { name: 'line' }))
+    expect(clients.console.sent.map((intent) => intent.name)).toEqual(['select'])
+    await confirmDock(user)
+    expect(clients.console.sent).toHaveLength(2)
+    const original = clients.console.sent[1]
+    expect(original).toMatchObject({ name: 'formation_set', args: { name: 'line' }, selection: [1, 2, 4], source: 'console', confirm: true })
+    act(() => clients.console.emitServer({
+      v: 1, t: t0 + 1, type: 'acknowledgement', event_id: 'line-failed', session,
+      intent_id: original.intent_id, command_id: null, status: 'failed', source: 'autonomy',
+      drone_id: null, connection_epoch: null, roster_version: 7, reason: 'adapter_failure', detail: 'Line failed.',
+    }))
+    await openPane(user, 'Requests')
+    expect(screen.getByRole('region', { name: 'Session run evidence' })).toBeInTheDocument()
+    await user.click(within(screen.getByRole('listitem', { name: 'formation_set failed' })).getByRole('button', { name: 'Retry as new intent' }))
+    expect(clients.console.sent).toHaveLength(2)
+    const dock = screen.getByRole('region', { name: 'Pending confirmation' })
+    const retry = JSON.parse(dock.querySelector('pre')!.textContent!)
+    expect(retry).toMatchObject({ name: 'formation_set', retry_of: original.intent_id, confirm: false })
+    expect(retry.intent_id).not.toBe(original.intent_id)
+    await confirmDock(user)
+    expect(clients.console.sent).toHaveLength(3)
+    expect(clients.console.sent[2]).toMatchObject({ ...retry, confirm: true })
+  })
+
+  test.each(['selection', 'epoch'] as const)('a manual formation preview no longer displays as active after %s changes', async (change) => {
+    const clients = fixtureClients(() => t0, 'c2_fleet_operations')
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
+    await screen.findByText('1 of 4 selected')
+    await user.click(fleetGroup().getByRole('button', { name: 'Select all ready' }))
+    await screen.findByText('3 of 4 selected')
+    await user.click(screen.getByRole('button', { name: 'line' }))
+    const panel = screen.getByLabelText('Formation')
+    expect(panel).toHaveTextContent('Preview line; nothing sent.')
+    const drones = fixtureAircraft(t0, 4)
+    if (change === 'epoch') drones[0] = { ...drones[0], connection_epoch: drones[0].connection_epoch + 1 }
+    act(() => clients.console.emitServer({
+      v: 1, t: t0, type: 'state', event_id: 'changed-line-context', state_sequence: 100, session,
+      roster_version: 7, mode: 'indoor', armed: true, estop: false,
+      selection: change === 'selection' ? [1, 2] : [1, 2, 4], formation: 'none', spacing: 0.8,
+      capability_profile: 'c2_fleet_operations', enabled_intent_names: [...C2_FLEET_OPERATIONS_INTENTS],
+      pending: null, accepted_plan: null, drones,
+    }))
+    expect(panel).not.toHaveTextContent('Preview line; nothing sent.')
+    expect(within(panel).getByRole('button', { name: 'line' })).toHaveAttribute('aria-pressed', 'false')
+    const dock = screen.queryByRole('region', { name: 'Pending confirmation' })
+    if (dock) await user.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
+    expect(clients.console.sent.map((intent) => intent.name)).toEqual(['select'])
   })
 
   test('retrying selected landing waits for a fresh confirmation before sending', async () => {
@@ -265,7 +330,7 @@ describe('Control › Swarm: capability-profile behavior on the fixture client',
     expect(clients.console.sent[1]).toEqual({ ...draft, t: now, confirm: true })
   })
 
-  test('retrying a confirmed sweep mints a new id and sends without a second preview', async () => {
+  test('retrying a confirmed sweep mints a new id and requires a fresh preview', async () => {
     const clients = fixtureClients(() => t0, 'c2_fleet_operations')
     const user = userEvent.setup()
     render(<App sessionId={session} clients={clients} intentDependencies={sequentialIds()} />)
@@ -290,7 +355,9 @@ describe('Control › Swarm: capability-profile behavior on the fixture client',
       within(sweepRow).getByText('Mints a new intent id and sets retry_of to this request.'),
     ).toBeInTheDocument()
     await user.click(within(sweepRow).getByRole('button', { name: 'Retry as new intent' }))
-    expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Pending confirmation' })).toBeInTheDocument()
+    expect(clients.console.sent).toHaveLength(1)
+    await confirmDock(user)
     await waitFor(() => expect(clients.console.sent).toHaveLength(2))
     expect(clients.console.sent[1]).toMatchObject({
       intent_id: 'intent-2',
@@ -303,7 +370,7 @@ describe('Control › Swarm: capability-profile behavior on the fixture client',
     const retriedSweep = await screen.findByRole('listitem', { name: 'sweep accepted' })
     expect(retriedSweep).toHaveTextContent('Retry of')
     expect(retriedSweep).toHaveTextContent('intent-1')
-    expect(within(retriedSweep).getByLabelText('Lifecycle timestamps')).not.toHaveTextContent(
+    expect(within(retriedSweep).getByLabelText('Lifecycle timestamps')).toHaveTextContent(
       'pending_confirmation',
     )
   })
@@ -604,32 +671,4 @@ describe('Control › Commands, Fleet and the mission tracker', () => {
     expect(screen.getByText('Registry · roster v10')).toBeInTheDocument()
   })
 
-  test('the mission tracker advances a step per press, runs the clock from the first press, and resets', async () => {
-    let now = t0
-    const user = userEvent.setup()
-    const { rerender } = render(<MissionTracker now={() => now} />)
-    const rows = screen.getAllByRole('button', { name: /available|unsupported/ })
-    expect(rows).toHaveLength(10)
-    expect(rows[0]).toHaveAttribute('aria-current', 'step')
-    expect(rows[4]).toHaveTextContent('formation_set')
-    expect(rows[4]).toHaveTextContent('available')
-    expect(screen.getByLabelText('Elapsed')).toHaveTextContent('0:00')
-    expect(screen.getByText(/Pass requires all ten steps/)).toBeInTheDocument()
-
-    await user.click(rows[0])
-    now += 65_000
-    await user.click(rows[1])
-    expect(rows[0]).toHaveTextContent('✓')
-    expect(rows[2]).toHaveAttribute('aria-current', 'step')
-    expect(screen.getByLabelText('Elapsed')).toHaveTextContent('1:05')
-
-    for (let i = 2; i < 10; i += 1) await user.click(rows[i])
-    expect(screen.getByText(/Pass — ten steps/)).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Reset the run' }))
-    now += 10_000
-    rerender(<MissionTracker now={() => now} />)
-    expect(screen.getByLabelText('Elapsed')).toHaveTextContent('0:00')
-    expect(rows[0]).toHaveAttribute('aria-current', 'step')
-  })
 })

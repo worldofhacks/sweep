@@ -18,6 +18,7 @@ See [docs/mvp-plan.md](docs/mvp-plan.md) for the delivery sequence and hardware 
 - [PRD](docs/prd.md): problem, architecture, contracts, milestones, capability areas. M0 freezes five contract groups: intent and WebSocket, telemetry, flight and camera adapters, repository layout, and room-world records.
 - [MVP delivery plan](docs/mvp-plan.md): the dependency-mapped work breakdown.
 - [Modular fleet integration](docs/modular-fleet.md): device identity, capabilities, cameras, sensors, freshness, capacity, and commissioning evidence.
+- [Four-device live demo](docs/four-device-demo.md): the six-camera console workflow, confirmed gestures and language, survey evidence, parallel work and physical acceptance gates.
 - [Map and navigation integration](docs/platform-integration.md): authenticated authoring, immutable approvals, active-map selection, qualified observations, and frozen destination reviews.
 - [Decision records](docs/decisions/): why the scaffold and the architecture look the way they do. The [docs index](docs/README.md) lists everything else.
 - The [pull request template](.github/pull_request_template.md) is the working agreement as a checklist.

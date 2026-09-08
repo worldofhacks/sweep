@@ -1,5 +1,6 @@
 import { groundControlBlockedReason, groundPulseArgs } from '../control/ground'
 import { isReady } from '../shell/derive'
+import { classFormationReason } from '../modules/control/controls'
 /**
  * Binds the webcam camera, the MediaPipe recognizer, and the pure policy to the
  * existing control flow. An accepted draft gesture becomes a previewed Intent v1
@@ -286,6 +287,7 @@ export function useGestureProducer({ control, roomId, dependencies, profile = 'c
               : bindings.prepareIntent(pair.action.name === 'ground_velocity'
                 ? { name: 'ground_velocity', args: groundPulseArgs(pair.action.direction) } : pair.action.name === 'translate'
                 ? { name: 'translate', args: createTranslateArgs(pair.action.direction, 1) }
+                : pair.action.name === 'formation_set' ? { name: 'formation_set', args: { name: pair.action.formation } }
                 : pair.action.name === 'formation_next' ? { name: 'formation_next', args: {} } : flightIntentRequest(pair.action, bindings.state.selection), 'webcam')
         const detail = intent
           ? `${pair.gesture} drafted ${intent.name} for preview; nothing sent.`
@@ -626,8 +628,12 @@ export function emissionBlockedReason(
   const groundReason = groundControlBlockedReason(state, action.name)
   if (groundReason) return groundReason
   if (action.name === 'ground_velocity') return null
-  if (action.name === 'translate' || action.name === 'formation_next') {
+  if (action.name === 'translate' || action.name === 'formation_next' || action.name === 'formation_set') {
     if (state.selection.some((id) => state.aircraft[id]?.device_class === 'ground_vehicle')) return 'Select only aircraft for this profile. Use Ground pulses for robots.'
+    if (action.name === 'formation_set' || action.name === 'formation_next') {
+      const formationReason = classFormationReason(state, action.name === 'formation_set' ? action.formation : undefined)
+      if (formationReason) return formationReason
+    }
     if (!state.armed) return 'Arm the session with the manual controls before drafting motion.'
     const immobile = state.selection.find((id) => {
       const device = state.aircraft[id]
@@ -636,7 +642,7 @@ export function emissionBlockedReason(
         ? !['idle', 'moving', 'stopped'].includes(telemetry?.state ?? device.flight_state ?? '')
         : !['airborne', 'hovering'].includes(device.flight_state ?? '')
     })
-    if (immobile !== undefined) return `${label(immobile)} is not mobile; aircraft must be airborne and robots idle, moving or stopped.`
+    if (immobile !== undefined) return `${label(immobile)} must report airborne or hovering before aircraft motion can be drafted.`
     return null
   }
   if (action.name !== 'capture_room' && action.name !== 'hold') return flightActionBlockedReason(state, pendingRequest, action)

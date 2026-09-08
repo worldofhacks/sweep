@@ -93,6 +93,12 @@ device and a trail of the last twenty, read with `useSensorStore(controller.sens
 reducer records only `sensor.last_scan_at`, mirroring the relay's projection. `MapMetadata` and
 `parseMapMetadata` read the headers of the relay's map endpoint for the fleet map.
 
+## Survey and run evidence
+
+Control → Ground records one confirmed pilot-assisted survey and closes the exact acknowledged run/epoch. A completed candidate can be fetched through the authenticated platform provider, verified and downloaded with its original occupancy PNG and provenance. It remains unregistered local evidence; Map validation/approval requires actual measured registration. See [the lifecycle contract](../docs/survey-area.md).
+
+Control → Requests summarizes retained session request outcomes and separately stores explicitly unverified operator observations. It has no automatic checklist completion or scripted command playback. Request completion does not establish physical movement.
+
 ## Camera dashboard
 
 The Live module's single wall and device inspection use the authoritative device ID, class, unit, connection
@@ -100,10 +106,12 @@ epoch, telemetry, membership, readiness reasons, and a closed media status with 
 timestamp. The console uses explicitly reported camera IDs, labels, safe configured stream names, and per-camera status. With no camera mapping it retains one legacy primary stream, `drone{unit}` for aircraft or `ground{unit}` for robots. It never renders an arbitrary adapter-provided media URL. `All devices` is the default for every roster: its responsive
 wall has one tile per reported device with selection among its explicitly configured onboard cameras, adds new joins automatically, and keeps known offline states visible. An empty configured-camera list remains empty. There are no empty hardware slots or six-device display cap; it supports
 the configured bounded mixed-fleet inventory. Focus opens local device inspection with
-a Back to All devices action; no extra wall modes or command selection changes are needed. With device IDs
+a Back to All devices action; inspection changes no command selection. All cameras adds one tile per unique, explicitly reported camera stream, allowing two two-camera robots and two one-camera aircraft to occupy six tiles. A duplicate stream mapping is withheld, and an already inspected mapping retires until the operator explicitly chooses a current camera. With device IDs
 `1,2,11,12,13` configured as two aircraft and three robots, the paths are `drone1`, `drone2`,
 `ground1`, `ground2`, `ground3`; command envelopes retain the global IDs. One console uses one
 authoritative relay/session; it does not combine rosters from separate relay instances.
+
+See [the four-device demo workflow](../docs/four-device-demo.md) for six-feed checks and physical acceptance.
 
 ## Live playback
 
@@ -172,15 +180,20 @@ so every projection flips y exactly once (`projection.ts`). Dragging pans, the w
 the pointer, the zoom buttons about the centre, and Fit view frames the geofence, or the placed
 fleet when there is none.
 
-The raster comes from `GET /api/sessions/{id}/map` under the relay bootstrap URL read as HTTP,
+The optional raster is requested from `GET /api/sessions/{id}/map` under the relay bootstrap URL read as HTTP,
 behind the relay bearer, the same base and bearer the transcripts endpoint uses
 (`src/relay/map-endpoint.ts`, `src/relay/origin.ts`). It is read once on mount and once a second
 while the pane is mounted, and never after it unmounts. Image row 0 is the grid's maximum y and
 `X-Sweep-Map-Origin-X`/`-Y` name the bottom-left cell corner, so the raster is placed from
 `(origin_x, origin_y + height × resolution)`. Headers that do not describe a grid, a body that
-does not decode, or a refusal draw no raster and say so; 404 is the honest "the relay has no grid
-for this session yet"; without a bootstrap nothing is read at all and `Reset map` is disabled.
-`Reset map` posts to `…/map/reset` and reports what the relay answered.
+does not decode, or a refusal draw no raster and say so. HTTP 404 means live occupancy is
+unavailable; it does not establish whether a mapper is running. The current relay has no live
+occupancy or reset route: the former implementation in PR #251 was closed, and the bounded,
+registered live overlay belongs to #245. Survey candidates are separate immutable local evidence.
+Without a bootstrap nothing is read. Production bootstrap does not provide a reset endpoint,
+so `Reset map` is disabled. A future supported reset requires both an explicitly supplied
+reset URL and a successful map read from the current endpoint; a successful GET alone cannot
+enable it. Isolated test fixtures may supply that explicit reset URL.
 
 Positions come from the relay's telemetry projection (`x`, `y`, and an optional `heading_deg`, or
 `yaw_deg` from a node that names it that way), else from the pose of the device's newest scan in
@@ -204,10 +217,10 @@ flow, room field with inline validation, pattern cards, Capture room, the captur
 the plan detail), Commands (the catalogue), Requests (lifecycle rows with a timestamp per state and
 retry as a new intent with `retry_of`), and Fleet (registry rows and the departed list). `controls.ts` holds the pure gating and
 geometry; every control builds its envelope through `control/intent.ts`, which now covers every
-Appendix E name the contract lists. `takeoff`, `land`, `land_all`, `sweep` and `capture_room` park
-in the dock until the operator confirms the exact envelope; the rest send at once. A retry creates a new intent id with `retry_of` set. Takeoff, fleet landing and capture retries
-return to the dock for fresh confirmation of the same arguments; other retries retain their
-confirmation and send immediately. The authoritative state projection carries the relay's
+Appendix E name the contract lists. `takeoff`, `land`, `land_all`, `sweep`, `capture_room`, `survey_area` and formations park
+in the dock until the operator confirms the exact envelope. Ground motion and webcam drafts
+also require confirmation. A retry creates a new intent ID with `retry_of`; confirmation-gated
+requests return to the dock and recheck the current targets, source, epoch and capability. The authoritative state projection carries the relay's
 capability profile and exact enabled-intent list. Controls outside that list remain visible with
 their reason but are disabled before preview or dispatch; the network stop remains universally
 available by explicit safety policy. Missing or malformed capability metadata fails closed at the
@@ -271,7 +284,7 @@ then staged one step at a time with source `language`. Confirmation sends only t
 payload, and any relevant state or input change invalidates it. A relayed transcript without such a
 plan is display-only. Separately typed text may use the labelled local matcher for bounded ground pulses/return, `capture_room`,
 `hold`, or `select`; local negation and ambiguity produce no draft. Without a relay bootstrap, and
-without a configured real language service, the module reports it unavailable.
+without a configured real language service, the module reports it unavailable. The typed guide derives suggestions from current devices and capabilities; aircraft-only selection excludes ground robots. Ground HOLD is described as a zero-drive request.
 
 The M2.0 control panel emits the production Intent v1 sequence for session arm, aircraft
 selection, confirmed takeoff, configured-step translation, hold, come home, and confirmed
@@ -285,12 +298,12 @@ separately authenticated keyboard connection.
 Control › Swarm chips add or remove one device from the current selection. **Only** selects
 one device; **Select aircraft**, **Select robots**, and **Select all ready** select a class
 or the full ready roster. The relay remains authoritative: a selection change invalidates
-an older movement preview. Intent selections support up to 64 configured device IDs; measured physical operating capacity and model-specific qualification remain separate concerns.
+an older movement preview. The relay Intent v1 boundary accepts at most 32 configured device IDs per selection; measured physical operating capacity and model-specific qualification remain separate concerns.
 
 Gesture starts with Capture / HOLD. **Fleet motion** is an explicit opt-in profile:
 point up → north, Victory → east, closed fist → south, I love you → west, open palm → hold.
 Each translation drafts one relay-configured step for selected aircraft only. **Swarm
-formations** maps Victory to formation_next and open palm to hold. Thumb up confirms a
+formations** maps Pointing Up to the explicitly confirmed `formation_set {name: line}`, Victory to independently advertised formation_next, and open palm to hold. Thumb up confirms a
 webcam draft; thumb down cancels it. Changing profile stops tracking and cancels the pending
 preview. Arming, takeoff and landing are available only in the separate confirmed Flight profile; network stop remains manual. Gestures use the
 same Intent v1 preview, selection invalidation and relay outcome path as manual controls.
@@ -298,8 +311,7 @@ same Intent v1 preview, selection invalidation and relay outcome path as manual 
 Aircraft use the relay's configured translation frame. Translation and formation controls
 refuse a selection containing robots; Ground provides bounded robot pulses and configured return.
 Formation previews show anonymous aircraft slots only.
-C2 formation controls remain disabled unless the relay advertises them. The simulator-only
-C2 release restriction remains in force for real hardware.
+Formation controls require an advertised intent and a known shape contract. Mapped-line profiles permit only line; they do not enable column or cycling. C2 supports its documented shapes, while its simulator-only release restriction remains in force for real hardware. Unknown profile shapes stay unavailable.
 
 Map reads the authenticated occupancy PNG and displays reported fresh robot LiDAR scans.
 Each scoped ground robot has one LiDAR. Each aircraft has an owner-reported infrared depth/proximity sensor whose model/interface and readings remain unverified; it must not be presented as LiDAR.

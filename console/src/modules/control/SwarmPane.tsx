@@ -47,6 +47,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
   const rosterWord = rosterNoun(sortedAircraft(state.aircraft))
   const run = (spec: ControlSpec) => {
     if (spec.name === 'select') selectAllReady()
+    else if (spec.name === 'formation_set' || spec.name === 'formation_next') controller.prepareIntent(spec.press, 'console')
     else issueIntent(spec.press)
   }
 
@@ -246,8 +247,15 @@ function FormationPanel({
   preview: string | null
   onPreview: (name: string) => void
 }) {
-  const { state, issueIntent } = controller
-  const shown = preview ?? state.formation
+  const { state, prepareIntent } = controller
+  const request = state.requests.find((item) => item.intent.name === 'formation_set' &&
+    'name' in item.intent.args && item.intent.args.name === preview && item.intent.session === state.sessionId &&
+    ['pending_confirmation', 'sent', 'accepted', 'executing'].includes(item.status) &&
+    item.plan?.rosterVersion === state.rosterVersion &&
+    item.intent.selection.length === state.selection.length &&
+    item.intent.selection.every((id) => state.selection.includes(id) && item.plan?.deviceEpochs?.[id] === state.aircraft[id]?.connection_epoch))
+  const currentPreview = request ? preview : null
+  const shown = currentPreview ?? state.formation
   const selected = sortedAircraft(state.aircraft).filter((drone) => state.selection.includes(drone.drone_id))
   const groundSelected = selected.some((device) => device.device_class === 'ground_vehicle')
   const dots = groundSelected ? [] : formationPlot(selected.length, shown, state.spacing)
@@ -274,7 +282,7 @@ function FormationPanel({
               title={spec.note}
               onClick={() => {
                 onPreview(name)
-                issueIntent(spec.press)
+                prepareIntent(spec.press, 'console')
               }}
             >
               {name}
@@ -287,7 +295,7 @@ function FormationPanel({
           {dots.map((dot) => <span key={dot.id} className="ct-plot-dot" style={{ left: dot.left, top: dot.top }}>{dot.id}</span>)}
         </div>
       </section>}
-      <p className="ct-formation-relay">{formationRelayNote(preview, state.formation)}</p>
+      <p className="ct-formation-relay">{request?.status === 'pending_confirmation' ? `Preview ${currentPreview}; nothing sent. Confirm or cancel the pending request. Relay formation: ${state.formation ?? 'unreported'}.` : formationRelayNote(currentPreview, state.formation)}</p>
       <p className="ct-formation-planner">
         Shape-only slots: device-to-slot assignments are not projected by the relay and are therefore not
         guessed here. Formations require an aircraft-only selection. Use Ground controls for robots.

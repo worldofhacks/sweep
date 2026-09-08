@@ -2,12 +2,13 @@ import { formatDeviceId } from '../../control/state'
 import type { DeviceCameraState, RelayAircraftState } from '../../relay/contract'
 import { deriveStream } from './derive-live'
 
-export function CameraChoice({ device, cameras, camera, now, onChoose }: {
+export function CameraChoice({ device, cameras, camera, now, onChoose, unavailableStreams }: {
   device: RelayAircraftState
   cameras: DeviceCameraState[]
   camera: DeviceCameraState | null
   now: number
   onChoose: (cameraId: string) => void
+  unavailableStreams?: ReadonlySet<string>
 }) {
   if (device.cameras === undefined) return null
   if (cameras.length === 0) return <p className="lv-note">No cameras configured for this device.</p>
@@ -16,8 +17,9 @@ export function CameraChoice({ device, cameras, camera, now, onChoose }: {
       Camera
       <select aria-label={`${formatDeviceId(device)} camera`} value={camera?.camera_id ?? ''}
         onChange={(event) => onChoose(event.target.value)}>
-        {cameras.map((item) => <option key={item.camera_id} value={item.camera_id}>
-          {item.label} · {deriveStream(device, now, item).status}
+        {camera === null && <option value="" disabled>Choose a current camera</option>}
+        {cameras.map((item) => <option key={item.camera_id} value={item.camera_id} disabled={unavailableStreams?.has(item.stream)}>
+          {item.label} · {unavailableStreams?.has(item.stream) ? 'ambiguous stream mapping' : deriveStream(device, now, item).status}
         </option>)}
       </select>
     </label>

@@ -3,6 +3,7 @@ import { deviceLabeller, isTerminalRequest, selectionNoun } from '../../control/
 import { formatTime, shortId } from '../../shell/format'
 import { reasonSentence } from '../../shell/sentences'
 import type { ModuleProps } from '../types'
+import { SessionRunEvidence } from './SessionRunEvidence'
 import { requestTone, retryBlockedReason } from './controls'
 
 const SHOWN_REQUESTS = 14
@@ -22,12 +23,13 @@ const TIMELINE_ORDER: RequestStatus[] = [
 ]
 
 /** Control › Requests: the newest outcome as a card, then the recent requests. */
-export function RequestsPane({ controller }: { controller: ModuleProps['controller'] }) {
+export function RequestsPane({ controller, now }: { controller: ModuleProps['controller']; now?: () => number }) {
   const { state, retryRequest } = controller
   const outcome = state.requests.find((request) => isTerminalRequest(request.status)) ?? null
   const shown = state.requests.slice(0, SHOWN_REQUESTS)
   return (
     <div>
+      <SessionRunEvidence state={state} now={now} />
       {outcome && <OutcomeCard request={outcome} state={state} />}
       {shown.length === 0 ? (
         <p className="ct-requests-empty">No requests in this session. Every control press appears here.</p>

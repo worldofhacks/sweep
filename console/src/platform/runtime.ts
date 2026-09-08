@@ -1,3 +1,4 @@
+import { HttpSurveyCandidateClient } from './survey-client'
 import type { ModuleServices } from '../modules/types'
 import { UNAVAILABLE_MAP_AUTHORING_CLIENT, type AuthoringOperation } from '../modules/map/authoring/client'
 import { UnavailableNavigationClient } from '../navigation'
@@ -49,6 +50,7 @@ export class PlatformRuntime {
       const signature = JSON.stringify([value.sessionId, operations, value.navigation.review, value.navigation.dispatch])
       if (signature !== this.signature) this.publish(signature, {
         mapAuthoring: createHttpMapAuthoringClient(this.http, operations),
+        surveyCandidates: new HttpSurveyCandidateClient(this.http),
         navigation: value.navigation.review ? new HttpNavigationClient(this.http) : new UnavailableNavigationClient('The relay has disabled destination reviews.'),
       })
     } catch (error) {

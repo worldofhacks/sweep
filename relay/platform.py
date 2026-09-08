@@ -19,6 +19,7 @@ from relay.map_authoring import MapAuthoringError, MapAuthoringStore
 from relay.navigation_service import NavigationError, NavigationService
 from relay.platform_observations import WorldObservationError, WorldObservationService
 from relay.settings import SettingsError
+from relay.survey_area import SurveyCandidateRegistry, SurveyLifecycleError
 
 if TYPE_CHECKING:
     from relay.app import RelayRuntime
@@ -91,6 +92,13 @@ class PlatformServices:
             # review authority, while existing relay control stays independent.
             self.failed = True
             _LOGGER.error("Platform state observation failed; navigation and observations disabled")
+
+    def survey_candidate(self, session: str, candidate_id: str) -> dict[str, object]:
+        current = self.session(session)
+        directory = current.audit_log.root / "survey_candidates"
+        if not directory.is_dir():
+            raise SurveyLifecycleError("survey_candidate_missing", "No survey candidate was saved.")
+        return SurveyCandidateRegistry(directory).preview(session, candidate_id)
 
     def require_current(self) -> None:
         if self.failed:
@@ -170,7 +178,12 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
         try:
             value = await asyncio.to_thread(operation, *args)
             return JSONResponse(value, headers={"Cache-Control": "no-store"})
-        except (MapAuthoringError, NavigationError, WorldObservationError) as error:
+        except (
+            MapAuthoringError,
+            NavigationError,
+            WorldObservationError,
+            SurveyLifecycleError,
+        ) as error:
             return JSONResponse(
                 {"code": error.code, "detail": error.detail},
                 status_code=getattr(error, "status_code", 409),
@@ -191,6 +204,16 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
                 "navigation": {"review": not service.failed, "dispatch": False},
             },
             headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/api/sessions/{session_id}/survey-candidates/{candidate_id}")
+    async def survey_candidate(
+        session_id: str,
+        candidate_id: str,
+        authorization: str | None = Header(default=None),
+    ):
+        return await call(
+            services(session_id, authorization).survey_candidate, session_id, candidate_id
         )
 
     @application.get("/api/sessions/{session_id}/maps/revisions")

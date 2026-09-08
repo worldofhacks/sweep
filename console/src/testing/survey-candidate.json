@@ -1,0 +1,115 @@
+{
+  "v": 1,
+  "type": "survey_candidate_preview",
+  "candidate_id": "candidate-3fee09ebe38e2e3a285934320bb769f0",
+  "session": "session-test",
+  "intent_id": "preview-survey",
+  "run_id": "survey-preview-survey",
+  "device_id": 9,
+  "connection_epoch": 1,
+  "area_id": "floor-1",
+  "source": {
+    "lidar_frame": "lidar",
+    "mount_id": "rplidar",
+    "odom_frame": "odom",
+    "source_id": "ohmni-lidar"
+  },
+  "pose_identity": {
+    "connection_epoch": 1,
+    "event_id": "pose-1",
+    "frame": "odom",
+    "session": "session-test",
+    "source_id": "ohmni-pose"
+  },
+  "files": {
+    "occupancy/manifest.json": {
+      "bytes": 1373,
+      "sha256": "2a44f419b68ca10caa0bd878118833794ed601fd74ddbe2baf1c04647a82eeba"
+    },
+    "occupancy/occupancy.png": {
+      "bytes": 77,
+      "sha256": "3bef7014fc99421cc3779a453ecc23b3b7cb1f8ebf7754a1ef11f24f606907f9"
+    },
+    "pose_path.json": {
+      "bytes": 294,
+      "sha256": "017695e160691b34262800a6fbaee5eddd6225091a36e4ea4e7b27ffb81f8a97"
+    },
+    "recording/observations.jsonl": {
+      "bytes": 601,
+      "sha256": "4da426af6f282825e069f9f22d75e101d6f72d22633461078f38230d94f99e8c"
+    },
+    "recording/recording.json": {
+      "bytes": 1200,
+      "sha256": "db3b39aa07c3e5a397627e263b431db0755c41fd200cdacf59af6f30afeb2545"
+    },
+    "tag_candidates.json": {
+      "bytes": 54,
+      "sha256": "ca2e9829dc657332d708dd4543147e7f1dabd879de8bfa72f350c9e8dae0d0e0"
+    }
+  },
+  "occupancy": {
+    "artifact_sha256": "e2d8197900363f028e27fad7187a8a2e7b753b69a30caee544e527079fe35ec7",
+    "created_at_ms": 1788834085686,
+    "files": {
+      "occupancy.png": {
+        "bytes": 77,
+        "sha256": "3bef7014fc99421cc3779a453ecc23b3b7cb1f8ebf7754a1ef11f24f606907f9"
+      }
+    },
+    "format": "ohmni.canonical-occupancy-grid.v1",
+    "grid": {
+      "frame": "odom",
+      "frame_kind": "source_scoped_local_odometry",
+      "height": 2,
+      "origin": {
+        "x_m": -0.05,
+        "y_m": -0.05
+      },
+      "pixels": {
+        "free": 255,
+        "occupied": 0,
+        "unknown": 128
+      },
+      "png_row_0": "maximum_y",
+      "registered_to_world": false,
+      "resolution_m": 0.05,
+      "width": 22
+    },
+    "input": {
+      "observations_sha256": "4da426af6f282825e069f9f22d75e101d6f72d22633461078f38230d94f99e8c",
+      "run_id": "survey-preview-survey",
+      "source": {
+        "connection_epoch": 1,
+        "device_id": 9,
+        "node_type": "ground",
+        "session": "session-test",
+        "source_id": "ohmni-lidar",
+        "transport": "file_jsonl"
+      }
+    },
+    "mount_id": "rplidar",
+    "observations": {
+      "confidence": {
+        "count": 1,
+        "maximum": 1.0,
+        "mean": 1.0,
+        "minimum": 1.0
+      },
+      "empty_bins_remain_unknown": true,
+      "occupancy_cells": {
+        "free": 19,
+        "occupied": 1,
+        "unknown": 24
+      },
+      "records": 1,
+      "valid_observed_endpoints": 1
+    }
+  },
+  "navigation_authority": false,
+  "image": {
+    "mime_type": "image/png",
+    "bytes": 77,
+    "sha256": "3bef7014fc99421cc3779a453ecc23b3b7cb1f8ebf7754a1ef11f24f606907f9",
+    "data_base64": "iVBORw0KGgoAAAANSUhEUgAAABYAAAACCAAAAAB5mHNqAAAAFElEQVQIHWNsYKhnwACMjA0M2AAAN2ABg8LJnZoAAAAASUVORK5CYII="
+  }
+}

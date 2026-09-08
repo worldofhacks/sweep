@@ -6,6 +6,22 @@
 /* Mosaic */
 .lv-note { margin: 0 0 16px; font-size: var(--text-14); color: var(--color-ink-2); }
 .lv-tile { min-width: 0; }
+.lv-view-switch { display: flex; gap: 4px; margin: 0 0 16px; }
+.lv-view-switch button { min-height: 40px; padding: 8px 16px; border: 1px solid var(--color-border-secondary); background: #fff; color: var(--color-ink); font: inherit; font-size: var(--text-12); cursor: pointer; }
+.lv-view-switch button[aria-pressed='true'] { background: var(--color-ink); color: #fff; border-color: var(--color-ink); }
+.lv-view-switch button:hover:not([aria-pressed='true']) { background: var(--color-ground); }
+.lv-camera-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.lv-camera-tile { padding: 12px; border: 1px solid var(--color-border-secondary); }
+.lv-camera-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; margin-bottom: 8px; }
+.lv-camera-heading h2 { margin: 0; font-size: var(--text-13); font-weight: var(--weight-600); }
+.lv-camera-heading p, .lv-camera-stream { margin: 0; color: var(--color-ink-2); font-family: var(--font-mono); font-size: var(--text-11); overflow-wrap: anywhere; }
+.lv-camera-stream { margin: 8px 0; }
+.lv-camera-tile > .lv-focus { width: 100%; min-height: 40px; }
+.lv-camera-tile .lv-bar { gap: 8px; padding: 4px 8px; }
+.lv-camera-tile .lv-playback, .lv-camera-tile .lv-overlay { padding: 8px; }
+.lv-camera-warning { padding: 12px; margin: 0 0 16px; border: 1px solid var(--color-warn); color: var(--color-warn); font-size: var(--text-12); }
+@media (min-width: 760px) { .lv-camera-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1360px) { .lv-camera-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .lv-visual {
   position: relative;
   aspect-ratio: 16 / 9;

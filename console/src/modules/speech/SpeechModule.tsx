@@ -14,7 +14,6 @@ import { Pane, type PaneTab } from '../../shell/Pane'
 import { isReady, sortedAircraft } from '../../shell/derive'
 import { humanizeCode, shortId } from '../../shell/format'
 import {
-  TRY_PHRASES,
   VOICE_FAILS,
   compileUtterance,
   describeCompilerReason,
@@ -312,7 +311,7 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
               <textarea
                 value={speech.utterance}
                 rows={2}
-                placeholder="capture the kitchen with a full panorama"
+                placeholder="Type a command for the selected devices"
                 onChange={(event) => setUtterance(event.target.value, 'typed', false)}
               />
             </label>
@@ -323,9 +322,10 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
             >
               Compile to intents
             </button>
-            <p className="sp-eyebrow">Try one</p>
+            <p className="sp-eyebrow">Typed command guide</p>
+            <p className="sp-hint">Examples follow the current fleet and capabilities. Compile opens a preview; confirm it separately to send.</p>
             <div className="sp-phrases">
-              {TRY_PHRASES.map((phrase) => (
+              {typedCommandExamples(state, roomId).map((phrase) => (
                 <button
                   key={phrase}
                   type="button"
@@ -336,6 +336,7 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
                 </button>
               ))}
             </div>
+            {typedCommandExamples(state, roomId).length === 0 && <p className="sp-hint">Connect a ready device to see supported examples.</p>}
           </div>
 
           <div className="sp-column">
@@ -724,12 +725,35 @@ function compileContext(state: ControlState, roomId: string): CompileContext {
   return {
     roomId: roomId.trim(),
     selection: state.selection,
-    selectedGroundIds: state.selection.filter((id) => state.aircraft[id]?.node_type === 'ground'),
+    selectedGroundIds: state.selection.filter((id) => state.aircraft[id]?.device_class === 'ground_vehicle'),
     pattern: state.capturePattern,
     readyIds: sortedAircraft(state.aircraft)
       .filter(isReady)
       .map((drone) => drone.drone_id),
+    readyAircraftIds: sortedAircraft(state.aircraft)
+      .filter((device) => isReady(device) && device.device_class === 'aircraft' && device.node_type !== 'ground')
+      .map((device) => device.drone_id),
   }
+}
+
+/** Suggestions are derived from the current device inventory, never invented rooms or motion. */
+function typedCommandExamples(state: ControlState, roomId: string): string[] {
+  if (state.connection.status !== 'connected') return []
+  const examples: string[] = []
+  const selected = state.selection.map((id) => state.aircraft[id])
+  const has = (name: ControlState['enabledIntentNames'][number]) => state.enabledIntentNames.includes(name)
+  if (has('hold') && selected.length > 0 && selected.every(isReady)) examples.push('hold position')
+  if (has('select') && Object.values(state.aircraft).some((device) => device.device_class === 'aircraft' && device.node_type !== 'ground' && isReady(device))) {
+    examples.push('select all ready aircraft')
+  }
+  if (has('ground_velocity') && groundControlBlockedReason(state, 'ground_velocity') === null) {
+    examples.push('robot pulse forward', 'robot pulse left', 'robot pulse right')
+  }
+  if (has('come_home') && selected.length === 1 && selected[0]?.device_class === 'ground_vehicle' && groundControlBlockedReason(state, 'come_home') === null) examples.push('return home')
+  if (has('capture_room') && selected.length === 1 && selected[0]?.device_class === 'aircraft' && selected[0].node_type !== 'ground' && isReady(selected[0]) && isValidRoomId(roomId.trim()) && selected[0].camera_patterns.includes(state.capturePattern)) {
+    examples.push('capture the current room')
+  }
+  return examples
 }
 
 /** Folds a recorder or transcript change into the module state; pure, so it runs during render. */
@@ -817,7 +841,7 @@ function emissionBlockedReason(
     }
     return null
   }
-  if (state.selection.length === 0) return 'Select at least one ready aircraft.'
+  if (state.selection.length === 0) return 'Select at least one ready device.'
   const stale = state.selection.find(notReady)
   if (stale !== undefined) return `${label(stale)} is not ready or selectable.`
   if (compiled.intent === 'hold') return null

@@ -11,6 +11,7 @@ const PLAN_TITLES: Partial<Record<IntentV1['name'], string>> = {
   land_all: 'Land all fleet',
   sweep: 'Sweep area',
   navigate: 'Review destination',
+  survey_area: 'Start survey recording',
 }
 
 /** Plan-card title from the design; other intents show their name. */
@@ -25,6 +26,11 @@ export function planTitle(intent: IntentV1): string {
 export function planSteps(intent: IntentV1, label: DeviceLabeller = formatDroneId): string[] {
   if (intent.name === 'navigate') return [] // Only the authoritative preview may describe routes.
   const ids = intent.selection.map(label).join(', ')
+  if (intent.name === 'survey_area' && 'area_id' in intent.args) return [
+    `Record area ${intent.args.area_id} from ${ids} on its current authenticated connection.`,
+    'Starting this recording sends no drive, route, takeoff or capture command. Movement uses the separate confirmed Ground controls.',
+    'Complete or cancel the exact relay run explicitly. Completion saves an unapproved local-frame candidate; world registration and map approval remain separate.',
+  ]
   if (intent.name === 'camera_control' && 'kind' in intent.args) return [
     `Send ${intent.args.kind === 'photo' ? 'single photo capture' : intent.args.kind === 'ready' ? 'photo-mode preparation' : `absolute gimbal pitch ${'pitch_mdeg' in intent.args ? intent.args.pitch_mdeg / 1000 : ''}°`} only to ${ids}.`,
     'Confirm against the current aircraft connection and SDK capability report.',

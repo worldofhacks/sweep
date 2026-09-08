@@ -1,3 +1,4 @@
+import type { SurveyCandidateClient } from '../platform/survey-client'
 import type { NavigationClient } from '../navigation'
 import type { MapAuthoringClient } from './map/authoring/client'
 import type { ComponentType } from 'react'
@@ -37,6 +38,7 @@ export interface ModuleServices {
   navigation?: NavigationClient
   /** Explicit saved-map integration; absent backend actions remain unavailable. */
   mapAuthoring?: MapAuthoringClient
+  surveyCandidates?: SurveyCandidateClient
   transcript?: TranscriptClient
   gesture?: GestureProducerDependencies
   voice?: VoiceDependencies

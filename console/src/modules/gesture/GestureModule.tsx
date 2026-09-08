@@ -1,4 +1,4 @@
-import { deviceLabeller } from '../../control/state'
+import { capabilityBlockedReason, deviceLabeller } from '../../control/state'
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import './gesture.css'
 import { drawLandmarkOverlay } from '../../gesture/overlay'
@@ -10,6 +10,7 @@ import {
 } from '../../gesture/policy'
 import {
   useGestureProducer,
+  emissionBlockedReason,
   type GestureActionRecord,
   type GestureProducerView,
 } from '../../gesture/use-gesture-producer'
@@ -107,8 +108,19 @@ function GestureWorkspace({ controller, now, roomId, services, profile, changePr
       </fieldset>
       {profile === 'ground' && <p className="gs-safety-note">One selected ground robot. Point up drafts a forward pulse (80 mm/s); victory drafts left yaw and I love you drafts right yaw (350 mrad/s), each for 250 ms. Open palm drafts HOLD. Thumb up confirms only a gesture preview. These requested parameters do not guarantee distance or angle; local motion checks still apply.</p>}
       {profile === 'fleet' && <p className="gs-safety-note">One step per translation using the relay-configured frame. Ground nodes using signed local observations require the Ground pulses profile. Point up: north. Victory: east. Closed fist: south. I love you: west. Open palm: hold. Use manual controls for arming and flight actions.</p>}
-      {profile === 'swarm' && <p className="gs-safety-note">Victory drafts the next coordinated formation; open palm drafts hold. Formation availability follows the relay capability profile. Formations require an aircraft-only selection. Use Ground pulses for robot motion.</p>}
+      {profile === 'swarm' && <p className="gs-safety-note">Point up drafts the line formation; victory drafts the next formation only when the relay advertises that operation. Open palm drafts hold. Formation availability follows the relay capability profile. Formations require an aircraft-only selection. Use Ground pulses for robot motion.</p>}
       {profile === 'flight' && <FlightControls controller={controller} />}
+      <section className="gs-action-readiness" aria-label="Gesture action availability">
+        <p className="gs-safety-note">Current profile · {controller.state.capabilityProfile ?? 'relay capabilities unreported'}. Every action below drafts a preview and requires confirmation.</p>
+        {pairs.filter((pair) => pair.action.kind === 'draft').map((pair) => {
+          const capability = pair.action.kind === 'draft' ? capabilityBlockedReason(controller.state, pair.action.name) : null
+          const blocked = capability ?? emissionBlockedReason(controller, pair, roomId)
+          return <p className="gs-action-readiness-row" key={pair.gesture}>
+            <strong>{gestureName(pair.gesture)} · {describeGestureAction(pair.action)}</strong>
+            <span>{blocked ?? 'Available to draft; confirm the preview before sending.'}</span>
+          </p>
+        })}
+      </section>
       {pane === 'camera' ? (
         <div data-two="1" className="gs-two">
           <div className="gs-column">
@@ -571,7 +583,7 @@ function describeNotable(outcome: GestureProducerView['outcome']): string {
 
 function pairStatus(pair: GesturePair): string {
   if (pair.action.kind === 'draft' && pair.action.name !== 'capture_room' && pair.action.name !== 'hold') {
-    return `previews ${pair.action.name === 'translate' || pair.action.name === 'formation_next' || pair.action.name === 'ground_velocity' ? describeGestureAction(pair.action) : flightActionLabel(pair.action)}`
+    return `previews ${pair.action.name === 'translate' || pair.action.name === 'formation_next' || pair.action.name === 'formation_set' || pair.action.name === 'ground_velocity' ? describeGestureAction(pair.action) : flightActionLabel(pair.action)}`
   }
   if (pair.action.kind === 'draft') return `emits ${pair.action.name} as a preview`
   return pair.action.kind === 'confirm' ? 'confirms the pending preview' : 'cancels the pending preview'

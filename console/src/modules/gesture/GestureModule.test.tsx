@@ -359,3 +359,17 @@ test('changing a gesture profile closes tracking and invalidates its previous pr
   expect(screen.getByText(/Point up: north/)).toBeInTheDocument()
   expect(clients.webcam?.sent).toHaveLength(0)
 })
+
+
+test('Swarm vocabulary shows line and next capability blockers without enabling unavailable actions', async () => {
+  const { clients } = mount({ withWebcam: false })
+  const user = userEvent.setup()
+  await screen.findByText(/Development fixture active/i)
+  await user.click(screen.getByRole('radio', { name: 'Swarm formations (opt in)' }))
+  const availability = within(screen.getByRole('region', { name: 'Gesture action availability' }))
+  expect(availability.getByText('Pointing up · draft line formation')).toBeInTheDocument()
+  expect(availability.getByText(/formation_set is disabled by relay capability profile/)).toBeInTheDocument()
+  expect(availability.getByText(/formation_next is disabled by relay capability profile/)).toBeInTheDocument()
+  expect(clients.console.sent).toEqual([])
+  expect(clients.keyboard.sent).toEqual([])
+})

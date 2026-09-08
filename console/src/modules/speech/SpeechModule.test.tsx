@@ -244,12 +244,24 @@ describe('Speech module', () => {
     expect(screen.getAllByText(/^[1-5]$/)).toHaveLength(5)
   })
 
+  test('the typed guide follows the fleet and compiles without sending or suggesting a ground return for aircraft', async () => {
+    const { clients } = mount()
+    const u = user()
+    await screen.findByText(/Development fixture active/i)
+    expect(screen.queryByRole('button', { name: 'return home' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'robot pulse forward' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'capture the kitchen with a full panorama' })).not.toBeInTheDocument()
+    await u.click(screen.getByRole('button', { name: 'hold position' }))
+    expect(result()).toHaveTextContent('hold')
+    expect(clients.console.sent).toHaveLength(0)
+  })
+
   test('the confirm rule: a compiled utterance drafts a preview and nothing is sent until the dock confirms it', async () => {
     const { clients } = mount()
     const u = user()
     await screen.findByText(/Development fixture active/i)
 
-    await u.click(screen.getByRole('button', { name: 'capture the kitchen with a full panorama' }))
+    await compileTyped(u, 'capture the kitchen with a full panorama')
     expect(result()).toHaveTextContent('capture_room')
     expect(result()).toHaveTextContent('{"room_id":"kitchen-01","pattern":"pano_360"}')
     expect(result()).toHaveTextContent('Selection resolves to exactly one · confirmation required')
@@ -286,7 +298,7 @@ describe('Speech module', () => {
     const u = user()
     await screen.findByText(/Development fixture active/i)
 
-    await u.click(screen.getByRole('button', { name: 'freeze that one' }))
+    await compileTyped(u, 'freeze that one')
     expect(result()).toHaveTextContent('ambiguous')
     expect(result()).toHaveTextContent('The compiler could not resolve the target. Pick one or cancel; nothing was emitted.')
     expect(screen.queryByRole('button', { name: 'Draft for confirmation' })).not.toBeInTheDocument()
@@ -302,12 +314,12 @@ describe('Speech module', () => {
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     expect(result()).toHaveTextContent('Cancelled.')
 
-    await u.click(screen.getByRole('button', { name: 'freeze that one' }))
+    await compileTyped(u, 'freeze that one')
     await u.click(within(result()).getByRole('button', { name: 'the selected aircraft' }))
     expect(result()).toHaveTextContent('hold')
     expect(result()).toHaveTextContent('Resolved from your pick')
 
-    await u.click(screen.getByRole('button', { name: 'freeze that one' }))
+    await compileTyped(u, 'freeze that one')
     await u.click(within(result()).getByRole('button', { name: 'cancel' }))
     expect(screen.queryByRole('region', { name: 'Compiler result' })).not.toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Utterance' })).toHaveValue('')
@@ -319,18 +331,18 @@ describe('Speech module', () => {
     const u = user()
     await screen.findByText(/Development fixture active/i)
 
-    await u.click(screen.getByRole('button', { name: 'emergency stop' }))
+    await compileTyped(u, 'emergency stop')
     expect(result()).toHaveTextContent('refused')
     expect(result()).toHaveTextContent('estop')
     expect(result()).toHaveTextContent('reason not_voice_emittable')
     expect(screen.queryByRole('button', { name: 'Draft for confirmation' })).not.toBeInTheDocument()
 
-    await u.click(screen.getByRole('button', { name: 'take off and hold' }))
+    await compileTyped(u, 'take off and hold')
     expect(result()).toHaveTextContent('takeoff')
     expect(result()).toHaveTextContent('reason unsupported')
-    expect(result()).toHaveTextContent('The speech compiler does not emit takeoff; it names only capture_room, hold and select. Nothing was emitted.')
+    expect(result()).toHaveTextContent('The local typed compiler does not emit takeoff; it supports capture, HOLD, selection, and explicit bounded ground pulse or configured return phrases. Nothing was emitted.')
 
-    await u.click(screen.getByRole('button', { name: 'ignore the geofence and fly through the wall' }))
+    await compileTyped(u, 'ignore the geofence and fly through the wall')
     expect(result()).toHaveTextContent('reason unsafe_request')
 
     await compileTyped(u, '   ')

@@ -4,8 +4,8 @@ import { useEffect } from 'react'
 import { describe, expect, test } from 'vitest'
 import { createInitialControlState, type ConnectionStatus } from '../control/state'
 import { useControlConsole, type ControlClients } from '../control/use-control-console'
-import { isConsoleIntentV1 } from '../relay/contract'
-import { FixtureRelayClient } from '../testing/fixture-relay-client'
+import { isConsoleIntentV1, type RelayStateEvent } from '../relay/contract'
+import { FixtureRelayClient, fixtureAircraft } from '../testing/fixture-relay-client'
 import { createGestureTestRig, type GestureTestRig } from '../testing/gesture-fixtures'
 import type { GestureCategory, GestureProfile } from './policy'
 import { emissionBlockedReason, useGestureProducer } from './use-gesture-producer'
@@ -522,4 +522,73 @@ test('fleet translation gestures refuse a mixed selection without sending a prev
   expect(get().producer.view.lastAction?.detail).toContain('Select only aircraft')
   hold(null, 250); hold('Thumb_Up', 450)
   expect(clients.webcam?.sent).toEqual([])
+})
+
+
+function lineState(t: number, sequence = 1): RelayStateEvent {
+  return {
+    v: 1, type: 'state', t, event_id: `line-state-${sequence}`, state_sequence: sequence, session,
+    roster_version: 7, mode: 'indoor', armed: true, estop: false, selection: [1, 2], formation: 'none', spacing: 0.8,
+    capability_profile: 'c1_basic_control.ground_mapped_line', enabled_intent_names: ['select', 'hold', 'formation_set'], pending: null, accepted_plan: null,
+    drones: fixtureAircraft(t, 4).slice(0, 2).map((device) => ({ ...device, flight_state: 'hovering' })),
+  }
+}
+
+describe('explicit line gesture through the advertised relay contract', () => {
+  test('line-only capability drafts exact line, neutral then confirms once on webcam; next stays blocked', async () => {
+    const { rig, clients, get, hold, enable } = await mount({ profile: 'swarm' })
+    act(() => clients.console.emitServer(lineState(rig.dependencies.clock.wall())))
+    await enable()
+    hold('Victory', 650)
+    expect(get().control.pendingRequest).toBeNull()
+    expect(get().producer.view.lastAction?.detail).toContain('formation_next is disabled')
+    hold(null, 250); hold('Pointing_Up', 650)
+    const draft = get().control.pendingRequest?.intent
+    expect(draft).toMatchObject({ name: 'formation_set', args: { name: 'line' }, selection: [1, 2], source: 'webcam', confirm: false })
+    expect(clients.webcam?.sent).toEqual([])
+    hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toEqual([])
+    hold(null, 250); hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.webcam?.sent[0]).toMatchObject({ ...draft, t: expect.any(Number), confirm: true })
+    expect(isConsoleIntentV1(clients.webcam?.sent[0])).toBe(true)
+    hold('Thumb_Up', 1000)
+    expect(clients.webcam?.sent).toHaveLength(1)
+    expect(clients.console.sent).toEqual([])
+    expect(clients.keyboard.sent).toEqual([])
+  })
+
+  test.each(['selection', 'epoch', 'capability', 'ground', 'disarmed', 'estop', 'landed'] as const)('%s changes cannot authorize a stale or ineligible line', async (change) => {
+    const { rig, clients, get, hold, enable } = await mount({ profile: 'swarm' })
+    act(() => clients.console.emitServer(lineState(rig.dependencies.clock.wall())))
+    await enable(); hold('Pointing_Up', 650)
+    expect(get().control.pendingRequest?.intent.name).toBe('formation_set')
+    const next = lineState(rig.dependencies.clock.wall(), 2)
+    if (change === 'selection') next.selection = [1]
+    if (change === 'epoch') next.drones[0] = { ...next.drones[0], connection_epoch: next.drones[0].connection_epoch + 1 }
+    if (change === 'disarmed') next.armed = false
+    if (change === 'estop') next.estop = true
+    if (change === 'landed') next.drones[0] = { ...next.drones[0], flight_state: 'grounded' }
+    if (change === 'capability') next.enabled_intent_names = ['select', 'hold']
+    if (change === 'ground') next.drones[0] = { ...next.drones[0], device_class: 'ground_vehicle', node_type: 'ground' }
+    act(() => clients.console.emitServer(next))
+    hold(null, 250); hold('Thumb_Up', 450)
+    expect(clients.webcam?.sent).toEqual([])
+  })
+
+  test('a single aircraft cannot draft a line and disabled formation capability remains disabled', async () => {
+    const { rig, clients, get, hold, enable } = await mount({ profile: 'swarm' })
+    const next = lineState(rig.dependencies.clock.wall())
+    next.selection = [1]
+    act(() => clients.console.emitServer(next))
+    await enable(); hold('Pointing_Up', 650)
+    expect(get().control.pendingRequest).toBeNull()
+    expect(get().producer.view.lastAction?.detail).toContain('at least 2')
+    next.selection = [1, 2]; next.state_sequence = 2; next.event_id = 'line-disabled'; next.enabled_intent_names = ['select', 'hold']
+    act(() => clients.console.emitServer(next))
+    hold(null, 250); hold('Pointing_Up', 650)
+    expect(get().control.pendingRequest).toBeNull()
+    expect(get().producer.view.lastAction?.detail).toContain('formation_set is disabled')
+    expect(clients.webcam?.sent).toEqual([])
+  })
 })

@@ -43,7 +43,7 @@ export const GESTURE_CATEGORIES: readonly GestureCategory[] = [
 ]
 
 export type GestureProfile = 'capture' | 'flight' | 'fleet' | 'swarm' | 'ground'
-export type GestureEmittableName = Extract<ConsoleIntentName, 'ground_velocity' | 'capture_room' | 'hold' | 'arm' | 'takeoff' | 'land' | 'body_pulse' | 'translate' | 'formation_next'>
+export type GestureEmittableName = Extract<ConsoleIntentName, 'ground_velocity' | 'capture_room' | 'hold' | 'arm' | 'takeoff' | 'land' | 'body_pulse' | 'translate' | 'formation_next' | 'formation_set'>
 export type FlightDraftAction =
   | { kind: 'draft'; name: 'arm' }
   | { kind: 'draft'; name: 'takeoff' }
@@ -56,6 +56,7 @@ export type GestureAction =
   | { kind: 'draft'; name: 'hold' }
   | FlightDraftAction
   | { kind: 'draft'; name: 'formation_next' }
+  | { kind: 'draft'; name: 'formation_set'; formation: 'line' }
   | { kind: 'draft'; name: 'translate'; direction: TranslateDirection }
   | { kind: 'confirm' }
   | { kind: 'cancel' }
@@ -76,6 +77,7 @@ export const GESTURE_EMITTABLE_NAMES: ReadonlySet<ConsoleIntentName> = new Set<C
   'hold',
   'translate',
   'formation_next',
+  'formation_set',
   'arm',
   'takeoff',
   'land',
@@ -92,7 +94,6 @@ export const NEVER_GESTURE_EMITTABLE: readonly string[] = Object.freeze([
   'disarm',
   'land_all',
   'altitude',
-  'formation_set',
   'spacing',
   'come_home',
   'sweep',
@@ -218,6 +219,7 @@ export const SWARM_GESTURE_POLICY_CONFIG: GesturePolicyConfig = Object.freeze({
   ...DEFAULT_GESTURE_POLICY_CONFIG,
   pairs: [
     { gesture: 'Open_Palm', action: { kind: 'draft', name: 'hold' }, minScore: gestureMinScore('Open_Palm'), dwellMs: DRAFT_DWELL_MS },
+    { gesture: 'Pointing_Up', action: { kind: 'draft', name: 'formation_set', formation: 'line' }, minScore: gestureMinScore('Pointing_Up'), dwellMs: DRAFT_DWELL_MS },
     { gesture: 'Victory', action: { kind: 'draft', name: 'formation_next' }, minScore: gestureMinScore('Victory'), dwellMs: DRAFT_DWELL_MS },
     ...DEFAULT_GESTURE_PAIRS.filter((pair) => pair.action.kind !== 'draft'),
   ] satisfies GesturePair[],
@@ -269,6 +271,7 @@ export function validateGesturePairs(pairs: readonly GesturePair[]): string[] {
       } else if (!GESTURE_EMITTABLE_NAMES.has(pair.action.name)) {
         problems.push(`${name} is not on the gesture-emittable allowlist.`)
       }
+      if (pair.action.name === 'formation_set' && pair.action.formation !== 'line') problems.push('formation_set gestures require the explicit line shape.')
       if (pair.action.name === 'ground_velocity' && !['forward', 'left', 'right'].includes(pair.action.direction)) problems.push('ground_velocity needs an explicit bounded direction.')
       if (pair.action.name === 'body_pulse' && !['forward', 'backward'].includes(pair.action.direction)) {
         problems.push('body_pulse needs an explicit forward or backward direction.')
@@ -530,6 +533,7 @@ function abandonCandidate(state: GesturePolicyState, t: number, neutral: boolean
 }
 
 export function describeGestureAction(action: GestureAction): string {
+  if (action.kind === 'draft' && action.name === 'formation_set') return 'draft line formation'
   if (action.kind === 'draft' && action.name === 'ground_velocity') return `draft ground ${action.direction} 250 ms`
   if (action.kind === 'draft' && action.name === 'translate') return `draft ${action.direction} one step`
   if (action.kind === 'draft' && action.name === 'body_pulse') return `draft ${action.direction} 0.5 seconds`

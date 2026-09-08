@@ -42,6 +42,7 @@ export interface ControlModuleProps extends ModuleProps {
 export function ControlModule({
   controller,
   now,
+  services,
   roomId,
   onRoomIdChange,
   guidance = null,
@@ -72,7 +73,7 @@ export function ControlModule({
           onFormationPreview={setFormationPreview}
         />
       )}
-      {pane === 'ground' && <GroundPane controller={controller} />}
+      {pane === 'ground' && <GroundPane controller={controller} now={now} services={services} />}
       {pane === 'navigation' && <NavigationPane state={controller.state} snapshot={controller.navigation}
         now={now()} onPreview={(zoneId) => { void controller.prepareNavigation(zoneId) }}
         onDestinationChange={controller.invalidateNavigation} verification={controller.navigationVerification}
@@ -81,7 +82,7 @@ export function ControlModule({
         <CapturePane controller={controller} roomId={roomId} onRoomId={onRoomIdChange} guidance={currentGuidance} />
       )}
       {pane === 'commands' && <CommandsPane controller={controller} steps={steps} onSteps={setSteps} />}
-      {pane === 'requests' && <RequestsPane controller={controller} />}
+      {pane === 'requests' && <RequestsPane controller={controller} now={now} />}
       {pane === 'fleet' && <FleetPane controller={controller} now={now} />}
     </Pane>
   )

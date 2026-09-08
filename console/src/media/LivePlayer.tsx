@@ -15,10 +15,12 @@ export interface LivePlayerProps {
   device: LivePlayerDevice
   media: MediaRuntime
   camera?: Pick<DeviceCameraState, 'camera_id' | 'label' | 'stream'>
+  /** Keep decoded playback evidence visible beside camera-wall source status. */
+  showPlaybackStatus?: boolean
 }
 
 /** Mounted only while the relay reports the stream live; unmounting closes the session. */
-export function LivePlayer({ device, media, camera }: LivePlayerProps) {
+export function LivePlayer({ device, media, camera, showPlaybackStatus = false }: LivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const { device_class, unit } = device
   const cameraStream = camera?.stream
@@ -42,6 +44,9 @@ export function LivePlayer({ device, media, camera }: LivePlayerProps) {
       <p className="visually-hidden" role="status">
         Playback {playback.state}
       </p>
+      {showPlaybackStatus && playback.state === 'playing' && (
+        <p className="lv-playback is-playing">Playback · receiving frames</p>
+      )}
       {caption && (
         <p className={caption.failed ? 'lv-playback is-failed' : 'lv-playback'}>
           <span className={caption.failed ? 'is-failed' : undefined}>{caption.text}</span>

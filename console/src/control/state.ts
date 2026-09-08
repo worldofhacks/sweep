@@ -14,6 +14,7 @@ import type {
 import { DEVICE_CLASSES, followsSelection, isSupportedIntent } from '../relay/contract'
 import type { NavigationPreview } from '../navigation'
 import type { Observation } from '../relay/observation'
+import { retainSurveyContext, retireSurveys, type SurveyRun, type SurveyLifecycleAttempt } from './survey'
 
 export { NAVIGATION_CONFIRMATION_UNAVAILABLE } from '../navigation'
 
@@ -71,6 +72,11 @@ export interface RequestRecord {
   detail?: string
   plan?: PlanPreview
   responseRosterVersion?: number
+  surveyRun?: SurveyRun
+  surveyCandidateId?: string
+  surveyLifecycle?: SurveyLifecycleAttempt
+  surveyUnavailable?: string
+  surveyControlUnavailable?: string
 }
 
 export interface DepartureRecord {
@@ -145,6 +151,9 @@ export type ControlAction =
   | { type: 'request_invalidated'; intentId: string; t: number; reasonCode: string; detail: string }
   | { type: 'capture_pattern_changed'; pattern: CapturePattern }
   | { type: 'feed_selected'; droneId: DroneId }
+  | { type: 'survey_provider_changed' }
+  | { type: 'survey_lifecycle_sent'; intentId: string; attempt: SurveyLifecycleAttempt }
+  | { type: 'survey_lifecycle_send_failed'; intentId: string; eventId: string; error: string }
 
 export function createInitialControlState(sessionId: string, now = Date.now()): ControlState {
   return {
@@ -220,10 +229,18 @@ export function createRequestRecord(intent: IntentV1, now: number): RequestRecor
 
 export function controlReducer(state: ControlState, action: ControlAction): ControlState {
   switch (action.type) {
+    case 'survey_provider_changed':
+      return retireSurveys(state, 'The console provider changed. Prior recording controls are unavailable until the relay supplies a new run.')
+    case 'survey_lifecycle_sent':
+      return updateRequest(state, action.intentId, (request) => ({ ...request, surveyLifecycle: action.attempt }))
+    case 'survey_lifecycle_send_failed':
+      return updateRequest(state, action.intentId, (request) => request.surveyLifecycle?.eventId === action.eventId
+        ? { ...request, surveyLifecycle: { ...request.surveyLifecycle, error: action.error } } : request)
     case 'session_changed':
       return createInitialControlState(action.sessionId, action.t)
     case 'connection_changed':
-      return reduceConnection(state, action.connection)
+      return action.connection.status === 'connected' ? reduceConnection(state, action.connection) :
+        retireSurveys(reduceConnection(state, action.connection), 'The console connection changed. The recording outcome is unknown; a reconnect cannot revive its controls.')
     case 'keyboard_connection_changed':
       return reduceKeyboardConnection(state, action.connection)
     case 'webcam_connection_changed':
@@ -231,7 +248,7 @@ export function controlReducer(state: ControlState, action: ControlAction): Cont
     case 'language_connection_changed':
       return reduceLanguageConnection(state, action.connection)
     case 'relay_event':
-      return reduceRelayEvent(state, action.event, action.source ?? 'console', action.receivedAt)
+      return retainSurveyContext(state, reduceRelayEvent(state, action.event, action.source ?? 'console', action.receivedAt))
     case 'request_created':
       return { ...state, requests: [action.request, ...state.requests] }
     case 'request_pending_confirmation':
@@ -379,7 +396,7 @@ function reduceRelayEvent(
     case 'auth.refused':
       return reduceAuthRefusal(stateWithEvent, event)
     case 'state':
-      return reduceStateEvent(stateWithEvent, event, source, receivedAt)
+      return retainSurveyContext(state, reduceStateEvent(stateWithEvent, event, source, receivedAt))
     case 'membership':
       return reduceMembershipEvent(stateWithEvent, event)
     case 'telemetry':
@@ -423,6 +440,12 @@ function reduceRelayEvent(
         rosterVersion: event.roster_version,
         droneId: event.drone_id ?? undefined,
         connectionEpoch: event.connection_epoch ?? undefined,
+        source: event.source,
+        surveyCandidateId: event.result && 'candidate_id' in event.result ? event.result.candidate_id : undefined,
+        surveyRun: event.result === undefined || event.drone_id === null ? undefined : {
+          runId: event.result.run_id, connectionEpoch: event.result.connection_epoch,
+          deviceId: event.drone_id, receivedAt: receivedAt ?? event.t,
+        },
       })
     case 'refusal':
       if (event.source === 'adapter') {
@@ -437,6 +460,7 @@ function reduceRelayEvent(
         rosterVersion: event.roster_version,
         droneId: event.drone_id ?? undefined,
         connectionEpoch: event.connection_epoch ?? undefined,
+        source: event.source,
       })
   }
 }
@@ -916,10 +940,26 @@ interface BackendUpdate {
   rosterVersion?: number
   droneId?: DroneId
   connectionEpoch?: number
+  source?: string
+  surveyRun?: SurveyRun
+  surveyCandidateId?: string
 }
 
 function reduceBackendUpdate(state: ControlState, update: BackendUpdate): ControlState {
   const request = state.requests.find((item) => item.intent.intent_id === update.intentId)
+  if (request?.intent.name === 'survey_area') {
+    if (['completed', 'failed', 'refused', 'invalidated', 'cancelled'].includes(request.status)) return state
+    const priorBackendTimes = [request.timestamps.accepted, request.timestamps.executing]
+      .filter((t): t is number => t !== undefined)
+    if (priorBackendTimes.length > 0 && update.t < Math.max(...priorBackendTimes)) return state
+    if (request.surveyRun && update.status === 'accepted') return state
+    if (update.source === 'survey_area' && update.status !== 'refused') {
+      const id = request.intent.selection[0]
+      if (request.intent.selection.length !== 1 || update.droneId !== id ||
+        update.connectionEpoch !== request.plan?.deviceEpochs?.[id]) return state
+      if (update.surveyRun && request.surveyRun && update.surveyRun.runId !== request.surveyRun.runId) return state
+    } else if (['executing', 'completed'].includes(update.status)) return state
+  }
   if (!request) {
     const detail = update.detail ?? defaultStatusDetail(update.status)
     const outcomeKind = outcomeKindForStatus(update.status)
@@ -959,6 +999,10 @@ function reduceBackendUpdate(state: ControlState, update: BackendUpdate): Contro
           reasonCode: update.reasonCode,
           detail,
           responseRosterVersion: update.rosterVersion ?? item.responseRosterVersion,
+          surveyRun: item.surveyRun ?? update.surveyRun,
+          surveyCandidateId: update.surveyCandidateId ?? item.surveyCandidateId,
+          surveyLifecycle: ['completed', 'failed', 'refused', 'invalidated'].includes(update.status)
+            ? undefined : item.surveyLifecycle,
         }
       : item,
   )

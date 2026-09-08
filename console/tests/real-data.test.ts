@@ -16,6 +16,9 @@ test('the operator entrypoint cannot reach synthetic clients, catalogs or maps',
     // synthetic peers; nothing reachable from the operator boot may import them.
     for (const match of source.matchAll(/(?:from\s*|import\s*\(?\s*)['"](\.[^'"]+)['"]/g)) {
       const base = resolve(dirname(path), match[1])
+      // Recorded artifact JSON is test evidence too; do not let the extension
+      // shortcut hide a fixture import from the production dependency walk.
+      expect(base).not.toMatch(/\/testing\/|\.test\./)
       if (/\.(css|svg|png|jpg|json)$/.test(base)) continue
       const dependency = [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`]
         .find((candidate) => /\.tsx?$/.test(candidate) && existsSync(candidate))

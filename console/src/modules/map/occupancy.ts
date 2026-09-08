@@ -12,9 +12,9 @@ export interface OccupancyMap extends MapMetadata {
 }
 
 /**
- * `absent` is a relay that has no grid for this session yet (404); `error` is
- * anything else, including headers that do not describe a grid. Neither
- * invents a raster.
+ * `absent` means HTTP 404: it does not distinguish a missing endpoint from a
+ * missing session grid. `error` is anything else, including headers that do
+ * not describe a grid. Neither invents a raster.
  */
 export type OccupancyResult =
   | { status: 'map'; map: OccupancyMap }
@@ -72,6 +72,7 @@ export async function resetOccupancyMap(
   endpoint: MapEndpoint,
   fetcher: typeof fetch = endpoint.fetcher ?? fetch,
 ): Promise<boolean> {
+  if (!endpoint.resetUrl) return false
   try {
     const response = await fetcher(endpoint.resetUrl, {
       method: 'POST',

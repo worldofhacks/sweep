@@ -11,7 +11,8 @@ export class PlatformHttp {
     this.fetcher = fetcher
   }
 
-  async request(path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
+  async request(path: string, body?: unknown, signal?: AbortSignal, maximum = 16 * 1024 * 1024): Promise<unknown> {
+    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 24 * 1024 * 1024) throw new Error('Invalid relay response bound.')
     const url = relayHttpUrl(this.connection.baseUrl, `/api/sessions/${encodeURIComponent(this.connection.sessionId)}${path}`)
     if (!url) throw new Error('The relay URL is invalid.')
     const controller = new AbortController()
@@ -26,7 +27,6 @@ export class PlatformHttp {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal, credentials: 'omit', cache: 'no-store', redirect: 'error',
       })
-      const maximum = 16 * 1024 * 1024
       const length = Number(response.headers.get('Content-Length'))
       if (Number.isFinite(length) && length > maximum) throw new Error('The relay response exceeds its size limit.')
       const reader = response.body?.getReader()
