@@ -7,6 +7,7 @@ import json
 import math
 import secrets
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -309,7 +310,7 @@ class InspectionAuthority:
             "image_sha256": frame.image_sha256,
             "source_sha256": frame.source_sha256,
             "capture_pipeline_sha256": frame.capture_pipeline_sha256,
-            "pulse": pulse.__dict__,
+            "pulse": pulse.__dict__.copy(),
             "state": state.__dict__.copy(),
             "issued_at_device_monotonic_ns": now_ns,
             "expires_at_device_monotonic_ns": expires_at,
@@ -322,7 +323,7 @@ class InspectionAuthority:
         record = self._approvals.get(approval_id)
         if record is None:
             raise InspectionError("camera inspection approval is unknown")
-        return {**record[5], "consumed": record[4]}
+        return {**deepcopy(record[5]), "consumed": record[4]}
 
     def consume(
         self, approval_id: str, pulse: ForwardPulse, state: LiveState, now_ns: int

@@ -304,3 +304,14 @@ def test_challenge_and_approval_reject_time_before_they_exist(tmp_path, monkeypa
         authority.consume(approval, pulse, state, 1_099)
         == "camera_inspection_approval_time_invalid"
     )
+
+
+def test_exported_approval_cannot_mutate_the_authorized_pulse(tmp_path, monkeypatch):
+    authority, approval, pulse, state, _ = _approval(tmp_path, monkeypatch)
+    exported = authority.approval_record(approval)
+    exported["pulse"]["duration_s"] = 5.0
+    exported["state"]["x_m"] = 99.0
+
+    assert authority.consume(approval, pulse, state, 1_200) is None
+    with pytest.raises(inspection.InspectionError, match="pulse exceeds"):
+        inspection.ForwardPulse(0.04, 0, 0.51)
