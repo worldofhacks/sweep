@@ -333,7 +333,13 @@ class GroundPlatformNavigation:
                 )
 
             device = self.deployment.device(route.device_id)
-            guarded = _GroundGuardedLink(link, self.session, guard, send_stop)
+            guarded = _GroundGuardedLink(
+                link,
+                self.session,
+                guard,
+                send_stop,
+                stop_timeout_ms=self.session.limits.command_ttl_ms,
+            )
             result = GroundCommandDispatcher(
                 guarded,
                 acknowledgement_timeout_ms=device.limits.route_timeout_ms,
@@ -380,9 +386,12 @@ class _GroundGuardedLink:
         session: RelaySession,
         guard: Callable[[bool], None],
         send_stop: Callable[[CommandRequest], None],
+        *,
+        stop_timeout_ms: int,
     ) -> None:
         self.inner, self.session, self.guard = inner, session, guard
         self.send_stop = send_stop
+        self.stop_timeout_ms = stop_timeout_ms
         self.request: CommandRequest | None = None
 
     def connection_epoch(self, device_id: int) -> int | None:
@@ -440,5 +449,25 @@ class _GroundGuardedLink:
             )
             try:
                 self.send_stop(stop)
+                acknowledgement = self._await_stop(stop.command_id)
+                if acknowledgement is None or acknowledgement.status.value != "completed":
+                    raise AdapterError("independent ground STOP was not confirmed")
             finally:
                 self.session.discard_command_waiter(stop.command_id)
+
+    def _await_stop(self, command_id: str):
+        deadline = time.monotonic() + self.stop_timeout_ms / 1_000
+        while (remaining := deadline - time.monotonic()) > 0:
+            acknowledgement = self.session.await_command_acknowledgement(
+                command_id,
+                timeout_ms=min(100, max(1, int(remaining * 1_000))),
+                retain_on_timeout=True,
+            )
+            if acknowledgement is not None and acknowledgement.status.value in {
+                "completed",
+                "failed",
+                "invalidated",
+                "refused",
+            }:
+                return acknowledgement
+        return None

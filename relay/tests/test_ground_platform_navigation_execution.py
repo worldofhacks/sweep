@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -14,6 +15,7 @@ from mcap.reader import make_reader
 from websockets.sync.client import connect
 
 from adapters.dji_mini3.fake_node import FakeNode, FakeNodeConfig
+from adapters.dji_mini3.remote import CommandRequest
 from adapters.ohmni.fake import FakeGroundDevice
 from adapters.ohmni.runtime import GroundRuntimeConfig, OhmniRuntime
 from adapters.ohmni.test_runtime import (
@@ -23,12 +25,15 @@ from adapters.ohmni.test_runtime import (
     _receive_until,
     _wait_for,
 )
+from adapters.protocols import AdapterError
 from planner.ground_navigation import GroundNavigationDeployment
+from planner.models import CommandOperation, LifecycleStatus
 from planner.test_ground_navigation import KEY, deployment_file
 from relay.auth import sign_event
 from relay.autonomy import AutonomyConfig, create_autonomy_app
 from relay.bridge import RelayNodeLink
 from relay.contracts import NodeType
+from relay.ground_navigation_execution import _GroundGuardedLink
 from relay.map_authoring import MapAuthoringStore
 from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION
@@ -491,6 +496,45 @@ def test_uncertain_delivery_stops_a_route_that_already_reached_the_ground_node(
         assert device.status().y == pytest.approx(stopped.y)
 
 
+@pytest.mark.parametrize("reply", [None, SimpleNamespace(status=LifecycleStatus.FAILED)])
+def test_missing_or_failed_stop_ack_is_reported_and_its_waiter_released(reply):
+    class StopSession:
+        registry = SimpleNamespace(roster_version=4)
+
+        def __init__(self):
+            self.discarded = []
+
+        def await_command_acknowledgement(self, _command_id, **_kwargs):
+            return reply
+
+        def discard_command_waiter(self, command_id):
+            self.discarded.append(command_id)
+
+    session = StopSession()
+    stopped = []
+    request = CommandRequest(
+        command_id="navigate-command",
+        intent_id="navigate-intent",
+        roster_version=4,
+        drone_id=GROUND_ID,
+        connection_epoch=1,
+        operation=CommandOperation.GROUND_NAVIGATE,
+        args={},
+    )
+    guarded = _GroundGuardedLink(
+        None, session, lambda _moving: None, stopped.append, stop_timeout_ms=10
+    )
+    guarded.request = request
+
+    with pytest.raises(AdapterError, match="independent ground STOP was not confirmed"):
+        guarded._stop()
+
+    assert len(stopped) == 1
+    assert stopped[0].operation is CommandOperation.HOVER
+    assert stopped[0].intent_id != request.intent_id
+    assert session.discarded == [stopped[0].command_id]
+
+
 @pytest.mark.parametrize("withdraw_world_pose", [False, "world", "approval_file"])
 def test_named_ground_preview_confirm_and_guard_reach_the_real_node(
     ground_platform, withdraw_world_pose, tmp_path
@@ -543,18 +587,57 @@ def test_named_ground_preview_confirm_and_guard_reach_the_real_node(
         _wait_for(lambda: bool(commands()), "audited ground route command")
         command = commands()[0]
         assert command["operation"] == "ground_navigate"
+        stop_started = threading.Event()
+        release_stop = threading.Event()
+        terminal_ready = threading.Event()
+        terminal_frames = []
         if withdraw_world_pose == "world":
             stop_source.set()
         elif withdraw_world_pose == "approval_file":
+            stop = device.stop
+
+            def block_stop_confirmation():
+                stop_started.set()
+                assert release_stop.wait(timeout=5), "test did not release the ground STOP"
+                stop()
+
+            device.stop = block_stop_confirmation
             path.rename(tmp_path / "retired-ground-navigation.json")
-        terminal = _receive_until(
-            console,
-            lambda frame: (
-                frame.get("source") == "autonomy"
-                and frame.get("intent_id") == command["intent_id"]
-                and frame.get("status") in {"completed", "failed", "refused", "invalidated"}
-            ),
-        )
+        if withdraw_world_pose == "approval_file":
+
+            def receive_terminal():
+                terminal_frames.append(
+                    _receive_until(
+                        console,
+                        lambda frame: (
+                            frame.get("source") == "autonomy"
+                            and frame.get("intent_id") == command["intent_id"]
+                            and frame.get("status")
+                            in {"completed", "failed", "refused", "invalidated"}
+                        ),
+                    )
+                )
+                terminal_ready.set()
+
+            terminal_thread = threading.Thread(target=receive_terminal, daemon=True)
+            terminal_thread.start()
+            assert stop_started.wait(timeout=5), "independent STOP was not sent"
+            assert not terminal_ready.wait(timeout=0.2), (
+                "terminal result preceded STOP confirmation"
+            )
+            release_stop.set()
+            terminal_thread.join(timeout=5)
+            assert terminal_ready.is_set(), "terminal result did not follow STOP confirmation"
+            terminal = terminal_frames[0]
+        else:
+            terminal = _receive_until(
+                console,
+                lambda frame: (
+                    frame.get("source") == "autonomy"
+                    and frame.get("intent_id") == command["intent_id"]
+                    and frame.get("status") in {"completed", "failed", "refused", "invalidated"}
+                ),
+            )
         if withdraw_world_pose:
             assert terminal["status"] != "completed", terminal
             if withdraw_world_pose == "world":
