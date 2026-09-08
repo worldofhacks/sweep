@@ -148,3 +148,47 @@ def test_stale_challenge_and_oversized_or_reversed_pulses_refuse(tmp_path, monke
     for values in ((0.05, 0, 0.5), (0.04, 0, 0.51), (-0.04, 0, 0.5), (0.04, 1, 0.5)):
         with pytest.raises(inspection.InspectionError, match="pulse exceeds"):
             inspection.ForwardPulse(*values)
+
+
+def test_challenge_cannot_rebind_a_moved_body_or_authorize_twice(tmp_path, monkeypatch):
+    state = _state()
+    authority = inspection.InspectionAuthority()
+    challenge = authority.issue_challenge(state, 1_000, capture._capture_tool_sha256())
+    output = _producer(tmp_path, monkeypatch, challenge)
+    evidence = inspection.FrameEvidence.load(
+        output / "main" / "frame-000000.json", output / "manifest.json"
+    )
+    pulse = inspection.ForwardPulse(0.04, 0, 0.5)
+    with pytest.raises(inspection.InspectionError, match="live identity differs"):
+        authority.approve(
+            evidence,
+            pulse,
+            _state(x_m=1.01),
+            1_100,
+            operator_id="spotter-a",
+            accepted=True,
+            review_notes="clear",
+        )
+    authority.approve(
+        evidence, pulse, state, 1_100, operator_id="spotter-a", accepted=True, review_notes="clear"
+    )
+    with pytest.raises(inspection.InspectionError, match="challenge expired or unknown"):
+        authority.approve(
+            evidence,
+            pulse,
+            state,
+            1_100,
+            operator_id="spotter-a",
+            accepted=True,
+            review_notes="clear",
+        )
+
+
+def test_incomplete_manifest_refuses_capture_evidence(tmp_path, monkeypatch):
+    _, _, _, _, output = _approval(tmp_path, monkeypatch)
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["status"] = "failed"
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(inspection.InspectionError, match="manifest challenge differs"):
+        inspection.FrameEvidence.load(output / "main" / "frame-000000.json", manifest_path)
