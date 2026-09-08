@@ -47,6 +47,20 @@ class NavigationAdmissionFileTest {
         assertThrows(IllegalArgumentException::class.java) { parse(manifest, key) }
     }
 
+    @Test
+    fun `advertisement requires an enabled signed navigation admission`() {
+        val fixture = fixture()
+        val key = fixture.text("key_utf8").toByteArray()
+        val evidence = fixture.objectAt("evidence_utf8")
+        evidence.fields.forEach { (name, value) -> temporaryDirectory.resolve(name).writeText((value as JsonString).value) }
+
+        assertEquals(listOf("flight"), advertisedCapabilities(listOf("flight"), null))
+        assertEquals(
+            listOf("flight", "navigate"),
+            advertisedCapabilities(listOf("flight"), parse(fixture.objectAt("manifest"), key)),
+        )
+    }
+
     private fun parse(
         manifest: JsonObject,
         key: ByteArray,

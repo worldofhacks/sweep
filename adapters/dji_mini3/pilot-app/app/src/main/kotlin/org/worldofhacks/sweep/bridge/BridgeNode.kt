@@ -178,7 +178,7 @@ class BridgeNode(private val application: Application, val session: AircraftSess
                     droneId = setup.droneId,
                     token = setup.token,
                     adapterId = "${BuildConfig.AIRCRAFT}-${setup.droneId}",
-                    capabilities = AircraftVariant.capabilities,
+                    capabilities = advertisedCapabilities(AircraftVariant.capabilities, navigationAdmission),
                     localizationPins = setup.localizationPins,
                     observationSource = observationSource,
                     captureAlignment = captureAlignment,

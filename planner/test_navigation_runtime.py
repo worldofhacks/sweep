@@ -2,15 +2,18 @@ from dataclasses import replace
 
 import pytest
 
+from planner.mapped_formations import FormationLayout, FormationZone
 from planner.models import Plan, Position, Refusal
 from planner.navigation_authorization import NavigationApproval
 from planner.navigation_runtime import (
+    FormationBinding,
     NavigationExecutionConfig,
     NavigationFrame,
     NavigationRuntime,
     navigation_configuration_digest,
 )
 from planner.test_navigation import MOTION, PERMISSION, artifact
+from planner.test_navigation import pose as Pose
 from relay.auth import sign_event
 from relay.intent_v1 import IntentName
 from tests.autonomy_fixtures import make_intent, make_snapshot, replace_aircraft
@@ -255,3 +258,179 @@ def test_navigation_execution_uses_an_explicit_bounded_aircraft_limit():
         "level_1", MOTION, 0.2, 0.05, 500, 0.5, 5000, frames, max_aircraft=5
     )
     assert config.max_aircraft == 5
+
+
+def test_mapped_column_executes_each_aircraft_in_order_after_the_prior_hold():
+    from dataclasses import asdict
+
+    from planner.planner import DeterministicPlanner
+    from tests.autonomy_fixtures import planning_config
+
+    runtime, _, _, geometry = setup_runtime()
+    binding = FormationBinding(
+        "column",
+        FormationZone(
+            "approved-lobby",
+            "level_1",
+            ((0.0, 0.0), (7.5, 0.0), (7.5, 4.5), (0.0, 4.5), (0.0, 0.0)),
+            0.5,
+            2.0,
+            0.2,
+            True,
+            True,
+            geometry[0].map_pin,
+            geometry[0].geometry_pin,
+        ),
+        FormationLayout(Pose(5.5, 2.5, 1.0, "level_1"), 0.0, 1.0, (0.0, 0.0)),
+    )
+    runtime.config = replace(
+        runtime.config,
+        frames=tuple(
+            NavigationFrame(drone_id, f"measured-enu-world-{drone_id}", IDENTITY)
+            for drone_id in (1, 2)
+        ),
+        max_aircraft=2,
+        formation_bindings=(binding,),
+    )
+    raw = asdict(runtime.approval)
+    raw.update(
+        v=1,
+        type="navigation_approval",
+        epochs=[[1, 1], [2, 1]],
+        evidence_sha256=[],
+        configuration_sha256=navigation_configuration_digest(
+            geometry[0], runtime.config, PERMISSION, "atrium"
+        ),
+    )
+    runtime.approval = NavigationApproval.verify({**raw, "signature": sign_event(raw, KEY)}, KEY)
+    snapshot = make_snapshot(2, spacing=1.0)
+    snapshot = replace_aircraft(snapshot, 1, pose=Position(1.5, 1.0, 1.0))
+    snapshot = replace_aircraft(snapshot, 2, pose=Position(1.5, 4.0, 1.0))
+    intent = make_intent(
+        IntentName.FORMATION_SET,
+        selection=(1, 2),
+        args={"name": "column"},
+        confirm=True,
+    )
+
+    plan = DeterministicPlanner(planning_config(), navigation_runtime=runtime).plan(
+        intent, snapshot
+    )
+
+    assert isinstance(plan, Plan)
+    assert plan.formation_update == "column"
+    first_route_commands = len(plan.navigation.route.routes[0].swept_segments) + 1
+    blocked = runtime.check(plan, plan.commands[first_route_commands], snapshot)
+    assert isinstance(blocked, Refusal)
+    assert "prior aircraft has not reached and held" in blocked.detail
+    for command in plan.commands:
+        assert runtime.check(plan, command, snapshot) is None
+        issued = snapshot.now_ms
+        snapshot = replace(snapshot, now_ms=issued + 10)
+        changes = {"position_last_seen_ms": snapshot.now_ms}
+        if command.operation.value == "goto":
+            changes["pose"] = Position(*(command.parameters[axis] for axis in ("x", "y", "z")))
+        else:
+            changes["flight_state"] = snapshot.aircraft[command.drone_id].flight_state.HOVERING
+        snapshot = replace_aircraft(snapshot, command.drone_id, **changes)
+        assert runtime.check(plan, command, snapshot, completed=True, issued_at_ms=issued) is None
+
+
+def test_mapped_formation_next_transitions_from_line_to_the_approved_column():
+    from dataclasses import asdict
+
+    from planner.planner import DeterministicPlanner
+    from tests.autonomy_fixtures import planning_config
+
+    runtime, _, _, geometry = setup_runtime()
+    zone = FormationZone(
+        "approved-lobby",
+        "level_1",
+        ((0.0, 0.0), (7.5, 0.0), (7.5, 4.5), (0.0, 4.5), (0.0, 0.0)),
+        0.5,
+        2.0,
+        0.2,
+        True,
+        True,
+        geometry[0].map_pin,
+        geometry[0].geometry_pin,
+    )
+    bindings = (
+        FormationBinding(
+            "line", zone, FormationLayout(Pose(5.5, 2.5, 1.0, "level_1"), 0.0, 1.0, (0.0, 0.0))
+        ),
+        FormationBinding(
+            "column", zone, FormationLayout(Pose(5.5, 2.5, 1.0, "level_1"), 0.0, 1.0, (0.0, 0.0))
+        ),
+    )
+    runtime.config = replace(
+        runtime.config,
+        frames=tuple(
+            NavigationFrame(drone_id, f"measured-enu-world-{drone_id}", IDENTITY)
+            for drone_id in (1, 2)
+        ),
+        max_aircraft=2,
+        formation_bindings=bindings,
+    )
+    raw = asdict(runtime.approval)
+    raw.update(
+        v=1,
+        type="navigation_approval",
+        epochs=[[1, 1], [2, 1]],
+        evidence_sha256=[],
+        configuration_sha256=navigation_configuration_digest(
+            geometry[0], runtime.config, PERMISSION, "atrium"
+        ),
+    )
+    runtime.approval = NavigationApproval.verify({**raw, "signature": sign_event(raw, KEY)}, KEY)
+    snapshot = make_snapshot(2, spacing=1.0, formation="line")
+    snapshot = replace_aircraft(snapshot, 1, pose=Position(1.5, 1.0, 1.0))
+    snapshot = replace_aircraft(snapshot, 2, pose=Position(1.5, 4.0, 1.0))
+
+    plan = DeterministicPlanner(planning_config(), navigation_runtime=runtime).plan(
+        make_intent(IntentName.FORMATION_NEXT, selection=(1, 2)), snapshot
+    )
+
+    assert isinstance(plan, Plan)
+    assert plan.formation_update == "column"
+    assert runtime.check(plan, plan.commands[0], snapshot) is None
+
+
+def test_unbound_column_is_refused_before_a_route_is_prepared():
+    from dataclasses import asdict
+
+    from planner.planner import DeterministicPlanner
+    from tests.autonomy_fixtures import planning_config
+
+    runtime, _, _, geometry = setup_runtime()
+    runtime.config = replace(
+        runtime.config,
+        frames=tuple(
+            NavigationFrame(drone_id, f"measured-enu-world-{drone_id}", IDENTITY)
+            for drone_id in (1, 2)
+        ),
+        max_aircraft=2,
+    )
+    raw = asdict(runtime.approval)
+    raw.update(
+        v=1,
+        type="navigation_approval",
+        epochs=[[1, 1], [2, 1]],
+        evidence_sha256=[],
+        configuration_sha256=navigation_configuration_digest(
+            geometry[0], runtime.config, PERMISSION, "atrium"
+        ),
+    )
+    runtime.approval = NavigationApproval.verify({**raw, "signature": sign_event(raw, KEY)}, KEY)
+    result = DeterministicPlanner(planning_config(), navigation_runtime=runtime).plan(
+        make_intent(
+            IntentName.FORMATION_SET,
+            selection=(1, 2),
+            args={"name": "column"},
+            confirm=True,
+        ),
+        make_snapshot(2),
+    )
+
+    assert isinstance(result, Refusal)
+    assert "formation_set is outside capability profile" in result.detail

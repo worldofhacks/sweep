@@ -32,6 +32,12 @@ internal fun loadNavigationAdmission(
     )
 }
 
+internal fun advertisedCapabilities(
+    capabilities: List<String>,
+    navigationAdmission: NavigationAdmissionConfig?,
+): List<String> =
+    if (navigationAdmission?.enabled == true) (capabilities + "navigate").distinct() else capabilities
+
 internal fun parseNavigationAdmission(
     json: JsonObject,
     session: String,
