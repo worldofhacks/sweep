@@ -91,6 +91,17 @@ def test_missing_measured_clearance_refuses_before_enable(field):
     assert device.drive_shell.commands == []
 
 
+def test_direct_lidar_guard_reports_unconfigured_clearance_before_sensor_state():
+    device = configured(lidar_mount_x_m=None)
+
+    evidence = device.lidar_guard_evidence()
+
+    assert evidence.coverage is LidarCoverage.INVALID
+    assert evidence.reason == "ground_clearance_unconfigured"
+    assert device.guard_reason() == "ground_clearance_unconfigured"
+    assert device.status().extras["lidar_guard"]["reason"] == "ground_clearance_unconfigured"
+
+
 @pytest.mark.parametrize("invalid", [-1, True, float("nan")])
 def test_invalid_scan_bin_cannot_be_inferred_clear(invalid):
     device = configured()
@@ -139,6 +150,27 @@ def test_lidar_read_error_is_distinct_from_missing_scan_coverage():
     assert evidence.reason == "lidar_read_error"
     assert evidence.read_error == "lidar_disconnected"
     assert not device.enable()
+
+
+def test_operator_report_truncates_lidar_errors_to_the_status_contract_limit():
+    device = configured()
+    device.lidar.error = "x" * 10_000
+
+    report = device.lidar_guard_evidence().operator_report()
+    detail = json.dumps(report, sort_keys=True, separators=(",", ":"))
+
+    assert len(detail) <= 512
+    assert isinstance(report["read_error"], str)
+    assert 0 < len(report["read_error"]) < 10_000
+    node = node_for(device)
+    node._publish_observations()
+    reports = [
+        event["payload"]
+        for event in (node._outbound.get_nowait() for _ in range(node._outbound.qsize()))
+        if event["type"] == "observation" and event["payload"]["kind"] == "status"
+    ]
+    emitted = next(event for event in reports if event["code"] == "ground_lidar_guard")
+    assert len(emitted["detail"]) <= 512
 
 
 def test_new_complete_scan_needs_fresh_validation_after_a_guard_stop():

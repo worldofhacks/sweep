@@ -6,6 +6,7 @@ Neither pre_drive/pre_rot nor vendor Docker/ROS paths work on the measured robot
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -25,6 +26,8 @@ from .odometry import BASE_MM, Odometry
 from .paired_encoder import PairedEncoderStream, default_socket_path
 
 MIN_CALIBRATION_RAW_POINTS = 20
+_MAX_OPERATOR_REPORT_CHARS = 512
+_MAX_REPORTED_BIN_INDICES = 32
 
 
 class LidarCoverage(StrEnum):
@@ -52,7 +55,7 @@ class LidarGuardEvidence:
     read_error: str | None
 
     def operator_report(self) -> dict[str, object]:
-        return {
+        report: dict[str, object] = {
             "coverage": self.coverage.value,
             "reason": self.reason,
             "scan_t_ms": self.scan_t_ms,
@@ -60,11 +63,33 @@ class LidarGuardEvidence:
             "scan_age_ms": self.scan_age_ms,
             "valid_bins": self.valid_bins,
             "missing_bin_count": len(self.missing_bins),
-            "missing_bins": list(self.missing_bins[:32]),
+            "missing_bins": list(self.missing_bins[:_MAX_REPORTED_BIN_INDICES]),
             "invalid_bin_count": len(self.invalid_bins),
-            "invalid_bins": list(self.invalid_bins[:32]),
+            "invalid_bins": list(self.invalid_bins[:_MAX_REPORTED_BIN_INDICES]),
             "read_error": self.read_error,
         }
+        if len(_compact_report(report)) <= _MAX_OPERATOR_REPORT_CHARS:
+            return report
+        assert self.read_error is not None
+        report["read_error"] = _prefix_that_fits(report, self.read_error)
+        return report
+
+
+def _compact_report(value: dict[str, object]) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _prefix_that_fits(report: dict[str, object], value: str) -> str:
+    lower, upper = 0, len(value)
+    while lower < upper:
+        middle = (lower + upper + 1) // 2
+        report["read_error"] = value[:middle]
+        if len(_compact_report(report)) <= _MAX_OPERATOR_REPORT_CHARS:
+            lower = middle
+        else:
+            upper = middle - 1
+    report["read_error"] = value[:lower]
+    return value[:lower]
 
 
 @dataclass(frozen=True)
@@ -378,6 +403,14 @@ class OhmniDevice:
             return "spotter_missing"
         if self.docked:
             return "robot_docked"
+        return self.lidar_guard_evidence(now=now).reason
+
+    @property
+    def last_lidar_guard_fault(self) -> LidarGuardEvidence | None:
+        return self._last_lidar_guard_fault
+
+    def lidar_guard_evidence(self, *, now: float | None = None) -> LidarGuardEvidence:
+        now = time.monotonic() if now is None else now
         measured = (
             self.config.footprint_radius_m,
             self.config.stopping_distance_m,
@@ -387,15 +420,20 @@ class OhmniDevice:
             self.config.lidar_mount_z_m,
         )
         if any(value is None for value in measured):
-            return "ground_clearance_unconfigured"
-        return self.lidar_guard_evidence(now=now).reason
-
-    @property
-    def last_lidar_guard_fault(self) -> LidarGuardEvidence | None:
-        return self._last_lidar_guard_fault
-
-    def lidar_guard_evidence(self, *, now: float | None = None) -> LidarGuardEvidence:
-        now = time.monotonic() if now is None else now
+            return self._record_lidar_guard(
+                LidarGuardEvidence(
+                    LidarCoverage.INVALID,
+                    "ground_clearance_unconfigured",
+                    None,
+                    None,
+                    None,
+                    None,
+                    (),
+                    (),
+                    (),
+                    None,
+                )
+            )
         if self.lidar is None:
             return self._record_lidar_guard(
                 LidarGuardEvidence(

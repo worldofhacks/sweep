@@ -449,7 +449,7 @@ class ReturnController:
             return ReturnOutcome(
                 False,
                 "return_lidar_invalid",
-                f"scan has invalid bins: {','.join(map(str, invalid))}",
+                _scan_bin_detail("invalid", invalid),
             )
         if missing:
             reason = (
@@ -458,7 +458,7 @@ class ReturnController:
                 else "return_lidar_coverage_sparse"
             )
             return ReturnOutcome(
-                False, reason, f"scan is missing bins: {','.join(map(str, missing))}"
+                False, reason, _scan_bin_detail("missing", missing)
             )
         required_cm = math.ceil(self.route.required_clearance_m * 100)
         if any(value <= required_cm for value in values):
@@ -492,6 +492,12 @@ class ReturnController:
             self._stop()
         except OSError:
             pass
+
+
+def _scan_bin_detail(kind: str, bins: list[int]) -> str:
+    shown = ",".join(map(str, bins[:32]))
+    suffix = "..." if len(bins) > 32 else ""
+    return f"scan has {len(bins)} {kind} bins: {shown}{suffix}"
 
 
 def _geometry(raw: object, clearance_m: float) -> tuple[ReturnPoint, tuple[ReturnSegment, ...]]:

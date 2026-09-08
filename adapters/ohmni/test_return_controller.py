@@ -232,7 +232,9 @@ def test_return_keeps_missing_invalid_and_obstacle_scan_failures_distinct(tmp_pa
     device.scan = lambda: RangeScan(  # type: ignore[method-assign]
         0, (device.x, device.y, device.yaw), 0.0, 1.0, 0.15, 12.0, [0] * 360
     )
-    assert asyncio.run(_controller(route, device).run()).reason == "return_lidar_coverage_missing"
+    missing = asyncio.run(_controller(route, device).run())
+    assert missing.reason == "return_lidar_coverage_missing"
+    assert missing.detail is not None and len(missing.detail) <= 512
 
     device.scan = lambda: RangeScan(  # type: ignore[method-assign]
         0, (device.x, device.y, device.yaw), 0.0, 1.0, 0.15, 12.0, [400] * 359 + [0]
