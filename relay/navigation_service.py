@@ -261,6 +261,10 @@ class FlightNavigationExecution(Protocol):
 
     def confirm(self, session: str, preview: Mapping[str, object]) -> Mapping[str, object]: ...
 
+    def reserve(self, session: str, preview: Mapping[str, object]) -> Mapping[str, object]: ...
+
+    def dispatch_reserved(self, session: str, preview_id: str) -> Mapping[str, object]: ...
+
 
 class NavigationService:
     @_storage_errors
@@ -707,6 +711,21 @@ class NavigationService:
         }
 
     @_storage_errors
+    def multiview_context(self, session: str) -> dict[str, object]:
+        """Return the server-owned inputs for a batch of frozen route reviews."""
+        with self._lock:
+            catalog = self._catalog(session, self._now())
+            state = self._context(session, catalog)["state"]
+            return {
+                "rosterVersion": state["rosterVersion"],
+                "selected": _copy(state["selected"]),
+                **{
+                    key: _copy(catalog[key])
+                    for key in ("catalogVersion", "map", "configVersion", "motionConfig")
+                },
+            }
+
+    @_storage_errors
     def preview(self, session: str, raw: object) -> dict[str, object]:
         request = _exact(
             _copy(raw),
@@ -878,7 +897,7 @@ class NavigationService:
         )
 
     @_storage_errors
-    def confirm(self, session: str, raw: object) -> dict[str, object]:
+    def _consume(self, session: str, raw: object, *, reserve: bool) -> dict[str, object]:
         request = _exact(_copy(raw), {"previewId", "intentId", "previewHash"})
         _identity(request["previewId"])
         _identity(request["intentId"])
@@ -967,7 +986,13 @@ class NavigationService:
             else:
                 try:
                     dispatched = _exact(
-                        _copy(self.flight_execution.confirm(session, _copy(retained))),
+                        _copy(
+                            (
+                                self.flight_execution.reserve
+                                if reserve
+                                else self.flight_execution.confirm
+                            )(session, _copy(retained))
+                        ),
                         {"status", "code", "detail"},
                     )
                     if (
@@ -996,6 +1021,35 @@ class NavigationService:
             "intentId": request["intentId"],
             "dispatchEligible": dispatch_eligible,
         }
+
+    def confirm(self, session: str, raw: object) -> dict[str, object]:
+        return self._consume(session, raw, reserve=False)
+
+    def reserve(self, session: str, raw: object) -> dict[str, object]:
+        return self._consume(session, raw, reserve=True)
+
+    @_storage_errors
+    def dispatch_reserved(self, session: str, preview_id: str) -> dict[str, object]:
+        _identity(preview_id)
+        if self.flight_execution is None:
+            _fail(
+                "navigation_execution_unavailable",
+                "Class-qualified navigation execution is not enabled.",
+            )
+        try:
+            dispatched = _exact(
+                _copy(self.flight_execution.dispatch_reserved(session, preview_id)),
+                {"status", "code", "detail"},
+            )
+        except (ValueError, KeyError, TypeError) as error:
+            _fail(
+                "navigation_dispatch_failed", str(error) or "Qualified navigation dispatch failed."
+            )
+        if dispatched["status"] != "accepted":
+            _fail(
+                "navigation_dispatch_failed", "Reserved navigation was not accepted for dispatch."
+            )
+        return {"status": "accepted", "code": dispatched["code"], "detail": dispatched["detail"]}
 
 
 def validate_flight_execution_preview(

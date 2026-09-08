@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from planner.navigation import ArtifactPin
 from relay.auth import AuthenticationError, authenticate
 from relay.map_authoring import MapAuthoringError, MapAuthoringStore
+from relay.multiview import MultiviewService
 from relay.navigation_service import NavigationError, NavigationService
 from relay.observations import Observation, ObservationError, ObservationSubmission
 from relay.platform_observations import WorldObservationError, WorldObservationService
@@ -58,6 +59,18 @@ class _FlightExecutionAdapter:
         if not callable(handler):
             raise ValueError("qualified aircraft navigation is unavailable")
         return handler(session, preview)
+
+    def reserve(self, session: str, preview: Mapping[str, object]) -> Mapping[str, object]:
+        handler = getattr(self.source, "reserve_platform_navigation", None)
+        if not callable(handler):
+            raise ValueError("qualified aircraft navigation reservation is unavailable")
+        return handler(session, preview)
+
+    def dispatch_reserved(self, session: str, preview_id: str) -> Mapping[str, object]:
+        handler = getattr(self.source, "dispatch_reserved_platform_navigation", None)
+        if not callable(handler):
+            raise ValueError("qualified aircraft navigation reservation is unavailable")
+        return handler(session, preview_id)
 
     def tag_destinations(self, map_ref: dict[str, object]) -> tuple[object, ...]:
         config = getattr(self.source, "config", None)
@@ -103,6 +116,10 @@ class PlatformServices:
                 tag_destinations=None if execution is None else execution.tag_destinations,
             )
             cleanup.callback(self.navigation.close)
+            self.multiview = MultiviewService(self.navigation, flight_execution)
+            set_multiview_listener = getattr(flight_execution, "set_multiview_listener", None)
+            if callable(set_multiview_listener):
+                set_multiview_listener(self.multiview.observe_execution)
             self.observations = WorldObservationService.from_env(
                 os.environ if environment is None else environment,
                 approved_bundle=self.navigation.current_approved_bundle,
@@ -328,6 +345,50 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
             if operation not in {"preview", "resolve", "confirm", "compile"}:
                 raise MapAuthoringError("unknown_operation", "Unknown navigation operation.", 404)
             return getattr(service.navigation, operation)(session_id, value)
+
+        return await call(perform)
+
+    @application.post("/api/sessions/{session_id}/multiview/preview")
+    async def multiview_preview(
+        session_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        service = services(session_id, authorization)
+        value = await _body(request)
+
+        def perform():
+            service.require_current()
+            return service.multiview.preview(session_id, value)
+
+        return await call(perform)
+
+    @application.post("/api/sessions/{session_id}/multiview/confirm")
+    async def multiview_confirm(
+        session_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        service = services(session_id, authorization)
+        value = await _body(request)
+
+        def perform():
+            service.require_current()
+            return service.multiview.confirm(session_id, value)
+
+        return await call(perform)
+
+    @application.get("/api/sessions/{session_id}/multiview/{workflow_id}")
+    async def multiview_status(
+        session_id: str,
+        workflow_id: str,
+        authorization: str | None = Header(default=None),
+    ):
+        service = services(session_id, authorization)
+
+        def perform():
+            service.require_current()
+            return service.multiview.status(session_id, workflow_id)
 
         return await call(perform)
 

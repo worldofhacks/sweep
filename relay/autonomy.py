@@ -657,6 +657,7 @@ class AutonomySession:
         )
         self._platform_ground_dispatch: dict[str, PreparedGroundNavigation] = {}
         self._platform_navigation: dict[str, tuple[int, PreparedExecution]] = {}
+        self._platform_navigation_reservations: dict[str, PreparedExecution] = {}
         self._platform_dispatch: dict[str, PreparedExecution] = {}
         self.navigation_wire = (
             NavigationWirePublisher(
@@ -1013,6 +1014,100 @@ class AutonomySession:
             "code": "navigation_accepted",
             "detail": "The frozen qualified aircraft route was accepted for scheduling.",
         }
+
+    def reserve_platform_navigation(self, preview: Mapping[str, object]) -> dict[str, object]:
+        """Consume an aircraft review without dispatching its route yet."""
+        preview_id = preview.get("previewId")
+        execution = preview.get("execution")
+        if not isinstance(preview_id, str) or not isinstance(execution, Mapping):
+            raise ValueError("retained navigation preview is invalid")
+        runtime = self._composition.runtime
+        with self._lock:
+            self._prune_platform_navigation(runtime.clock())
+            retained = self._platform_navigation.pop(preview_id, None)
+            prepared = retained[1] if retained is not None else None
+            if prepared is None or execution.get("planHash") != content_digest(
+                prepared.plan.to_dict()
+            ):
+                raise ValueError("retained navigation plan is unavailable")
+            self._platform_navigation_reservations[preview_id] = prepared
+        return {
+            "status": "accepted",
+            "code": "navigation_reserved",
+            "detail": "The frozen qualified aircraft route is reserved for its multiview slot.",
+        }
+
+    def dispatch_reserved_platform_navigation(self, preview_id: str) -> dict[str, object]:
+        runtime = self._composition.runtime
+        with self._lock:
+            prepared = self._platform_navigation_reservations.pop(preview_id, None)
+            if prepared is None:
+                raise ValueError("reserved navigation plan is unavailable")
+            admitted = replace(prepared.intent, t=runtime.clock())
+            prepared = PreparedExecution(admitted, prepared.plan, prepared.snapshot)
+            self._platform_dispatch[admitted.intent_id] = prepared
+        session = runtime.sessions.get(self.session_id)
+        if session is None:
+            with self._lock:
+                self._platform_dispatch.pop(prepared.intent.intent_id, None)
+            raise ValueError("relay session is unavailable")
+        try:
+            self._publish(runtime, lambda: session.admit_platform_navigation(prepared.intent))
+            self._publish(
+                runtime,
+                lambda: session.execute_pending_intent(
+                    prepared.intent.intent_id, defer_resume=True
+                ),
+            )
+        except Exception:
+            with self._lock:
+                self._platform_dispatch.pop(prepared.intent.intent_id, None)
+            raise
+        return {
+            "status": "accepted",
+            "code": "navigation_accepted",
+            "detail": "The reserved qualified aircraft route was accepted for scheduling.",
+        }
+
+    def confirm_platform_capture(self, capture: Mapping[str, object]) -> dict[str, object]:
+        capture_id = capture.get("captureId")
+        room_id = capture.get("roomId")
+        navigation_intent_id = capture.get("navigationIntentId")
+        selected = capture.get("selected")
+        if (
+            not isinstance(capture_id, str)
+            or not isinstance(room_id, str)
+            or not isinstance(navigation_intent_id, str)
+            or not isinstance(selected, list)
+            or len(selected) != 1
+            or not isinstance(selected[0], Mapping)
+            or type(selected[0].get("id")) is not int
+        ):
+            raise ValueError("platform capture request is invalid")
+        runtime = self._composition.runtime
+        session = runtime.sessions.get(self.session_id)
+        if session is None:
+            raise ValueError("relay session is unavailable")
+        intent = IntentV1(
+            v=1,
+            t=runtime.clock(),
+            type="intent",
+            intent_id=f"platform-capture:{navigation_intent_id}",
+            retry_of=None,
+            source="platform",
+            session=self.session_id,
+            name=IntentName.CAPTURE_ROOM,
+            args={"room_id": room_id, "capture_id": capture_id, "pattern": "single_still"},
+            selection=(selected[0]["id"],),
+            mode=Mode.INDOOR,
+            confirm=True,
+        )
+        self._publish(runtime, lambda: session.admit_platform_capture(intent))
+        self._publish(
+            runtime,
+            lambda: session.execute_pending_intent(intent.intent_id, defer_resume=True),
+        )
+        return {"status": "accepted", "intentId": intent.intent_id}
 
     def _prune_platform_navigation(self, now: int) -> None:
         for preview_id, (expires_at, _) in tuple(self._platform_navigation.items()):
@@ -1562,6 +1657,7 @@ class AutonomySession:
             if owner.job.cancelled_by is None:
                 raise
             return None
+        self._composition.report_multiview_execution(self.session_id, owner.job.intent, result)
         return RelayExecution(result, tuple(events))
 
     def resume_after_acknowledgement(
@@ -1593,6 +1689,7 @@ class AutonomySession:
                 return []
 
         self._publish(runtime, operation)
+        self._composition.report_multiview_execution(self.session_id, job.intent, result)
 
     def _fail_search_detection(self, intent_id: str, session: RelaySession, reason: str) -> None:
         runtime = self._composition.runtime_if_bound()
@@ -1805,6 +1902,7 @@ class AutonomyComposition:
         self.capability_profile = profile
         self._runtime_source: Callable[[], RelayRuntime | None] = _no_runtime
         self._sessions: dict[str, AutonomySession] = {}
+        self._multiview_listener: Callable[[str, str, str, str], None] | None = None
         self._lock = threading.Lock()
 
     def bind(self, target: FastAPI | RelayRuntime) -> None:
@@ -1854,6 +1952,31 @@ class AutonomyComposition:
         self, session_id: str, preview: Mapping[str, object]
     ) -> dict[str, object]:
         return self.session(session_id).confirm_platform_navigation(preview)
+
+    def reserve_platform_navigation(
+        self, session_id: str, preview: Mapping[str, object]
+    ) -> dict[str, object]:
+        return self.session(session_id).reserve_platform_navigation(preview)
+
+    def dispatch_reserved_platform_navigation(
+        self, session_id: str, preview_id: str
+    ) -> dict[str, object]:
+        return self.session(session_id).dispatch_reserved_platform_navigation(preview_id)
+
+    def confirm_platform_capture(
+        self, session_id: str, capture: Mapping[str, object]
+    ) -> dict[str, object]:
+        return self.session(session_id).confirm_platform_capture(capture)
+
+    def set_multiview_listener(self, listener: Callable[[str, str, str, str], None]) -> None:
+        self._multiview_listener = listener
+
+    def report_multiview_execution(
+        self, session_id: str, intent: IntentV1, result: ExecutionResult
+    ) -> None:
+        listener = self._multiview_listener
+        if listener is not None and result.status is not LifecycleStatus.EXECUTING:
+            listener(session_id, intent.intent_id, intent.name.value, result.status.value)
 
     def navigation_events(
         self, session_id: str, events: list[dict[str, object]]

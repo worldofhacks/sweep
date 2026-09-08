@@ -30,6 +30,7 @@ class IntentName(StrEnum):
     GROUND_VELOCITY = "ground_velocity"
     NAVIGATE = "navigate"
     SEARCH = "search"
+    MULTIVIEW_CAPTURE = "multiview_capture"
 
 
 @dataclass(frozen=True, slots=True)
