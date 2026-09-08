@@ -1,4 +1,4 @@
-"""Stage unapproved navigation-area data from the retained 53-tag map."""
+"""Stage retained tag geometry and optional owner approval for field preparation."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from math import isfinite
 from pathlib import Path
 
 _EXPECTED_TAG_IDS = frozenset(set(range(54)) - {29})
@@ -47,9 +48,11 @@ def _tag_points(raw: Mapping[str, object]) -> dict[int, tuple[float, float]]:
             type(tag_id) is not int
             or not isinstance(center, list)
             or len(center) != 3
-            or not all(type(item) in {int, float} for item in center)
+            or not all(type(item) in {int, float} and isfinite(item) for item in center)
         ):
             raise ValueError("tag map entry has an invalid center")
+        if tag_id in points:
+            raise ValueError("tag map contains a duplicate tag ID")
         points[tag_id] = (float(center[0]), float(center[1]))
     if set(points) != _EXPECTED_TAG_IDS:
         raise ValueError("tag map IDs do not match its retained coverage")
@@ -114,25 +117,49 @@ def _area(
     }
 
 
-def build_package(source: Path) -> dict[str, object]:
-    raw = _load(source)
+def _map_approval(path: Path | None, source_digest: str) -> dict[str, object]:
+    if path is None:
+        return {"status": "pending", "scope": "tag_map_baseline"}
+    approval = _load(path)
+    if (
+        approval.get("schemaVersion") != 1
+        or approval.get("scope") != "tag_map_baseline"
+        or approval.get("ownerApproved") is not True
+        or approval.get("sourceSha256") != source_digest
+        or approval.get("coordinateFrame") != _SOURCE_FRAME
+        or not isinstance(approval.get("recordedAt"), str)
+        or not approval["recordedAt"].strip()
+    ):
+        raise ValueError("map approval must bind the exact source and coordinate frame")
+    return {**approval, "status": "accepted"}
+
+
+def build_package(source: Path, *, map_approval: Path | None = None) -> dict[str, object]:
+    payload = source.read_bytes()
+    raw = json.loads(payload)
+    if not isinstance(raw, dict):
+        raise ValueError("tag map must be an object")
     if raw.get("kind") != "complete_private_provisional_53_tag_map":
         raise ValueError("tag map is not the retained final 53-tag map")
     if raw.get("status") != "private_provisional_offline_map_not_for_registry_acceptance":
         raise ValueError("tag map status must remain provisional and unaccepted")
     tag_points = _tag_points(raw)
+    digest = hashlib.sha256(payload).hexdigest()
+    approval = _map_approval(map_approval, digest)
+    accepted = approval["status"] == "accepted"
     areas = [_area(*specification, tag_points) for specification in _AREAS]
     return {
         "schemaVersion": 1,
         "kind": "real_navigation_staging_package",
         "activation": "blocked",
         "source": {
-            "path": str(source.resolve()),
-            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "path": str(source),
+            "sha256": digest,
             "coordinateFrame": _SOURCE_FRAME,
             "retainedTagIds": sorted(_EXPECTED_TAG_IDS),
             "intentionallyAbsentTagIds": [29],
         },
+        "mapApproval": approval,
         "semanticCatalogSeed": {
             "destinations": [
                 {"destinationId": area["zoneId"], "name": area["name"], "aliases": area["aliases"]}
@@ -153,9 +180,21 @@ def build_package(source: Path) -> dict[str, object]:
         },
         "activationChecks": [
             {
-                "id": "accepted-map-and-geometry",
+                "id": "accepted-tag-map",
+                "status": "passed" if accepted else "blocked",
+                "evidence": (
+                    "Owner approved this exact tag-map baseline for hardware-test preparation."
+                    if accepted
+                    else "No owner approval record accompanies the retained source."
+                ),
+            },
+            {
+                "id": "measured-route-geometry",
                 "status": "blocked",
-                "evidence": "The retained source explicitly prohibits registry acceptance.",
+                "evidence": (
+                    "Wall and height measurements and replacement-tag verification remain "
+                    "outstanding; tag-map approval does not supply route clearance."
+                ),
             },
             {
                 "id": "formation-area-clearance",
@@ -178,8 +217,7 @@ def build_package(source: Path) -> dict[str, object]:
                 "id": "signed-navigation-approval",
                 "status": "blocked",
                 "evidence": (
-                    "No signed execution configuration or owner approval is present in "
-                    "this staging package."
+                    "No signed execution configuration is present in this staging package."
                 ),
             },
         ],
@@ -190,8 +228,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--map-approval", type=Path)
     arguments = parser.parse_args()
-    package = build_package(arguments.source)
+    package = build_package(arguments.source, map_approval=arguments.map_approval)
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")
 

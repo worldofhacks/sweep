@@ -2,8 +2,13 @@
   "activation": "blocked",
   "activationChecks": [
     {
-      "evidence": "The retained source explicitly prohibits registry acceptance.",
-      "id": "accepted-map-and-geometry",
+      "evidence": "Owner approved this exact tag-map baseline for hardware-test preparation.",
+      "id": "accepted-tag-map",
+      "status": "passed"
+    },
+    {
+      "evidence": "Wall and height measurements and replacement-tag verification remain outstanding; tag-map approval does not supply route clearance.",
+      "id": "measured-route-geometry",
       "status": "blocked"
     },
     {
@@ -17,7 +22,7 @@
       "status": "blocked"
     },
     {
-      "evidence": "No signed execution configuration or owner approval is present in this staging package.",
+      "evidence": "No signed execution configuration is present in this staging package.",
       "id": "signed-navigation-approval",
       "status": "blocked"
     }
@@ -145,6 +150,22 @@
     "selector": "zone_id"
   },
   "kind": "real_navigation_staging_package",
+  "mapApproval": {
+    "basis": "Owner confirmed the map against physical measurements and approved the retained provisional map in the hardware-navigation checkpoint request.",
+    "coordinateFrame": "unit11_atrium_38_to_39_v1",
+    "flightAuthorization": false,
+    "outstandingMeasurements": [
+      "wall positions and route clear widths",
+      "floor, ceiling and obstacle heights",
+      "identity, position and orientation of replacement tags"
+    ],
+    "ownerApproved": true,
+    "recordedAt": "2026-09-08",
+    "schemaVersion": 1,
+    "scope": "tag_map_baseline",
+    "sourceSha256": "7f4f1f2bf3e2ba0285568a7a0a78bd25587fcba82b5b31a97b4c592b00ca2009",
+    "status": "accepted"
+  },
   "schemaVersion": 1,
   "semanticCatalogSeed": {
     "destinations": [
@@ -168,7 +189,7 @@
     "intentionallyAbsentTagIds": [
       29
     ],
-    "path": "/var/tmp/gauntlet/sweep-production/unit12-live-camera-map-fit-20260908/final-53-tag-map.json",
+    "path": "deployments/real-navigation/tag-map-53.json",
     "retainedTagIds": [
       0,
       1,

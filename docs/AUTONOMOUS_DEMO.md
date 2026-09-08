@@ -1,5 +1,10 @@
 # Autonomous demo software
 
+The current real-vehicle scope is checkpoint navigation, multi-stop photos and
+search/survey. See the [hardware checkpoint](hardware-navigation-checkpoint.md)
+for the approved map baseline, configuration and field procedure. The evidence
+below describes the earlier software rehearsals.
+
 The demo software has simulated routes for hallway flight, named-tag visits, marked
 precision return, and line and column formations. Each route uses the production
 navigation runtime, approved map pins, command-by-command revalidation, and

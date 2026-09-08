@@ -123,8 +123,7 @@ def test_simulated_line_and_column_routes_refuse_lost_separation():
     runtime.config = replace(
         runtime.config,
         frames=tuple(
-            NavigationFrame(drone_id, f"demo-world-{drone_id}", IDENTITY)
-            for drone_id in (1, 2)
+            NavigationFrame(drone_id, f"demo-world-{drone_id}", IDENTITY) for drone_id in (1, 2)
         ),
         max_aircraft=2,
         formation_bindings=(

@@ -1,0 +1,5740 @@
+{
+  "schema_version": 1,
+  "kind": "complete_private_provisional_53_tag_map",
+  "status": "private_provisional_offline_map_not_for_registry_acceptance",
+  "coordinate_frame": {
+    "id": "unit11_atrium_38_to_39_v1",
+    "units": "meters",
+    "origin": "tag 38 center",
+    "x_axis": "in-floor direction from tag 38 center to tag 39 center",
+    "y_axis": "right-handed in-floor axis",
+    "z_axis": "up",
+    "handedness": "right_handed",
+    "source_frame_transform_old_world_to_this_world": [
+      [
+        -0.999188369978473,
+        0.04028152553916066,
+        0.0,
+        22.921291742262003
+      ],
+      [
+        -0.04028152553916066,
+        -0.999188369978473,
+        0.0,
+        0.3612981334253781
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "verified_tag_38_center_m": [
+      0.0,
+      5.551115123125783e-17,
+      0.0
+    ],
+    "verified_tag_39_center_m": [
+      0.7148048250485033,
+      1.1102230246251565e-16,
+      0.0
+    ]
+  },
+  "coverage": {
+    "expected_tag_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53
+    ],
+    "actual_tag_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53
+    ],
+    "missing_tag_ids": [],
+    "intentionally_absent_tag_ids": [
+      29
+    ]
+  },
+  "source_reports": {
+    "stable_unit12_corridor_snapshot": {
+      "path": "/var/tmp/gauntlet/sweep-production/unit12-live-camera-map-fit-20260908/input-snapshots/final-53-live-floor-map-candidate.json",
+      "sha256": "9007e7bd9967454f4f9acb0e181bb29a410fae7b40ba56994eef66561901b4bf"
+    },
+    "crosszone_joint_fit_snapshot": {
+      "path": "/var/tmp/gauntlet/sweep-production/unit12-live-camera-map-fit-20260908/input-snapshots/final-53-unit11-crosszone-joint-probe.json",
+      "sha256": "166bb04f9c27fccb0efd778dcd16755bc1295d34cfab6ab27fc67b1158bc27f7"
+    },
+    "wall_alternatives_snapshot": {
+      "path": "/var/tmp/gauntlet/sweep-production/unit12-live-camera-map-fit-20260908/input-snapshots/final-53-wall-height-constrained-alternatives.json",
+      "sha256": "3dad9036f656cd20847575035e89ea05268aad52698d96f514dec3a146d353dc"
+    },
+    "stable_unit12_inputs": {
+      "intrinsics": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit12-fixed-tag-views-20260908-boot17058702/diagnostic-37-view/fisheye.json",
+        "sha256": "cf0d6c2ffcae1870c9db7345a8cf75e69de774cc3e198d672ba7cbaa12012585"
+      },
+      "nominal_53_tag_layout_preserved_as_reference": {
+        "path": "/var/tmp/gauntlet/sweep-production/office-tag-layout-provisional-20260908/provisional-office-tag-layout.json",
+        "sha256": "a8bc9ee9238a43c491e8dc3401d1fc9bb5ef0db330e4fe0c2855c5398d705720"
+      },
+      "camera_lidar_capture_index": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/camera-lidar-capture-index.json",
+        "sha256": "11367a3a384360c972e1952c43cf5ec1249e316365d571bc2f4e9a2f56dcb9c3"
+      },
+      "main_frame_detections": [
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/floor368/main/result.json",
+          "sha256": "3c0a453d1fbec022543c791d162d08f1314454bcac1c4f1d03219ecf9f94fd27"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/after-forward1-dual/main/result.json",
+          "sha256": "5966f1d0791b9c4d4c234b402973bd0042357a59a1c2232466613eff81af61d1"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward1-dual/main/result.json",
+          "sha256": "ed3b8e02743539c6ac43df5bd9e9794abc262382b96dcde2e1384b89f29dd61b"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward2-dual/main/result.json",
+          "sha256": "bd1915476f4ecaeb625f206e894e95cbc1345b7445ab0a579b9781e8db658eff"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward3-main/main/result.json",
+          "sha256": "4d6c96ce7b8b00610bbc56aa6fa675d7d8540a5f61b1ed7ed0af73c0fee60330"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward4-main/main/result.json",
+          "sha256": "011fa69709b2790c9646027c6e7482e0c5ece8db63a8082c4db66cd758b56ec3"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward5-main/main/result.json",
+          "sha256": "c881c268b934856bd71cdbc47e5ce1b41ef58c9f72f9523ea7fa9451379ab804"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward6-main/main/result.json",
+          "sha256": "9602236ca46a7a6b61161323f4c2ba30c2f97db0b18ba2e49c9c5bc970b3ca1e"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward7-main/main/result.json",
+          "sha256": "1a0c2efb5396b7c975c2adbb2e03e38f036e4a46450ccec46e22c7c96a770fc5"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward8-main/main/result.json",
+          "sha256": "4bce6c45076363afab63b7999ebe6488ddd6916af0ffe81660b4d8ba6b972700"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward9-main/main/result.json",
+          "sha256": "2a066444eb4a0d7a697602289b747b7cdbfac68e415bba34b97751d17d0c96a0"
+        }
+      ],
+      "raw_main_captures": [
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/floor368/main/raw-000000.uyvy",
+          "sha256": "0ec027806bc7033c92f5802c93b5b23a4f44413fe4006d65f5557bd557b3357f"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/after-forward1-dual/main/raw-000000.uyvy",
+          "sha256": "f0945161012f9d1d62057bbd54a0fdaecf81a55f3c0af252fb23a8a303115017"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward1-dual/main/raw-000000.uyvy",
+          "sha256": "ca7d720937514e4593b81f52b34ad154c947ff5eb6bfa82a51db1c0c1410be1f"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward2-dual/main/raw-000000.uyvy",
+          "sha256": "51c0040dca90e6aaa027afa0fad029ef14856285a1fb71535464d6247da6d78d"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward3-main/main/raw-000000.uyvy",
+          "sha256": "dacc3c77ee52dec79d4c4fa811adc69aa022bf5b70c8825b60a419e46d04e1e0"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward4-main/main/raw-000000.uyvy",
+          "sha256": "b6eef182b0b6fd5ba2ac0aa4fd41f9ffea466398b8288d60dac1cc956396ccfc"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward5-main/main/raw-000000.uyvy",
+          "sha256": "c17356f9bce4c1f7b9e4fe92048062c9d8bbc3dc938ad4a1355e24914499120d"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward6-main/main/raw-000000.uyvy",
+          "sha256": "c83db7e9732bee6f181f816ec7bbc1595ad8d613ef31d58fa5ae341f6aab1e17"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward7-main/main/raw-000000.uyvy",
+          "sha256": "64e504d8a7bf954905db31f6f16862a68706a6e8247e9653877ff362c4eafd7b"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward8-main/main/raw-000000.uyvy",
+          "sha256": "72c9c7b0a307335c10b895037db560f123745776ceb1ec2cf618552f60634db2"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward9-main/main/raw-000000.uyvy",
+          "sha256": "340c7984625270ca542df67bf0387bfe7a1ae8dfda417689da74057a28e640df"
+        }
+      ],
+      "corridor_fit_detection_selection": [
+        {
+          "name": "floor368",
+          "all_decoded_tag_ids": [
+            16,
+            17,
+            19,
+            20,
+            21
+          ],
+          "selected_floor_tag_ids": [
+            16,
+            17,
+            19,
+            20,
+            21
+          ]
+        },
+        {
+          "name": "after_forward1",
+          "all_decoded_tag_ids": [
+            17,
+            19,
+            20
+          ],
+          "selected_floor_tag_ids": [
+            17,
+            19,
+            20
+          ]
+        },
+        {
+          "name": "manual_forward1",
+          "all_decoded_tag_ids": [
+            17,
+            19,
+            20,
+            21
+          ],
+          "selected_floor_tag_ids": [
+            17,
+            19,
+            20,
+            21
+          ]
+        },
+        {
+          "name": "manual_forward2",
+          "all_decoded_tag_ids": [
+            19,
+            20,
+            21
+          ],
+          "selected_floor_tag_ids": [
+            19,
+            20,
+            21
+          ]
+        },
+        {
+          "name": "manual_forward3",
+          "all_decoded_tag_ids": [
+            20,
+            21,
+            22
+          ],
+          "selected_floor_tag_ids": [
+            20,
+            21,
+            22
+          ]
+        },
+        {
+          "name": "manual_forward4",
+          "all_decoded_tag_ids": [
+            21,
+            22,
+            23
+          ],
+          "selected_floor_tag_ids": [
+            21,
+            22,
+            23
+          ]
+        },
+        {
+          "name": "manual_forward5",
+          "all_decoded_tag_ids": [
+            22,
+            23,
+            24
+          ],
+          "selected_floor_tag_ids": [
+            22,
+            23,
+            24
+          ]
+        },
+        {
+          "name": "manual_forward6",
+          "all_decoded_tag_ids": [
+            24,
+            25,
+            26
+          ],
+          "selected_floor_tag_ids": [
+            24,
+            25,
+            26
+          ]
+        },
+        {
+          "name": "manual_forward7",
+          "all_decoded_tag_ids": [
+            26,
+            27
+          ],
+          "selected_floor_tag_ids": [
+            26,
+            27
+          ]
+        },
+        {
+          "name": "manual_forward8",
+          "all_decoded_tag_ids": [
+            14,
+            27,
+            28,
+            53
+          ],
+          "selected_floor_tag_ids": [
+            14,
+            27,
+            28,
+            53
+          ]
+        },
+        {
+          "name": "manual_forward9",
+          "all_decoded_tag_ids": [
+            12,
+            13,
+            14,
+            30,
+            31,
+            53
+          ],
+          "selected_floor_tag_ids": [
+            12,
+            13,
+            14,
+            30,
+            31,
+            53
+          ]
+        }
+      ]
+    },
+    "crosszone_inputs": {
+      "stable_unit12_map": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit12-live-camera-map-fit-20260908/live-floor-map-candidate.json",
+        "sha256": "9007e7bd9967454f4f9acb0e181bb29a410fae7b40ba56994eef66561901b4bf"
+      },
+      "unit12_intrinsics": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit12-fixed-tag-views-20260908-boot17058702/diagnostic-37-view/fisheye.json",
+        "sha256": "cf0d6c2ffcae1870c9db7345a8cf75e69de774cc3e198d672ba7cbaa12012585"
+      },
+      "unit11_intrinsics": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-camera-calibration-20260908-boota8492a44/analysis/aggregate-six-positions/candidate-diagnostic.json",
+        "sha256": "340cf3da34ef3bbc03f275fccb331dad1a6e5ae7053dc77e84afbd7319c4f118"
+      },
+      "unit12_camera_lidar_capture_index": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/camera-lidar-capture-index.json",
+        "sha256": "11367a3a384360c972e1952c43cf5ec1249e316365d571bc2f4e9a2f56dcb9c3"
+      },
+      "unit11_camera_lidar_capture_index": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit12-live-camera-map-fit-20260908/input-snapshots/final-53-unit11-capture-index-before-position12.json",
+        "sha256": "0db134e61b580e05c457f43cc41c2f075564237867887680277f3d247b09d70f"
+      },
+      "unit12_crosszone_frame": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward8-main/main/result.json",
+        "sha256": "4bce6c45076363afab63b7999ebe6488ddd6916af0ffe81660b4d8ba6b972700"
+      },
+      "unit11_frames": [
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position1-main/main/result.json",
+          "sha256": "bb6fd13852d55cb020b02ea08744b671cbcb3f2576a3a73bdcba494ecb51e365"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position2-main/main/result.json",
+          "sha256": "6829aa627d936ec3c5a02b41ee1a00e2aef54444b3126338f0554dd970cc610f"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position3-main/main/result.json",
+          "sha256": "0472853c81bdf39ad41bf38c66436052f32ad30d0fc34b496faa1561eba60432"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position4-main/main/result.json",
+          "sha256": "8821e4f09d86facac1fd7bff7201a9169bf2c9b4c3d432e1fd92e639b89e30d3"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position5-main/main/result.json",
+          "sha256": "f085793824dcd0c58247e4b39b03472fc71de0910c502478884cf9ac8e49e2b7"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position6-main/main/result.json",
+          "sha256": "2f3b2bd779d0835108d7325b514b787df8672a89da4ebb4ce14d14c5fb629537"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position7-main/main/result.json",
+          "sha256": "50dc4d5bc94601b0881ec324555a4de8cfd8d3e3684497e92e4003da0fc99ba4"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position8-main/main/result.json",
+          "sha256": "c50abf31866ad41363eed9c0a4f77bc05cfaee63d5db2b89a1e899990e824e02"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position9-main/main/result.json",
+          "sha256": "94c41c6314fc598642acc192d72a561fade732767ed457e10dcac474805f8673"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position10-main/main/result.json",
+          "sha256": "ae3d0323ecaef740e7cff95d956e0e428f1c00d6c5b565081b4b30546ec99919"
+        },
+        {
+          "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position11-main/main/result.json",
+          "sha256": "e02d1e0104b7a907738de98e37ad5e54604c2986301cede33081a3a2ceebef7c"
+        }
+      ]
+    }
+  },
+  "fit_quality": {
+    "stable_unit12_corridor_raw_rms_per_corner_px": 1.3606051473259642,
+    "crosszone_joint_raw_rms_per_corner_px": 1.3307153193172665,
+    "crosszone_maximum_corner_error_px": 4.074732104934665,
+    "crosszone_conditioning": {
+      "parameter_count": 144,
+      "residual_scalar_count": 656,
+      "jacobian_rank_at_relative_1e-8": 144,
+      "jacobian_condition_number": 1613.4543093854586,
+      "scope": "Local joint camera/tag reprojection system only; it does not establish a body-camera mount or survey uncertainty."
+    },
+    "intrinsics_qualification": "Both pinned fisheye calibrations were rejected for physical qualification and are retained only under the stated private provisional scope."
+  },
+  "tags": [
+    {
+      "id": 0,
+      "mount": "floor",
+      "center_m": [
+        9.75647062059346,
+        6.017388979857255,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          9.75647062059346
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          6.017388979857255
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            9.75647062059346,
+            6.017388979857255,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              9.75647062059346
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              6.017388979857255
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 1,
+      "mount": "floor",
+      "center_m": [
+        10.613653581538966,
+        6.027880749104198,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          10.613653581538966
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          6.027880749104198
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            10.613653581538966,
+            6.027880749104198,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              10.613653581538966
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              6.027880749104198
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 2,
+      "mount": "floor",
+      "center_m": [
+        11.456940505731268,
+        6.045564250875566,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          11.456940505731268
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          6.045564250875566
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            11.456940505731268,
+            6.045564250875566,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              11.456940505731268
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              6.045564250875566
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 3,
+      "mount": "floor",
+      "center_m": [
+        9.747226404297042,
+        5.0737812337601405,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          9.747226404297042
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          5.0737812337601405
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            9.747226404297042,
+            5.0737812337601405,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              9.747226404297042
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              5.0737812337601405
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 4,
+      "mount": "floor",
+      "center_m": [
+        10.58631825761755,
+        5.083924401320575,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          10.58631825761755
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          5.083924401320575
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            10.58631825761755,
+            5.083924401320575,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              10.58631825761755
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              5.083924401320575
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 5,
+      "mount": "floor",
+      "center_m": [
+        11.407523447249147,
+        5.081185977485728,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          11.407523447249147
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          5.081185977485728
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            11.407523447249147,
+            5.081185977485728,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              11.407523447249147
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              5.081185977485728
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 6,
+      "mount": "floor",
+      "center_m": [
+        9.714280334408139,
+        4.149408135041268,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          9.714280334408139
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          4.149408135041268
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            9.714280334408139,
+            4.149408135041268,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              9.714280334408139
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              4.149408135041268
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 7,
+      "mount": "floor",
+      "center_m": [
+        10.559633540456748,
+        4.152476888028498,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          10.559633540456748
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          4.152476888028498
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            10.559633540456748,
+            4.152476888028498,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              10.559633540456748
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              4.152476888028498
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 8,
+      "mount": "floor",
+      "center_m": [
+        11.393067960967644,
+        4.141126479465942,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          11.393067960967644
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          4.141126479465942
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            11.393067960967644,
+            4.141126479465942,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              11.393067960967644
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              4.141126479465942
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 9,
+      "mount": "floor",
+      "center_m": [
+        9.696731896754525,
+        3.229883983546109,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          9.696731896754525
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          3.229883983546109
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            9.696731896754525,
+            3.229883983546109,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              9.696731896754525
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              3.229883983546109
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 10,
+      "mount": "floor",
+      "center_m": [
+        10.514491455949843,
+        3.2421986546528174,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          10.514491455949843
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          3.2421986546528174
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            10.514491455949843,
+            3.2421986546528174,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              10.514491455949843
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              3.2421986546528174
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 11,
+      "mount": "floor",
+      "center_m": [
+        11.348515962832737,
+        3.2172877988329334,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          11.348515962832737
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          3.2172877988329334
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            11.348515962832737,
+            3.2172877988329334,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              11.348515962832737
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              3.2172877988329334
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 12,
+      "mount": "floor",
+      "center_m": [
+        9.659942327014477,
+        2.3072493309700595,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          9.659942327014477
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          2.3072493309700595
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            9.659942327014477,
+            2.3072493309700595,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              9.659942327014477
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              2.3072493309700595
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 13,
+      "mount": "floor",
+      "center_m": [
+        10.486061532427083,
+        2.3147816906609777,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          10.486061532427083
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          2.3147816906609777
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            10.486061532427083,
+            2.3147816906609777,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              10.486061532427083
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              2.3147816906609777
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 14,
+      "mount": "floor",
+      "center_m": [
+        11.303954574452883,
+        2.2926128242218202,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9994689170595463,
+          -0.03258655906685307,
+          0.0,
+          11.303954574452883
+        ],
+        [
+          0.032586559066853066,
+          -0.9994689170595464,
+          0.0,
+          2.2926128242218202
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.109000324575324,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            11.303954574452883,
+            2.2926128242218202,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9994689170595463,
+              -0.03258655906685307,
+              0.0,
+              11.303954574452883
+            ],
+            [
+              0.032586559066853066,
+              -0.9994689170595464,
+              0.0,
+              2.2926128242218202
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.109000324575324
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 15,
+      "mount": "wall",
+      "center_m": [
+        9.170689035694586,
+        1.4296145995466527,
+        1.483134402076155
+      ],
+      "T_world_tag": [
+        [
+          0.10586154032115667,
+          0.02640375193694841,
+          0.994030269239566,
+          9.170689035694586
+        ],
+        [
+          -0.9943566801446984,
+          -0.004163231558053199,
+          0.10600688729798495,
+          1.4296145995466527
+        ],
+        [
+          0.006937357742382255,
+          -0.9996426908584121,
+          0.025814021013938798,
+          1.483134402076155
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.994030269239566,
+        0.10600688729798495,
+        0.025814021013938798
+      ],
+      "printed_top_yaw_rad": -1.4647334949406394,
+      "position_status": "selected_provisional_candidate_with_explicit_operator_height_alternative",
+      "source_candidates": [
+        {
+          "candidate_id": "free_floor_camera_pose",
+          "selected": true,
+          "center_m": [
+            9.170689035694586,
+            1.4296145995466527,
+            1.483134402076155
+          ],
+          "T_world_tag": [
+            [
+              0.10586154032115667,
+              0.02640375193694841,
+              0.994030269239566,
+              9.170689035694586
+            ],
+            [
+              -0.9943566801446984,
+              -0.004163231558053199,
+              0.10600688729798495,
+              1.4296145995466527
+            ],
+            [
+              0.006937357742382255,
+              -0.9996426908584121,
+              0.025814021013938798,
+              1.483134402076155
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.994030269239566,
+            0.10600688729798495,
+            0.025814021013938798
+          ],
+          "printed_top_yaw_rad": -1.4647334949406394,
+          "reprojection_rms_per_corner_px": 0.23487651299375573,
+          "center_height_minus_operator_measurement_m": 0.06073440207615488
+        },
+        {
+          "candidate_id": "operator_height_joint_camera",
+          "selected": false,
+          "center_m": [
+            9.348454910411952,
+            1.4084050891213136,
+            1.4224
+          ],
+          "T_world_tag": [
+            [
+              0.5316781516386534,
+              0.0,
+              0.8469464818216704,
+              9.348454910411952
+            ],
+            [
+              -0.8469464818216704,
+              0.0,
+              0.5316781516386534,
+              1.4084050891213136
+            ],
+            [
+              0.0,
+              -1.0,
+              0.0,
+              1.4224
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.8469464818216704,
+            0.5316781516386534,
+            0.0
+          ],
+          "printed_top_yaw_rad": -1.0102155768935581,
+          "operator_measured_center_height_m": 1.4224,
+          "floor_reprojection_rms_per_corner_px": 4.341999386392916,
+          "wall_reprojection_rms_per_corner_px": 12.552105961086228,
+          "camera_center_delta_from_free_floor_only_pose_m": 0.06379072533656903
+        }
+      ],
+      "quality": "Tag 15 selects the low-residual free vision candidate while retaining the operator measurement and joint alternative; tag 18 selects the joint operator-height candidate because its floor and wall residuals remain comparable to the free fit."
+    },
+    {
+      "id": 16,
+      "mount": "floor",
+      "center_m": [
+        22.921291742262003,
+        0.3612981334253781,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          22.921291742262003
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.3612981334253781
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "measured_anchor",
+          "selected": true,
+          "center_m": [
+            22.921291742262003,
+            0.3612981334253781,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              22.921291742262003
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.3612981334253781
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Physical measured anchor."
+    },
+    {
+      "id": 17,
+      "mount": "floor",
+      "center_m": [
+        21.982254512156235,
+        0.3234415557236749,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          21.982254512156235
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.3234415557236749
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "measured_anchor",
+          "selected": true,
+          "center_m": [
+            21.982254512156235,
+            0.3234415557236749,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              21.982254512156235
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.3234415557236749
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Physical measured anchor."
+    },
+    {
+      "id": 18,
+      "mount": "wall",
+      "center_m": [
+        21.482885205790613,
+        -0.7814762315237952,
+        1.4986
+      ],
+      "T_world_tag": [
+        [
+          0.8685831015935936,
+          0.0,
+          0.4955435355506647,
+          21.482885205790613
+        ],
+        [
+          -0.4955435355506647,
+          0.0,
+          0.8685831015935936,
+          -0.7814762315237952
+        ],
+        [
+          0.0,
+          -1.0,
+          0.0,
+          1.4986
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.4955435355506647,
+        0.8685831015935936,
+        0.0
+      ],
+      "printed_top_yaw_rad": -0.5184604926594484,
+      "position_status": "selected_provisional_candidate_with_explicit_operator_height_alternative",
+      "source_candidates": [
+        {
+          "candidate_id": "free_floor_camera_pose",
+          "selected": false,
+          "center_m": [
+            21.568051873071944,
+            -0.7421434123863478,
+            1.6079844110816477
+          ],
+          "T_world_tag": [
+            [
+              0.8761827913840139,
+              0.011415546730245035,
+              0.48184375203520746,
+              21.568051873071944
+            ],
+            [
+              -0.4819144909613691,
+              0.004398779063080009,
+              0.8762072095938256,
+              -0.7421434123863478
+            ],
+            [
+              0.007882860138368,
+              -0.999925165217679,
+              0.009355451909722869,
+              1.6079844110816477
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.48184375203520746,
+            0.8762072095938256,
+            0.009355451909722869
+          ],
+          "printed_top_yaw_rad": -0.5028554395143042,
+          "reprojection_rms_per_corner_px": 1.1550699975120837,
+          "center_height_minus_operator_measurement_m": 0.10938441108164776
+        },
+        {
+          "candidate_id": "operator_height_joint_camera",
+          "selected": true,
+          "center_m": [
+            21.482885205790613,
+            -0.7814762315237952,
+            1.4986
+          ],
+          "T_world_tag": [
+            [
+              0.8685831015935936,
+              0.0,
+              0.4955435355506647,
+              21.482885205790613
+            ],
+            [
+              -0.4955435355506647,
+              0.0,
+              0.8685831015935936,
+              -0.7814762315237952
+            ],
+            [
+              0.0,
+              -1.0,
+              0.0,
+              1.4986
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.4955435355506647,
+            0.8685831015935936,
+            0.0
+          ],
+          "printed_top_yaw_rad": -0.5184604926594484,
+          "operator_measured_center_height_m": 1.4986,
+          "floor_reprojection_rms_per_corner_px": 1.4848663616224766,
+          "wall_reprojection_rms_per_corner_px": 1.4861807507955087,
+          "camera_center_delta_from_free_floor_only_pose_m": 0.15957985037653374
+        }
+      ],
+      "quality": "Tag 15 selects the low-residual free vision candidate while retaining the operator measurement and joint alternative; tag 18 selects the joint operator-height candidate because its floor and wall residuals remain comparable to the free fit."
+    },
+    {
+      "id": 19,
+      "mount": "floor",
+      "center_m": [
+        21.06512358821027,
+        0.3251423863812566,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          21.06512358821027
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.3251423863812566
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "stable_unit12_metric_fit",
+          "selected": true,
+          "center_m": [
+            21.06512358821027,
+            0.3251423863812566,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              21.06512358821027
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.3251423863812566
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Stable Unit 12 corridor joint-reprojection candidate."
+    },
+    {
+      "id": 20,
+      "mount": "floor",
+      "center_m": [
+        20.12371696446666,
+        0.320586564218142,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          20.12371696446666
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.320586564218142
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "stable_unit12_metric_fit",
+          "selected": true,
+          "center_m": [
+            20.12371696446666,
+            0.320586564218142,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              20.12371696446666
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.320586564218142
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Stable Unit 12 corridor joint-reprojection candidate."
+    },
+    {
+      "id": 21,
+      "mount": "floor",
+      "center_m": [
+        19.18191914079776,
+        0.32572468744507804,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          19.18191914079776
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.32572468744507804
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "stable_unit12_metric_fit",
+          "selected": true,
+          "center_m": [
+            19.18191914079776,
+            0.32572468744507804,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              19.18191914079776
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.32572468744507804
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Stable Unit 12 corridor joint-reprojection candidate."
+    },
+    {
+      "id": 22,
+      "mount": "floor",
+      "center_m": [
+        18.24572479784849,
+        0.3342374366321546,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          18.24572479784849
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.3342374366321546
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "stable_unit12_metric_fit",
+          "selected": true,
+          "center_m": [
+            18.24572479784849,
+            0.3342374366321546,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              18.24572479784849
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.3342374366321546
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Stable Unit 12 corridor joint-reprojection candidate."
+    },
+    {
+      "id": 23,
+      "mount": "floor",
+      "center_m": [
+        17.28363688752777,
+        0.35325805267832205,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          17.28363688752777
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.35325805267832205
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "stable_unit12_metric_fit",
+          "selected": true,
+          "center_m": [
+            17.28363688752777,
+            0.35325805267832205,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              17.28363688752777
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.35325805267832205
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Stable Unit 12 corridor joint-reprojection candidate."
+    },
+    {
+      "id": 24,
+      "mount": "floor",
+      "center_m": [
+        16.262886045613854,
+        0.3386138021052913,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          16.262886045613854
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.3386138021052913
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "stable_unit12_metric_fit",
+          "selected": true,
+          "center_m": [
+            16.262886045613854,
+            0.3386138021052913,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              16.262886045613854
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.3386138021052913
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Stable Unit 12 corridor joint-reprojection candidate."
+    },
+    {
+      "id": 25,
+      "mount": "floor",
+      "center_m": [
+        15.314139951349745,
+        0.3390257734590585,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          15.314139951349745
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.3390257734590585
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "stable_unit12_metric_fit",
+          "selected": true,
+          "center_m": [
+            15.314139951349745,
+            0.3390257734590585,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              15.314139951349745
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.3390257734590585
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Stable Unit 12 corridor joint-reprojection candidate."
+    },
+    {
+      "id": 26,
+      "mount": "floor",
+      "center_m": [
+        14.352951818889382,
+        0.3557891324648052,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          14.352951818889382
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.3557891324648052
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "stable_unit12_metric_fit",
+          "selected": true,
+          "center_m": [
+            14.352951818889382,
+            0.3557891324648052,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              14.352951818889382
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.3557891324648052
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Stable Unit 12 corridor joint-reprojection candidate."
+    },
+    {
+      "id": 27,
+      "mount": "floor",
+      "center_m": [
+        13.406476464683212,
+        0.34476803467307854,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          13.406476464683212
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.34476803467307854
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "stable_unit12_metric_fit",
+          "selected": true,
+          "center_m": [
+            13.406476464683212,
+            0.34476803467307854,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              13.406476464683212
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.34476803467307854
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Stable Unit 12 corridor joint-reprojection candidate."
+    },
+    {
+      "id": 28,
+      "mount": "floor",
+      "center_m": [
+        12.51193880191404,
+        0.29730113733111996,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          12.51193880191404
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.29730113733111996
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            12.51193880191404,
+            0.29730113733111996,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              12.51193880191404
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.29730113733111996
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 30,
+      "mount": "floor",
+      "center_m": [
+        10.68935560089745,
+        0.27163087288392124,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          10.68935560089745
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.27163087288392124
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            10.68935560089745,
+            0.27163087288392124,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              10.68935560089745
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.27163087288392124
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 31,
+      "mount": "floor",
+      "center_m": [
+        9.755748297679794,
+        0.26590661278588484,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          9.755748297679794
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.26590661278588484
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            9.755748297679794,
+            0.26590661278588484,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              9.755748297679794
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.26590661278588484
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 32,
+      "mount": "floor",
+      "center_m": [
+        8.800985506846516,
+        0.2663287625413304,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          8.800985506846516
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.2663287625413304
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            8.800985506846516,
+            0.2663287625413304,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              8.800985506846516
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.2663287625413304
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 33,
+      "mount": "floor",
+      "center_m": [
+        7.833663409729615,
+        0.2458402748125047,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          7.833663409729615
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.2458402748125047
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            7.833663409729615,
+            0.2458402748125047,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              7.833663409729615
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.2458402748125047
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 34,
+      "mount": "floor",
+      "center_m": [
+        6.891844359512927,
+        0.2214148627965247,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          6.891844359512927
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.2214148627965247
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            6.891844359512927,
+            0.2214148627965247,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              6.891844359512927
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.2214148627965247
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 35,
+      "mount": "floor",
+      "center_m": [
+        5.9090449952735895,
+        0.19588461522985284,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          5.9090449952735895
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.19588461522985284
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            5.9090449952735895,
+            0.19588461522985284,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              5.9090449952735895
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.19588461522985284
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 36,
+      "mount": "floor",
+      "center_m": [
+        4.974178100932946,
+        0.20348990905530046,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          4.974178100932946
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.20348990905530046
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            4.974178100932946,
+            0.20348990905530046,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              4.974178100932946
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.20348990905530046
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 37,
+      "mount": "floor",
+      "center_m": [
+        4.015220815359363,
+        0.2149380409136724,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          4.015220815359363
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.2149380409136724
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            4.015220815359363,
+            0.2149380409136724,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              4.015220815359363
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.2149380409136724
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 38,
+      "mount": "floor",
+      "center_m": [
+        0.0,
+        5.551115123125783e-17,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          0.0
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          5.551115123125783e-17
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            0.0,
+            5.551115123125783e-17,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              0.0
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              5.551115123125783e-17
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 39,
+      "mount": "floor",
+      "center_m": [
+        0.7148048250485033,
+        1.1102230246251565e-16,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          0.7148048250485033
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          1.1102230246251565e-16
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            0.7148048250485033,
+            1.1102230246251565e-16,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              0.7148048250485033
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              1.1102230246251565e-16
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 40,
+      "mount": "floor",
+      "center_m": [
+        1.4238210629143673,
+        -0.010696752535702292,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          1.4238210629143673
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -0.010696752535702292
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            1.4238210629143673,
+            -0.010696752535702292,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              1.4238210629143673
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -0.010696752535702292
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 41,
+      "mount": "floor",
+      "center_m": [
+        2.127896372307738,
+        -0.02312574106996601,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          2.127896372307738
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -0.02312574106996601
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            2.127896372307738,
+            -0.02312574106996601,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              2.127896372307738
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -0.02312574106996601
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 42,
+      "mount": "floor",
+      "center_m": [
+        2.854098138900092,
+        -0.02700226069716677,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          2.854098138900092
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -0.02700226069716677
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            2.854098138900092,
+            -0.02700226069716677,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              2.854098138900092
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -0.02700226069716677
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 43,
+      "mount": "floor",
+      "center_m": [
+        0.0019975091677686407,
+        -0.6275420340894715,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          0.0019975091677686407
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -0.6275420340894715
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            0.0019975091677686407,
+            -0.6275420340894715,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              0.0019975091677686407
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -0.6275420340894715
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 44,
+      "mount": "floor",
+      "center_m": [
+        0.7145632488285898,
+        -0.625654315622191,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          0.7145632488285898
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -0.625654315622191
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            0.7145632488285898,
+            -0.625654315622191,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              0.7145632488285898
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -0.625654315622191
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 45,
+      "mount": "floor",
+      "center_m": [
+        1.4292589539007565,
+        -0.6335426013880037,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          1.4292589539007565
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -0.6335426013880037
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            1.4292589539007565,
+            -0.6335426013880037,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              1.4292589539007565
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -0.6335426013880037
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 46,
+      "mount": "floor",
+      "center_m": [
+        2.1271291003140362,
+        -0.6505370883823692,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          2.1271291003140362
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -0.6505370883823692
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            2.1271291003140362,
+            -0.6505370883823692,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              2.1271291003140362
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -0.6505370883823692
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 47,
+      "mount": "floor",
+      "center_m": [
+        2.84561739573412,
+        -0.647439169471468,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          2.84561739573412
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -0.647439169471468
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            2.84561739573412,
+            -0.647439169471468,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              2.84561739573412
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -0.647439169471468
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 48,
+      "mount": "floor",
+      "center_m": [
+        0.008604992366638697,
+        -1.256828475681226,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          0.008604992366638697
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -1.256828475681226
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            0.008604992366638697,
+            -1.256828475681226,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              0.008604992366638697
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -1.256828475681226
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 49,
+      "mount": "floor",
+      "center_m": [
+        0.7281708673948373,
+        -1.2421204305661289,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          0.7281708673948373
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -1.2421204305661289
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            0.7281708673948373,
+            -1.2421204305661289,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              0.7281708673948373
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -1.2421204305661289
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 50,
+      "mount": "floor",
+      "center_m": [
+        1.4338631062131029,
+        -1.2503073244587126,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          1.4338631062131029
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -1.2503073244587126
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            1.4338631062131029,
+            -1.2503073244587126,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              1.4338631062131029
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -1.2503073244587126
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 51,
+      "mount": "floor",
+      "center_m": [
+        2.1389198511906216,
+        -1.2780932569606054,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          2.1389198511906216
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -1.2780932569606054
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            2.1389198511906216,
+            -1.2780932569606054,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              2.1389198511906216
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -1.2780932569606054
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 52,
+      "mount": "floor",
+      "center_m": [
+        2.853978670896904,
+        -1.2788586475984656,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          -0.9999955533725843,
+          -0.0029821527557938126,
+          0.0,
+          2.853978670896904
+        ],
+        [
+          0.0029821527557938126,
+          -0.9999955533725843,
+          0.0,
+          -1.2788586475984656
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": 3.1386104964138175,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            2.853978670896904,
+            -1.2788586475984656,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              -0.9999955533725843,
+              -0.0029821527557938126,
+              0.0,
+              2.853978670896904
+            ],
+            [
+              0.0029821527557938126,
+              -0.9999955533725843,
+              0.0,
+              -1.2788586475984656
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": 3.1386104964138175
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    },
+    {
+      "id": 53,
+      "mount": "floor",
+      "center_m": [
+        11.606466923182886,
+        0.26919599313439463,
+        0.0
+      ],
+      "T_world_tag": [
+        [
+          0.005886402352821851,
+          0.9999826749835922,
+          0.0,
+          11.606466923182886
+        ],
+        [
+          -0.9999826749835922,
+          0.005886402352821853,
+          0.0,
+          0.26919599313439463
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "normal_unit": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "printed_top_yaw_rad": -1.5649098904478334,
+      "position_status": "selected_provisional_candidate",
+      "source_candidates": [
+        {
+          "candidate_id": "crosszone_joint_reprojection",
+          "selected": true,
+          "center_m": [
+            11.606466923182886,
+            0.26919599313439463,
+            0.0
+          ],
+          "T_world_tag": [
+            [
+              0.005886402352821851,
+              0.9999826749835922,
+              0.0,
+              11.606466923182886
+            ],
+            [
+              -0.9999826749835922,
+              0.005886402352821853,
+              0.0,
+              0.26919599313439463
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "normal_unit": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "printed_top_yaw_rad": -1.5649098904478334
+        }
+      ],
+      "quality": "Cross-zone joint reprojection candidate with fixed Unit 12 tag 27 bridge."
+    }
+  ],
+  "camera_poses": [
+    {
+      "name": "unit12_manual_forward8",
+      "unit": "unit12",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit12-provisional-mapping-20260908/manual-forward8-main/main/result.json",
+        "sha256": "4bce6c45076363afab63b7999ebe6488ddd6916af0ffe81660b4d8ba6b972700"
+      },
+      "camera_center_m": [
+        14.647059756404502,
+        0.49498604355361325,
+        1.3780034070004683
+      ],
+      "T_camera_world": [
+        [
+          -0.09502422782005508,
+          0.9869120610579932,
+          -0.13028806493868417,
+          1.082855244125109
+        ],
+        [
+          0.7114837593187604,
+          -0.02420804884020955,
+          -0.7022854338493678,
+          -9.441410771604405
+        ],
+        [
+          -0.6962479848106183,
+          -0.15943197329775002,
+          -0.6998715521704955,
+          11.24132782382959
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 1.7328652150726418
+    },
+    {
+      "name": "manual-position1-main",
+      "unit": "unit11",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position1-main/main/result.json",
+        "sha256": "bb6fd13852d55cb020b02ea08744b671cbcb3f2576a3a73bdcba494ecb51e365"
+      },
+      "camera_center_m": [
+        12.896320427741783,
+        0.28096807934387447,
+        1.346078388866996
+      ],
+      "T_camera_world": [
+        [
+          -0.014004714968045921,
+          0.9999011803680438,
+          0.0012237063604816356,
+          -0.10197822714073385
+        ],
+        [
+          0.6327873075550182,
+          0.00981044652083342,
+          -0.7742635071707387,
+          -7.121164928863072
+        ],
+        [
+          -0.7741989998417297,
+          -0.010068993874998692,
+          -0.6328621682534126,
+          10.839029530483568
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 1.3206695088124152
+    },
+    {
+      "name": "manual-position2-main",
+      "unit": "unit11",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position2-main/main/result.json",
+        "sha256": "6829aa627d936ec3c5a02b41ee1a00e2aef54444b3126338f0554dd970cc610f"
+      },
+      "camera_center_m": [
+        11.92042924554201,
+        0.2794944512486157,
+        1.346078388866996
+      ],
+      "T_camera_world": [
+        [
+          0.003333477368984174,
+          0.9999381145379858,
+          0.010613907049185467,
+          -0.3335007866243127
+        ],
+        [
+          0.6338997243149153,
+          0.006095989384526219,
+          -0.7733912195175856,
+          -6.5170154009402665
+        ],
+        [
+          -0.7734080601093481,
+          0.009306234880015828,
+          -0.6338401742949503,
+          10.069953578068532
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 1.4861322878215988
+    },
+    {
+      "name": "manual-position3-main",
+      "unit": "unit11",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position3-main/main/result.json",
+        "sha256": "0472853c81bdf39ad41bf38c66436052f32ad30d0fc34b496faa1561eba60432"
+      },
+      "camera_center_m": [
+        11.284563084623972,
+        2.0280608049501105,
+        1.346078388866996
+      ],
+      "T_camera_world": [
+        [
+          0.9996139855485827,
+          -0.02312385286583563,
+          0.015400237800664462,
+          -11.25404042782563
+        ],
+        [
+          -0.0029043181013016194,
+          -0.6382462576244696,
+          -0.7698267854295049,
+          2.3634233788638377
+        ],
+        [
+          0.02763050546125209,
+          0.7694848939758321,
+          -0.638067044369914,
+          -1.013472076336543
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 1.7341023611466984
+    },
+    {
+      "name": "manual-position4-main",
+      "unit": "unit11",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position4-main/main/result.json",
+        "sha256": "8821e4f09d86facac1fd7bff7201a9169bf2c9b4c3d432e1fd92e639b89e30d3"
+      },
+      "camera_center_m": [
+        11.3588381442791,
+        3.88024624321996,
+        1.346078388866996
+      ],
+      "T_camera_world": [
+        [
+          0.9993068705117343,
+          -0.03378163149134234,
+          0.01563905118052183,
+          -11.240935338741224
+        ],
+        [
+          -0.009104277716981784,
+          -0.6291371404815824,
+          -0.777240999043353,
+          3.590848354585222
+        ],
+        [
+          0.03609557694920394,
+          0.7765598881222494,
+          -0.6290086243321815,
+          -2.576552489187541
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 1.3637538948156898
+    },
+    {
+      "name": "manual-position5-main",
+      "unit": "unit11",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position5-main/main/result.json",
+        "sha256": "f085793824dcd0c58247e4b39b03472fc71de0910c502478884cf9ac8e49e2b7"
+      },
+      "camera_center_m": [
+        10.790593693893767,
+        1.5125784970737832,
+        1.346078388866996
+      ],
+      "T_camera_world": [
+        [
+          0.052395437304637756,
+          0.9986244647951797,
+          0.0019739458442901148,
+          -2.078532853311027
+        ],
+        [
+          0.6356718920067675,
+          -0.03182757644968779,
+          -0.7713029567490814,
+          -5.7729011601728235
+        ],
+        [
+          -0.7701791764662246,
+          0.041667537602786846,
+          -0.636465122727026,
+          9.104397090311176
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 1.7865947152050439
+    },
+    {
+      "name": "manual-position6-main",
+      "unit": "unit11",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position6-main/main/result.json",
+        "sha256": "2f3b2bd779d0835108d7325b514b787df8672a89da4ebb4ce14d14c5fb629537"
+      },
+      "camera_center_m": [
+        9.117355567239123,
+        0.2794750289212454,
+        1.346078388866996
+      ],
+      "T_camera_world": [
+        [
+          -0.028778247857740934,
+          0.9995465992047603,
+          -0.00885485564174543,
+          -0.005047466583830762
+        ],
+        [
+          0.6168621140311739,
+          0.010788354815106684,
+          -0.786997295848832,
+          -4.567806253316105
+        ],
+        [
+          -0.7865449413245432,
+          -0.02811062821391778,
+          -0.6168928982069656,
+          8.009452316824097
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 0.9918940851735681
+    },
+    {
+      "name": "manual-position7-main",
+      "unit": "unit11",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position7-main/main/result.json",
+        "sha256": "50dc4d5bc94601b0881ec324555a4de8cfd8d3e3684497e92e4003da0fc99ba4"
+      },
+      "camera_center_m": [
+        7.0927832726575435,
+        0.22165383929135818,
+        1.346078388866996
+      ],
+      "T_camera_world": [
+        [
+          -0.016087973800246336,
+          0.9998604713268112,
+          -0.004496106885933826,
+          -0.10146228845072298
+        ],
+        [
+          0.6415873244955664,
+          0.0068741989161546614,
+          -0.7670191982185859,
+          -3.5196955691449485
+        ],
+        [
+          -0.7668812699144658,
+          -0.015224429952818811,
+          -0.6416083965995053,
+          6.306352393491961
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 0.6703413191812602
+    },
+    {
+      "name": "manual-position8-main",
+      "unit": "unit11",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position8-main/main/result.json",
+        "sha256": "c50abf31866ad41363eed9c0a4f77bc05cfaee63d5db2b89a1e899990e824e02"
+      },
+      "camera_center_m": [
+        5.1479763783178925,
+        0.21602309984288226,
+        1.346078388866996
+      ],
+      "T_camera_world": [
+        [
+          0.013192875699044329,
+          0.9998996674490007,
+          0.005157816026950979,
+          -0.29086086284259516
+        ],
+        [
+          0.6433237895276598,
+          -0.004539021490498189,
+          -0.7655807593661694,
+          -2.2803034234905315
+        ],
+        [
+          -0.7654805352577957,
+          0.013418357548042704,
+          -0.6433191259570568,
+          4.803735010972542
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 0.7037091567108086
+    },
+    {
+      "name": "manual-position9-main",
+      "unit": "unit11",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position9-main/main/result.json",
+        "sha256": "94c41c6314fc598642acc192d72a561fade732767ed457e10dcac474805f8673"
+      },
+      "camera_center_m": [
+        4.258008641269505,
+        0.21327216841261998,
+        1.346078388866996
+      ],
+      "T_camera_world": [
+        [
+          -0.008902531146595876,
+          0.9999082419756447,
+          0.010210414700657533,
+          -0.18908956299834528
+        ],
+        [
+          0.628298245102165,
+          0.01353690675324822,
+          -0.777854785520468,
+          -1.631132885930473
+        ],
+        [
+          -0.7779216285338283,
+          -0.0005096908174361919,
+          -0.6283611064304879,
+          4.158329025163974
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 0.8651569705296618
+    },
+    {
+      "name": "manual-position10-main",
+      "unit": "unit11",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position10-main/main/result.json",
+        "sha256": "ae3d0323ecaef740e7cff95d956e0e428f1c00d6c5b565081b4b30546ec99919"
+      },
+      "camera_center_m": [
+        1.6682537176318881,
+        0.3598734730368911,
+        1.346078388866996
+      ],
+      "T_camera_world": [
+        [
+          0.018991420749787664,
+          0.9997996716183983,
+          0.006320013421404036,
+          -0.3999911219193025
+        ],
+        [
+          0.6385548225540228,
+          -0.007265002643262547,
+          -0.7695420445496094,
+          -0.026793059411913234
+        ],
+        [
+          -0.7693419685230386,
+          0.018650371801536888,
+          -0.6385648746218039,
+          2.1363042026631156
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 1.1973512468623573
+    },
+    {
+      "name": "manual-position11-main",
+      "unit": "unit11",
+      "source": {
+        "path": "/var/tmp/gauntlet/sweep-production/unit11-manual-mapping-20260908-boot9a002ed3/manual-position11-main/main/result.json",
+        "sha256": "e02d1e0104b7a907738de98e37ad5e54604c2986301cede33081a3a2ceebef7c"
+      },
+      "camera_center_m": [
+        1.9496791517608294,
+        0.3607387127893199,
+        1.346078388866996
+      ],
+      "T_camera_world": [
+        [
+          -0.01200340665213049,
+          0.9999173074743328,
+          0.00461480682408244,
+          -0.3435179824289806
+        ],
+        [
+          0.6406739660539708,
+          0.011234128706718352,
+          -0.7677308536022738,
+          -0.21973534931988858
+        ],
+        [
+          -0.7677192113327754,
+          -0.006258799044617745,
+          -0.6407558349208382,
+          2.361571513780108
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_rms_per_corner_px": 1.058555774784407
+    },
+    {
+      "name": "wall15_free_floor_camera_pose",
+      "unit": "unit11",
+      "camera_center_m": [
+        10.839184760258567,
+        1.5493306986224693,
+        1.3841489606770945
+      ],
+      "T_camera_world": [
+        [
+          0.045833912738631626,
+          0.9989263879091038,
+          -0.006732308811844945,
+          -2.035151048666357
+        ],
+        [
+          0.3425665124129687,
+          -0.02204805362370287,
+          -0.9392348310750733,
+          -2.3789410791332104
+        ],
+        [
+          -0.9383748915099352,
+          0.04074254373841743,
+          -0.3432092774291515,
+          10.583147914358177
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_reprojection_diagnostic": 0.23487651299375573
+    },
+    {
+      "name": "wall18_operator_height_constrained_joint_camera",
+      "unit": "unit12",
+      "camera_center_m": [
+        23.617665307286067,
+        0.3326410311756491,
+        1.2909578013813272
+      ],
+      "T_camera_world": [
+        [
+          -0.0684514190464593,
+          0.9976417904759796,
+          -0.005026044807608099,
+          1.291294522674686
+        ],
+        [
+          0.40885138837511936,
+          0.02345651504564495,
+          -0.9122994761182598,
+          -8.486177724524405
+        ],
+        [
+          -0.9100301893092688,
+          -0.06450309913326234,
+          -0.409492862877903,
+          22.04288281398441
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "raw_reprojection_diagnostic": 1.4861807507955087
+    }
+  ],
+  "wall_selection": {
+    "tag_15": "free vision fit selected; operator height and joint camera alternative retained in source_candidates",
+    "tag_18": "operator-height joint camera alternative selected; free vision fit retained in source_candidates"
+  }
+}

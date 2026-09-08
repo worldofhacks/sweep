@@ -1,5 +1,9 @@
 # Field software readiness, 8 September 2026
 
+The later [hardware navigation checkpoint](hardware-navigation-checkpoint.md)
+records the owner's completed lateral-flight test and approval of the 53-tag map
+baseline. Use that guide for the current field-test scope and remaining measurements.
+
 The software includes route planning and confirmed execution, authenticated aircraft
 and ground observations, map and geofence evidence tooling, localization admission,
 flight evaluation, and MCAP replay. Physical acceptance remains open.

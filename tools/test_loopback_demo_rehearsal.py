@@ -30,9 +30,7 @@ def test_rehearsal_deployment_reloads_a_signed_fresh_session(tmp_path) -> None:
     artifact = deployment.artifact()
     assert [zone.zone_id for zone in artifact.zones] == ["demo-east", "demo-west", "lobby"]
     assert {
-        (zone.zone_id, slot.slot_id)
-        for zone in artifact.zones
-        for slot in zone.arrival_slots
+        (zone.zone_id, slot.slot_id) for zone in artifact.zones for slot in zone.arrival_slots
     } == {
         ("demo-west", "demo-west-slot"),
         ("lobby", "lobby-slot"),

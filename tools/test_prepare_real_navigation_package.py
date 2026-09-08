@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -72,4 +73,75 @@ def test_rejects_missing_or_extra_tag_coverage(tmp_path) -> None:
     source.write_text(json.dumps(payload))
 
     with pytest.raises(ValueError, match="53 retained"):
+        build_package(source)
+
+
+def _approval(source) -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "scope": "tag_map_baseline",
+        "ownerApproved": True,
+        "sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "coordinateFrame": "unit11_atrium_38_to_39_v1",
+        "recordedAt": "2026-09-08",
+    }
+
+
+def test_map_approval_accepts_geometry_baseline_without_enabling_unmeasured_flight(tmp_path):
+    source = tmp_path / "map.json"
+    source.write_text(json.dumps(_source()))
+    approval = tmp_path / "approval.json"
+    approval.write_text(json.dumps(_approval(source)))
+
+    package = build_package(source, map_approval=approval)
+
+    assert package["mapApproval"]["status"] == "accepted"
+    checks = {check["id"]: check["status"] for check in package["activationChecks"]}
+    assert checks["accepted-tag-map"] == "passed"
+    assert checks["measured-route-geometry"] == "blocked"
+    assert package["activation"] == "blocked"
+    assert not any(
+        area["flightAuthorization"]["enabled"] for area in package["formationAreaDrafts"]
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("sourceSha256", "0" * 64),
+        ("coordinateFrame", "different-frame"),
+        ("scope", "flight_authorization"),
+        ("ownerApproved", False),
+    ],
+)
+def test_approval_cannot_be_reused_for_different_map_or_authority(tmp_path, field, value):
+    source = tmp_path / "map.json"
+    source.write_text(json.dumps(_source()))
+    approval = tmp_path / "approval.json"
+    record = _approval(source)
+    record[field] = value
+    approval.write_text(json.dumps(record))
+
+    with pytest.raises(ValueError, match="exact source"):
+        build_package(source, map_approval=approval)
+
+
+@pytest.mark.parametrize("coordinate", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_tag_coordinates_cannot_enter_staged_geometry(tmp_path, coordinate):
+    payload = _source()
+    payload["tags"][0]["center_m"][0] = coordinate
+    source = tmp_path / "map.json"
+    source.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="invalid center"):
+        build_package(source)
+
+
+def test_duplicate_tag_cannot_silently_replace_approved_geometry(tmp_path):
+    payload = _source()
+    payload["tags"].append({"id": 0, "center_m": [50, 50, 0]})
+    source = tmp_path / "map.json"
+    source.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="duplicate tag"):
         build_package(source)

@@ -146,7 +146,10 @@ class RelayNodeLink:
             and acknowledgement.status.value in {"completed", "failed", "invalidated", "refused"}
             and self._navigation_publisher is not None
         ):
-            if acknowledgement.status.value != "completed" or not self._navigation_publisher.retain_arrival(command_id):
+            if (
+                acknowledgement.status.value != "completed"
+                or not self._navigation_publisher.retain_arrival(command_id)
+            ):
                 self._navigation_publisher.retire(command_id)
         return acknowledgement
 

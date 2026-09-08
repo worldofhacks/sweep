@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "scope": "tag_map_baseline",
+  "ownerApproved": true,
+  "sourceSha256": "7f4f1f2bf3e2ba0285568a7a0a78bd25587fcba82b5b31a97b4c592b00ca2009",
+  "coordinateFrame": "unit11_atrium_38_to_39_v1",
+  "recordedAt": "2026-09-08",
+  "basis": "Owner confirmed the map against physical measurements and approved the retained provisional map in the hardware-navigation checkpoint request.",
+  "outstandingMeasurements": [
+    "wall positions and route clear widths",
+    "floor, ceiling and obstacle heights",
+    "identity, position and orientation of replacement tags"
+  ],
+  "flightAuthorization": false
+}
