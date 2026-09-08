@@ -7,9 +7,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import tools.ohmni_lidar_self_calibration as fitter
 from tools.ohmni_lidar_self_calibration import (
     _local_segments,
     fit_capture,
+    parse_capture,
     predicted_raw_transform,
     run,
 )
@@ -103,6 +105,45 @@ def _capture(offset_deg: float = 37.3, sign: int = -1) -> dict[str, object]:
             "after_yaw": _stage(yaw, world, offset_deg, sign, (130, 70), 30.0),
         },
     }
+
+
+def _multistage_capture(offset_deg: float = 37.3, sign: int = -1) -> dict[str, object]:
+    rng = np.random.default_rng(9)
+    world = np.vstack(
+        (
+            np.column_stack((rng.uniform(-3, 3, 75), rng.uniform(2, 3, 75))),
+            np.column_stack((rng.uniform(-4, -3, 60), rng.uniform(-2, 3, 60))),
+            np.column_stack((rng.uniform(1, 4, 55), rng.uniform(-3, -2, 55))),
+        )
+    )
+    baseline = (1.0, -0.5, 17.0)
+    forward = (
+        1.0 + 0.4 * math.cos(math.radians(17.0)),
+        -0.5 + 0.4 * math.sin(math.radians(17.0)),
+        17.0,
+    )
+    yaw = (1.0, -0.5, 77.0)
+    cross_forward = (
+        1.0 + 0.4 * math.cos(math.radians(77.0)),
+        -0.5 + 0.4 * math.sin(math.radians(77.0)),
+        77.0,
+    )
+    capture = _capture(offset_deg, sign)
+    capture["limits"].update(
+        {
+            "forward_distance_m": 0.4,
+            "yaw_degrees": 60.0,
+            "max_wheel_travel_m": 1.05,
+            "max_yaw_degrees": 70.0,
+        }
+    )
+    capture["stages"] = {
+        "baseline": _stage(baseline, world, offset_deg, sign, (100, 100), 10.0),
+        "after_forward": _stage(forward, world, offset_deg, sign, (300, 302), 20.0),
+        "after_yaw": _stage(yaw, world, offset_deg, sign, (130, 70), 30.0),
+        "after_cross_forward": _stage(cross_forward, world, offset_deg, sign, (330, 270), 40.0),
+    }
+    return capture
 
 
 @pytest.mark.parametrize(("offset_deg", "sign"), [(37.3, -1), (-72.4, 1)])
@@ -306,3 +347,123 @@ def test_multistage_profile_requires_the_second_independent_translation_stage() 
 
     with pytest.raises(ValueError, match="stages schema"):
         fit_capture(capture)
+
+
+@pytest.mark.parametrize(("max_runtime_s", "max_yaw_degrees"), ((60.0, 70.0), (90.0, 85.0)))
+def test_multistage_profiles_keep_the_legacy_and_extended_budgets_immutable(
+    max_runtime_s: float, max_yaw_degrees: float
+) -> None:
+    capture = _multistage_capture()
+    capture["limits"].update({"max_runtime_s": max_runtime_s, "max_yaw_degrees": max_yaw_degrees})
+
+    assert parse_capture(capture)["stage_names"] == (
+        "baseline",
+        "after_forward",
+        "after_yaw",
+        "after_cross_forward",
+    )
+
+
+def test_unit12_capture_propagates_an_unqualified_mount_seed_without_changing_unit11() -> None:
+    legacy = fit_capture(_capture())
+    assert "mount_source" not in legacy
+    assert "mount_initialization_only" not in legacy
+
+    capture = _multistage_capture()
+    capture["device_id"] = 12
+    capture["mount_source"] = "unqualified_legacy_seed"
+    result = fit_capture(capture)
+
+    assert result["device_id"] == 12
+    assert result["mount_source"] == "unqualified_legacy_seed"
+    assert result["mount_initialization_only"] is True
+
+    capture = _capture()
+    capture["device_id"] = 12
+    capture["mount_source"] = "unqualified_legacy_seed"
+    result = fit_capture(capture)
+    assert result["approval_status"] == "refused"
+    assert result["refusal_reasons"] == ["unit12_requires_multistage_joint_fit"]
+    assert "candidate" not in result
+
+    capture = _capture()
+    capture["mount_source"] = "unqualified_legacy_seed"
+    with pytest.raises(ValueError, match="capture schema"):
+        fit_capture(capture)
+
+
+def _geometry() -> fitter._ScanGeometry:
+    angles = np.linspace(0.0, 2 * math.pi, 72, endpoint=False)
+    points = np.column_stack((2.0 * np.cos(angles), 2.0 * np.sin(angles)))
+    return fitter._ScanGeometry(points, np.empty((0, 2)), np.empty((0, 2)), False)
+
+
+def test_joint_seed_ties_never_compare_arrays_or_score_outside_the_mount_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_mounts: list[np.ndarray] = []
+
+    def tied_score(*args: object) -> float:
+        seen_mounts.append(np.asarray(args[3], dtype=float))
+        return 0.0
+
+    monkeypatch.setattr(fitter, "_score_offset", tied_score)
+    geometry = _geometry()
+    stage = {"pose": {"x_m": 0.0, "y_m": 0.0, "yaw_deg": 0.0}}
+    sign, offset, seed = fitter._joint_coarse_seed(
+        geometry, stage["pose"], [(stage, geometry)], (0.9, 0.9)
+    )
+    score, _, fitted_mount = fitter._refine_joint_mount(
+        geometry, stage["pose"], [(stage, geometry)], sign, offset, seed
+    )
+
+    assert score == 0.0
+    assert np.linalg.norm(seed) <= fitter.MAX_FITTED_MOUNT_RADIUS_M
+    assert np.linalg.norm(fitted_mount) <= fitter.MAX_FITTED_MOUNT_RADIUS_M
+    assert seen_mounts
+    assert all(np.linalg.norm(mount) <= fitter.MAX_FITTED_MOUNT_RADIUS_M for mount in seen_mounts)
+
+
+def test_joint_offset_uncertainty_refuses_the_actual_multistage_fitter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        fitter,
+        "_joint_mount_metrics",
+        lambda *_args: {
+            "joint_hessian_eigenvalues": [1.0, 1.0, 1.0],
+            "joint_parameter_uncertainty": {
+                "offset_deg": fitter.MAX_OFFSET_UNCERTAINTY_DEG + 0.01,
+                "mount_x_m": 0.01,
+                "mount_y_m": 0.01,
+            },
+            "joint_identifiable": True,
+        },
+    )
+
+    result = fit_capture(_multistage_capture())
+
+    assert result["approval_status"] == "refused"
+    assert "joint_offset_uncertainty_too_broad" in result["refusal_reasons"]
+    assert "candidate" not in result
+
+
+def test_joint_competing_basins_profile_distinct_mount_seeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = fitter._refine_joint_mount
+    seeds: list[tuple[float, float]] = []
+
+    def record_refinement(*args: object) -> tuple[float, float, np.ndarray]:
+        mount = np.asarray(args[5], dtype=float)
+        seeds.append((float(mount[0]), float(mount[1])))
+        return original(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(fitter, "_refine_joint_mount", record_refinement)
+
+    result = fit_capture(_multistage_capture())
+
+    assert result["metrics"]["joint_competing_basin_count"] >= 2
+    assert len(seeds) >= 3
+    assert len(set(seeds)) >= 2
+    assert all(math.hypot(*seed) <= fitter.MAX_FITTED_MOUNT_RADIUS_M for seed in seeds)

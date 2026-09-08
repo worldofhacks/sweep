@@ -17,7 +17,7 @@ from tools.map_common import finite_number, parse_document
 
 SCHEMA_VERSION = 1
 KIND = "ohmni_supervised_lidar_calibration_capture"
-DEVICE_ID = 11
+DEVICE_IDS = (11, 12)
 WHEEL_DIAMETER_MM = 152.4
 _THREE_STAGE_NAMES = ("baseline", "after_forward", "after_yaw")
 _FOUR_STAGE_NAMES = (*_THREE_STAGE_NAMES, "after_cross_forward")
@@ -39,6 +39,8 @@ MAX_HELD_OUT_RMS_M = 0.15
 MAX_OFFSET_UNCERTAINTY_DEG = 5.0
 MAX_MOUNT_UNCERTAINTY_M = 0.05
 MAX_FITTED_MOUNT_RADIUS_M = 0.5
+MAX_JOINT_COMPETING_BASINS = 4
+JOINT_BASIN_SEPARATION_DEG = 10.0
 RESIDUAL_RETAINED_FRACTION = 0.8
 OFFSET_UNCERTAINTY_METHOD = "local_curvature_ratio"
 MIN_GEOMETRY_RANK = 0.03
@@ -87,8 +89,21 @@ CALIBRATION_PROFILES = (
         },
         "stage_names": _FOUR_STAGE_NAMES,
     },
+    {
+        "limits": {
+            "wheel_diameter_mm": 152.4,
+            "forward_speed_m_s": 0.04,
+            "forward_distance_m": 0.4,
+            "yaw_rate_deg_s": 10.0,
+            "yaw_degrees": 60.0,
+            "pulse_duration_s": 0.5,
+            "max_wheel_travel_m": 1.05,
+            "max_yaw_degrees": 85.0,
+            "max_runtime_s": 90.0,
+        },
+        "stage_names": _FOUR_STAGE_NAMES,
+    },
 )
-
 
 
 def _require(condition: bool, message: str) -> None:
@@ -308,8 +323,7 @@ def _limits(value: object) -> dict[str, float]:
     _require(
         any(
             all(
-                abs(result[name] - expected) < 1e-12
-                for name, expected in profile["limits"].items()
+                abs(result[name] - expected) < 1e-12 for name, expected in profile["limits"].items()
             )
             for profile in CALIBRATION_PROFILES
         ),
@@ -321,35 +335,54 @@ def _limits(value: object) -> dict[str, float]:
 def _stage_names(limits: Mapping[str, float]) -> tuple[str, ...]:
     for profile in CALIBRATION_PROFILES:
         if all(
-            abs(limits[name] - expected) < 1e-12
-            for name, expected in profile["limits"].items()
+            abs(limits[name] - expected) < 1e-12 for name, expected in profile["limits"].items()
         ):
             return tuple(profile["stage_names"])
     raise ValueError("limits are not a supported immutable profile")
 
 
 def parse_capture(value: object) -> dict[str, object]:
-    raw = _exact(
-        value,
-        {
-            "schema_version",
-            "kind",
-            "device_id",
-            "mount",
-            "wheel_diameter_mm",
-            "limits",
-            "boot_id",
-            "executed_bundle_source_sha256",
-            "stages",
-        },
-        "capture",
+    capture_keys = {
+        "schema_version",
+        "kind",
+        "device_id",
+        "mount",
+        "wheel_diameter_mm",
+        "limits",
+        "boot_id",
+        "executed_bundle_source_sha256",
+        "stages",
+    }
+    _require(isinstance(value, Mapping), "capture schema is invalid")
+    raw = value
+    _require(
+        capture_keys <= set(raw) <= capture_keys | {"mount_source"},
+        "capture schema is invalid",
     )
     _require(raw["schema_version"] == SCHEMA_VERSION, "capture schema_version is unsupported")
     _require(raw["kind"] == KIND, "capture kind is unsupported")
-    _require(raw["device_id"] == DEVICE_ID, "capture device_id must be 11")
+    device_id = raw["device_id"]
+    _require(
+        type(device_id) is int and device_id in DEVICE_IDS,
+        "capture device_id must be 11 or 12",
+    )
+    if device_id == 11:
+        _require(set(raw) == capture_keys, "capture schema is invalid")
+        mount_source = None
+    else:
+        _require(
+            set(raw) in (capture_keys, capture_keys | {"mount_source"}),
+            "capture schema is invalid",
+        )
+        mount_source = raw.get("mount_source")
+        if mount_source is not None:
+            _require(
+                mount_source == "unqualified_legacy_seed",
+                "mount_source is unsupported",
+            )
     _require(
         abs(_number(raw["wheel_diameter_mm"], "wheel_diameter_mm") - WHEEL_DIAMETER_MM) < 1e-6,
-        "wheel diameter mismatches Ohmni 11",
+        "wheel diameter mismatches Ohmni",
     )
     mount_raw = _exact(raw["mount"], {"x_m", "y_m", "z_m"}, "mount")
     mount = {key: _number(mount_raw[key], f"mount.{key}") for key in mount_raw}
@@ -361,7 +394,10 @@ def parse_capture(value: object) -> dict[str, object]:
     stage_names = _stage_names(limits)
     stages_raw = _exact(raw["stages"], set(stage_names), "stages")
     return {
+        "device_id": device_id,
         "mount": mount,
+        "mount_source": mount_source,
+        "requires_joint_mount_fit": device_id == 12 and stage_names != _FOUR_STAGE_NAMES,
         "limits": limits,
         "stage_names": stage_names,
         "boot_id": _boot_id(raw["boot_id"]),
@@ -565,18 +601,43 @@ def _coarse_geometry(geometry: _ScanGeometry) -> _ScanGeometry:
     return _ScanGeometry(points, np.empty((0, 2)), np.empty((0, 2)), False)
 
 
-def _joint_coarse_seed(
+def _coarse_offset_scores(
+    baseline: _ScanGeometry,
+    baseline_pose: Mapping[str, float],
+    stages: Sequence[tuple[Mapping[str, object], _ScanGeometry]],
+    mount: Sequence[float],
+    step: float,
+) -> list[tuple[float, int, float]]:
+    return sorted(
+        (
+            _score_offset(baseline, baseline_pose, stages, mount, sign, float(offset)),
+            sign,
+            float(offset),
+        )
+        for sign in (-1, 1)
+        for offset in np.arange(-180.0, 180.0, step)
+    )
+
+
+def _joint_coarse_scores(
     baseline: _ScanGeometry,
     baseline_pose: Mapping[str, float],
     stages: Sequence[tuple[Mapping[str, object], _ScanGeometry]],
     declared_mount: Sequence[float],
-) -> tuple[int, float, np.ndarray]:
+) -> list[tuple[float, int, float, np.ndarray]]:
     baseline_coarse = _coarse_geometry(baseline)
     stages_coarse = [(stage, _coarse_geometry(geometry)) for stage, geometry in stages]
     grid = (-0.5, -0.25, 0.0, 0.25, 0.5)
-    mounts = [np.array((x, y), dtype=float) for x in grid for y in grid]
-    mounts.append(np.asarray(declared_mount, dtype=float))
-    return min(
+    mounts = [
+        np.array((x, y), dtype=float)
+        for x in grid
+        for y in grid
+        if math.hypot(x, y) <= MAX_FITTED_MOUNT_RADIUS_M
+    ]
+    declared = np.asarray(declared_mount, dtype=float)
+    if np.linalg.norm(declared) <= MAX_FITTED_MOUNT_RADIUS_M:
+        mounts.append(declared)
+    scored = [
         (
             _score_offset(
                 baseline_coarse,
@@ -593,7 +654,23 @@ def _joint_coarse_seed(
         for mount in mounts
         for sign in (-1, 1)
         for offset in np.arange(-180.0, 180.0, 4.0)
-    )[1:]
+    ]
+    return sorted(
+        scored,
+        key=lambda item: (item[0], item[1], item[2], float(item[3][0]), float(item[3][1])),
+    )
+
+
+def _joint_coarse_seed(
+    baseline: _ScanGeometry,
+    baseline_pose: Mapping[str, float],
+    stages: Sequence[tuple[Mapping[str, object], _ScanGeometry]],
+    declared_mount: Sequence[float],
+) -> tuple[int, float, np.ndarray]:
+    _, sign, offset, mount = _joint_coarse_scores(baseline, baseline_pose, stages, declared_mount)[
+        0
+    ]
+    return sign, offset, mount
 
 
 def _refine_joint_mount(
@@ -614,6 +691,10 @@ def _refine_joint_mount(
             float(parameters[0]),
         )
 
+    _require(
+        np.linalg.norm(declared_mount) <= MAX_FITTED_MOUNT_RADIUS_M,
+        "joint mount seed exceeds the fitted mount radius",
+    )
     starts = (np.array((offset_deg, *declared_mount), dtype=float),)
     best_parameters: np.ndarray | None = None
     best_score = math.inf
@@ -628,10 +709,13 @@ def _refine_joint_mount(
                         candidate[index] += direction * step
                         if np.linalg.norm(candidate[1:]) <= MAX_FITTED_MOUNT_RADIUS_M:
                             candidates.append(candidate)
-                scored = min((score(candidate), candidate) for candidate in candidates)
-                if scored[0] >= score(parameters) - 1e-12:
+                score_and_candidate = min(
+                    ((score(candidate), candidate) for candidate in candidates),
+                    key=lambda item: item[0],
+                )
+                if score_and_candidate[0] >= score(parameters) - 1e-12:
                     break
-                parameters = scored[1]
+                parameters = score_and_candidate[1]
         final_score = score(parameters)
         if final_score < best_score:
             best_score, best_parameters = final_score, parameters
@@ -681,10 +765,67 @@ def _joint_mount_metrics(
             "mount_x_m": float(uncertainty[1]),
             "mount_y_m": float(uncertainty[2]),
         },
-        "joint_identifiable": bool(
-            eigenvalues[0] > max(eigenvalues[-1], 1e-12) * 1e-5
-        ),
+        "joint_identifiable": bool(eigenvalues[0] > max(eigenvalues[-1], 1e-12) * 1e-5),
     }
+
+
+def _joint_competing_scores(
+    baseline: _ScanGeometry,
+    baseline_pose: Mapping[str, float],
+    stages: Sequence[tuple[Mapping[str, object], _ScanGeometry]],
+    coarse: Sequence[tuple[float, int, float, np.ndarray]],
+    winning_sign: int,
+    winning_offset: float,
+) -> list[tuple[float, int, float, np.ndarray]]:
+    selected: list[tuple[float, int, float, np.ndarray]] = []
+
+    def add_best_for_sign(sign: int) -> None:
+        for seed in coarse:
+            if seed[1] != sign or (
+                sign == winning_sign
+                and _offset_distance(seed[2], winning_offset) <= JOINT_BASIN_SEPARATION_DEG
+            ):
+                continue
+            if any(
+                selected_seed[1] == sign
+                and _offset_distance(selected_seed[2], seed[2]) <= JOINT_BASIN_SEPARATION_DEG
+                for selected_seed in selected
+            ):
+                continue
+            selected.append(seed)
+            return
+
+    for sign in (-1, 1):
+        add_best_for_sign(sign)
+    for seed in coarse:
+        if len(selected) >= MAX_JOINT_COMPETING_BASINS:
+            break
+        if (
+            seed[1] == winning_sign
+            and _offset_distance(seed[2], winning_offset) <= JOINT_BASIN_SEPARATION_DEG
+        ):
+            continue
+        if any(
+            selected_seed[1] == seed[1]
+            and _offset_distance(selected_seed[2], seed[2]) <= JOINT_BASIN_SEPARATION_DEG
+            for selected_seed in selected
+        ):
+            continue
+        selected.append(seed)
+    refined = [
+        _refine_joint_mount(baseline, baseline_pose, stages, sign, offset, mount)
+        for _, sign, offset, mount in selected
+    ]
+    alternatives = [
+        (score, sign, offset, mount)
+        for (score, offset, mount), (_, sign, _, _) in zip(refined, selected, strict=True)
+        if sign != winning_sign
+        or _offset_distance(offset, winning_offset) > JOINT_BASIN_SEPARATION_DEG
+    ]
+    return sorted(
+        alternatives,
+        key=lambda item: (item[0], item[1], item[2], float(item[3][0]), float(item[3][1])),
+    )
 
 
 def _geometry_rank(points: np.ndarray) -> tuple[float, list[float], list[float]]:
@@ -811,32 +952,19 @@ def _candidate(
         }
     mount_xy = (mount["x_m"], mount["y_m"])
     fit_stages = [
-        (stage, changed_fit[name])
-        for name, stage in zip(changed_names, changed, strict=True)
+        (stage, changed_fit[name]) for name, stage in zip(changed_names, changed, strict=True)
     ]
     held_out_stages = [
-        (stage, changed_held_out[name])
-        for name, stage in zip(changed_names, changed, strict=True)
+        (stage, changed_held_out[name]) for name, stage in zip(changed_names, changed, strict=True)
     ]
-    coarse: list[tuple[float, int, float]] = []
     coarse_step = 4.0 if "after_cross_forward" in stages else 1.0
-    for sign in (-1, 1):
-        for offset in np.arange(-180.0, 180.0, coarse_step):
-            coarse.append(
-                (
-                    _score_offset(
-                        baseline_fit,
-                        baseline["pose"],  # type: ignore[arg-type]
-                        fit_stages,
-                        mount_xy,
-                        sign,
-                        float(offset),
-                    ),
-                    sign,
-                    float(offset),
-                )
-            )
-    coarse.sort()
+    coarse = _coarse_offset_scores(
+        baseline_fit,
+        baseline["pose"],  # type: ignore[arg-type]
+        fit_stages,
+        mount_xy,
+        coarse_step,
+    )
     best_coarse = coarse[0]
     refined: list[tuple[float, int, float]] = []
     for offset in np.arange(
@@ -860,13 +988,15 @@ def _candidate(
     fit_score, sign, offset = refined[0]
     fitted_mount = np.asarray(mount_xy, dtype=float)
     joint_metrics: dict[str, object] = {}
+    joint_coarse: list[tuple[float, int, float, np.ndarray]] = []
     if "after_cross_forward" in stages:
-        sign, offset, initial_mount = _joint_coarse_seed(
+        joint_coarse = _joint_coarse_scores(
             baseline_fit,
             baseline["pose"],  # type: ignore[arg-type]
             fit_stages,
             mount_xy,
         )
+        _, sign, offset, initial_mount = joint_coarse[0]
         fit_score, offset, fitted_mount = _refine_joint_mount(
             baseline_fit,
             baseline["pose"],  # type: ignore[arg-type]
@@ -913,9 +1043,33 @@ def _candidate(
     ]
     curvature = max((nearby[0] + nearby[1] - 2.0 * fit_score) / (step * step), 1e-12)
     uncertainty = math.sqrt(max(fit_score, 1e-12) / curvature)
-    competing = next(
-        item for item in coarse if item[1] != sign or _offset_distance(item[2], offset) > 10.0
-    )
+    if joint_coarse:
+        competing_scores = _joint_competing_scores(
+            baseline_fit,
+            baseline["pose"],  # type: ignore[arg-type]
+            fit_stages,
+            joint_coarse,
+            sign,
+            offset,
+        )
+        if competing_scores:
+            competing = competing_scores[0]
+        else:
+            refusals.append("joint_competing_basin_unresolved")
+            competing = (math.inf, sign, offset, fitted_mount)
+    else:
+        competing_scores = _coarse_offset_scores(
+            baseline_fit,
+            baseline["pose"],  # type: ignore[arg-type]
+            fit_stages,
+            fitted_mount,
+            coarse_step,
+        )
+        competing = next(
+            item
+            for item in competing_scores
+            if item[1] != sign or _offset_distance(item[2], offset) > 10.0
+        )
     if best_rms > MAX_RMS_M:
         refusals.append("scan_overlap_or_residual_failure")
     if held_out_rms > MAX_HELD_OUT_RMS_M:
@@ -941,11 +1095,14 @@ def _candidate(
             for candidate_offset in np.arange(offset - 5.0, offset + 5.001, 0.25)
         )
         per_stage_offsets.append(float(local[1]))
-    if max(
-        _offset_distance(left, right)
-        for index, left in enumerate(per_stage_offsets)
-        for right in per_stage_offsets[index + 1 :]
-    ) > 3.0:
+    if (
+        max(
+            _offset_distance(left, right)
+            for index, left in enumerate(per_stage_offsets)
+            for right in per_stage_offsets[index + 1 :]
+        )
+        > 3.0
+    ):
         refusals.append("per_stage_offset_disagreement")
     candidate: dict[str, object] = {"offset_deg": _normalized_offset(offset), "angle_sign": sign}
     if joint_metrics:
@@ -953,6 +1110,12 @@ def _candidate(
         assert isinstance(mount_uncertainty, Mapping)
         if not joint_metrics["joint_identifiable"]:
             refusals.append("joint_mount_not_identifiable")
+        joint_offset_uncertainty = float(mount_uncertainty["offset_deg"])
+        if (
+            not math.isfinite(joint_offset_uncertainty)
+            or joint_offset_uncertainty > MAX_OFFSET_UNCERTAINTY_DEG
+        ):
+            refusals.append("joint_offset_uncertainty_too_broad")
         if (
             max(
                 float(mount_uncertainty["mount_x_m"]),
@@ -962,37 +1125,42 @@ def _candidate(
         ):
             refusals.append("mount_uncertainty_too_broad")
         candidate["mount_xy_m"] = {"x_m": float(fitted_mount[0]), "y_m": float(fitted_mount[1])}
+    metrics: dict[str, object] = {
+        "fit_rms_m": best_rms,
+        "held_out_rms_m": held_out_rms,
+        "fit_mean_squared_m2": fit_score,
+        "held_out_mean_squared_m2": held_out_score,
+        "competing_basin_mean_squared_m2": competing[0],
+        "per_stage_offset_deg": dict(
+            zip(
+                changed_names,
+                [_normalized_offset(value) for value in per_stage_offsets],
+                strict=True,
+            )
+        ),
+        **initial_metrics,
+        "registration_skipped": False,
+        "offset_hessian_m2_per_deg2": [[curvature]],
+        "offset_hessian_eigenvalues_m2_per_deg2": [curvature],
+        "offset_uncertainty_deg": uncertainty,
+        "offset_uncertainty_method": OFFSET_UNCERTAINTY_METHOD,
+        "residual_retained_fraction": RESIDUAL_RETAINED_FRACTION,
+        **joint_metrics,
+    }
+    if joint_coarse:
+        metrics["joint_competing_basin_count"] = len(competing_scores)
     return {
         "refusal_reasons": sorted(set(refusals)),
         "candidate": candidate,
-        "metrics": {
-            "fit_rms_m": best_rms,
-            "held_out_rms_m": held_out_rms,
-            "fit_mean_squared_m2": fit_score,
-            "held_out_mean_squared_m2": held_out_score,
-            "competing_basin_mean_squared_m2": competing[0],
-            "per_stage_offset_deg": dict(
-                zip(
-                    changed_names,
-                    [_normalized_offset(value) for value in per_stage_offsets],
-                    strict=True,
-                )
-            ),
-            **initial_metrics,
-            "registration_skipped": False,
-            "offset_hessian_m2_per_deg2": [[curvature]],
-            "offset_hessian_eigenvalues_m2_per_deg2": [curvature],
-            "offset_uncertainty_deg": uncertainty,
-            "offset_uncertainty_method": OFFSET_UNCERTAINTY_METHOD,
-            "residual_retained_fraction": RESIDUAL_RETAINED_FRACTION,
-            **joint_metrics,
-        },
+        "metrics": metrics,
     }
 
 
 def fit_capture(value: object, *, source_sha256: str | None = None) -> dict[str, object]:
     parsed = parse_capture(value)
     fit = _candidate(parsed["stages"], parsed["mount"])  # type: ignore[arg-type]
+    if parsed["requires_joint_mount_fit"]:
+        fit["refusal_reasons"].append("unit12_requires_multistage_joint_fit")
     if parsed["boot_id"] is None:
         fit["refusal_reasons"].append("missing_boot_id")
     if parsed["executed_bundle_source_sha256"] is None:
@@ -1002,7 +1170,7 @@ def fit_capture(value: object, *, source_sha256: str | None = None) -> dict[str,
     result = {
         "schema_version": 1,
         "kind": "ohmni_supervised_lidar_calibration_candidate",
-        "device_id": DEVICE_ID,
+        "device_id": parsed["device_id"],
         "approval_status": "unapproved_candidate" if approved else "refused",
         "input_provenance": {
             "capture_sha256": source_sha256,
@@ -1012,6 +1180,10 @@ def fit_capture(value: object, *, source_sha256: str | None = None) -> dict[str,
         "refusal_reasons": fit["refusal_reasons"],
         "metrics": fit["metrics"],
     }
+    if parsed["device_id"] == 12:
+        result["mount_initialization_only"] = True
+        if parsed["mount_source"] is not None:
+            result["mount_source"] = parsed["mount_source"]
     if approved:
         result["candidate"] = fit["candidate"]
     return result
