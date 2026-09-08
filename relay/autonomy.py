@@ -1734,10 +1734,10 @@ class AutonomySession:
                 except Exception:
                     _LOGGER.exception("search detection cleanup failed after navigation tracking")
         events.extend(self._queue_navigation_tracking_hold(session, job.intent))
-        self._defer_tracking_callback(self._report_navigation_tracking_failure, job.intent, result)
+        self._defer_multiview_callback(self._report_multiview_execution, job.intent, result)
         return events
 
-    def _defer_tracking_callback(self, callback: Callable[..., None], *args: object) -> None:
+    def _defer_multiview_callback(self, callback: Callable[..., None], *args: object) -> None:
         runtime = self._composition.runtime_if_bound()
         loop = None if runtime is None else runtime.loop
         if loop is None or loop.is_closed():
@@ -1750,13 +1750,13 @@ class AutonomySession:
 
         loop.call_soon_threadsafe(schedule)
 
-    def _report_navigation_tracking_failure(
+    def _report_multiview_execution(
         self, intent: IntentV1, result: ExecutionResult
     ) -> None:
         try:
             self._composition.report_multiview_execution(self.session_id, intent, result)
         except Exception:
-            _LOGGER.exception("multiview execution reporting failed for navigation tracking")
+            _LOGGER.exception("multiview execution reporting failed")
 
     def _queue_navigation_tracking_hold(
         self, session: RelaySession, failed_intent: IntentV1
@@ -1797,7 +1797,7 @@ class AutonomySession:
             hold_lane.pending.append(hold_job)
             hold_lane.ready.notify()
         events.extend(hold_job.publications)
-        self._defer_tracking_callback(self._report_navigation_tracking_hold, safety_intent)
+        self._defer_multiview_callback(self._report_navigation_tracking_hold, safety_intent)
         return events
 
     def _report_navigation_tracking_hold(self, intent: IntentV1) -> None:
@@ -1946,8 +1946,8 @@ class AutonomySession:
                 raise
             return None
         if result.status is not LifecycleStatus.EXECUTING:
-            self._defer_tracking_callback(
-                self._report_navigation_tracking_failure, owner.job.intent, result
+            self._defer_multiview_callback(
+                self._report_multiview_execution, owner.job.intent, result
             )
         return RelayExecution(result, tuple(events))
 
