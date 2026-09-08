@@ -38,7 +38,9 @@ _FLIGHT_STATES = frozenset(
 _CAMERA_PATTERNS = frozenset({"pano_360", "reconstruct_8", "single_still"})
 _MODES = frozenset({"indoor", "outdoor"})
 VOICE_PLAN_VERSION = 1
-VOICE_PLAN_KINDS = frozenset({"plan", "clarify", "unsupported", "refuse", "cancel_pending"})
+VOICE_PLAN_KINDS = frozenset(
+    {"plan", "review", "clarify", "unsupported", "refuse", "cancel_pending"}
+)
 MAX_VOICE_PLAN_STEPS = 8
 MAX_VOICE_PLAN_OPTIONS = 16
 MAX_VOICE_PLAN_NOTES = 8
@@ -72,6 +74,7 @@ class TranscriptCompiler(Protocol):
         *,
         capability_version: str,
         rooms: tuple[str, ...] = (),
+        review_catalog: object = None,
         now_ms: int,
         correlation_id: str | None = None,
         session_id: str | None = None,
@@ -86,11 +89,21 @@ class UnavailableTranscriptCompiler:
         *,
         capability_version: str,
         rooms: tuple[str, ...] = (),
+        review_catalog: object = None,
         now_ms: int,
         correlation_id: str | None = None,
         session_id: str | None = None,
     ) -> tuple[object, object | None]:
-        del transcript, relay_state, capability_version, rooms, now_ms, correlation_id, session_id
+        del (
+            transcript,
+            relay_state,
+            capability_version,
+            rooms,
+            review_catalog,
+            now_ms,
+            correlation_id,
+            session_id,
+        )
         raise CompilerUnavailable()
 
 
@@ -250,6 +263,7 @@ class VoicePlan:
     prompt_schema_version: str
     response_source: str
     pending_intent_id: str | None = None
+    review: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         _validate_voice_plan_fields(self)
@@ -274,6 +288,7 @@ class VoicePlan:
             "prompt_schema_version": self.prompt_schema_version,
             "response_source": self.response_source,
             "pending_intent_id": self.pending_intent_id,
+            "review": None if self.review is None else _thaw(self.review),
         }
 
 
@@ -335,6 +350,7 @@ _VOICE_PLAN_FIELDS = frozenset(
         "prompt_schema_version",
         "response_source",
         "pending_intent_id",
+        "review",
     }
 )
 _VOICE_PLAN_STEP_FIELDS = frozenset(
@@ -413,6 +429,7 @@ def parse_voice_plan(raw: object) -> VoicePlan:
         prompt_schema_version=raw["prompt_schema_version"],
         response_source=raw["response_source"],
         pending_intent_id=raw["pending_intent_id"],
+        review=None if raw["review"] is None else dict(_review(raw["review"])),
     )
 
 
@@ -484,19 +501,69 @@ def _validate_voice_plan_fields(plan: VoicePlan) -> None:
         raise ValueError("voice plan carries too many steps")
     for index, step in enumerate(plan.steps):
         _validate_voice_plan_step(step, index)
+    review = None if plan.review is None else _review(plan.review)
     if plan.kind == "plan":
         if not plan.steps or plan.expires_at_ms is None or plan.plan_digest is None:
             raise ValueError("a compiled plan requires steps, an expiry, and a digest")
-        if plan.reason is not None or plan.options or plan.pending_intent_id is not None:
+        if (
+            plan.reason is not None
+            or plan.options
+            or plan.pending_intent_id is not None
+            or review is not None
+        ):
             raise ValueError("a compiled plan carries no reason, options, or pending intent")
     else:
         if plan.steps or plan.plan_digest is not None or plan.expires_at_ms is not None:
             raise ValueError("only a compiled plan carries steps, a digest, or an expiry")
-        if plan.kind == "cancel_pending":
+        if plan.kind == "review":
+            if (
+                review is None
+                or plan.reason is not None
+                or plan.options
+                or plan.pending_intent_id is not None
+            ):
+                raise ValueError("a review carries exactly one semantic request")
+        elif plan.kind == "cancel_pending":
+            if review is not None:
+                raise ValueError("cancel_pending carries no review")
             if plan.pending_intent_id is None or plan.reason is not None or plan.options:
                 raise ValueError("cancel_pending names exactly the pending intent")
-        elif plan.reason is None or plan.pending_intent_id is not None:
+        elif review is not None or plan.reason is None or plan.pending_intent_id is not None:
             raise ValueError("clarify, unsupported, and refuse carry a typed reason")
+
+
+def _review(raw: object) -> Mapping[str, object]:
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("kind"), str):
+        raise ValueError("voice plan review is invalid")
+    kind = raw["kind"]
+    catalog_identity = raw.get("catalog_identity")
+    if not _bounded_text(catalog_identity, limit=128):
+        raise ValueError("voice plan review catalog identity is invalid")
+    if kind == "navigate" or kind == "survey":
+        if set(raw) != {"kind", "catalog_identity", "destination_id"} or not _bounded_text(
+            raw.get("destination_id"), limit=128
+        ):
+            raise ValueError("voice plan destination review is invalid")
+    elif kind == "search":
+        if (
+            set(raw) != {"kind", "catalog_identity", "destination_id", "target_class"}
+            or not _bounded_text(raw.get("destination_id"), limit=128)
+            or not _bounded_text(raw.get("target_class"), limit=128)
+        ):
+            raise ValueError("voice plan search review is invalid")
+    elif kind == "multiview":
+        ids = raw.get("destination_ids")
+        if (
+            set(raw) != {"kind", "catalog_identity", "destination_ids"}
+            or not isinstance(ids, list)
+            or not 1 <= len(ids) <= 8
+            or len(set(ids)) != len(ids)
+            or any(not _bounded_text(item, limit=128) for item in ids)
+        ):
+            raise ValueError("voice plan multiview review is invalid")
+    else:
+        raise ValueError("voice plan review kind is invalid")
+    return raw
 
 
 def _validate_voice_plan_step(step: VoicePlanStep, index: int) -> None:
@@ -606,6 +673,7 @@ class TranscriptService:
         body: bytes,
         relay_state: object,
         rooms: tuple[str, ...] = (),
+        review_catalog: object = None,
         now_ms: int,
         refresh_state: Callable[[], tuple[object, int]] | None = None,
     ) -> VoiceOutcome:
@@ -773,6 +841,7 @@ class TranscriptService:
                 grounded_state,
                 capability_version=capability_version,
                 rooms=grounded_rooms,
+                review_catalog=review_catalog,
                 now_ms=now_ms,
                 correlation_id=correlation_id,
                 session_id=session_id,

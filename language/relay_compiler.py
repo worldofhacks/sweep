@@ -31,6 +31,7 @@ from language.contracts import (
     CompilerReason,
     OutcomeKind,
     ProposedIntent,
+    ReviewCatalog,
     build_grounding_facts,
     intent_payload,
     plan_step_matches_projected_facts,
@@ -139,6 +140,7 @@ class RelayTranscriptCompiler:
         *,
         capability_version: str,
         rooms: tuple[str, ...] = (),
+        review_catalog: ReviewCatalog | None = None,
         now_ms: int,
         correlation_id: str | None = None,
         session_id: str | None = None,
@@ -160,6 +162,7 @@ class RelayTranscriptCompiler:
             translation=self._translation(relay_state),
             capability_profile=self._capability_profile,
             qualified_voice_intents=self._qualified_voice_intents,
+            review_catalog=review_catalog,
             require_qualified_voice_intents=True,
             now_ms=now_ms,
             correlation_id=correlation,
@@ -179,6 +182,7 @@ class RelayTranscriptCompiler:
             transcript=transcript,
             relay_state=relay_state,
             rooms=rooms,
+            review_catalog=review_catalog,
             now_ms=now_ms,
             correlation_id=correlation,
             session_id=session_id,
@@ -332,6 +336,7 @@ def voice_plan_from_outcome(
     now_ms: int,
     correlation_id: str,
     session_id: str,
+    review_catalog: ReviewCatalog | None = None,
 ) -> VoicePlan:
     """Render a compiler outcome as the preview the console shows; never an emission."""
     state_event_id = relay_state.get("event_id")
@@ -366,6 +371,28 @@ def voice_plan_from_outcome(
             model=model,
             prompt_schema_version=prompt_schema_version,
             response_source=outcome.source,
+        )
+    if outcome.kind is OutcomeKind.REVIEW:
+        if outcome.review is None or review_catalog is None:
+            raise CompilerUnavailable()
+        return VoicePlan(
+            kind="review",
+            transcript=transcript.strip(),
+            reason=None,
+            detail=None,
+            options=(),
+            steps=(),
+            compiled_at_ms=now_ms,
+            expires_at_ms=None,
+            state_event_id=state_event_id,
+            roster_version=roster_version,
+            session=session_id,
+            correlation_id=correlation_id,
+            plan_digest=None,
+            model=model,
+            prompt_schema_version=prompt_schema_version,
+            response_source=outcome.source,
+            review=outcome.review.to_dict(),
         )
     if outcome.kind is OutcomeKind.CANCEL_PENDING:
         return VoicePlan(

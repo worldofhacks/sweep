@@ -118,6 +118,7 @@ type OutcomeSource = Literal["anthropic", "replay", "synthetic", "template"]
 
 class OutcomeKind(StrEnum):
     PLAN = "plan"
+    REVIEW = "review"
     CANCEL_PENDING = "cancel_pending"
     CLARIFY = "clarify"
     UNSUPPORTED = "unsupported"
@@ -135,6 +136,99 @@ class CompilerReason(StrEnum):
     NO_SELECTION = "no_selection"
     STALE_STATE = "stale_state"
     UNKNOWN_REFERENCE = "unknown_reference"
+
+
+class ReviewKind(StrEnum):
+    NAVIGATE = "navigate"
+    SEARCH = "search"
+    SURVEY = "survey"
+    MULTIVIEW = "multiview"
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewDestination:
+    destination_id: str
+    name: str
+    aliases: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _review_identifier(self.destination_id, "review destination_id")
+        _review_text(self.name, "review destination name")
+        if not isinstance(self.aliases, tuple) or len(self.aliases) > 16:
+            raise ValueError("review destination aliases are invalid")
+        for alias in self.aliases:
+            _review_text(alias, "review destination alias")
+
+    def model_dict(self) -> dict[str, object]:
+        return {
+            "destination_id": self.destination_id,
+            "name": self.name,
+            "aliases": list(self.aliases),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewCatalog:
+    catalog_identity: str
+    destinations: tuple[ReviewDestination, ...]
+    search_target_classes: tuple[str, ...] = ()
+    enabled_kinds: tuple[ReviewKind, ...] = tuple(ReviewKind)
+
+    def __post_init__(self) -> None:
+        _review_identifier(self.catalog_identity, "review catalog_identity")
+        if (
+            not isinstance(self.destinations, tuple)
+            or not self.destinations
+            or len(self.destinations) > 128
+            or any(not isinstance(item, ReviewDestination) for item in self.destinations)
+            or len({item.destination_id for item in self.destinations}) != len(self.destinations)
+        ):
+            raise ValueError("review catalog destinations are invalid")
+        if (
+            not isinstance(self.search_target_classes, tuple)
+            or len(self.search_target_classes) > 64
+            or len(set(self.search_target_classes)) != len(self.search_target_classes)
+        ):
+            raise ValueError("review catalog target classes are invalid")
+        for target_class in self.search_target_classes:
+            _review_identifier(target_class, "review target class")
+        if (
+            not isinstance(self.enabled_kinds, tuple)
+            or not self.enabled_kinds
+            or len(set(self.enabled_kinds)) != len(self.enabled_kinds)
+            or any(not isinstance(kind, ReviewKind) for kind in self.enabled_kinds)
+        ):
+            raise ValueError("review catalog kinds are invalid")
+
+    def model_dict(self) -> dict[str, object]:
+        return {
+            "catalog_identity": self.catalog_identity,
+            "destinations": [item.model_dict() for item in self.destinations],
+            "search_target_classes": list(self.search_target_classes),
+            "enabled_kinds": [kind.value for kind in self.enabled_kinds],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewRequest:
+    kind: ReviewKind
+    catalog_identity: str
+    destination_id: str | None = None
+    target_class: str | None = None
+    destination_ids: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        value: dict[str, object] = {
+            "kind": self.kind.value,
+            "catalog_identity": self.catalog_identity,
+        }
+        if self.destination_id is not None:
+            value["destination_id"] = self.destination_id
+        if self.target_class is not None:
+            value["target_class"] = self.target_class
+        if self.destination_ids:
+            value["destination_ids"] = list(self.destination_ids)
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +264,7 @@ class CompilerOutcome:
     reason: CompilerReason | None = None
     detail: str | None = None
     pending_intent_id: str | None = None
+    review: ReviewRequest | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -578,13 +673,17 @@ def validate_model_outcome(
     capture_id: Callable[[int], str],
     source: OutcomeSource,
     transcript: str,
+    review_catalog: ReviewCatalog | None = None,
 ) -> CompilerOutcome:
+    if review_catalog is not None and not isinstance(review_catalog, ReviewCatalog):
+        return _invalid(source)
     if not isinstance(raw, Mapping) or not set(raw) <= {
         "kind",
         "intents",
         "reason",
         "detail",
         "pending_intent_id",
+        "review",
     }:
         return _invalid(source)
     try:
@@ -594,6 +693,21 @@ def validate_model_outcome(
     detail = raw.get("detail")
     if detail is not None and (not isinstance(detail, str) or len(detail) > 500):
         return _invalid(source)
+
+    if kind is OutcomeKind.REVIEW:
+        if set(raw) != {"kind", "review"} or review_catalog is None:
+            return _invalid(source)
+        review = _validate_review_request(raw.get("review"), review_catalog)
+        if review is None:
+            return _invalid(source)
+        if transcript_negates_action(transcript):
+            return CompilerOutcome(
+                kind=OutcomeKind.CLARIFY,
+                reason=CompilerReason.AMBIGUOUS_ACTION,
+                detail=NEGATED_TRANSCRIPT_DETAIL,
+                source=source,
+            )
+        return CompilerOutcome(kind=kind, source=source, review=review)
 
     if kind is not OutcomeKind.PLAN:
         if kind is OutcomeKind.CANCEL_PENDING:
@@ -654,6 +768,10 @@ def validate_model_outcome(
             expected_selection = tuple(intent.args["ids"])
         if intent.name is IntentName.ESTOP:
             expected_estop = True
+    if review_catalog is not None and any(
+        intent.name in {IntentName.SURVEY_AREA, IntentName.MAP_AREA} for intent in intents
+    ):
+        return _invalid(source)
     if any(intent.name is IntentName.ESTOP for intent in intents) and (
         transcript != "Emergency stop."
         or IntentName.ESTOP.value not in facts.qualified_voice_intents
@@ -698,6 +816,58 @@ def validate_model_outcome(
     if not _explicit_altitude_matches(intents, transcript, facts):
         return _invalid(source)
     return CompilerOutcome(kind=kind, intents=tuple(intents), detail=detail, source=source)
+
+
+def _validate_review_request(raw: object, catalog: ReviewCatalog) -> ReviewRequest | None:
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("kind"), str):
+        return None
+    try:
+        kind = ReviewKind(raw["kind"])
+    except ValueError:
+        return None
+    if kind not in catalog.enabled_kinds:
+        return None
+    destination_ids = {item.destination_id for item in catalog.destinations}
+    if kind is ReviewKind.NAVIGATE:
+        if (
+            set(raw) != {"kind", "destination_id"}
+            or raw.get("destination_id") not in destination_ids
+        ):
+            return None
+        return ReviewRequest(kind, catalog.catalog_identity, destination_id=raw["destination_id"])
+    if kind is ReviewKind.SEARCH:
+        if (
+            set(raw) != {"kind", "destination_id", "target_class"}
+            or raw.get("destination_id") not in destination_ids
+            or raw.get("target_class") not in catalog.search_target_classes
+        ):
+            return None
+        return ReviewRequest(
+            kind,
+            catalog.catalog_identity,
+            destination_id=raw["destination_id"],
+            target_class=raw["target_class"],
+        )
+    if kind is ReviewKind.SURVEY:
+        if (
+            set(raw) != {"kind", "destination_id"}
+            or raw.get("destination_id") not in destination_ids
+        ):
+            return None
+        return ReviewRequest(kind, catalog.catalog_identity, destination_id=raw["destination_id"])
+    if (
+        set(raw) != {"kind", "destination_ids"}
+        or not isinstance(raw.get("destination_ids"), list)
+        or not 1 <= len(raw["destination_ids"]) <= 8
+        or any(destination_id not in destination_ids for destination_id in raw["destination_ids"])
+        or len(set(raw["destination_ids"])) != len(raw["destination_ids"])
+    ):
+        return None
+    return ReviewRequest(
+        kind,
+        catalog.catalog_identity,
+        destination_ids=tuple(raw["destination_ids"]),
+    )
 
 
 def rehydrate_plan_intents(raw: object, facts: GroundingFacts) -> tuple[ProposedIntent, ...]:
@@ -1181,6 +1351,22 @@ def _explicit_altitude_matches(
         return False
     expected = phrase.steps if phrase.direction == "up" else -phrase.steps
     return isfinite(delta) and isclose(delta, expected, rel_tol=0.0, abs_tol=1e-9)
+
+
+def _review_identifier(value: object, field: str) -> None:
+    if not isinstance(value, str) or _SAFE_IDENTIFIER.fullmatch(value) is None:
+        raise ValueError(f"{field} must be a safe identifier")
+
+
+def _review_text(value: object, field: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or value != normalize("NFKC", value).strip()
+        or any(category(character).startswith("C") for character in value)
+    ):
+        raise ValueError(f"{field} must be bounded display text")
 
 
 def _normalized_motion_text(transcript: str) -> str:

@@ -16,6 +16,7 @@ from language.contracts import (
     GroundingFacts,
     OutcomeKind,
     ProposedIntent,
+    ReviewCatalog,
     build_grounding_facts,
     intent_payload,
     plan_step_matches_facts,
@@ -216,12 +217,15 @@ class TranscriptCompiler:
         altitude: object = None,
         capability_profile: CapabilityProfile | None = None,
         qualified_voice_intents: tuple[str, ...] = (),
+        review_catalog: ReviewCatalog | None = None,
         require_qualified_voice_intents: bool = False,
         now_ms: int,
         correlation_id: str | None = None,
         session_id: str | None = None,
     ) -> tuple[CompilerOutcome, CompiledPlan | None]:
         correlation = correlation_id or uuid.uuid4().hex
+        if review_catalog is not None and not isinstance(review_catalog, ReviewCatalog):
+            return self._refusal(correlation, CompilerReason.INVALID_MODEL_OUTPUT)
         if (
             not isinstance(transcript, str)
             or not transcript.strip()
@@ -246,7 +250,10 @@ class TranscriptCompiler:
         if state_age_ms < 0 or state_age_ms > self._state_max_age_ms:
             return self._refusal(correlation, CompilerReason.STALE_STATE)
 
-        request = ModelRequest(transcript=transcript.strip(), facts=facts.model_dict())
+        model_facts = facts.model_dict()
+        if review_catalog is not None:
+            model_facts["review_catalog"] = review_catalog.model_dict()
+        request = ModelRequest(transcript=transcript.strip(), facts=model_facts)
         self._trace(
             {
                 "event": "compiler_started",
@@ -269,6 +276,7 @@ class TranscriptCompiler:
             capture_id=lambda index: _capture_id(correlation, index),
             source=response.source,
             transcript=transcript.strip(),
+            review_catalog=review_catalog,
         )
         if (
             require_qualified_voice_intents
@@ -292,13 +300,16 @@ class TranscriptCompiler:
                 "model": response.model,
                 "prompt_schema_version": response.prompt_schema_version,
                 "state_digest": facts.state_digest,
+                "review_catalog_identity": (
+                    None if review_catalog is None else review_catalog.catalog_identity
+                ),
                 "outcome": outcome.kind.value,
                 "reason": None if outcome.reason is None else outcome.reason.value,
                 "pending_intent_id": outcome.pending_intent_id,
                 "source": response.source,
                 "origin": response.origin,
                 "cassette_digest": response.cassette_digest,
-                "grounded": int(outcome.kind is OutcomeKind.PLAN),
+                "grounded": int(outcome.kind in {OutcomeKind.PLAN, OutcomeKind.REVIEW}),
                 "input_units": response.input_units,
                 "output_units": response.output_units,
                 "provider_latency_ms": response.latency_ms,
@@ -314,6 +325,7 @@ class TranscriptCompiler:
                     "outcome": outcome.kind.value,
                     "reason": None if outcome.reason is None else outcome.reason.value,
                     "pending_intent_id": outcome.pending_intent_id,
+                    "review": None if outcome.review is None else outcome.review.to_dict(),
                     "model": response.model,
                     "prompt_schema_version": response.prompt_schema_version,
                     "response_source": response.source,

@@ -19,7 +19,7 @@ import httpx
 from language.contracts import CompilerReason
 
 PINNED_COMPILER_MODEL = "claude-sonnet-5"
-PROMPT_SCHEMA_VERSION = "intent-v1-compiler-9"
+PROMPT_SCHEMA_VERSION = "intent-v1-compiler-10"
 _CASSETTE_LOCK = Lock()
 _COMPILER_INTENT_NAMES = (
     "arm",
@@ -332,7 +332,12 @@ def _anthropic_body(request: ModelRequest) -> dict[str, object]:
             "unsupported, "
             "and refuse have kind and a reason enum, with optional human-readable detail. Put "
             "explanations in detail, never in reason. Omit fields belonging to other "
-            "outcome kinds.\n"
+            "outcome kinds. When review_catalog is present, use review for named approved-map "
+            "work: navigate has destination_id; search has destination_id and target_class; "
+            "survey has destination_id; multiview has one through eight destination_ids. "
+            "Use only exact canonical identifiers present in review_catalog. A review is not an "
+            "Intent v1 command: never emit navigate, search, survey, or multiview as intents, "
+            "never invent a route, and never choose the aircraft selection.\n"
             "Every intent has exactly name, args, selection, mode; mode is indoor. "
             "select requires args.ids, a nonempty array of known selectable IDs, and selection "
             "must equal args.ids. It changes the selection for subsequent plan steps. "
@@ -470,6 +475,22 @@ def _tool_schema() -> dict[str, object]:
             "mode": {"type": "string", "enum": ["indoor"]},
         },
     }
+    review = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "kind": {"type": "string", "enum": ["navigate", "search", "survey", "multiview"]},
+            "destination_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "target_class": {"type": "string", "minLength": 1, "maxLength": 128},
+            "destination_ids": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 128},
+                "minItems": 1,
+                "maxItems": 8,
+                "uniqueItems": True,
+            },
+        },
+    }
     return {
         "name": "submit_compiler_outcome",
         "description": "Submit a grounded plan or typed non-plan outcome.",
@@ -481,9 +502,17 @@ def _tool_schema() -> dict[str, object]:
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["plan", "cancel_pending", "clarify", "unsupported", "refuse"],
+                    "enum": [
+                        "plan",
+                        "review",
+                        "cancel_pending",
+                        "clarify",
+                        "unsupported",
+                        "refuse",
+                    ],
                 },
                 "intents": {"type": "array", "items": intent, "minItems": 1, "maxItems": 12},
+                "review": review,
                 "reason": {"type": "string", "enum": [reason.value for reason in CompilerReason]},
                 "detail": {"type": "string", "maxLength": 500},
                 "pending_intent_id": {"type": "string", "minLength": 1, "maxLength": 128},
