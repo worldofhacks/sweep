@@ -457,6 +457,7 @@ class RelayLink(
             authorization.connectionEpoch == current.connectionEpoch && current.relayOffsetMs != null &&
             (current.authRoundTripMs?.div(2) ?: Long.MAX_VALUE) <= authorization.maxClockErrorMs &&
             authorization.clockLeaseId == navigation.clockLeaseId && authorization.expiresAtMs <= navigation.clockLeaseExpiresAtMs &&
+            authorization.arrivalHoldTimeoutMs <= navigation.arrivalHoldTimeoutMs &&
             relayNow < navigation.clockLeaseExpiresAtMs && navigationPinsMatch(authorization, navigation)
         if (!identityMatches || !effectiveAuthority(aircraft.snapshot.value) || !authorization.verifies(config.key) ||
             authorization.seq <= lastNavigationAuthorizationSeq || !timeWithinClockBudget(authorization.t, relayNow, authorization.trackingTimeoutMs, authorization.maxClockErrorMs) ||
@@ -1088,6 +1089,7 @@ class RelayLink(
             authorization.connectionEpoch == _state.value.connectionEpoch && _state.value.relayOffsetMs != null &&
             (_state.value.authRoundTripMs?.div(2) ?: Long.MAX_VALUE) <= authorization.maxClockErrorMs &&
             authorization.clockLeaseId == navigation.clockLeaseId && authorization.expiresAtMs <= navigation.clockLeaseExpiresAtMs &&
+            authorization.arrivalHoldTimeoutMs <= navigation.arrivalHoldTimeoutMs &&
             relayNow < navigation.clockLeaseExpiresAtMs && navigationPinsMatch(authorization, navigation) &&
             authorization.commandId == command.commandId && authorization.routeId == goto.navigationRouteId &&
             authorization.expiresAtMs > relayNow &&

@@ -43,6 +43,7 @@ class FlightControllerTest {
 
     private class Harness(
         private val navigationLeaseExpiresAtMs: Long = Long.MAX_VALUE,
+        private val arrivalHoldTimeoutMs: Long = 0,
         private val supervisedVertical: SupervisedVerticalConfig? = null,
         private val navigationEnabled: Boolean = false,
     ) {
@@ -79,6 +80,7 @@ class FlightControllerTest {
                 arrivalHorizontalToleranceM = 0.2,
                 arrivalVerticalToleranceM = 0.2,
                 maxPositionUncertaintyM = 0.1,
+                arrivalHoldTimeoutMs = arrivalHoldTimeoutMs,
             ) else null,
         )
         val controller = FlightController(model, clock, config) { log += it }
@@ -189,6 +191,8 @@ class FlightControllerTest {
             expiresAtMs: Long = clock.nowMs() + 2_000,
             freshUntilMs: Long? = clock.nowMs() + 500,
             poseConnectionEpoch: Int = 1,
+            trackingTimeoutMs: Long = 3_000,
+            arrivalHoldTimeoutMs: Long = 0,
         ) {
             val now = clock.nowMs()
             val authorization = NavigationRouteAuthorization(
@@ -199,8 +203,8 @@ class FlightControllerTest {
                 geometrySha256 = "a".repeat(64), cameraCalibrationSha256 = "a".repeat(64), bodyExtrinsicsSha256 = "a".repeat(64), worldTransformSha256 = "a".repeat(64),
                 controlSourceIds = listOf("tag-source"), segments = listOf(NavigationSegment(0, 0, 1_200, 0, 2_000, targetZMm, 300)),
                 maxSpeedMmS = 300, maxAccelerationMmS2 = 300, maxDecelerationMmS2 = 300, maxPositionUncertaintyMm = 100, maxCrossTrackMm = 300,
-                arrivalHorizontalToleranceMm = 200, arrivalVerticalToleranceMm = 200, poseFreshnessMs = 500, trackingTimeoutMs = 3_000,
-                flightApproved = true, signature = "0".repeat(64),
+                arrivalHorizontalToleranceMm = 200, arrivalVerticalToleranceMm = 200, poseFreshnessMs = 500, trackingTimeoutMs = trackingTimeoutMs,
+                flightApproved = true, signature = "0".repeat(64), arrivalHoldTimeoutMs = arrivalHoldTimeoutMs,
             )
             val ready = poseStatus == NavigationPose.Status.READY
             val pose = NavigationPose(
@@ -517,6 +521,20 @@ class FlightControllerTest {
         val replacement = h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-2"), "route-command-2")
         assertEquals("completed", replacement.terminal?.first, replacement.events.toString())
         assertEquals("route-2", h.controller.status.arrivalHold?.routeId)
+    }
+
+    @Test
+    fun `configured arrival hold starts its own deadline after verified arrival`() {
+        val h = Harness(navigationEnabled = true, arrivalHoldTimeoutMs = 200)
+        h.hovering()
+        h.join()
+        h.navigation(yMm = 2_000, trackingTimeoutMs = 1, arrivalHoldTimeoutMs = 200)
+        h.run(CommandArgs.Goto(0, 2_000, 1_200, 300, "route-1"), "route-command")
+
+        h.tick()
+        assertEquals("navigation_arrival_hold", h.controller.status.phase)
+        h.tick()
+        assertEquals("navigation_hold", h.controller.status.phase)
     }
 
     @Test

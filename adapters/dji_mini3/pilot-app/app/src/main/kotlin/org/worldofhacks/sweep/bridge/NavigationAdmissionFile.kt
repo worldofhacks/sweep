@@ -48,10 +48,11 @@ internal fun parseNavigationAdmission(
 ): NavigationAdmissionConfig? {
     fun text(name: String) = (json[name] as? JsonString)?.value ?: error("$name must be text")
     fun positive(name: String) = ((json[name] as? JsonInt)?.value ?: error("$name must be integer")).also { require(it > 0) { "$name must be positive" } }
+    fun arrivalHoldTimeout() = ((json["arrival_hold_timeout_ms"] as? JsonInt)?.value ?: 0).also { require(it in 0..180_000) { "arrival hold timeout is invalid" } }
     require(json["v"] == JsonInt(1) && json["enabled"] is JsonBool) { "navigation admission version or enabled flag is invalid" }
     if (!(json["enabled"] as JsonBool).value) { require(json.keys == setOf("v", "enabled")) { "disabled navigation admission has extra fields" }; return null }
     val fields = setOf("v", "enabled", "navigation_config_id", "navigation_config_sha256", "map_version", "map_sha256", "geometry_sha256", "camera_calibration_sha256", "body_extrinsics_sha256", "world_transform_sha256", "control_source_ids", "clock_lease_id", "clock_lease_expires_at_ms", "max_authorization_lifetime_ms", "provenance")
-    require(json.keys == fields) { "navigation admission fields are invalid" }
+    require(json.keys == fields || json.keys == fields + "arrival_hold_timeout_ms") { "navigation admission fields are invalid" }
     val pins = linkedMapOf("navigation_config" to text("navigation_config_sha256"), "map" to text("map_sha256"), "geometry" to text("geometry_sha256"), "camera_calibration" to text("camera_calibration_sha256"), "body_extrinsics" to text("body_extrinsics_sha256"), "world_transform" to text("world_transform_sha256"))
     val provenance = json["provenance"] as? JsonObject ?: error("navigation provenance must be an object")
     require(provenance.keys == setOf("v", "session", "device_id", "bindings", "signature")) { "navigation provenance fields are invalid" }
@@ -78,7 +79,7 @@ internal fun parseNavigationAdmission(
         evidenceFile(name)
     }
     val sources = (json["control_source_ids"] as? JsonArray)?.items?.map { (it as? JsonString)?.value ?: error("control source must be text") } ?: error("control sources must be a list")
-    return NavigationAdmissionConfig(text("navigation_config_id"), pins.getValue("navigation_config"), text("map_version"), pins.getValue("map"), pins.getValue("geometry"), pins.getValue("camera_calibration"), pins.getValue("body_extrinsics"), pins.getValue("world_transform"), sources, text("clock_lease_id"), positive("clock_lease_expires_at_ms"), positive("max_authorization_lifetime_ms"), files, enabled = true)
+    return NavigationAdmissionConfig(text("navigation_config_id"), pins.getValue("navigation_config"), text("map_version"), pins.getValue("map"), pins.getValue("geometry"), pins.getValue("camera_calibration"), pins.getValue("body_extrinsics"), pins.getValue("world_transform"), sources, text("clock_lease_id"), positive("clock_lease_expires_at_ms"), positive("max_authorization_lifetime_ms"), files, enabled = true, arrivalHoldTimeoutMs = arrivalHoldTimeout())
 }
 
 private fun sha256(bytes: ByteArray): String =

@@ -166,6 +166,7 @@ data class NavigationConfig(
     val arrivalHorizontalToleranceM: Double,
     val arrivalVerticalToleranceM: Double,
     val maxPositionUncertaintyM: Double,
+    val arrivalHoldTimeoutMs: Long = 0,
     val localHeightPolicy: NavigationLocalHeightPolicy = NavigationLocalHeightPolicy(),
 ) {
     init {
@@ -178,7 +179,7 @@ data class NavigationConfig(
         require(controlSourceIds.isNotEmpty() && controlSourceIds == controlSourceIds.distinct().sorted()) {
             "navigation control source identities must be sorted and unique"
         }
-        require(poseFreshnessMs > 0 && authorizationLifetimeMs > 0 && lossLandAfterMs > 0) {
+        require(poseFreshnessMs > 0 && authorizationLifetimeMs > 0 && lossLandAfterMs > 0 && arrivalHoldTimeoutMs in 0..180_000) {
             "navigation timing bounds are invalid"
         }
         require(

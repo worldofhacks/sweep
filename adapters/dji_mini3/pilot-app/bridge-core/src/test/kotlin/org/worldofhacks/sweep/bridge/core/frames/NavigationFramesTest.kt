@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test
 import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonArray
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
+import org.worldofhacks.sweep.bridge.core.json.JsonInt
 import org.worldofhacks.sweep.bridge.core.signing.Signing
 
 class NavigationFramesTest {
@@ -38,6 +39,15 @@ class NavigationFramesTest {
         )) {
             assertThrows(ContractError::class.java) { NavigationRouteAuthorization.parse(invalid) }
         }
+    }
+
+    @Test
+    fun `route authorization signs an explicit arrival hold timeout while legacy routes omit it`() {
+        val configured = routeAuthorization().copy(arrivalHoldTimeoutMs = 1_000).signed()
+
+        assertEquals(JsonInt(1_000), configured["arrival_hold_timeout_ms"])
+        assertEquals(1_000, NavigationRouteAuthorization.parse(configured).arrivalHoldTimeoutMs)
+        assertFalse("arrival_hold_timeout_ms" in routeAuthorization().unsignedEvent().keys)
     }
 
     @Test

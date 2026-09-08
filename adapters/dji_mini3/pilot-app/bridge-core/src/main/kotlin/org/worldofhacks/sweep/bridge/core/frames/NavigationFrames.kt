@@ -92,6 +92,7 @@ data class NavigationRouteAuthorization(
     val trackingTimeoutMs: Long,
     val flightApproved: Boolean,
     val signature: String,
+    val arrivalHoldTimeoutMs: Long = 0,
 ) {
     init {
         require(t >= 0 && deviceId > 0 && connectionEpoch > 0 && seq > 0) { "route identity is invalid" }
@@ -101,7 +102,7 @@ data class NavigationRouteAuthorization(
         require(provenanceIds().all(::validIdentity) && controlSourceIds.all(::validIdentity)) { "route provenance pins are invalid" }
         require(controlSourceIds.isNotEmpty() && controlSourceIds == controlSourceIds.distinct().sorted()) { "route source identities must be sorted and unique" }
         require(segments.size == 1) { "route authorization must carry exactly one current segment" }
-        require(maxClockErrorMs >= 0 && limits().all { it > 0 }) { "route limits must be nonnegative/positive" }
+        require(maxClockErrorMs >= 0 && limits().all { it > 0 } && arrivalHoldTimeoutMs in 0..180_000) { "route limits must be nonnegative/positive" }
         require(flightApproved) { "route must be explicitly flight approved" }
         require(Signing.isWellFormed(signature)) { "signature must be lowercase HMAC-SHA256 hex" }
     }
@@ -122,7 +123,7 @@ data class NavigationRouteAuthorization(
         "arrival_horizontal_tolerance_mm" to JsonInt(arrivalHorizontalToleranceMm), "arrival_vertical_tolerance_mm" to JsonInt(arrivalVerticalToleranceMm),
         "pose_freshness_ms" to JsonInt(poseFreshnessMs), "tracking_timeout_ms" to JsonInt(trackingTimeoutMs),
         "flight_approved" to JsonBool(flightApproved),
-    ))
+    )).let { event -> if (arrivalHoldTimeoutMs > 0) event.with("arrival_hold_timeout_ms", JsonInt(arrivalHoldTimeoutMs)) else event }
 
     fun verifies(key: ByteArray): Boolean = Signing.verify(unsignedEvent(), signature, key)
     fun target(): List<Long> = segments.last().end()
@@ -140,9 +141,10 @@ data class NavigationRouteAuthorization(
             "max_deceleration_mm_s2", "max_position_uncertainty_mm", "max_cross_track_mm", "arrival_horizontal_tolerance_mm", "arrival_vertical_tolerance_mm",
             "pose_freshness_ms", "tracking_timeout_ms", "flight_approved", "signature",
         )
+        private const val ARRIVAL_HOLD_TIMEOUT = "arrival_hold_timeout_ms"
 
         fun parse(json: JsonObject): NavigationRouteAuthorization {
-            Fields.exact(json, FIELDS, CODE)
+            Fields.exact(json, if (ARRIVAL_HOLD_TIMEOUT in json.keys) FIELDS + ARRIVAL_HOLD_TIMEOUT else FIELDS, CODE)
             Fields.envelope(json, TYPE, CODE)
             Fields.exactString(json["position_frame"], "position_frame", POSITION_FRAME, CODE)
             if (json["flight_approved"] != JsonBool(true)) throw ContractError(CODE, "flight_approved must be true")
@@ -162,7 +164,7 @@ data class NavigationRouteAuthorization(
                     Fields.positiveInt(json["max_position_uncertainty_mm"], "max_position_uncertainty_mm", CODE), Fields.positiveInt(json["max_cross_track_mm"], "max_cross_track_mm", CODE),
                     Fields.positiveInt(json["arrival_horizontal_tolerance_mm"], "arrival_horizontal_tolerance_mm", CODE), Fields.positiveInt(json["arrival_vertical_tolerance_mm"], "arrival_vertical_tolerance_mm", CODE),
                     Fields.positiveInt(json["pose_freshness_ms"], "pose_freshness_ms", CODE), Fields.positiveInt(json["tracking_timeout_ms"], "tracking_timeout_ms", CODE), true,
-                    signature(json, CODE),
+                    signature(json, CODE), Fields.nonNegativeInt(json[ARRIVAL_HOLD_TIMEOUT] ?: JsonInt(0), ARRIVAL_HOLD_TIMEOUT, CODE),
                 )
             } catch (error: IllegalArgumentException) {
                 throw ContractError(CODE, error.message ?: "navigation route authorization values are invalid")

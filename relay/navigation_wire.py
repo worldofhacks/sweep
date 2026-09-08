@@ -48,6 +48,7 @@ class NavigationWireConfig:
     arrival_vertical_tolerance_mm: int
     pose_freshness_ms: int
     tracking_timeout_ms: int
+    arrival_hold_timeout_ms: int = 0
 
     def __post_init__(self) -> None:
         for name in ("clock_lease_id", "navigation_config_id", "map_version"):
@@ -82,6 +83,25 @@ class NavigationWireConfig:
             "tracking_timeout_ms",
         ):
             _positive_int(getattr(self, name), name)
+        _nonnegative_int(self.arrival_hold_timeout_ms, "arrival hold timeout")
+        if self.arrival_hold_timeout_ms > 180_000:
+            raise ValueError("arrival hold timeout exceeds 180000 ms")
+
+
+def wire_config_digest_candidates(
+    profiles: Mapping[int, NavigationWireConfig],
+) -> frozenset[str]:
+    canonical = {str(drone_id): asdict(profiles[drone_id]) for drone_id in sorted(profiles)}
+    canonical_digest = content_digest(canonical)
+    if any(profile.arrival_hold_timeout_ms for profile in profiles.values()):
+        return frozenset((canonical_digest,))
+    legacy = {
+        drone_id: {
+            name: value for name, value in profile.items() if name != "arrival_hold_timeout_ms"
+        }
+        for drone_id, profile in canonical.items()
+    }
+    return frozenset((canonical_digest, content_digest(legacy)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,10 +148,7 @@ class NavigationWirePublisher:
         if not callable(signing_key) or not callable(event_ids) or not callable(clock):
             raise ValueError("navigation wire dependencies must be callable")
         expected = getattr(runtime.config, "wire_config_sha256", None)
-        actual = content_digest(
-            {str(drone_id): asdict(profiles[drone_id]) for drone_id in sorted(profiles)}
-        )
-        if expected != actual:
+        if expected not in wire_config_digest_candidates(profiles):
             raise ValueError("navigation wire configuration is not approved by the runtime")
         self.runtime = runtime
         self.wire_configs = MappingProxyType(profiles)
@@ -417,7 +434,8 @@ class NavigationWirePublisher:
             or profile.arrival_vertical_tolerance_mm / 1_000 > config.position_tolerance_m
             or profile.pose_freshness_ms > config.position_max_age_ms
             or profile.tracking_timeout_ms > config.segment_timeout_ms
-            or profile.max_authorization_lifetime_ms > config.segment_timeout_ms
+            or profile.max_authorization_lifetime_ms
+            > profile.tracking_timeout_ms + profile.arrival_hold_timeout_ms
             or profile.max_clock_error_ms != pins.clock_mapping.max_error_ms
             or (config.speed_m_s**2) / (2 * (profile.max_deceleration_mm_s2 / 1_000))
             > config.motion.stopping_allowance_m
@@ -514,7 +532,7 @@ class NavigationWirePublisher:
 
     @staticmethod
     def _limits(profile: NavigationWireConfig) -> dict[str, int]:
-        return {
+        limits = {
             "max_speed_mm_s": profile.max_speed_mm_s,
             "max_acceleration_mm_s2": profile.max_acceleration_mm_s2,
             "max_deceleration_mm_s2": profile.max_deceleration_mm_s2,
@@ -525,6 +543,9 @@ class NavigationWirePublisher:
             "pose_freshness_ms": profile.pose_freshness_ms,
             "tracking_timeout_ms": profile.tracking_timeout_ms,
         }
+        if profile.arrival_hold_timeout_ms:
+            limits["arrival_hold_timeout_ms"] = profile.arrival_hold_timeout_ms
+        return limits
 
     def _event_id(self) -> str:
         value = self._event_ids()

@@ -99,14 +99,16 @@ def _control_pose(
     )
 
 
-def _publisher() -> tuple[
+def _publisher(
+    wire: NavigationWireConfig | None = None,
+) -> tuple[
     NavigationWirePublisher,
     Plan,
     list[object],
     list[object],
     MutableClock,
 ]:
-    wire = _wire_config()
+    wire = wire or _wire_config()
     clock = MutableClock(100_000)
     pose = [_control_pose()]
     config = NavigationExecutionConfig(
@@ -283,6 +285,45 @@ def test_phone_wire_binds_a_flight_approved_frozen_segment_and_fresh_pose() -> N
     )
     publisher.retire(plan.commands[0].command_id)
     assert publisher.update(hold) == []
+
+
+def test_legacy_wire_profile_digest_without_an_arrival_timeout_remains_approved() -> None:
+    publisher, _, _, _, _ = _publisher()
+    legacy_profile = asdict(_wire_config())
+    del legacy_profile["arrival_hold_timeout_ms"]
+    publisher.runtime.config = replace(
+        publisher.runtime.config,
+        wire_config_sha256=content_digest({"1": legacy_profile}),
+    )
+
+    assert NavigationWirePublisher(
+        publisher.runtime,
+        {1: _wire_config()},
+        session="test-session",
+        signing_key=lambda _drone_id: NODE_KEY,
+        event_ids=lambda: "legacy-event",
+        clock=lambda: 100_000,
+    )
+
+
+def test_explicit_arrival_hold_timeout_is_signed_and_extends_the_authorization_budget() -> None:
+    wire = replace(
+        _wire_config(),
+        max_authorization_lifetime_ms=6_000,
+        arrival_hold_timeout_ms=1_000,
+    )
+    publisher, plan, snapshot, _, _ = _publisher(wire)
+
+    with publisher.command_scope(plan, lambda: snapshot[0]):
+        route, _ = publisher.prepare_request(_request(plan))
+
+    assert route["arrival_hold_timeout_ms"] == 1_000
+    assert route["expires_at_ms"] == 106_000
+    assert verify_event_signature(
+        {name: value for name, value in route.items() if name != "signature"},
+        route["signature"],
+        NODE_KEY,
+    )
 
 
 def test_completed_arrival_retains_fresh_pose_until_the_original_authorization_expires() -> None:

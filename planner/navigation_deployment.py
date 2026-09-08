@@ -5,7 +5,7 @@ import json
 import os
 import stat
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from math import hypot
 from pathlib import Path
 from types import MappingProxyType
@@ -241,6 +241,7 @@ _WIRE_LIMIT_FIELDS = frozenset(
         "arrival_vertical_tolerance_mm",
         "pose_freshness_ms",
         "tracking_timeout_ms",
+        "arrival_hold_timeout_ms",
     }
 )
 
@@ -267,8 +268,15 @@ def _wire_profiles(value: object, frame_ids: set[int]) -> Mapping[int, Navigatio
         raise ValueError("wire profiles must match every configured aircraft")
     result: dict[int, NavigationWireConfig] = {}
     fields = set(NavigationWireConfig.__dataclass_fields__)
+    legacy_fields = fields - {"arrival_hold_timeout_ms"}
     for device_id, item in entries.items():
-        profile = dict(_fields(item, fields, "wire profile"))
+        profile_fields = (
+            legacy_fields
+            if isinstance(item, dict) and "arrival_hold_timeout_ms" not in item
+            else fields
+        )
+        profile = dict(_fields(item, profile_fields, "wire profile"))
+        profile.setdefault("arrival_hold_timeout_ms", 0)
         sources = profile["control_source_ids"]
         if not isinstance(sources, list):
             raise ValueError("wire profile control sources must be a list")
@@ -309,7 +317,15 @@ def _validate_wire_tuning(
             or hashlib.sha256(encoded).hexdigest() != profile.navigation_config_sha256
         ):
             raise ValueError("wire navigation tuning does not match its approved profile")
-        limits = _fields(value["limits"], set(_WIRE_LIMIT_FIELDS), "wire navigation limits")
+        limit_fields = set(_WIRE_LIMIT_FIELDS)
+        raw_limits = value["limits"]
+        expected_limit_fields = (
+            limit_fields - {"arrival_hold_timeout_ms"}
+            if isinstance(raw_limits, dict) and "arrival_hold_timeout_ms" not in raw_limits
+            else limit_fields
+        )
+        limits = _fields(raw_limits, expected_limit_fields, "wire navigation limits")
+        limits.setdefault("arrival_hold_timeout_ms", 0)
         if any(
             type(limits[name]) is not int or limits[name] != getattr(profile, name)
             for name in _WIRE_LIMIT_FIELDS
@@ -692,9 +708,9 @@ def load_navigation_deployment(path: str | Path) -> NavigationDeployment:
 
     frame_ids = {frame.drone_id for frame in config.frames}
     profiles = _wire_profiles(raw["wire_profiles"], frame_ids)
-    if config.wire_config_sha256 != content_digest(
-        {str(device_id): asdict(profiles[device_id]) for device_id in sorted(profiles)}
-    ):
+    from relay.navigation_wire import wire_config_digest_candidates
+
+    if config.wire_config_sha256 not in wire_config_digest_candidates(profiles):
         raise ValueError("navigation execution does not bind approved wire profiles")
     world_path = local("world_localization_file")
     guard = _InputGuard.capture(

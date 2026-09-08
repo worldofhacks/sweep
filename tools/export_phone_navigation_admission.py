@@ -250,6 +250,8 @@ def export_phone_navigation_admission(
         "max_authorization_lifetime_ms": profile.max_authorization_lifetime_ms,
         "provenance": {**provenance, "signature": sign_event(provenance, key)},
     }
+    if profile.arrival_hold_timeout_ms:
+        manifest["arrival_hold_timeout_ms"] = profile.arrival_hold_timeout_ms
     encoded_manifest = json.dumps(
         manifest, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True
     ).encode()

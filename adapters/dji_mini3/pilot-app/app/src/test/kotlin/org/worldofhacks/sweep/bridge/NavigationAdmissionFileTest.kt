@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.worldofhacks.sweep.bridge.core.json.Json
 import org.worldofhacks.sweep.bridge.core.json.JsonObject
+import org.worldofhacks.sweep.bridge.core.json.JsonInt
 import org.worldofhacks.sweep.bridge.core.json.JsonString
 import org.worldofhacks.sweep.bridge.core.signing.Signing
 
@@ -31,6 +32,17 @@ class NavigationAdmissionFileTest {
 
         assertEquals("navigation-config-7", admission?.navigationConfigId)
         assertEquals(6, admission?.approvedEvidenceFiles?.size)
+    }
+
+    @Test
+    fun `admission accepts a bounded explicit arrival hold timeout`() {
+        val fixture = fixture()
+        val key = fixture.text("key_utf8").toByteArray()
+        val evidence = fixture.objectAt("evidence_utf8")
+        evidence.fields.forEach { (name, value) -> temporaryDirectory.resolve(name).writeText((value as JsonString).value) }
+
+        val manifest = fixture.objectAt("manifest").with("arrival_hold_timeout_ms", JsonInt(1_000))
+        assertEquals(1_000, parse(manifest, key)?.arrivalHoldTimeoutMs)
     }
 
     @Test

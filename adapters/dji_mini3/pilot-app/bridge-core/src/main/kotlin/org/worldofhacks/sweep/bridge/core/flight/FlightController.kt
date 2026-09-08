@@ -103,7 +103,12 @@ class FlightController(
         data class Invalid(val reason: FlightReason, val detail: String) : NavigationCheck
     }
 
-    private data class RetainedArrival(val command: FlightCommand, val args: CommandArgs.Goto, val startedMs: Long)
+    private data class RetainedArrival(
+        val command: FlightCommand,
+        val args: CommandArgs.Goto,
+        val trackingStartedMs: Long,
+        val arrivalStartedMs: Long,
+    )
 
     private class Active(val command: FlightCommand, val sink: ReportSink, val startedMs: Long, val startDetail: String) {
         var executingSent = false
@@ -534,7 +539,7 @@ class FlightController(
                     beginVirtualStick(now) {
                         when (val freshRoute = navigationCheck(command, args, clock.nowMs())) {
                             is NavigationCheck.Invalid -> handleNavigationInvalid(freshRoute, clock.nowMs())
-                            is NavigationCheck.Ready -> if (freshRoute.arrived) enterNavigationArrivalHold(command, args, now)
+                            is NavigationCheck.Ready -> if (freshRoute.arrived) enterNavigationArrivalHold(command, args, now, clock.nowMs())
                             else transition(Phase.Navigating)
                         }
                     }
@@ -1007,7 +1012,7 @@ class FlightController(
             else -> null
         } ?: return
         val args = command.args as? CommandArgs.Goto ?: return
-        when (val check = navigationCheck(command, args, now, retainedArrival?.startedMs)) {
+        when (val check = navigationCheck(command, args, now, retainedArrival?.trackingStartedMs, retainedArrival?.arrivalStartedMs)) {
             is NavigationCheck.Ready -> Unit
             is NavigationCheck.Invalid -> handleNavigationInvalid(check, now)
         }
@@ -1034,7 +1039,13 @@ class FlightController(
         }
     }
 
-    private fun navigationCheck(command: FlightCommand, args: CommandArgs.Goto, now: Long, trackingStartedMs: Long? = active?.takeIf { it.command == command }?.startedMs): NavigationCheck {
+    private fun navigationCheck(
+        command: FlightCommand,
+        args: CommandArgs.Goto,
+        now: Long,
+        trackingStartedMs: Long? = active?.takeIf { it.command == command }?.startedMs,
+        arrivalStartedMs: Long? = null,
+    ): NavigationCheck {
         val local = config.navigation ?: return navigationInvalid("navigation is not configured on this node")
         when (val height = navigationHeightCheck(local.localHeightPolicy)) {
             is NavigationCheck.Invalid -> return height
@@ -1048,6 +1059,9 @@ class FlightController(
         if (!routePinsMatch(authorization, local)) return navigationInvalid("signed route provenance does not match this node")
         if (authorization.commandId != command.commandId || authorization.routeId != routeId) {
             return navigationInvalid("signed route does not bind command ${command.commandId} and route $routeId")
+        }
+        if (authorization.arrivalHoldTimeoutMs > local.arrivalHoldTimeoutMs) {
+            return navigationInvalid("signed arrival hold timeout exceeds the local bound")
         }
         if (listOf(args.xMm, args.yMm, args.zMm) != authorization.target() || args.speedMmS > authorization.maxSpeedMmS) {
             return navigationInvalid("goto target or speed does not match the signed route")
@@ -1069,7 +1083,11 @@ class FlightController(
         if (now >= freshUntil || !withinClockBudget(poseTime, relayNow, authorization) || !withinClockBudget(fixTime, relayNow, authorization)) {
             return navigationLost("signed navigation pose or fix is stale")
         }
-        if (trackingStartedMs != null && now - trackingStartedMs >= authorization.trackingTimeoutMs) {
+        if (arrivalStartedMs != null && authorization.arrivalHoldTimeoutMs > 0) {
+            if (now - arrivalStartedMs >= authorization.arrivalHoldTimeoutMs) {
+                return navigationLost("signed arrival hold deadline elapsed")
+            }
+        } else if (trackingStartedMs != null && now - trackingStartedMs >= authorization.trackingTimeoutMs) {
             return navigationLost("signed route tracking deadline elapsed")
         }
         val x = pose.xMm ?: return navigationLost("ready navigation pose omitted x")
@@ -1125,8 +1143,14 @@ class FlightController(
     private fun withinClockBudget(timeMs: Long, relayNowMs: Long, route: NavigationRouteAuthorization): Boolean =
         timeMs <= relayNowMs + route.maxClockErrorMs && relayNowMs - timeMs <= route.poseFreshnessMs + route.maxClockErrorMs
 
-    private fun navigationFrame(command: FlightCommand, args: CommandArgs.Goto, now: Long, trackingStartedMs: Long? = active?.takeIf { it.command == command }?.startedMs): StickFrame {
-        val check = navigationCheck(command, args, now, trackingStartedMs) as? NavigationCheck.Ready ?: return StickFrame.NEUTRAL
+    private fun navigationFrame(
+        command: FlightCommand,
+        args: CommandArgs.Goto,
+        now: Long,
+        trackingStartedMs: Long? = active?.takeIf { it.command == command }?.startedMs,
+        arrivalStartedMs: Long? = null,
+    ): StickFrame {
+        val check = navigationCheck(command, args, now, trackingStartedMs, arrivalStartedMs) as? NavigationCheck.Ready ?: return StickFrame.NEUTRAL
         if (check.arrived) {
             rememberNavigationVelocity(BodyVelocity.ZERO)
             return StickFrame.NEUTRAL
@@ -1199,13 +1223,13 @@ class FlightController(
         val args = current.command.args as? CommandArgs.Goto ?: return
         when (val check = navigationCheck(current.command, args, now)) {
             is NavigationCheck.Invalid -> Unit
-            is NavigationCheck.Ready -> if (check.arrived) enterNavigationArrivalHold(current.command, args, current.startedMs)
+            is NavigationCheck.Ready -> if (check.arrived) enterNavigationArrivalHold(current.command, args, current.startedMs, now)
             else progress(now, "signed route ${args.navigationRouteId}: tracking mapped pose")
         }
     }
 
-    private fun enterNavigationArrivalHold(command: FlightCommand, args: CommandArgs.Goto, startedMs: Long) {
-        arrivalHold = RetainedArrival(command, args, startedMs)
+    private fun enterNavigationArrivalHold(command: FlightCommand, args: CommandArgs.Goto, trackingStartedMs: Long, arrivalStartedMs: Long) {
+        arrivalHold = RetainedArrival(command, args, trackingStartedMs, arrivalStartedMs)
         completeActive("route arrival confirmed by signed pose; retaining signed position hold")
         transition(Phase.NavigationArrivalHold)
     }
@@ -1523,7 +1547,7 @@ class FlightController(
             Phase.Navigating -> active?.command?.let { command ->
                 (command.args as? CommandArgs.Goto)?.let { navigationFrame(command, it, now) }
             } ?: StickFrame.NEUTRAL
-            Phase.NavigationArrivalHold -> arrivalHold?.let { navigationFrame(it.command, it.args, now, it.startedMs) } ?: StickFrame.NEUTRAL
+            Phase.NavigationArrivalHold -> arrivalHold?.let { navigationFrame(it.command, it.args, now, it.trackingStartedMs, it.arrivalStartedMs) } ?: StickFrame.NEUTRAL
             is Phase.Bench -> current.frame
             else -> StickFrame.NEUTRAL
         }
@@ -1710,7 +1734,7 @@ class FlightController(
     private fun currentArrivalHold(now: Long): NavigationArrivalHold? {
         if (phase !is Phase.NavigationArrivalHold) return null
         val retained = arrivalHold ?: return null
-        val check = navigationCheck(retained.command, retained.args, now, retained.startedMs) as? NavigationCheck.Ready ?: return null
+        val check = navigationCheck(retained.command, retained.args, now, retained.trackingStartedMs, retained.arrivalStartedMs) as? NavigationCheck.Ready ?: return null
         if (!check.arrived) return null
         val route = navigation.authorization ?: return null
         val target = route.target()

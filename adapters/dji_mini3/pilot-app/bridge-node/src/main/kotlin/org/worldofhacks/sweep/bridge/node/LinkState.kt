@@ -73,12 +73,13 @@ data class NavigationAdmissionConfig(
     val maxAuthorizationLifetimeMs: Long,
     val approvedEvidenceFiles: List<java.io.File>,
     val enabled: Boolean = false,
+    val arrivalHoldTimeoutMs: Long = 0,
 ) {
     init {
         require(pins().all { it.length == 64 && it.all { char -> char in '0'..'9' || char in 'a'..'f' } }) {
             "navigation evidence hashes must be lowercase SHA-256"
         }
-        require(mapVersion.isNotBlank() && navigationConfigId.isNotBlank() && clockLeaseId.isNotBlank() && clockLeaseExpiresAtMs > 0 && maxAuthorizationLifetimeMs > 0) {
+        require(mapVersion.isNotBlank() && navigationConfigId.isNotBlank() && clockLeaseId.isNotBlank() && clockLeaseExpiresAtMs > 0 && maxAuthorizationLifetimeMs > 0 && arrivalHoldTimeoutMs in 0..180_000) {
             "navigation identity or clock lease is invalid"
         }
         require(controlSourceIds.isNotEmpty() && controlSourceIds == controlSourceIds.distinct().sorted()) {
