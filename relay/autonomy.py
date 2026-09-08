@@ -22,6 +22,7 @@ the intent operation.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -636,7 +637,11 @@ class AutonomySession:
         self.search_detection = (
             None
             if composition.config.search_detection is None or self.search_runtime is None
-            else SearchDetectionFactory(composition.config.search_detection, self.search_runtime)
+            else SearchDetectionFactory(
+                composition.config.search_detection,
+                self.search_runtime,
+                **composition.detection_factory_args,
+            )
         )
         if self.search_detection is not None:
             self.search_detection.start()
@@ -1428,6 +1433,15 @@ class AutonomySession:
         if intent.name is IntentName.SEARCH and result.status is not LifecycleStatus.EXECUTING:
             if self.search_detection is not None:
                 self.search_detection.finish_mission(intent.intent_id)
+        if (
+            intent.name is IntentName.SEARCH
+            and result.status is LifecycleStatus.EXECUTING
+            and self.search_detection is not None
+        ):
+            self.search_detection.monitor_mission(
+                intent.intent_id,
+                lambda reason: self._fail_search_detection(intent.intent_id, session, reason),
+            )
         if cancelled is not None:
             return  # a stop already recorded this plan's terminal lifecycle
         self._report(runtime, session, job, result)
@@ -1579,6 +1593,68 @@ class AutonomySession:
 
         self._publish(runtime, operation)
 
+    def _fail_search_detection(self, intent_id: str, session: RelaySession, reason: str) -> None:
+        runtime = self._composition.runtime_if_bound()
+        search = self.search_runtime
+        if runtime is None or search is None:
+            return
+        with self._lock:
+            owner = self._awaiting.get(intent_id)
+            if owner is None or owner.session is not session or owner.job.cancelled_by is not None:
+                return
+            result = ExecutionResult(
+                intent_id=intent_id,
+                roster_version=owner.snapshot.roster_version,
+                status=LifecycleStatus.FAILED,
+                plan=owner.pending.plan,
+                refusal=Refusal(
+                    intent_id=intent_id,
+                    roster_version=owner.snapshot.roster_version,
+                    drone_id=None,
+                    connection_epoch=None,
+                    reason=RefusalReason.ADAPTER_FAILURE,
+                    detail=reason,
+                    status=LifecycleStatus.FAILED,
+                ),
+            )
+
+        def operation() -> list[dict[str, object]]:
+            with self._lock:
+                current = self._awaiting.get(intent_id)
+                if current is not owner or owner.job.cancelled_by is not None:
+                    return []
+                events = apply_result(session, owner.job.intent, result)
+                owner.job.cancelled_by = reason
+                owner.job.finished = True
+                self._awaiting.pop(intent_id, None)
+            search.complete_execution(intent_id, result)
+            if self.search_detection is not None:
+                self.search_detection.finish_mission(intent_id)
+            safety_intent = IntentV1(
+                v=1,
+                t=session.clock(),
+                type="intent",
+                intent_id=f"safety:search-detection:{hashlib.sha256(intent_id.encode()).hexdigest()[:24]}",
+                retry_of=None,
+                source="safety",
+                session=self.session_id,
+                name=IntentName.HOLD,
+                args={},
+                selection=owner.job.intent.selection,
+                mode=Mode.INDOOR,
+                confirm=True,
+            )
+            events.append(session.admit_safety_stop(safety_intent))
+            hold_job = _Job(safety_intent, session)
+            hold_lane = self._route(hold_job)
+            with hold_lane.ready:
+                hold_lane.pending.append(hold_job)
+                hold_lane.ready.notify()
+            events.extend(hold_job.publications)
+            return events
+
+        self._publish(runtime, operation)
+
     def _publish(
         self, runtime: RelayRuntime, operation: Callable[[], list[dict[str, object]]]
     ) -> None:
@@ -1689,8 +1765,10 @@ class AutonomyComposition:
         *,
         node_types: Mapping[int, NodeType] | None = None,
         ground_return_id: str | None = None,
+        detection_factory_args: Mapping[str, object] | None = None,
     ) -> None:
         self.config = config
+        self.detection_factory_args = dict(detection_factory_args or {})
         if config.supervised_vertical is not None:
             profile = SUPERVISED_VERTICAL_PROFILE
         else:
@@ -1826,6 +1904,10 @@ def create_autonomy_app(
     clock: Clock | None = None,
     event_ids: EventIdFactory | None = None,
     transcript_service_factory: TranscriptServiceFactory | None = None,
+    detection_stream_factory: object | None = None,
+    detection_detector_factory: object | None = None,
+    detection_pose_provider_factory: object | None = None,
+    detection_camera_provider_factory: object | None = None,
 ) -> tuple[FastAPI, AutonomyComposition]:
     """Build the relay app with the planner and arbiter consuming every accepted intent.
 
@@ -1837,11 +1919,22 @@ def create_autonomy_app(
         raise SettingsError("SWEEP_SIM_CAMERA_JSON is required when SWEEP_ADAPTER_BACKEND is sim")
     if config.navigation is not None:
         config.navigation.validate_projector(config.control_localization_projector)
+    detection_factory_args = {
+        key: value
+        for key, value in {
+            "stream_factory": detection_stream_factory,
+            "detector_factory": detection_detector_factory,
+            "pose_provider_factory": detection_pose_provider_factory,
+            "camera_provider_factory": detection_camera_provider_factory,
+        }.items()
+        if value is not None
+    }
     composition = AutonomyComposition(
         config,
         settings.capability_profile,
         node_types=settings.node_types,
         ground_return_id=settings.ground_return_id,
+        detection_factory_args=detection_factory_args,
     )
     control_localization_factory = (
         None
@@ -1911,7 +2004,11 @@ def create_autonomy_app(
             if authorization is None or not authorization.startswith("Bearer ")
             else authorization.removeprefix("Bearer ")
         )
-        if expected is None or supplied is None or not hmac.compare_digest(supplied, expected):
+        if (
+            expected is None
+            or supplied is None
+            or not hmac.compare_digest(supplied.encode(), expected)
+        ):
             raise HTTPException(status_code=401, detail="authentication required")
         return runtime
 
@@ -1923,7 +2020,11 @@ def create_autonomy_app(
     ) -> dict[str, object]:
         runtime = search_runtime(authorization)
         try:
-            candidate = validate_intent(await request.json(), composition.capability_profile)
+            payload = await request.json()
+            raw_intent = payload.get("intent") if isinstance(payload, Mapping) else payload
+            candidate = validate_intent(
+                raw_intent, capability_profile=composition.capability_profile
+            )
         except (ValueError, TypeError):
             raise HTTPException(status_code=422, detail="search intent is invalid") from None
         if (
@@ -1954,6 +2055,22 @@ def create_autonomy_app(
             ),
         }
 
+    @app.get("/session/{session_id}/search/catalog")
+    def search_catalog(
+        session_id: str, authorization: str | None = Header(default=None)
+    ) -> dict[str, object]:
+        search_runtime(authorization)
+        search = composition.session(session_id).search_runtime
+        if search is None:
+            raise HTTPException(status_code=404, detail="search is unavailable")
+        from perception.object_detection import DEFAULT_TARGET_LABELS
+
+        return {
+            "session": session_id,
+            "target_classes": list(DEFAULT_TARGET_LABELS),
+            "zones": list(search.config.areas),
+        }
+
     @app.get("/session/{session_id}/search/{intent_id}")
     def search_status(
         session_id: str,
@@ -1968,6 +2085,28 @@ def create_autonomy_app(
             status = search.status_payload(intent_id)
         except ValueError:
             raise HTTPException(status_code=404, detail="search mission is unknown") from None
+        owner = composition.session(session_id)
+        if owner.search_detection is not None:
+            status["detection_workers"] = owner.search_detection.status(intent_id)
+        status["session"] = session_id
+        return status
+
+    @app.post("/session/{session_id}/search/{intent_id}/findings/{sighting_id}/ack")
+    def acknowledge_search_finding(
+        session_id: str,
+        intent_id: str,
+        sighting_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        search_runtime(authorization)
+        search = composition.session(session_id).search_runtime
+        if (
+            search is None
+            or not search.belongs_to_session(intent_id, session_id)
+            or not search.acknowledge_finding(intent_id, sighting_id)
+        ):
+            raise HTTPException(status_code=404, detail="search finding is unknown")
+        status = search.status_payload(intent_id)
         status["session"] = session_id
         return status
 
