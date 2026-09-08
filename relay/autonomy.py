@@ -202,11 +202,13 @@ class AutonomyConfig:
                     localization_raw,
                     navigation_path,
                     ground_path,
+                    values.get("SWEEP_SEARCH_CONFIG", ""),
+                    values.get("SWEEP_SEARCH_DETECTION_CONFIG", ""),
                 )
             ):
                 raise SettingsError(
                     "SWEEP_SUPERVISED_VERTICAL_JSON cannot be combined with "
-                    "world planning, safety, localization, or navigation"
+                    "world planning, safety, localization, navigation, or search"
                 )
             return cls(
                 supervised_vertical=_config_from_json(

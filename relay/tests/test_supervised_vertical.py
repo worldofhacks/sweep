@@ -356,14 +356,17 @@ def test_supervised_vertical_allows_stops_without_an_aircraft() -> None:
     assert arbiter.check_intent(make_intent(IntentName.ESTOP, selection=()), snapshot) is None
 
 
-def test_supervised_vertical_env_rejects_world_localization_and_navigation() -> None:
+@pytest.mark.parametrize(
+    "field", ["SWEEP_CONTROL_LOCALIZATION_JSON", "SWEEP_SEARCH_CONFIG", "SWEEP_SEARCH_DETECTION_CONFIG"]
+)
+def test_supervised_vertical_env_rejects_world_localization_navigation_and_search(field: str) -> None:
     vertical = json.dumps(asdict(_vertical_config()))
 
     with pytest.raises(SettingsError, match="cannot be combined"):
         AutonomyConfig.from_env(
             {
                 "SWEEP_SUPERVISED_VERTICAL_JSON": vertical,
-                "SWEEP_CONTROL_LOCALIZATION_JSON": "{}",
+                field: "{}",
             }
         )
 
