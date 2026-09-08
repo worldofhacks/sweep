@@ -32,7 +32,7 @@ export class HttpSearchClient implements SearchClient {
   private readonly config: { baseUrl: string; token: string }
   private readonly fetcher: typeof fetch
 
-  constructor(config: { baseUrl: string; token: string }, fetcher: typeof fetch = fetch) {
+  constructor(config: { baseUrl: string; token: string }, fetcher: typeof fetch = (input, init) => fetch(input, init)) {
     this.config = config
     this.fetcher = fetcher
   }
