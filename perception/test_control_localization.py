@@ -514,3 +514,96 @@ def test_config_and_extrinsics_are_canonical_immutable_values():
         config(horizon_s=True)
     with pytest.raises(ValueError):
         extrinsics(1.0, measured=1)
+
+
+def test_no_declaration_matches_unplanned_land_policy_byte_identical():
+    tracker = ControlLocalization(config())
+    first = tracker.snapshot(1_000_000.0)
+    assert first.status == "hold"
+    assert first.loss_age_s == 0
+    assert tracker.snapshot(1_000_002.999).status == "hold"
+    landed = tracker.snapshot(1_000_003.0)
+    assert landed.status == "land"
+    assert landed.reason == "tag_fix_lost"
+    assert landed.loss_age_s == pytest.approx(3)
+
+
+def test_declared_blackout_window_suspends_the_land_timer():
+    tracker = ControlLocalization(config())
+    tracker.declare_planned_blackout("pano_360", max_duration_s=5.0, now=1_000.0)
+    tracker.snapshot(1_000.0)
+    held_past_unplanned_threshold = tracker.snapshot(1_003.0)
+    assert held_past_unplanned_threshold.status == "hold"
+    assert held_past_unplanned_threshold.reason == "planned_optical_blackout"
+    still_inside_window = tracker.snapshot(1_004.999)
+    assert still_inside_window.status == "hold"
+    assert still_inside_window.reason == "planned_optical_blackout"
+
+
+def test_blackout_window_exceeding_its_own_duration_fails_closed_to_land():
+    tracker = ControlLocalization(config())
+    tracker.declare_planned_blackout("pano_360", max_duration_s=5.0, now=1_000.0)
+    tracker.snapshot(1_000.0)
+    expired = tracker.snapshot(1_005.5)
+    assert expired.status == "land"
+    assert expired.reason == "tag_fix_lost"
+
+
+def test_declaration_exceeding_the_configured_cap_is_rejected_and_leaves_state_unchanged():
+    tracker = ControlLocalization(config(max_planned_blackout_s=5.0))
+    with pytest.raises(ValueError, match="exceeds the configured cap"):
+        tracker.declare_planned_blackout("pano_360", max_duration_s=6.0, now=0.0)
+    tracker.snapshot(0.0)
+    assert tracker.snapshot(3.0).status == "land"
+
+
+def test_window_closing_without_a_regained_fix_blocks_subsequent_motion():
+    tracker = ControlLocalization(config())
+    tracker.ingest_tag_fix(tag("tag", 0.0), 0.0)
+    tracker.ingest_velocity(velocity("velocity", 0.0), 0.0)
+    ready = tracker.ingest_height(height("height", 0.0), 0.0)
+    assert ready.status == "ready"
+
+    tracker.declare_planned_blackout("pano_360", max_duration_s=0.1, now=0.0)
+    still_inside_window = tracker.snapshot(0.05)
+    assert still_inside_window.status == "hold"
+    assert still_inside_window.reason == "planned_blackout_relocalize_required"
+
+    after_window_expires = tracker.snapshot(0.15)
+    assert after_window_expires.status == "hold"
+    assert after_window_expires.reason == "planned_blackout_relocalize_required"
+
+    tracker.ingest_velocity(velocity("velocity-2", 0.2), 0.2)
+    tracker.ingest_height(height("height-2", 0.2), 0.2)
+    relocalized = tracker.ingest_tag_fix(tag("tag-2", 0.2), 0.2)
+    assert relocalized.status == "ready"
+
+
+def test_capture_gimbal_command_parameters_open_the_declared_window():
+    tracker = ControlLocalization(config())
+    tracker.declare_capture_blackout(
+        {"pitch": -45.0, "blackout_reason": "pano_360", "blackout_max_duration_s": 5.0},
+        now=1_000.0,
+    )
+    held_past_unplanned_threshold = tracker.snapshot(1_003.0)
+    assert held_past_unplanned_threshold.status == "hold"
+    assert held_past_unplanned_threshold.reason == "planned_optical_blackout"
+
+
+def test_gimbal_command_missing_the_declaration_fails_closed():
+    tracker = ControlLocalization(config())
+    with pytest.raises(ValueError, match="missing its planned blackout declaration"):
+        tracker.declare_capture_blackout({"pitch": -45.0}, now=0.0)
+    tracker.snapshot(0.0)
+    assert tracker.snapshot(3.0).status == "land"
+
+
+def test_gimbal_command_exceeding_the_cap_fails_closed():
+    tracker = ControlLocalization(config(max_planned_blackout_s=5.0))
+    with pytest.raises(ValueError, match="exceeds the configured cap"):
+        tracker.declare_capture_blackout(
+            {"pitch": -45.0, "blackout_reason": "pano_360", "blackout_max_duration_s": 6.0},
+            now=0.0,
+        )
+    tracker.snapshot(0.0)
+    assert tracker.snapshot(3.0).status == "land"

@@ -72,6 +72,7 @@ class PlanningConfig:
     altitude_configuration_id: str | None = None
     altitude_completion_tolerance_m: float | None = None
     spacing_step_m: float = 0.2
+    capture_blackout_max_duration_s: float = 6.0
 
     def __post_init__(self) -> None:
         positive = {
@@ -80,6 +81,7 @@ class PlanningConfig:
             "flight_speed_m_s": self.flight_speed_m_s,
             "capture_yaw_speed_deg_s": self.capture_yaw_speed_deg_s,
             "spacing_step_m": self.spacing_step_m,
+            "capture_blackout_max_duration_s": self.capture_blackout_max_duration_s,
         }
         for name, value in positive.items():
             if (
@@ -673,7 +675,11 @@ class DeterministicPlanner:
         builder.add(
             drone_id,
             CommandOperation.SET_GIMBAL_PITCH,
-            {"pitch": self.config.capture_gimbal_pitch_deg},
+            {
+                "pitch": self.config.capture_gimbal_pitch_deg,
+                "blackout_reason": pattern,
+                "blackout_max_duration_s": self.config.capture_blackout_max_duration_s,
+            },
         )
 
         if pattern == "single_still":
