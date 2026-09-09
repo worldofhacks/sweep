@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from threading import RLock
+from threading import Lock
 from types import SimpleNamespace
 
 import pytest
@@ -150,7 +150,7 @@ def test_late_search_terminal_result_finishes_the_real_runtime(
     )
     owner = AutonomySession.__new__(AutonomySession)
     owner.session_id = relay_session.session_id
-    owner._lock = RLock()
+    owner._lock = Lock()
     owner._awaiting = {}
     owner._composition = SimpleNamespace(
         runtime_if_bound=lambda: None, report_multiview_execution=lambda *_: None
@@ -180,7 +180,7 @@ def test_late_search_terminal_result_finishes_the_real_runtime(
     assert committed.execution.status is terminal_status
     assert intent.intent_id not in owner._awaiting
     deadline = time.monotonic() + 1
-    while runtime.status(intent.intent_id).state == "running" and time.monotonic() < deadline:
+    while runtime.status(intent.intent_id).state != expected_state and time.monotonic() < deadline:
         time.sleep(0.01)
     assert runtime.status(intent.intent_id).state == expected_state
 
