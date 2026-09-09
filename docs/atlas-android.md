@@ -39,8 +39,15 @@ private app files, databases, and preferences is excluded.
 Opened space metadata is cached for offline capture into known spaces (20 bounded entries,
 isolated by credential). Cached live people are stripped. The interface labels the offline state;
 it does not imply that map tiles, source media, or reconstructed geometry are cached for offline use.
-Revoked invitations do not fall back to cached access. A network failure can use previously cached
-space metadata; a server authorization refusal is shown as a refusal.
+Native successful detail reads populate this cache before returning to the bundled interface;
+there is no separate JavaScript cache-write operation. An observed authentication refusal removes
+that credential's cached metadata; a refused space read removes the affected space. Upload and
+media access refusals use the same policy. A denied owner-only write is not treated as loss of
+read access. Older in-flight detail reads cannot repopulate metadata after invalidation.
+A network failure can use remaining cached metadata; an authorization refusal is shown as a
+refusal. This cannot detect an invitation change while the device has no connection, and does
+not erase a contributor's own originals or private drafts. See the
+[cache lifecycle evidence](evidence/atlas-cache-lifecycle-2026-09-08.md).
 
 Mesh-derived surface review uses the same native-scoped JSON transport. Geometry annotations load
 on demand from the authenticated build manifest, not in every cached/polled space detail. The

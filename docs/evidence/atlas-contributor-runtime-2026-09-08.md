@@ -44,10 +44,11 @@ were neither printed nor committed.
    originals, including 11 from earlier isolated tests, remained unchanged and
    available in the device's Uploads page.
 
-This verifies the online authorization refusal, not remote erasure of downloaded
-data or metadata-cache invalidation across a subsequent offline restart. That
-later lifecycle requires separate qualification. Local originals intentionally
-remain owned by their contributor.
+This run verifies the online authorization refusal, not remote erasure of downloaded
+data or metadata-cache invalidation across a subsequent offline restart. The later
+[native cache lifecycle change](atlas-cache-lifecycle-2026-09-08.md) adds persisted
+invalidation and regression coverage; this earlier runtime run is not evidence for
+that newer behavior. Local originals intentionally remain owned by their contributor.
 
 ## Cached-space notice correction
 

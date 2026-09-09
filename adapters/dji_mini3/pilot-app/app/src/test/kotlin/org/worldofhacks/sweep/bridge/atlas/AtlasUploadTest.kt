@@ -65,12 +65,14 @@ class AtlasUploadTest {
     @Test fun `refused invitation is actionable failure with the original retained`() {
         MockWebServer().use { server ->
             val access = session(server); val item = capture(access)
+            AtlasOutbox.get(context).cache(access.id, "place", JSONObject().put("space", "place").toString())
             server.enqueue(MockResponse().setResponseCode(403).setBody("{\"detail\":\"Invitation revoked\"}"))
             assertEquals(ListenableWorker.Result.failure(), worker().deliver(item, access))
             val result = AtlasOutbox.get(context).get(item.id)!!
             assertEquals("failed", result.state)
             assertEquals("Invitation revoked", result.error)
             assertTrue(AtlasOutbox.get(context).file(item).isFile)
+            assertEquals(0, AtlasOutbox.get(context).cached(access.id).length())
         }
     }
     @Test fun `wrong server checksum never produces a saved badge`() {

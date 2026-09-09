@@ -71,6 +71,7 @@ class AtlasUploadWorker(context: Context, parameters: WorkerParameters) : Worker
                 .header("X-Sweep-Capture", asciiJson(item.metadata)).post(body).build()
             activeCall = HTTP.newCall(request)
             activeCall!!.execute().use { response ->
+                if (!response.isSuccessful) AtlasMetadataCache(queue).accessRefused(session, item.spaceId, response.code)
                 val raw = response.peekBody(64 * 1024).string()
                 val result = runCatching { JSONObject(raw) }.getOrNull()
                 if (isStopped) return Result.failure()

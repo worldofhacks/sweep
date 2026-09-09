@@ -99,7 +99,6 @@ export class NativeAtlasClient extends AtlasClient {
     try {
       const detail = await super.detail(id, signal)
       this.network(false)
-      await nativeCall('cacheSpace', { session: this.session.id, detail }).catch(() => {})
       return detail
     } catch (error) {
       if (!(error instanceof NativeError) || error.code !== 'network') throw error

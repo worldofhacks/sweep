@@ -29,6 +29,7 @@ data class AtlasUpload(val id: String, val sessionId: String, val spaceId: Strin
 /** Files and queue rows survive activity/process death. Tokens never enter this database. */
 class AtlasOutbox private constructor(context: Context) : SQLiteOpenHelper(context, "atlas-outbox.db", null, 2) {
     val root = File(context.filesDir, "atlas-captures").apply { mkdirs() }
+    private val cacheGenerations = mutableMapOf<String, Long>()
     init {
         setWriteAheadLoggingEnabled(true)
         // This singleton initializes once per process, before any new camera capture.
@@ -148,7 +149,15 @@ class AtlasOutbox private constructor(context: Context) : SQLiteOpenHelper(conte
         check(!file(item).exists() || file(item).delete()) { "The local capture could not be removed." }
         writableDatabase.delete("uploads", "id=?", arrayOf(id))
     }
-    fun cache(sessionId: String, spaceId: String, json: String) {
+    @Synchronized fun cacheGeneration(sessionId: String): Long = cacheGenerations[sessionId] ?: 0L
+    /** Only remote metadata is removed. Captures, upload bindings and private drafts stay intact. */
+    @Synchronized fun invalidateCache(sessionId: String, spaceId: String? = null) {
+        cacheGenerations[sessionId] = cacheGeneration(sessionId) + 1
+        writableDatabase.delete("cached_spaces", "session_id=?" + if (spaceId == null) "" else " AND space_id=?",
+            if (spaceId == null) arrayOf(sessionId) else arrayOf(sessionId, spaceId))
+    }
+    @Synchronized fun cache(sessionId: String, spaceId: String, json: String, observedGeneration: Long = cacheGeneration(sessionId)) {
+        check(observedGeneration == cacheGeneration(sessionId)) { "Workspace access changed during this read. Refresh the space." }
         if (json.length > 1_500_000) return
         val db = writableDatabase
         db.insertWithOnConflict("cached_spaces", null, ContentValues().apply {
@@ -156,7 +165,7 @@ class AtlasOutbox private constructor(context: Context) : SQLiteOpenHelper(conte
         }, SQLiteDatabase.CONFLICT_REPLACE)
         db.execSQL("DELETE FROM cached_spaces WHERE rowid NOT IN (SELECT rowid FROM cached_spaces ORDER BY rowid DESC LIMIT 20)")
     }
-    fun cached(sessionId: String): JSONArray = readableDatabase.rawQuery(
+    @Synchronized fun cached(sessionId: String): JSONArray = readableDatabase.rawQuery(
         "SELECT data FROM cached_spaces WHERE session_id=?", arrayOf(sessionId)).use { cursor ->
         JSONArray().also { result -> while (cursor.moveToNext()) result.put(JSONObject(cursor.getString(0))) }
     }

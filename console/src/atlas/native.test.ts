@@ -56,6 +56,12 @@ it('uses cached space metadata only for a network failure, and never shows stale
   expect(detail.people).toEqual([])
   expect(offline).toHaveBeenCalledWith(true)
 })
+it('leaves successful detail caching to the native response handler, with no delayed write message', async () => {
+  const detail = { space: { id: 'place' }, people: [] }
+  const api = port(() => ({ status: 200, body: JSON.stringify(detail) }))
+  expect(await new NativeAtlasClient(session).detail('place')).toEqual(detail)
+  expect(api.postMessage.mock.calls.map(([raw]) => JSON.parse(raw).op)).toEqual(['request'])
+})
 it('does not use the offline cache after invitation revocation', async () => {
   const api = port(() => ({ status: 403, body: '{"detail":"Invitation revoked"}' }))
   await expect(new NativeAtlasClient(session).detail('place')).rejects.toThrow('Invitation revoked')

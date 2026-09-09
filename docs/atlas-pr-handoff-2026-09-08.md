@@ -42,15 +42,17 @@ Final checks are recorded here and in the PR description. Detailed evidence:
 - [Android runtime smoke and limitations](atlas-android.md#actual-android-emulator-smoke--final-handoff)
 - [Native video, scan and offline recovery](evidence/atlas-android-runtime-2026-09-08.md)
 - [Desktop owner / actual Android contributor](evidence/atlas-contributor-runtime-2026-09-08.md)
+- [Native metadata-cache lifecycle](evidence/atlas-cache-lifecycle-2026-09-08.md)
 
 The console checkpoint passed 93 files / 1,258 tests, ESLint and production build.
-The subsequent cached-space notice follow-up passes 93 files / 1,260 tests with
+The final native cache-lifecycle follow-up passes 93 files / 1,261 tests with
 `pnpm test --maxWorkers=2`; default-parallel local runs hit five-second timeouts
 in existing shell/flight workflow tests. The isolated shell suite also passes.
 No assertions or timeouts were relaxed, and no test configuration was changed.
 ESLint, the production web build and both Android builds pass on the follow-up.
-Both Android variants assemble and pass lint: fake has 89 unit tests and probe has
-109, all passing. The four JVM bridge suites pass 297 tests. The complete Python
+Both Android variants assemble and pass lint: the cache-lifecycle follow-up has
+97 fake and 117 probe unit tests, all passing. The four JVM bridge suites pass
+297 tests. The complete Python
 suite passes 3,343 tests with four deprecation warnings. Python lint and formatting
 pass. The isolated M14 browser mission passes, including geofence and node-watchdog
 evidence. GitHub Actions results are separate from these local results.
@@ -66,6 +68,11 @@ offline force-stop/relaunch after finalization, and automatic queued-upload
 recovery with matching original checksums. It fixed scan guidance incorrectly
 advancing after photos/videos. These are not handset, location-sharing lifecycle,
 in-flight upload interruption or complete background scheduling acceptance.
+The cache-lifecycle follow-up moves metadata caching into the native HTTP response
+handler, invalidates observed access refusals without removing local originals,
+and retires older reads. Its normal offline/cold-start APK smoke passes; refusal
+transitions are covered by native regression tests. Map-tile recovery after
+reconnection remains unqualified by that smoke, even though metadata reconnected.
 
 Warnings remain visible: large lazy map/3D bundles, existing Android lint warnings,
 and toolchain/deprecation notices. No passing result is claimed for an unrun check.

@@ -300,16 +300,6 @@ class AtlasActivity : ComponentActivity() {
                 }.show()
             true
         }
-        "cacheSpace" -> withContext(Dispatchers.IO) {
-            val session = vault.load(payload.getString("session")) ?: error("Reconnect your workspace.")
-            val detail = payload.getJSONObject("detail")
-            val space = detail.getJSONObject("space").getString("id")
-            session.endpoint(space)
-            // Never preserve somebody's live presence as an offline observation.
-            detail.put("people", JSONArray())
-            detail.getJSONObject("space").put("contributors", 0)
-            queue.cache(session.id, space, detail.toString()); true
-        }
         "cachedSpaces" -> withContext(Dispatchers.IO) { queue.cached(payload.getString("session")) }
         "openFleet" -> { startActivity(Intent(this, MainActivity::class.java)); true }
         "exit" -> { finish(); true }
@@ -321,9 +311,13 @@ class AtlasActivity : ComponentActivity() {
         require(body == null || body.length <= 64_000)
         val request = Request.Builder().url(session.api(path)).header("Authorization", "Bearer ${session.token}")
             .method(method, if (method == "POST") (body ?: "{}").toRequestBody("application/json".toMediaType()) else null).build()
+        val observedGeneration = queue.cacheGeneration(session.id)
         HTTP.newCall(request).execute().use { response ->
+            val metadataCache = AtlasMetadataCache(queue)
+            if (!response.isSuccessful) metadataCache.response(session, path, method, response.code, "", observedGeneration)
             val raw = response.peekBody(2_000_001).string()
             require(raw.toByteArray().size <= 2_000_000) { "The workspace response is too large." }
+            if (response.isSuccessful) metadataCache.response(session, path, method, response.code, raw, observedGeneration)
             return JSONObject().put("status", response.code).put("body", raw)
         }
     }
@@ -336,7 +330,10 @@ class AtlasActivity : ComponentActivity() {
         require(path.endsWith("/media") || path.endsWith("/cloud.glb"))
         val response = HTTP.newCall(Request.Builder().url(session.api(path))
             .header("Authorization", "Bearer ${session.token}").build()).execute()
-        if (!response.isSuccessful || response.body == null) { response.close(); blocked() }
+        if (!response.isSuccessful || response.body == null) {
+            response.use { AtlasMetadataCache(queue).accessRefused(session, segments.getOrNull(4), it.code) }
+            blocked()
+        }
         else {
             val maximum = if (path.endsWith(".glb")) 16L * 1024 * 1024 else AtlasOutbox.MAX_BYTES
             if (response.body!!.contentLength() > maximum) { response.close(); blocked() }

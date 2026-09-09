@@ -345,6 +345,13 @@ with `--verify-space SPACE_ID`. The tool targets only the local preview.
 
 ## Remaining requirements — goal is not complete
 
+The [native cache lifecycle follow-up](evidence/atlas-cache-lifecycle-2026-09-08.md)
+now caches successful detail reads natively and invalidates observed access refusals
+without touching contributor originals or drafts. Its regressions cover restart
+persistence and older in-flight observations; the actual APK's ordinary offline
+and cold-start cache flow also passes. This does not promise remote erasure or
+knowledge of invitation changes while the device has no connection.
+
 The [two-client runtime checkpoint](evidence/atlas-contributor-runtime-2026-09-08.md)
 now verifies a desktop owner requesting a map view and an actual Android emulator
 contributor capturing offline, recovering automatically, and opening the exact
