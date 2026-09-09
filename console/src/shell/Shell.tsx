@@ -14,7 +14,7 @@ import { Header } from './Header'
 import { NoticeLine } from './NoticeLine'
 import { Rail } from './Rail'
 import { TabBar } from './TabBar'
-import { Icon } from '../atlas/Icon'
+import { WorkspaceHeader } from './WorkspaceHeader'
 import './refinement.css'
 import {
   STOP_CLEARED_NOTICE_MS,
@@ -67,6 +67,8 @@ export function Shell({
   const isFixture =
     state.connection.transport === 'fixture' || state.keyboardConnection.transport === 'fixture'
   const invalidation = deriveInvalidation(state.requests, pendingRequest)
+  const fleetActive = Object.keys(state.aircraft).length > 0 || state.armed || state.estop ||
+    Boolean(pendingRequest) || stopTimes.seenActiveAt !== null
   // The webcam pill appears only once a webcam-bound relay client reports; without one the
   // gesture producer says so itself and the header stays as it was.
   const webcam =
@@ -85,9 +87,7 @@ export function Shell({
 
   return (
     <Frame
-      header={activeId === 'spaces' && Object.keys(state.aircraft).length === 0 &&
-        !state.armed && !state.estop && !pendingRequest && stopTimes.seenActiveAt === null ?
-        <header className="sh-atlas-header"><span className="sh-brand"><Icon name="spaces" size={23} /><strong>sweep</strong><span>ATLAS</span></span><span>See more. Understand together.</span><button className="sh-atlas-fleet" onClick={() => setActiveId('control')}>Fleet workspace <Icon name="arrow" size={14} /></button></header> :
+      header={<WorkspaceHeader onOpenFleet={() => setActiveId('control')} controls={activeId === 'spaces' && !fleetActive ? null :
         <Header
           state={state}
           stopTimes={stopTimes}
@@ -97,16 +97,8 @@ export function Shell({
           onToggleDetail={() => setDetailOpen((open) => !open)}
           isFixture={isFixture}
           webcam={webcam}
-        >
-          {isFixture && (
-            <p className="sh-fixture-line" role="status">
-              Development fixture active — no device commands leave this browser.
-            </p>
-          )}
-          <DangerBanner notice={newestDanger(state.notices)} />
-          <NoticeLine notice={newestAdvisory(state.notices)} />
-        </Header>
-      }
+        />
+      } />}
       rail={<Rail modules={MODULES} active={activeId} onSelect={setActiveId} />}
       pane={<ModuleComponent {...moduleProps} />}
       context={activeId === 'spaces' ? null :
@@ -115,6 +107,9 @@ export function Shell({
         </ContextColumn>
       }
       dock={
+        <>
+        <DangerBanner notice={fleetActive ? newestDanger(state.notices) : null} />
+        <NoticeLine notice={fleetActive ? newestAdvisory(state.notices) : null} />
         <Dock
           pending={pendingRequest}
           invalidation={invalidation}
@@ -123,6 +118,7 @@ export function Shell({
           onCancel={cancelRequest}
           label={deviceLabeller(state.aircraft)}
         />
+        </>
       }
       tabBar={<TabBar modules={MODULES} active={activeId} onSelect={setActiveId} />}
     />

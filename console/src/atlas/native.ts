@@ -1,13 +1,17 @@
 import { AtlasClient } from './client'
 import type { PlatformConnection, PlatformFetch } from '../platform/http'
 import { relayHttpUrl } from '../relay/origin'
-import type { SpaceDetail } from './types'
+import type { CaptureResponseTarget, SpaceDetail } from './types'
+import { parseDraft, type SpaceDraftStore } from './drafts'
 
 export interface NativeSession extends Omit<PlatformConnection, 'token'> { id: string; space: string | null }
 export interface NativeUpload {
   id: string; spaceId: string; kind: 'photo' | 'video' | 'panorama'
-  state: 'capturing' | 'queued' | 'uploading' | 'saved' | 'failed'
+  state: 'capturing' | 'importing' | 'queued' | 'uploading' | 'saved' | 'failed'
   bytes: number; sent: number; error: string; createdAt: number
+  source: 'camera' | 'import'; finalized: boolean
+  displayName?: string
+  responseTo?: CaptureResponseTarget
 }
 interface MessagePort {
   postMessage: (message: string) => void
@@ -70,9 +74,16 @@ export function nativeFetch(session: NativeSession): PlatformFetch {
 export class NativeAtlasClient extends AtlasClient {
   readonly session: NativeSession
   private readonly network: (offline: boolean) => void
+  private readonly nativeDrafts: SpaceDraftStore
+  override get drafts(): SpaceDraftStore { return this.nativeDrafts }
   constructor(session: NativeSession, network: (offline: boolean) => void = () => {}) {
     super({ ...session, token: '' }, nativeFetch(session))
     this.session = session; this.network = network
+    this.nativeDrafts = {
+      read: async () => { const value = await nativeCall<unknown>('readDraft', { session: session.id }); return value === null ? null : parseDraft(value) },
+      write: (draft, previous) => nativeCall('writeDraft', { session: session.id, draft, previous }),
+      remove: previous => nativeCall('removeDraft', { session: session.id, previous }),
+    }
   }
   override async list(signal?: AbortSignal) {
     try { const spaces = await super.list(signal); this.network(false); return spaces }

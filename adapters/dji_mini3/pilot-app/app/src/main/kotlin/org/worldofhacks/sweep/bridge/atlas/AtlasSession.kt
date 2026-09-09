@@ -26,11 +26,12 @@ data class AtlasSession(val id: String, val baseUrl: String, val workspace: Stri
 
     /** The web surface can reach Atlas only, never the adjacent control APIs. */
     fun api(path: String): HttpUrl {
-        require(path.matches(Regex("/atlas/spaces(?:/[a-zA-Z0-9_-]{1,64}(?:/(?:status|invitation|requests|presence|leave|reconstruction|captures/[a-zA-Z0-9_-]{1,64}/media|reconstruction/[a-zA-Z0-9_-]{1,64}/cloud\\.glb))?)?"))) {
+        val draftPublish = path.matches(Regex("/atlas/spaces/drafts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/publish"))
+        require(draftPublish || path.matches(Regex("/atlas/spaces(?:/[a-zA-Z0-9_-]{1,64}(?:/(?:status|invitation|requests|presence|leave|reconstruction|surface-requests|surface-requests/[0-9a-f-]{36}/[0-9a-f]{16}/dismiss|captures/[a-zA-Z0-9_-]{1,64}/media|reconstruction/[a-zA-Z0-9_-]{1,64}/(?:cloud\\.glb|manifest\\.json)))?)?"))) {
             "This endpoint is not available in Atlas."
         }
         val segments = path.removePrefix("/atlas/spaces").split('/').filter { it.isNotEmpty() }
-        require(space == null || segments.firstOrNull() == space) { "This invitation is for one space only." }
+        require(space == null || !draftPublish && segments.firstOrNull() == space) { "This invitation is for one space only." }
         return baseUrl.toHttpUrlOrNull()!!.newBuilder().addPathSegments("api/sessions")
             .addPathSegment(workspace).addPathSegments(path.removePrefix("/")).build()
     }
@@ -69,6 +70,8 @@ class AtlasVault(context: Context) {
         "atlas-access", MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM)
+
+    val drafts by lazy { AtlasDrafts(preferences) }
 
     fun current(): AtlasSession? = preferences.getString("current", null)?.let(::load)
     fun load(id: String): AtlasSession? = preferences.getString("session-$id", null)

@@ -141,7 +141,8 @@ def reconstruct(store: AtlasStore, job: dict, openmvs_bin: Path | None = None) -
     import pycolmap
 
     store.progress_reconstruction(
-        job["id"], representation="textured_mesh" if openmvs_bin else "sparse_point_cloud",
+        job["id"],
+        representation="textured_mesh" if openmvs_bin else "sparse_point_cloud",
         experimental=openmvs_bin is not None,
     )
     output = store.root / "reconstructions" / job["id"]
@@ -248,16 +249,23 @@ def reconstruct(store: AtlasStore, job: dict, openmvs_bin: Path | None = None) -
         }
         # Retain the calibrated camera/track solution for densification and provenance.
         model.write(output)
-        detail = ("Sparse 3D geometry reconstructed from matching image features. "
-                  "Dense surfaces are not reconstructed yet.")
+        detail = (
+            "Sparse 3D geometry reconstructed from matching image features. "
+            "Dense surfaces are not reconstructed yet."
+        )
         if openmvs_bin is not None:
             from spatial.atlas_dense import dense_mesh
 
             dense = dense_mesh(store, job["id"], images, output, root, output, openmvs_bin)
             provenance.update(dense)
             checksum = dense["artifact_sha256"]
-            detail = ("Photo-textured surfaces reconstructed from overlapping images. "
-                      "Experimental local build; gaps remain and scale is not geographic.")
+            from spatial.atlas_guidance import mesh_guidance
+
+            provenance["surface_review"] = mesh_guidance(output / "cloud.glb")
+            detail = (
+                "Photo-textured surfaces reconstructed from overlapping images. "
+                "Experimental local build; gaps remain and scale is not geographic."
+            )
         (output / "manifest.json").write_text(json.dumps(provenance, allow_nan=False))
         store.progress_reconstruction(
             job["id"],
@@ -270,6 +278,7 @@ def reconstruct(store: AtlasStore, job: dict, openmvs_bin: Path | None = None) -
             faces=provenance.get("faces"),
             vertices=provenance.get("vertices"),
             dense_points=provenance.get("dense_points"),
+            surface_review=provenance.get("surface_review"),
             artifact_sha256=checksum,
             artifact_bytes=(output / "cloud.glb").stat().st_size,
             registered_views=model.num_reg_images(),

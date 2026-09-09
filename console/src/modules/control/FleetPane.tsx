@@ -34,7 +34,7 @@ export function FleetPane({ controller, now }: FleetPaneProps) {
   useSecondTick(fleet.some((device) => device.sensor?.last_scan_at != null))
   const at = now()
   return (
-    <div data-two="1" className="ct-two">
+    <div className="ct-fleet-layout">
       <div className="ct-column" role="region" aria-label="Registry">
         <p className="ct-eyebrow ct-fleet-eyebrow">Registry · roster v{state.rosterVersion}</p>
         {fleet.length === 0 ? (
@@ -42,22 +42,24 @@ export function FleetPane({ controller, now }: FleetPaneProps) {
             No devices have joined this session. The relay reports an empty roster.
           </p>
         ) : (
-          fleet.map((drone) => (
-            <RegistryCard
-              key={drone.drone_id}
-              drone={drone}
-              now={at}
-              scan={deviceScan(drone, snapshot)}
-              selected={state.selection.includes(drone.drone_id)}
-              lastInSelection={state.selection.length === 1 && state.selection[0] === drone.drone_id}
-              selectionEnabled={isIntentEnabled(state, 'select')}
-              selectionDisabledReason={capabilityBlockedReason(state, 'select')}
-              onToggle={() => toggleAircraft(drone.drone_id)}
-            />
-          ))
+          <div className="ct-fleet-grid">
+            {fleet.map((drone) => (
+              <RegistryCard
+                key={drone.drone_id}
+                drone={drone}
+                now={at}
+                scan={deviceScan(drone, snapshot)}
+                selected={state.selection.includes(drone.drone_id)}
+                lastInSelection={state.selection.length === 1 && state.selection[0] === drone.drone_id}
+                selectionEnabled={isIntentEnabled(state, 'select')}
+                selectionDisabledReason={capabilityBlockedReason(state, 'select')}
+                onToggle={() => toggleAircraft(drone.drone_id)}
+              />
+            ))}
+          </div>
         )}
       </div>
-      <div className="ct-column">
+      <section className="ct-fleet-history" aria-label="Fleet departures">
         <p className="ct-eyebrow ct-fleet-eyebrow">Departed this session</p>
         {state.departed.length === 0 ? (
           <p className="ct-departed-none">No {pluralNoun(rosterNoun(fleet))} have left.</p>
@@ -74,7 +76,7 @@ export function FleetPane({ controller, now }: FleetPaneProps) {
           The registry follows the relay's state frame, never telemetry. A departed device returns here with
           a higher connection epoch, and any selection that named it is cleared with the reason stated.
         </p>
-      </div>
+      </section>
     </div>
   )
 }
@@ -151,7 +153,7 @@ function RegistryCard({
         title={title}
         onClick={onToggle}
       >
-        {selected ? 'SEL' : canSelect ? 'select' : '—'}
+        {selected ? 'Selected' : canSelect ? 'Select device' : 'Unavailable'}
       </button>
     </article>
   )

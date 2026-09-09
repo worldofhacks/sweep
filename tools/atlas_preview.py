@@ -38,27 +38,27 @@ def main():
                     (
                         "Demo · Creekside restoration",
                         "community",
-                        37.4442,
-                        -122.1594,
-                        "San Francisquito Creek",
+                        30.2771,
+                        -97.7493,
+                        "Shoal Creek · Austin, Texas",
                         "A demonstration of neighbors documenting a restoration project. "
                         "Add a view of the creek, paths, or planting areas.",
                     ),
                     (
                         "Demo · Downtown accessibility",
                         "survey",
-                        37.4448,
-                        -122.1634,
-                        "University Avenue",
+                        30.2672,
+                        -97.7431,
+                        "Downtown · Austin, Texas",
                         "A sample space for a shared accessibility survey. "
                         "Capture crossings, paths, and entrances from multiple viewpoints.",
                     ),
                     (
                         "Demo · Storm damage survey",
                         "hazard",
-                        37.4407,
-                        -122.1516,
-                        "Heritage Park",
+                        30.2669,
+                        -97.7684,
+                        "Zilker area · Austin, Texas",
                         "Demonstration scenario only — no live hazard is being reported. "
                         "Documenting an area together can help everyone understand what changed.",
                     ),

@@ -14,31 +14,31 @@ import { AtlasClient, locate, phonePosition } from './client'
 import { CaptureComposer } from './CaptureComposer'
 import { Icon } from './Icon'
 import { ReconstructionPanel } from './ReconstructionPanel'
+import { SurfaceReviewPanel } from './SurfaceReviewPanel'
+import { CaptureRequestsPanel } from './CaptureRequestsPanel'
+import { isActionableRequest, isCurrentSurfaceRequest, linkedCaptureIds, spaceCaptureRequests } from './captureRequests'
+import { EMPTY_SPACE } from './drafts'
+import { useSpaceDraft } from './useSpaceDraft'
 import {
   CATEGORY_LABEL,
   type Capture,
+  type CaptureRequestContext,
   type GeoPosition,
   type NewSpace,
   type Space,
   type SpaceCategory,
   type SpaceDetail,
+  type SurfaceFocus,
+  type SpaceRequest,
+  type SurfaceRequest,
 } from './types'
 import './atlas.css'
 
 const SpaceMap = lazy(() => import('./SpaceMap'))
 const WorldViewer = lazy(() => import('./WorldViewer'))
-const DEFAULT_CENTER: [number, number] = [-98.5, 39.5]
-const emptyDraft: NewSpace = {
-  title: '',
-  description: '',
-  category: 'community',
-  latitude: 0,
-  longitude: 0,
-  radius: 80,
-  place: '',
-}
+const DEFAULT_CENTER: [number, number] = [-97.7431, 30.2672]
 type Filter = 'all' | 'incident' | 'needs-captures' | 'resolved'
-type DetailTab = 'overview' | 'captures' | 'coverage' | 'world'
+type DetailTab = 'overview' | 'captures' | 'coverage' | 'requests' | 'world'
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.'
 }
@@ -62,7 +62,7 @@ function identity() {
   }
 }
 
-export interface NativeCaptureRequest { spaceId: string; title: string; contributor: string; name: string }
+export interface NativeCaptureRequest { spaceId: string; title: string; contributor: string; name: string; request?: CaptureRequestContext }
 interface SpacesProps extends Pick<ModuleProps, 'services'> {
   initialSpace?: string | null
   captureNative?: (value: NativeCaptureRequest) => Promise<void>
@@ -81,15 +81,27 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState<DetailTab>('overview')
   const [creating, setCreating] = useState(false)
-  const [draft, setDraft] = useState<NewSpace>(emptyDraft)
-  const [coordinateInput, setCoordinateInput] = useState<[string, string]>(['', ''])
-  const hasCoordinate = coordinateInput.every(value => value.trim() !== '' && Number.isFinite(Number(value)))
+  const localDraft = useSpaceDraft(invitedSpace ? null : client?.drafts ?? null)
+  const draft = localDraft.draft?.space ?? EMPTY_SPACE
+  const coordinateInput = localDraft.draft?.coordinates ?? ['', '']
+  const submitted = localDraft.draft?.submitted ?? null
+  const setDraft = (value: NewSpace | ((previous: NewSpace) => NewSpace), coordinates?: [string, string]) => {
+    const current = localDraft.session.getSnapshot().draft?.space ?? EMPTY_SPACE
+    localDraft.session.edit(typeof value === 'function' ? value(current) : value, coordinates)
+  }
+  const hasCoordinate = coordinateInput.every(value => value.trim() !== '' && Number.isFinite(Number(value))) &&
+    Math.abs(Number(coordinateInput[0])) <= 85 && Math.abs(Number(coordinateInput[1])) <= 180
   const [position, setPosition] = useState<GeoPosition | null>(null)
   const [center, setCenter] = useState<[number, number]>(DEFAULT_CENTER)
   const [selectedCell, setSelectedCell] = useState<string | null>(null)
+  const [surfaceFocus, setSurfaceFocus] = useState<SurfaceFocus | null>(null)
+  const [surfaceRequest, setSurfaceRequest] = useState<SurfaceRequest | null>(null)
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  const [modal, setModal] = useState<'capture' | 'connect' | 'share' | null>(null)
+  const [modal, setModal] = useState<'capture' | 'connect' | 'share' | 'discard' | null>(null)
+  const [captureRequest, setCaptureRequest] = useState<CaptureRequestContext | undefined>()
+  const [captureFilter, setCaptureFilter] = useState<CaptureRequestContext | null>(null)
+  const [captureLimit, setCaptureLimit] = useState(24)
   const [invitation, setInvitation] = useState('')
   const [inviteTokens, setInviteTokens] = useState<Record<string, string>>({})
   const [contributor] = useState(identity)
@@ -105,25 +117,48 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
   useEffect(() => {
     const back = () => {
       if (modal) setModal(null)
-      else if (creating) setCreating(false)
+      else if (creating) void localDraft.session.flush().then(() => setCreating(false)).catch(error => setNotice(errorText(error)))
       else if (selected && !invitedSpace) { setSelected(null); setSharing(false) }
       else window.dispatchEvent(new Event('atlas-exit'))
     }
     window.addEventListener('atlas-back', back)
     return () => window.removeEventListener('atlas-back', back)
-  }, [modal, creating, selected, invitedSpace])
+  }, [modal, creating, selected, invitedSpace, localDraft.session])
+  useEffect(() => {
+    if (!localDraft.draft || (!localDraft.saving && !localDraft.error)) return
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [localDraft.draft, localDraft.saving, localDraft.error])
   const openConnect = () => { if (connectNative) connectNative(); else setModal('connect') }
-  const openCapture = () => {
+  const startDraft = () => {
+    if (!client) { openConnect(); return }
+    try {
+      localDraft.session.start()
+      setCreating(true); setSelected(null); setSharing(false); setNotice('')
+    } catch (error) { setNotice(errorText(error)) }
+  }
+  const openCapture = (request?: CaptureRequestContext) => {
+    setNotice('')
+    // Freeze the selected request before handing control to a camera or file picker.
+    const snapshot = request ? structuredClone(request) : undefined
     if (captureNative && selected) {
       void captureNative({ spaceId: selected, title: detail?.space.title ?? 'Space capture', contributor,
-        name: name.trim() || 'Contributor' }).catch(error => setNotice(errorText(error)))
-    } else setModal('capture')
+        name: name.trim() || 'Contributor', ...(snapshot ? { request: snapshot } : {}) }).catch(error => setNotice(errorText(error)))
+    } else { setCaptureRequest(snapshot); setModal('capture') }
   }
-  const openSpace = useCallback((id: string) => {
+  const viewLinkedCaptures = (request: CaptureRequestContext) => {
+    setNotice(''); setCaptureFilter(request); setCaptureLimit(24); setTab('captures')
+  }
+  const openSpace = useCallback((id: string, view: DetailTab = 'overview') => {
     setSelected(id)
     setDetailError('')
-    setTab('overview')
+    setTab(view)
     setSelectedCell(null)
+    setSurfaceFocus(null)
+    setSurfaceRequest(null)
+    setCaptureFilter(null)
+    setCaptureLimit(24)
     setCreating(false)
     setSharing(false)
   }, [])
@@ -206,6 +241,14 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
   }, [sharing, client, selected, contributor, name])
 
   const activeDetail = detail?.space.id === selected ? detail : null
+  const requestCount = activeDetail ? spaceCaptureRequests(activeDetail).filter(item => isActionableRequest(item, activeDetail)).length : 0
+  const inspectRequest = (request: SpaceRequest | SurfaceRequest) => {
+    setNotice(''); setSurfaceFocus(null)
+    if ('cell_id' in request) { setSelectedCell(request.cell_id); setTab('coverage') }
+    else { setSurfaceRequest(request); setTab('world') }
+  }
+  const linkedIds = activeDetail && captureFilter ? linkedCaptureIds(activeDetail, captureFilter.target) : null
+  const visibleCaptures = (activeDetail?.captures ?? []).filter(capture => !linkedIds || linkedIds.includes(capture.id))
   const visible = useMemo(
     () =>
       spaces.filter((space) => {
@@ -221,7 +264,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
               : filter === 'incident'
                 ? space.status === 'active' &&
                   (space.category === 'incident' || space.category === 'hazard')
-                : space.status === 'active' && space.coverage_percent < 100)
+                : space.status === 'active' && (space.open_request_count ?? 0) > 0)
         )
       }),
     [spaces, query, filter],
@@ -236,6 +279,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
           : spaces[0]
             ? [spaces[0].longitude, spaces[0].latitude]
             : center
+  const focusedCell = tab === 'coverage' ? activeDetail?.coverage.cells.find(cell => cell.id === selectedCell) : undefined
 
   const run = async (operation: () => Promise<void>) => {
     setBusy(true)
@@ -258,18 +302,18 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
           ...value,
           latitude: fix.latitude,
           longitude: fix.longitude,
-        }))
-        setCoordinateInput([String(fix.latitude), String(fix.longitude)])
+        }), [String(fix.latitude), String(fix.longitude)])
       }
     })
   const create = () =>
     run(async () => {
       if (!client || !hasCoordinate) return
-      const result = await client.create(draft)
-      setInviteTokens((tokens) => ({
-        ...tokens,
-        [result.space.id]: result.contributor_token,
+      const publication = await localDraft.session.submission()
+      const result = await client.publishDraft(publication.id, publication.submitted!)
+      if (result.contributor_token) setInviteTokens((tokens) => ({
+        ...tokens, [result.space.id]: result.contributor_token!,
       }))
+      await localDraft.session.discard()
       setCreating(false)
       openSpace(result.space.id)
       refresh()
@@ -312,25 +356,15 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
           </span>
           <button
             className="atlas-primary"
-            disabled={Boolean(invitedSpace)}
-            onClick={() => {
-              if (!client) {
-                openConnect()
-                return
-              }
-              setDraft(emptyDraft)
-              setCoordinateInput(['', ''])
-              setCreating(true)
-              setSelected(null)
-              setSharing(false)
-            }}
+            disabled={Boolean(invitedSpace) || Boolean(client && !localDraft.loaded)}
+            onClick={startDraft}
           >
             <Icon name="plus" size={18} />
-            <span>Create a space</span>
+            <span>{localDraft.draft ? 'Continue draft' : 'Create a space'}</span>
           </button>
         </div>
       </div>
-      <div className="atlas-stage" data-scroll="1">
+      <div className="atlas-stage" data-scroll="1" data-detail={selected || creating ? '1' : undefined}>
         <Suspense fallback={<div className="atlas-map-loading">Loading your atlas…</div>}>
           {tab === 'world' && activeDetail?.reconstruction.status === 'ready' && client ? (
             <WorldViewer
@@ -339,21 +373,21 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
               spaceId={activeDetail.space.id}
               jobId={activeDetail.reconstruction.id!}
               checksum={activeDetail.reconstruction.artifact_sha256!}
+              focus={surfaceFocus}
             />
           ) : (
             <SpaceMap
               spaces={visible}
               detail={activeDetail}
-              center={mapCenter}
-              picking={creating}
+              center={focusedCell ? [focusedCell.longitude, focusedCell.latitude] : mapCenter}
+              picking={creating && !submitted && !busy}
               coverageVisible={tab === 'coverage'}
               selectedCell={selectedCell}
               position={position}
               onSelect={openSpace}
               onCell={setSelectedCell}
               onPick={(longitude, latitude) => {
-                setDraft((value) => ({ ...value, latitude, longitude }))
-                setCoordinateInput([String(latitude), String(longitude)])
+                setDraft((value) => ({ ...value, latitude, longitude }), [String(latitude), String(longitude)])
               }}
             />
           )}
@@ -410,32 +444,38 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
               </span>
             </div>
             <div className="atlas-space-list">
+              {localDraft.error && <p className="atlas-draft-error" role="alert">{localDraft.error}
+                <button className="atlas-text-button" onClick={() => void localDraft.session.load()}>Retry local storage</button></p>}
+              {localDraft.draft && <div className="atlas-draft-card">
+                <span className="atlas-eyebrow">ONLY ON THIS DEVICE</span>
+                <h3>{localDraft.draft.space.title || 'Your next space'}</h3>
+                <p>{submitted ? 'Publication needs confirmation. Retry to find the same space.' : 'A private draft, ready when you are. Nothing has been shared.'}</p>
+                <button className="atlas-text-button" onClick={startDraft}>Continue draft <Icon name="arrow" size={16} /></button>
+              </div>}
               {visible.map((space) => (
-                <SpaceCard key={space.id} space={space} onOpen={() => openSpace(space.id)} />
+                <SpaceCard key={space.id} space={space} onOpen={() => openSpace(space.id, filter === 'needs-captures' ? 'requests' : 'overview')} />
               ))}
               {!loading && visible.length === 0 && (
                 <div className="atlas-empty">
                   <div className="atlas-empty-symbol">
                     <Icon name="spaces" size={32} />
                   </div>
-                  <h3>{query ? 'No matching spaces' : 'A new perspective starts here.'}</h3>
+                  <h3>{query ? 'No matching spaces' : filter === 'needs-captures' ? 'No open requests right now.' : 'A new perspective starts here.'}</h3>
                   <p>
                     {query
                       ? 'Try another place, title, or category.'
+                      : client && filter === 'needs-captures'
+                        ? 'Requests appear when someone asks for a map location or a current 3D region. Unmapped areas alone are not requests.'
                       : client
                         ? 'Create the first space in this workspace. A location and a few photos are all it takes to begin.'
                         : 'Connect your workspace to discover shared spaces and contribute your view.'}
                   </p>
                   <button
                     className="atlas-text-button"
-                    onClick={() => {
-                      if (client) {
-                        setCreating(true)
-                        setSelected(null)
-                      } else openConnect()
-                    }}
+                    disabled={Boolean(client && filter !== 'needs-captures' && !localDraft.loaded)}
+                    onClick={client && filter === 'needs-captures' ? () => setFilter('all') : startDraft}
                   >
-                    {client ? 'Create the first space' : 'Connect workspace'}
+                    {client ? filter === 'needs-captures' ? 'Explore all spaces' : 'Create the first space' : 'Connect workspace'}
                     <Icon name="arrow" size={16} />
                   </button>
                 </div>
@@ -453,7 +493,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
 
         {creating && (
           <section className="atlas-detail atlas-create" aria-label="Create a space">
-            <button className="atlas-back" onClick={() => setCreating(false)}>
+            <button className="atlas-back" disabled={busy} onClick={() => void run(async () => { await localDraft.session.flush(); setCreating(false) })}>
               <Icon name="back" size={17} />
               Back to spaces
             </button>
@@ -463,12 +503,20 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
               <br />A new perspective.
             </h2>
             <p className="atlas-muted">Give people a place to contribute what they see.</p>
+            <div className="atlas-draft-status" role="status">
+              <strong>{localDraft.error ? 'Draft not saved' : localDraft.saving ? 'Saving on this device…' : 'Draft saved on this device'}</strong>
+              <p>{submitted ? 'A publication was attempted. Details are locked so a retry cannot create another report. Check publication when connected.' : 'Private to this browser or device and workspace connection. Nothing is shared until you publish.'}</p>
+              {localDraft.error && <><p className="atlas-draft-error">{localDraft.error}</p><button className="atlas-text-button" onClick={() => void run(() => localDraft.session.flush())}>Retry saving</button></>}
+            </div>
+            {notice && <div className="atlas-draft-notice" role="status"><span>{notice}</span>
+              <button type="button" aria-label="Dismiss notice" onClick={() => setNotice('')}><Icon name="close" size={16} /></button></div>}
             <form
               onSubmit={(event) => {
                 event.preventDefault()
                 void create()
               }}
             >
+              <fieldset className="atlas-compose-fields" disabled={busy || Boolean(submitted)}>
               <label className="atlas-field">
                 Space name
                 <input
@@ -544,8 +592,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                     max={85}
                     value={coordinateInput[0]}
                     onChange={(e) => {
-                      setDraft({ ...draft, latitude: Number(e.target.value) })
-                      setCoordinateInput([e.target.value, coordinateInput[1]])
+                      setDraft({ ...draft, latitude: Number(e.target.value) }, [e.target.value, coordinateInput[1]])
                     }}
                     required
                   />
@@ -559,8 +606,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                     max={180}
                     value={coordinateInput[1]}
                     onChange={(e) => {
-                      setDraft({ ...draft, longitude: Number(e.target.value) })
-                      setCoordinateInput([coordinateInput[0], e.target.value])
+                      setDraft({ ...draft, longitude: Number(e.target.value) }, [coordinateInput[0], e.target.value])
                     }}
                     required
                   />
@@ -577,13 +623,18 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                   onChange={(e) => setDraft({ ...draft, radius: Number(e.target.value) })}
                 />
               </label>
+              </fieldset>
               <button
                 className="atlas-primary atlas-full"
                 disabled={!client || !hasCoordinate || busy}
               >
-                {busy ? 'Creating…' : 'Create space'}
+                {busy ? 'Confirming publication…' : submitted ? 'Check publication' : 'Publish space'}
                 <Icon name="arrow" size={18} />
               </button>
+              <div className="atlas-draft-actions">
+                <button type="button" disabled={busy} onClick={() => void run(async () => { await localDraft.session.flush(); setCreating(false) })}>Keep for later</button>
+                <button type="button" disabled={busy} onClick={() => setModal('discard')}>Discard draft</button>
+              </div>
             </form>
           </section>
         )}
@@ -645,6 +696,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                       ['overview', 'Overview'],
                       ['captures', 'Captures'],
                       ['coverage', 'Coverage'],
+                      ['requests', 'Requests'],
                       ['world', '3D atlas'],
                     ] as const
                   ).map(([value, label]) => (
@@ -652,7 +704,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                       key={value}
                       className={tab === value ? 'is-active' : ''}
                       aria-pressed={tab === value}
-                      onClick={() => setTab(value)}
+                      onClick={() => { if (tab !== value) { setTab(value); setSurfaceFocus(null); setSurfaceRequest(null) } }}
                     >
                       {label}
                     </button>
@@ -664,6 +716,10 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                       {activeDetail.space.description ||
                         'A shared space for a better view of this area. Add the first photo or video to begin.'}
                     </p>
+                    {requestCount > 0 && <button className="atlas-request-summary" onClick={() => setTab('requests')}>
+                      <Icon name="target" size={24} /><span><strong>{requestCount} {requestCount === 1 ? 'view requested' : 'views requested'}</strong>
+                        <small>See where your next perspective can help.</small></span><Icon name="arrow" size={18} />
+                    </button>}
                     <div className="atlas-space-metrics">
                       <div>
                         <strong>{activeDetail.captures.length}</strong>
@@ -750,7 +806,12 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                       <h3>Every perspective, together.</h3>
                       <p>Original media stays connected to its source and capture time.</p>
                     </div>
-                    {activeDetail.captures.length === 0 ? (
+                    {captureFilter && <div className="atlas-request-context" role="status">
+                      <strong>{captureFilter.label} · {visibleCaptures.length} linked views</strong>
+                      <p>These originals were submitted for this request. Review them before assessing coverage.</p>
+                      <button className="atlas-text-button" onClick={() => { setCaptureFilter(null); setCaptureLimit(24) }}>Show all captures</button>
+                    </div>}
+                    {visibleCaptures.length === 0 ? (
                       <div className="atlas-empty">
                         <Icon name="camera" size={32} />
                         <h3>The first view is yours.</h3>
@@ -758,7 +819,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                       </div>
                     ) : (
                       <div className="atlas-capture-grid">
-                        {activeDetail.captures.slice(0, 24).map((capture) => (
+                        {visibleCaptures.slice(0, captureLimit).map((capture) => (
                           <MediaCard
                             key={capture.id}
                             capture={capture}
@@ -768,11 +829,15 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                         ))}
                       </div>
                     )}
-                    {activeDetail.captures.length > 24 && (
-                      <p className="atlas-fine">Showing the latest 24 captures.</p>
+                    {visibleCaptures.length > captureLimit && (
+                      <button className="atlas-secondary atlas-full" onClick={() => setCaptureLimit(limit => limit + 24)}>
+                        Show {Math.min(24, visibleCaptures.length - captureLimit)} more captures
+                      </button>
                     )}
                   </>
                 )}
+                {tab === 'requests' && <CaptureRequestsPanel key={selected} detail={activeDetail}
+                  onInspect={inspectRequest} onContribute={openCapture} onViewCaptures={viewLinkedCaptures} />}
                 {tab === 'coverage' && (
                   <>
                     <div className="atlas-section-heading">
@@ -809,6 +874,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                       className="atlas-primary atlas-full"
                       disabled={
                         !selectedCell ||
+                        activeDetail.space.status !== 'active' ||
                         busy ||
                         Boolean(
                           activeDetail.coverage.cells.find((cell) => cell.id === selectedCell)
@@ -819,6 +885,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                         void run(async () => {
                           await client!.request(selected, selectedCell!)
                           refresh()
+                          setTab('requests')
                           setNotice(
                             'Viewpoint requested. Contributors can see this area in the space.',
                           )
@@ -828,46 +895,35 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                       <Icon name="plus" size={17} />
                       {selectedCell ? 'Request a view here' : 'Select a missing area'}
                     </button>
-                    <h3 className="atlas-section-title">Viewpoint requests</h3>
-                    {activeDetail.requests.length ? (
-                      activeDetail.requests.map((item) => (
-                        <button
-                          className="atlas-request"
-                          key={item.cell_id}
-                          onClick={() => setSelectedCell(item.cell_id)}
-                        >
-                          <Icon name={item.status === 'captured' ? 'check' : 'target'} />
-                          <div>
-                            <strong>
-                              {item.status === 'captured'
-                                ? 'New view received'
-                                : 'Another perspective needed'}
-                            </strong>
-                            <span>{item.note}</span>
-                          </div>
-                        </button>
-                      ))
-                    ) : (
-                      <p className="atlas-muted">
-                        No requests yet. Choose a gap to invite a contribution.
-                      </p>
-                    )}
+                    <button className="atlas-secondary atlas-full" onClick={() => setTab('requests')}>View all requests</button>
                   </>
                 )}
                 {tab === 'world' && (
-                  <ReconstructionPanel
-                    job={activeDetail.reconstruction}
-                    client={client!}
-                    spaceId={selected}
-                    canBuild={!invitedSpace}
-                    onChange={refresh}
-                  />
+                  <>
+                    <ReconstructionPanel
+                      job={activeDetail.reconstruction}
+                      client={client!}
+                      spaceId={selected}
+                      canBuild={!invitedSpace}
+                      onChange={refresh}
+                    />
+                    <SurfaceReviewPanel
+                      key={`${selected}:${activeDetail.reconstruction.id}`}
+                      job={activeDetail.reconstruction}
+                      requests={activeDetail.surface_requests ?? []}
+                      client={client!} spaceId={selected} canManage={!invitedSpace}
+                      active={activeDetail.space.status === 'active'}
+                      onFocus={setSurfaceFocus} onChange={refresh}
+                      initialRegionId={surfaceRequest && isCurrentSurfaceRequest(surfaceRequest, activeDetail.reconstruction) ? surfaceRequest.region_id : undefined}
+                      onContribute={openCapture} onViewCaptures={viewLinkedCaptures}
+                    />
+                  </>
                 )}
                 <div className="atlas-detail-footer">
                   <button
                     className="atlas-primary atlas-full"
                     disabled={activeDetail.space.status !== 'active'}
-                    onClick={openCapture}
+                    onClick={() => openCapture()}
                   >
                     <Icon name="camera" />
                     Add a capture
@@ -924,7 +980,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
             <p>One place. Every perspective.</p>
           </div>
         )}
-        {notice && (
+        {notice && !creating && (
           <div className="atlas-toast" role="status">
             <Icon name="spaces" size={18} />
             <span>{notice}</span>
@@ -941,10 +997,16 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
               ? 'Add your perspective'
               : modal === 'connect'
                 ? 'Connect your workspace'
-                : 'Invite a contributor'
+                : modal === 'discard' ? 'Discard this local draft?' : 'Invite a contributor'
           }
           onClose={() => setModal(null)}
         >
+          {modal === 'discard' && <>
+            <p>This removes the draft’s text and selected location from this device. It cannot be undone.
+              {submitted ? ' If publication already succeeded, the shared space remains available.' : ' No shared space or capture will be removed.'}</p>
+            <div className="atlas-draft-actions"><button disabled={busy} onClick={() => setModal(null)}>Keep draft</button>
+              <button disabled={busy} onClick={() => void run(async () => { await localDraft.session.discard(); setModal(null); setCreating(false); setNotice('The local draft was removed. Shared spaces and captures were not changed.') })}>Discard local draft</button></div>
+          </>}
           {modal === 'capture' && client && selected && (
             <CaptureComposer
               client={client}
@@ -952,6 +1014,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
               contributor={contributor}
               name={name.trim() || 'Contributor'}
               onSaved={refresh}
+              captureRequest={captureRequest}
             />
           )}
           {modal === 'connect' && (
@@ -965,6 +1028,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                 setDetail(null)
                 setSelected(null)
                 setSharing(false)
+                setCreating(false)
                 if (space) openSpace(space)
                 refresh()
               }}
@@ -1019,10 +1083,13 @@ function SpaceCard({ space, onOpen }: { space: Space; onOpen: () => void }) {
         <Icon name="pin" size={13} />
         {space.place || `${space.latitude.toFixed(4)}, ${space.longitude.toFixed(4)}`}
       </span>
+      {(space.open_request_count ?? 0) > 0 && <span className="atlas-card-request-count"><Icon name="target" size={14} />
+        {space.open_request_count} {space.open_request_count === 1 ? 'view requested' : 'views requested'}
+      </span>}
       <div className="atlas-card-bottom">
         <span>
           <Icon name="camera" size={14} />
-          {space.capture_count} captures
+          {space.capture_count} {space.capture_count === 1 ? 'capture' : 'captures'}
         </span>
         <span>
           <Icon name="people" size={14} />
@@ -1144,7 +1211,9 @@ function MediaCard({
       </div>
       <strong>{capture.name}</strong>
       <span>
-        {age(capture.captured_at)} · {capture.source === 'camera' ? 'Phone capture' : 'Imported'}
+        {capture.source === 'camera' && capture.captured_at !== null
+          ? `${age(capture.captured_at)} · Phone capture`
+          : `Imported ${age(capture.uploaded_at)} · Capture time ${capture.captured_at === null ? 'unknown' : 'unverified'}`}
       </span>
       <span>
         {capture.position

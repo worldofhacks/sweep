@@ -31,7 +31,7 @@ export function disposeModel(root: THREE.Object3D): void {
   const textures = new Set<THREE.Texture>()
   const images = new Set<ImageBitmap>()
   root.traverse(object => {
-    if (!(object instanceof THREE.Points || object instanceof THREE.Mesh)) return
+    if (!(object instanceof THREE.Points || object instanceof THREE.Mesh || object instanceof THREE.Line)) return
     geometries.add(object.geometry)
     ;(Array.isArray(object.material) ? object.material : [object.material]).forEach(material => materials.add(material))
   })

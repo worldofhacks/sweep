@@ -115,6 +115,54 @@ def test_shared_capture_request_media_and_restart(tmp_path):
         assert client.get(detail_url, headers={"Authorization": f"Bearer {new}"}).status_code == 200
 
 
+def test_import_preserves_unknown_capture_time_and_original_across_restart(tmp_path):
+    with TestClient(app(tmp_path)) as client:
+        created = client.post(BASE, headers=AUTH, json=SPACE).json()
+        url = f"{BASE}/{created['space']['id']}"
+        invited = {"Authorization": f"Bearer {created['contributor_token']}"}
+        metadata = capture_meta(source="import", captured_at=None, position=None)
+        response = client.post(
+            url + "/captures",
+            content=PNG,
+            headers={
+                **invited,
+                "Content-Type": "image/png",
+                "X-Sweep-Capture": json.dumps(metadata),
+            },
+        )
+        assert response.status_code == 201, response.text
+        item = response.json()
+        assert item["captured_at"] is None and item["position"] is None
+        assert item["uploaded_at"] > 0 and item["sha256"] == hashlib.sha256(PNG).hexdigest()
+    with TestClient(app(tmp_path)) as client:
+        detail = client.get(url, headers=invited).json()
+        assert detail["captures"][0] == item
+        assert detail["coverage"]["observed"] == 0
+        assert detail["coverage"]["qualified_captures"] == 0
+        assert client.get(url + f"/captures/{item['id']}/media", headers=invited).content == PNG
+
+
+def test_camera_without_capture_time_is_refused_not_reclassified_as_an_import(tmp_path):
+    with TestClient(app(tmp_path)) as client:
+        created = client.post(BASE, headers=AUTH, json=SPACE).json()
+        url = f"{BASE}/{created['space']['id']}"
+        for metadata in [
+            capture_meta(captured_at=None),
+            {k: v for k, v in capture_meta().items() if k != "captured_at"},
+        ]:
+            response = client.post(
+                url + "/captures",
+                content=PNG,
+                headers={
+                    **AUTH,
+                    "Content-Type": "image/png",
+                    "X-Sweep-Capture": json.dumps(metadata),
+                },
+            )
+            assert response.status_code == 422
+        assert client.get(url, headers=AUTH).json()["captures"] == []
+
+
 @pytest.mark.parametrize(
     "change",
     [

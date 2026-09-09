@@ -152,12 +152,96 @@
 .sh-stop {
   border-radius: 8px;
 }
-.sh-header {
-  border-bottom-color: #e0e7da;
+.sh-session { position: relative; display: flex; align-items: center; gap: 8px; }
+.sh-session > .sh-detail-toggle { display: flex; align-items: center; gap: 8px; }
+.sh-session > .sh-stop { min-height: 44px; justify-content: center; padding: 8px 16px; }
+.sh-session .sh-stop-title { font-size: 13px; }
+.sh-session-panel {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 16px);
+  right: 0;
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100dvh - 180px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--color-border-input);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  color: var(--color-ink);
 }
-.sh-header-row {
-  padding-top: 12px;
-  padding-bottom: 12px;
+.sh-session-panel[hidden] { display: none; }
+.sh-session-intro { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.sh-session-intro h2 { font-size: 24px; font-weight: 550; letter-spacing: -.03em; margin: 0; }
+.sh-session-demo { padding: 12px; border: 1px solid var(--color-hairline); border-radius: 8px; color: var(--color-ink-2); background: var(--color-panel); }
+.sh-session-panel .sh-header-right { margin-top: 16px; }
+.sh-session-panel .sh-sheet { padding: 16px 0 0; margin-top: 16px; background: none; grid-template-columns: minmax(0, 1fr); }
+.sh-session-panel .sh-rc { white-space: normal; }
+
+/* Shared content language, not a second component library. Existing modules keep
+   their event handlers, selection state, media elements and refusal semantics. */
+.sh-pane { background: var(--color-ground); }
+.sh-pane-head { background: var(--color-surface); }
+.sh-pane-scroll { background: var(--color-ground); }
+.sh-swap { max-width: 1440px; margin-inline: auto; }
+.sh-pane :is(.ct-panel, .sp-result, .gs-readout, .gs-preview, .gs-note, .dv-config,
+  .dv-card, .fleet-card, .gs-profile, .gs-flight, .tg-strip, .cat-note:not(.is-empty)) {
+  padding: 16px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+}
+.sh-pane :is(.ct-eyebrow, .sp-eyebrow, .gs-eyebrow, .tg-eyebrow, .dv-eyebrow, .cat-eyebrow, .fleet-eyebrow) {
+  font-family: var(--font-sans); font-size: 10px; font-weight: 650; letter-spacing: .13em;
+}
+.sh-pane .cat-h3 { font-family: var(--font-sans); font-size: 18px; font-weight: 550; letter-spacing: -.02em; text-transform: none; color: var(--color-ink); }
+.sh-pane :is(.ct-note, .ct-dpad-note, .ct-motion-foot, .fleet-footnote) { font-size: 12px; line-height: 1.5; }
+.sh-pane :is(.cat-empty, .sh-empty) { padding: 24px; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); background: var(--color-surface); }
+.sh-pane :is(.cat-button, .cat-filter, .ct-select-all, .mp-button, .sp-phrase, .tg-quick, .dv-config-copy-btn, .lv-focus, .lv-select) {
+  min-height: 44px; border-radius: var(--radius-control); font-family: var(--font-sans); font-size: 13px;
+}
+.sh-pane :is(.cat-button.is-primary:not(:disabled), .cat-filter.is-active, .ct-chip.is-selected, .tg-chip.is-selected, .lv-focus[aria-pressed='true'], .lv-select.is-selected, .sp-emit:not(:disabled)) {
+  background: var(--color-accent); border-color: var(--color-accent); color: #fff;
+}
+.sh-pane :is(.cat-button.is-primary, .sp-emit):hover:not(:disabled) { background: var(--color-accent-hover); }
+.sh-pane .ct-control-btn { border-color: var(--color-border-secondary); padding: 12px 16px; background: var(--color-surface); }
+.sh-pane .ct-control-btn:hover:not(:disabled) { border-color: var(--color-accent); background: var(--color-accent-soft); }
+.sh-pane .sp-field textarea { font-family: var(--font-sans); min-height: 128px; }
+.sh-pane .sp-listen { border-color: var(--color-accent); border-radius: var(--radius-card); background: var(--color-accent-soft); }
+.sh-pane .sp-listen.is-recording { background: var(--color-danger); border-color: var(--color-danger); color: #fff; }
+.sh-pane .sp-listen:disabled { background: var(--color-disabled-bg); border-color: var(--color-hairline); }
+.sh-pane .lv-tile { padding: 16px; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); background: var(--color-surface); }
+.sh-pane .lv-visual { overflow: hidden; border-radius: 8px; }
+.sh-pane .lv-actions { gap: 8px; margin-top: 16px; }
+.sh-pane .dv-row { padding: 8px 0; }
+.sh-pane .fleet-metrics { margin-top: 16px; }
+.sh-pane :is(.sp-column, .gs-column) { padding: 24px; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); background: var(--color-surface); }
+.sh-pane .gs-profile { margin-bottom: 24px; }
+.sh-pane .tg-strip { margin: 0 0 24px; }
+.sh-pane [data-mosaic] { gap: 16px; }
+.sh-pane [data-two] { gap: 24px; }
+.sh-pane :is(.cap-item, .wld-room, .wld-job, .con-metric, .nv-section, .cfg-group) {
+  padding: 24px; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); background: var(--color-surface);
+}
+.sh-pane .wld-content > section { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); }
+.sh-pane .wld-content > section > :is(.cat-eyebrow, .wld-intro, .cat-empty) { grid-column: 1 / -1; margin: 0; }
+.sh-pane .wld-content :is(.wld-room, .wld-job) { margin: 0; min-width: 0; }
+.sh-pane .nv-title { font-size: 22px; font-weight: 550; letter-spacing: -.02em; }
+.sh-pane .nv-review { min-height: 44px; border-radius: 8px; }
+.sh-pane .nv-review:not(:disabled) { background: var(--color-accent); border-color: var(--color-accent); color: #fff; }
+.sh-pane .nv-zone[aria-pressed='true'] { background: var(--color-accent-soft); border-color: var(--color-accent); }
+.sh-pane .mp { padding: 24px; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); background: var(--color-surface); }
+.sh-context-head { font-family: var(--font-sans); padding: 24px var(--gutter-context); }
+@media (max-width: 1099px) {
+  .sh-atlas-header:has(.sh-session) > span:nth-child(2) { display: none; }
+}
+@media (max-width: 600px) {
+  .sh-atlas-header:has(.sh-session) { padding-inline: 16px; gap: 8px; }
+  .sh-atlas-header:has(.sh-session) .sh-brand > span { display: none; }
+  .sh-session > .sh-detail-toggle { padding-inline: 10px; font-size: 12px; }
+  .sh-session-panel { padding: 16px; }
+  .sh-pane :is(.sp-column, .gs-column) { padding: 16px; }
+  .sh-pane :is(.cap-item, .wld-room, .wld-job, .con-metric, .nv-section, .cfg-group, .mp) { padding: 16px; }
 }
 .sh-tabbar-item {
   display: flex;

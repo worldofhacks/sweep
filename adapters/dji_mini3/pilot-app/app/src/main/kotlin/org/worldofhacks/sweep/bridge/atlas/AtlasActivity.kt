@@ -40,6 +40,7 @@ import org.worldofhacks.sweep.bridge.BuildConfig
 import org.worldofhacks.sweep.bridge.MainActivity
 import java.io.ByteArrayInputStream
 import java.io.FilterInputStream
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** Bundled shared UI + origin-restricted native capabilities. No robot session is started here. */
@@ -49,6 +50,36 @@ class AtlasActivity : ComponentActivity() {
     private val queue by lazy { AtlasOutbox.get(this) }
     private var locationReply: Pair<String, GeolocationPermissions.Callback>? = null
     private var exporting: String? = null
+    private var importing: AtlasImportTarget? = null
+    private val importDocuments = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val target = importing
+        importing = null
+        if (result.resultCode == RESULT_OK && target != null) {
+            val selected = buildList {
+                result.data?.data?.let(::add)
+                result.data?.clipData?.let { clip ->
+                    repeat(minOf(clip.itemCount, AtlasImportSelection.MAX_SELECTION + 1)) { add(clip.getItemAt(it).uri) }
+                }
+            }.distinct()
+            val context = applicationContext
+            // This small admission step outlives Activity teardown. The actual
+            // copies belong to WorkManager, not to an Activity coroutine.
+            IMPORTS.execute {
+                var accepted = 0
+                var failure = if (selected.size > AtlasImportSelection.MAX_SELECTION) "Choose up to 10 files at a time." else ""
+                val access = runCatching { AtlasVault(context).load(target.session) }.getOrNull()
+                selected.take(AtlasImportSelection.MAX_SELECTION).forEach { uri ->
+                    runCatching {
+                        val item = AtlasImportSelection.admit(context, access ?: error("Reconnect the original workspace."), target, uri)
+                        AtlasImportWorker.enqueue(context, item.id)
+                        accepted++
+                    }.onFailure { failure = it.message ?: "A selected file could not be imported." }
+                }
+                runOnUiThread { Toast.makeText(context,
+                    "$accepted selected for import. Follow progress in Uploads. $failure".trim(), Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
     private val exportDocument = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val id = exporting
         exporting = null
@@ -60,7 +91,7 @@ class AtlasActivity : ComponentActivity() {
                 output.use { target -> queue.file(item).inputStream().use { source -> source.copyTo(target) } }
             }
             withContext(Dispatchers.Main) { Toast.makeText(this@AtlasActivity,
-                if (outcome.isSuccess) "Original exported." else "Export failed. The original is still in your queue.", Toast.LENGTH_LONG).show() }
+                if (outcome.isSuccess) "Local file exported." else "Export failed. The local file is still in your queue.", Toast.LENGTH_LONG).show() }
         }
     }
     private val locationPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -73,6 +104,9 @@ class AtlasActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         exporting = savedInstanceState?.getString("atlas-export")
+        importing = savedInstanceState?.getString("atlas-import")?.let {
+            runCatching { AtlasImportTarget.parse(JSONObject(it)) }.getOrNull()
+        }
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             setContentView(TextView(this).apply {
                 text = "Update Android System WebView to open Sweep Atlas. Your saved captures are safe."
@@ -163,12 +197,22 @@ class AtlasActivity : ComponentActivity() {
         })
         lifecycleScope.launch(Dispatchers.IO) {
             queue.list().filter { it.state == "queued" || it.state == "uploading" }.forEach { AtlasUploadWorker.enqueue(applicationContext, it.id) }
+            queue.list().filter { it.state == "importing" }.forEach { AtlasImportWorker.enqueue(applicationContext, it.id) }
         }
         web.loadUrl("$ORIGIN/assets/atlas/atlas-native.html")
     }
 
     private suspend fun operation(op: String, payload: JSONObject): Any? = when (op) {
         "getSession" -> withContext(Dispatchers.IO) { vault.current()?.publicJson() }
+        "readDraft", "writeDraft", "removeDraft" -> withContext(Dispatchers.IO) {
+            val session = vault.current() ?: error("Reconnect your workspace.")
+            require(session.id == payload.getString("session")) { "Return to the draft's original workspace connection." }
+            when (op) {
+                "readDraft" -> vault.drafts.read(session)
+                "writeDraft" -> { vault.drafts.write(session, payload.getJSONObject("draft"), payload.optJSONObject("previous")); true }
+                else -> { vault.drafts.remove(session, payload.getJSONObject("previous")); true }
+            }
+        }
         "saveSession" -> withContext(Dispatchers.IO) {
             val session = AtlasSession.parse(payload)
             val path = "/atlas/spaces" + (session.space?.let { "/$it" } ?: "")
@@ -182,6 +226,7 @@ class AtlasActivity : ComponentActivity() {
             request(session, payload.getString("path"), payload.optString("method", "GET"), payload.optString("body").takeIf { it.isNotEmpty() })
         }
         "capture" -> {
+            val request = AtlasCaptureRequest.fromPayload(payload)
             val session = withContext(Dispatchers.IO) { vault.load(payload.getString("session")) } ?: error("Reconnect your workspace.")
             session.endpoint(payload.getString("spaceId"))
             val contributor = payload.getString("contributor")
@@ -189,7 +234,18 @@ class AtlasActivity : ComponentActivity() {
             startActivity(Intent(this, AtlasCaptureActivity::class.java)
                 .putExtra("session", session.id).putExtra("space", payload.getString("spaceId"))
                 .putExtra("title", payload.optString("title").take(100))
+                .putExtra("request", request?.json()?.toString())
                 .putExtra("contributor", contributor).putExtra("name", payload.optString("name", "Contributor").take(40)))
+            true
+        }
+        "importMedia" -> {
+            check(importing == null) { "Finish choosing the current files first." }
+            val target = AtlasImportTarget.parse(payload)
+            val session = withContext(Dispatchers.IO) { vault.load(target.session) } ?: error("Reconnect your workspace.")
+            session.endpoint(target.space)
+            importing = target
+            try { importDocuments.launch(AtlasImportSelection.picker()) }
+            catch (error: Exception) { importing = null; throw error }
             true
         }
         "getUploads" -> withContext(Dispatchers.IO) { JSONArray().also { result -> queue.list().forEach { result.put(it.summary()) } } }
@@ -200,25 +256,32 @@ class AtlasActivity : ComponentActivity() {
             val current = vault.current() ?: error("Reconnect to the original workspace.")
             require(previous.baseUrl == current.baseUrl && previous.workspace == current.workspace) { "Reconnect to this capture’s original workspace before retrying." }
             current.endpoint(item.spaceId)
-            require(item.checksum != null) { "This capture was interrupted before it was finalized. Export or remove the local copy." }
+            require(item.checksum != null || item.importUri != null) { "This capture was interrupted before it was finalized. Export or remove the local copy." }
             queue.rebind(item.id, current)
-            queue.state(item.id, "queued", sent = 0)
-            AtlasUploadWorker.enqueue(applicationContext, item.id, retryNow = true)
+            if (item.checksum == null) {
+                queue.retryImport(item.id)
+                AtlasImportWorker.enqueue(applicationContext, item.id, retryNow = true)
+            } else {
+                queue.state(item.id, "queued", sent = 0)
+                AtlasUploadWorker.enqueue(applicationContext, item.id, retryNow = true)
+            }
             true
         }
         "exportUpload" -> {
             val item = withContext(Dispatchers.IO) { queue.get(payload.getString("id")) } ?: error("This capture no longer exists.")
-            require(item.state != "capturing" && item.state != "uploading") { "Wait for capture or upload to finish first." }
+            require(item.state !in setOf("capturing", "importing", "uploading")) { "Wait for capture, import or upload to finish first." }
             require(queue.file(item).isFile) { "There is no local file to export." }
             exporting = item.id
+            val exportName = if (item.displayName.isBlank()) "atlas-${queue.file(item).name}"
+                else item.displayName.substringBeforeLast('.').ifBlank { "atlas-${item.id}" } + "." + queue.file(item).extension
             exportDocument.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                .setType(item.mime).putExtra(Intent.EXTRA_TITLE, "atlas-${queue.file(item).name}"))
+                .setType(item.mime).putExtra(Intent.EXTRA_TITLE, exportName))
             true
         }
         "removeUpload" -> {
             val id = payload.getString("id")
             val item = withContext(Dispatchers.IO) { queue.get(id) } ?: error("This capture no longer exists.")
-            require(item.state != "uploading" && item.state != "capturing") { "Wait for this capture to finish first." }
+            require(item.state !in setOf("uploading", "capturing", "importing")) { "Wait for this capture to finish first." }
             AlertDialog.Builder(this).setTitle("Remove local capture?")
                 .setMessage(if (item.state == "saved") "The verified workspace copy stays available. Only this device’s copy will be removed."
                     else "This capture has not been confirmed saved to the workspace. Removing it deletes this device’s original.")
@@ -226,7 +289,9 @@ class AtlasActivity : ComponentActivity() {
                     lifecycleScope.launch(Dispatchers.IO) {
                         val removed = runCatching {
                             WorkManager.getInstance(applicationContext).cancelUniqueWork("atlas-upload-$id").result.get()
+                            WorkManager.getInstance(applicationContext).cancelUniqueWork("atlas-import-$id").result.get()
                             queue.delete(id)
+                            AtlasImportWorker.releaseUnusedPermission(applicationContext, item.importUri)
                         }
                         if (removed.isFailure) withContext(Dispatchers.Main) {
                             Toast.makeText(this@AtlasActivity, "The local copy could not be removed.", Toast.LENGTH_LONG).show()
@@ -294,7 +359,11 @@ class AtlasActivity : ComponentActivity() {
     } catch (_: Exception) { blocked() }
 
     override fun onResume() { super.onResume(); if (::web.isInitialized) web.onResume() }
-    override fun onSaveInstanceState(outState: Bundle) { outState.putString("atlas-export", exporting); super.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("atlas-export", exporting)
+        outState.putString("atlas-import", importing?.json()?.toString())
+        super.onSaveInstanceState(outState)
+    }
     override fun onPause() {
         if (::web.isInitialized) { web.evaluateJavascript("window.dispatchEvent(new Event('atlas-background'))", null); web.onPause() }
         super.onPause()
@@ -305,6 +374,7 @@ class AtlasActivity : ComponentActivity() {
         super.onDestroy()
     }
     companion object {
+        private val IMPORTS = Executors.newSingleThreadExecutor()
         const val HOST = "appassets.androidplatform.net"
         const val ORIGIN = "https://$HOST"
         private val HTTP = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)

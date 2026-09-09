@@ -49,20 +49,41 @@ def main():
             assert manifest["representation"] == job["representation"]
             assert manifest["metric_scale"] is False
             originals = {capture["id"]: capture["sha256"] for capture in detail["captures"]}
-            assert all(originals[view["capture_id"]] == view["source_sha256"]
-                       for view in manifest["source_views"])
+            assert all(
+                originals[view["capture_id"]] == view["source_sha256"]
+                for view in manifest["source_views"]
+            )
             if job["representation"] == "textured_mesh":
                 stats = mesh_stats(document, binary)
                 assert stats == {key: job[key] for key in ("vertices", "faces")}
                 assert manifest["hole_filling"] is False
+                if manifest.get("surface_review"):
+                    from spatial.atlas_guidance import guidance_from_glb
+
+                    assert guidance_from_glb(document, binary) == manifest["surface_review"]
+                    summary = manifest["surface_review"] | {
+                        "regions": [
+                            {k: v for k, v in r.items() if k != "segments"}
+                            for r in manifest["surface_review"]["regions"]
+                        ]
+                    }
+                    assert job["surface_review"] == summary
                 for image, expected in zip(document["images"], manifest["textures"], strict=True):
                     view = document["bufferViews"][image["bufferView"]]
                     start = view.get("byteOffset", 0)
-                    texture = binary[start:start + view["byteLength"]]
+                    texture = binary[start : start + view["byteLength"]]
                     assert hashlib.sha256(texture).hexdigest() == expected["sha256"]
             else:
                 assert document["meshes"][0]["primitives"][0]["mode"] == 0
-            print(json.dumps(job, indent=2))
+            report = {key: value for key, value in job.items() if key != "surface_review"}
+            if job.get("surface_review"):
+                report["surface_review"] = {
+                    key: value for key, value in job["surface_review"].items() if key != "regions"
+                }
+                report["surface_review"]["displayed_regions"] = len(
+                    job["surface_review"]["regions"]
+                )
+            print(json.dumps(report, indent=2))
             return
         if not args.images:
             parser.error("Pass --images DIRECTORY or --verify-space SPACE_ID")
@@ -77,11 +98,13 @@ def main():
                 "title": "Demo · Fountain reconstruction",
                 "category": "survey",
                 "description": "COLMAP example photos, imported for reconstruction validation. "
+                "Austin demo placement only: these source photos are not asserted to be "
+                "from Austin. "
                 "This is not a live incident or a GPS-verified survey.",
-                "latitude": 0,
-                "longitude": 0,
+                "latitude": 30.2672,
+                "longitude": -97.7431,
                 "radius": 80,
-                "place": "COLMAP example dataset · geographic location not asserted",
+                "place": "Austin, Texas · demo pin, not photo geolocation",
             },
         )
         response.raise_for_status()

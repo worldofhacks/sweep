@@ -7,12 +7,12 @@
   --color-ground: #f2f5ef;
   --color-surface: #fcfdf9;
   --color-panel: #f8faf5;
-  --color-disabled-bg: #faf9f6;
-  --color-disabled-alt: #FBFAF7;
+  --color-disabled-bg: #f4f6f0;
+  --color-disabled-alt: var(--color-disabled-bg);
   --color-recovering-bg: #FBF7EF;
   --color-pill-bg: #edf2e7;
-  --color-map-grid: #F8F7F4;
-  --color-nav-reference-active: #F1EFE9;
+  --color-map-grid: var(--color-panel);
+  --color-nav-reference-active: var(--color-accent-soft);
 
   /* 1.1 Colour — ink */
   --color-ink: #182d29;
@@ -24,21 +24,21 @@
   --color-accent: #24634e;
   --color-accent-hover: #174f3e;
   --color-accent-soft: #edf3ed;
-  --color-eyebrow: #6E6B62;
-  --color-ink-v2-2: #6A6862;
-  --color-ink-v2-3: #66635C;
-  --color-stamp: #78756C;
+  --color-eyebrow: var(--color-ink-2);
+  --color-ink-v2-2: var(--color-ink-2);
+  --color-ink-v2-3: var(--color-ink-3);
+  --color-stamp: var(--color-ink-3);
 
   /* 1.1 Colour — rules and borders */
   --color-hairline: #e0e7dc;
   --color-rule-inner: #e7ece2;
   --color-rule: #dce4d7;
-  --color-rule-v2: #E6E3DB;
-  --color-rule-reference: #E7E4DC;
-  --color-scrollbar-thumb: #DCD8CE;
-  --color-border-secondary: #DAD6CA;
-  --color-border-input: #CFCBBE;
-  --color-border-chip: #B9B5A9;
+  --color-rule-v2: var(--color-rule);
+  --color-rule-reference: var(--color-rule);
+  --color-scrollbar-thumb: #cdd8c9;
+  --color-border-secondary: #d7e2d9;
+  --color-border-input: #b8c8bd;
+  --color-border-chip: var(--color-border-input);
 
   /* 1.1 Colour — semantic */
   --color-danger: #A3160B;
@@ -93,7 +93,7 @@
   --text-32: 32px;
   --text-34: 34px;
   --text-stop-title: clamp(14px, 1.8vw, 17px);
-  --text-module-h1: clamp(22px, 2.2vw, 28px);
+  --text-module-h1: clamp(29px, 2.6vw, 36px);
   --text-dock-title: clamp(16px, 2.2vw, 19px);
   --text-capture-button: clamp(16px, 2.2vw, 18px);
   --text-body: 15px;
@@ -152,8 +152,8 @@
   --space-24: 24px;
   --space-28: 28px;
   --gutter-header: clamp(16px, 2vw, 24px);
-  --gutter-pane: clamp(16px, 2vw, 24px);
-  --gutter-pane-top: clamp(16px, 2vw, 24px);
+  --gutter-pane: clamp(20px, 2.3vw, 32px);
+  --gutter-pane-top: 24px;
   --gutter-context: clamp(12px, 1.4vw, 18px);
   --size-rail: 200px;
   --size-context-min: 280px;
@@ -197,8 +197,8 @@
   --shadow-hover: none;
   --shadow-hover-capture: none;
   --shadow-confirm: none;
-  --shadow-focus-input: 0 0 0 3px rgba(22, 21, 15, .08);
-  --shadow-inset-ring: inset 0 0 0 1px #E9E6DE;
+  --shadow-focus-input: 0 0 0 3px rgba(36, 99, 78, .1);
+  --shadow-inset-ring: inset 0 0 0 1px var(--color-rule);
   --shadow-accent-ok: inset 3px 0 0 #1B6A3F;
   --shadow-accent-warn: inset 3px 0 0 #8A5A00;
   --shadow-accent-danger: inset 3px 0 0 #A3160B;

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef } from 'react'
 import type { ControlState, OperatorNotice } from '../control/state'
 import { deviceLabeller } from '../control/state'
 import {
@@ -27,8 +27,6 @@ export interface HeaderProps {
   onToggleDetail: () => void
   isFixture: boolean
   webcam?: ControlState['connection']['status']
-  /** Banners rendered inside the header, under the session sheet. */
-  children?: ReactNode
 }
 
 export function Header({
@@ -40,33 +38,61 @@ export function Header({
   onToggleDetail,
   isFixture,
   webcam,
-  children,
 }: HeaderProps) {
   const stop = deriveStop(state, stopTimes, now)
   const tags = deriveStateTags(state)
   const rc = deriveRcLine(state)
   const links = deriveLinks(state, webcam)
   const up = isLinkUp(state.connection.status)
+  const root = useRef<HTMLElement>(null)
+  const toggle = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!detailOpen) return
+    const closeOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !root.current?.contains(event.target)) onToggleDetail()
+    }
+    const closeEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { onToggleDetail(); toggle.current?.focus() }
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeEscape)
+    }
+  }, [detailOpen, onToggleDetail])
 
   return (
-    <header className="sh-header">
-      <div className="sh-header-row">
-        <button
-          type="button"
-          className={stop.active ? 'sh-stop is-active' : 'sh-stop'}
-          aria-label="Network stop"
-          aria-describedby={STOP_REASON_ID}
-          disabled={stop.disabled}
-          title={stop.reason}
-          onClick={onStop}
-        >
-          <span className="sh-stop-title">{stop.title}</span>
-          <span className="sh-stop-sub">{stop.sub}</span>
-        </button>
-        <span id={STOP_REASON_ID} className="visually-hidden">
-          {stop.reason}
-        </span>
+    <section ref={root} className="sh-session" aria-label="Fleet session controls">
+      <button ref={toggle} type="button" className="sh-detail-toggle" aria-expanded={detailOpen}
+        aria-label={detailOpen ? 'Hide detail' : 'Session detail'}
+        aria-controls="fleet-session-panel" onClick={onToggleDetail}>
+        <span className={`sh-pill-dot tone-${up ? 'ok' : 'warn'}`} aria-hidden="true" />
+        {isFixture ? 'Demo fleet' : detailOpen ? 'Hide detail' : 'Session detail'}
+      </button>
+      <button
+        type="button"
+        className={stop.active ? 'sh-stop is-active' : 'sh-stop'}
+        aria-label="Network stop"
+        aria-describedby={STOP_REASON_ID}
+        disabled={stop.disabled}
+        title={stop.reason}
+        aria-keyshortcuts="Shift+Escape"
+        onClick={onStop}
+      >
+        <span className="sh-stop-title">{stop.active ? 'Stopped' : 'Stop'}</span>
+        <span className="visually-hidden">{stop.title} · {stop.sub}</span>
+      </button>
+      <span id={STOP_REASON_ID} className="visually-hidden">
+        {stop.reason}
+      </span>
 
+      <div id="fleet-session-panel" className="sh-session-panel" hidden={!detailOpen}>
+        <div className="sh-session-intro">
+          <div><span className="sh-pane-eyebrow">YOUR CONNECTION</span><h2>Fleet session</h2></div>
+          <button type="button" className="sh-detail-toggle" onClick={onToggleDetail} aria-label="Close session details">Close</button>
+        </div>
+        {isFixture && <p className="sh-session-demo">Development fixture active — no device commands leave this browser.</p>}
         <div className="sh-header-middle">
           <ul className="sh-tags" aria-label="Session state">
             {tags.map((tag) => (
@@ -104,22 +130,13 @@ export function Header({
               />
             </li>
           </ul>
-          <button
-            type="button"
-            className="sh-detail-toggle"
-            aria-expanded={detailOpen}
-            onClick={onToggleDetail}
-          >
-            {detailOpen ? 'Hide detail' : 'Session detail'}
-          </button>
         </div>
-      </div>
 
-      {detailOpen && (
-        <SessionSheet state={state} stopReason={stop.reason} isFixture={isFixture} />
-      )}
-      {children}
-    </header>
+        {detailOpen && (
+          <SessionSheet state={state} stopReason={stop.reason} isFixture={isFixture} />
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -134,7 +151,7 @@ function SessionSheet({
 }) {
   const shown = state.notices.slice(0, SHEET_NOTICE_CAP)
   return (
-    <div className="sh-sheet" data-two="1" aria-label="Session detail">
+    <div className="sh-sheet" data-two="1" role="region" aria-label="Session detail">
       <div className="sh-sheet-column">
         <p className="sh-sheet-reason">{stopReason}</p>
         <p className="sh-sheet-line">

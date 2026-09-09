@@ -180,7 +180,7 @@ function FleetCard({
         title={title}
         onClick={onToggle}
       >
-        {selected ? 'SEL' : canSelect ? 'select' : '—'}
+        {selected ? 'Selected' : canSelect ? 'Select device' : 'Unavailable'}
       </button>
     </article>
   )

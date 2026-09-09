@@ -15,22 +15,47 @@ def fixture(tmp_path):
     indices = np.tile(np.array([0, 1, 2], dtype="<u4"), 50).tobytes()
     uv = np.array([[0, 0], [1, 0], [0, 1]], dtype="<f4").tobytes()
     document = {
-        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
         "nodes": [{"mesh": 0}],
-        "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 2},
-                                     "indices": 1, "mode": 4, "material": 0}]}],
-        "buffers": [{"byteLength": len(xyz) + len(indices)},
-                    {"byteLength": len(uv), "uri": "data:application/octet-stream;base64,"
-                     + base64.b64encode(uv).decode()}],
-        "bufferViews": [{"buffer": 0, "byteLength": len(xyz)},
-                        {"buffer": 0, "byteOffset": len(xyz), "byteLength": len(indices)},
-                        {"buffer": 1, "byteLength": len(uv)}],
-        "accessors": [{"bufferView": 0, "componentType": 5126, "type": "VEC3", "count": 3},
-                      {"bufferView": 1, "componentType": 5125, "type": "SCALAR", "count": 150},
-                      {"bufferView": 2, "componentType": 5126, "type": "VEC2", "count": 3}],
-        "images": [{"uri": "texture.png"}], "textures": [{"source": 0}],
-        "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}},
-                       "extensions": {"KHR_materials_unlit": {}}}],
+        "meshes": [
+            {
+                "primitives": [
+                    {
+                        "attributes": {"POSITION": 0, "TEXCOORD_0": 2},
+                        "indices": 1,
+                        "mode": 4,
+                        "material": 0,
+                    }
+                ]
+            }
+        ],
+        "buffers": [
+            {"byteLength": len(xyz) + len(indices)},
+            {
+                "byteLength": len(uv),
+                "uri": "data:application/octet-stream;base64," + base64.b64encode(uv).decode(),
+            },
+        ],
+        "bufferViews": [
+            {"buffer": 0, "byteLength": len(xyz)},
+            {"buffer": 0, "byteOffset": len(xyz), "byteLength": len(indices)},
+            {"buffer": 1, "byteLength": len(uv)},
+        ],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "type": "VEC3", "count": 3},
+            {"bufferView": 1, "componentType": 5125, "type": "SCALAR", "count": 150},
+            {"bufferView": 2, "componentType": 5126, "type": "VEC2", "count": 3},
+        ],
+        "images": [{"uri": "texture.png"}],
+        "textures": [{"source": 0}],
+        "materials": [
+            {
+                "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}},
+                "extensions": {"KHR_materials_unlit": {}},
+            }
+        ],
         "extensionsUsed": ["KHR_materials_unlit"],
     }
     ok, image = cv2.imencode(".png", np.full((4, 4, 3), 127, dtype=np.uint8))
@@ -48,19 +73,33 @@ def test_pack_embeds_unchanged_geometry_and_textures(tmp_path):
     checksum = hashlib.sha256((tmp_path / "cloud.glb").read_bytes()).hexdigest()
     assert stats["artifact_sha256"] == checksum
     assert len(packed["buffers"]) == 1 and "uri" not in packed["buffers"][0]
-    assert data[:len(binary)] == binary
+    assert data[: len(binary)] == binary
     image = packed["images"][0]
     assert "uri" not in image and image["mimeType"] == "image/png"
     view = packed["bufferViews"][image["bufferView"]]
-    assert data[view["byteOffset"]:view["byteOffset"] + view["byteLength"]] == (
-        tmp_path / "texture.png"
-    ).read_bytes()
+    assert (
+        data[view["byteOffset"] : view["byteOffset"] + view["byteLength"]]
+        == (tmp_path / "texture.png").read_bytes()
+    )
     assert packed["extras"]["metric_scale"] is False
     assert packed["extras"]["hole_filling"] is False
 
 
-@pytest.mark.parametrize("fault", ["remote", "path", "symlink", "index", "count", "nan", "texture",
-                                  "material", "extension", "texture_source"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "remote",
+        "path",
+        "symlink",
+        "index",
+        "count",
+        "nan",
+        "texture",
+        "material",
+        "extension",
+        "texture_source",
+    ],
+)
 def test_pack_rejects_incomplete_or_unbounded_assets(tmp_path, fault):
     document, binary = fixture(tmp_path)
     if fault == "remote":

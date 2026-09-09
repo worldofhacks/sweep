@@ -10,7 +10,7 @@ export interface FrameProps {
   tabBar: ReactNode
 }
 
-/** The persistent 100dvh grid: header, body (rail, pane, context), footer (dock, tab bar). */
+/** One header and persistent navigation; each working page owns its content. */
 export function Frame({ header, rail, pane, context, dock, tabBar }: FrameProps) {
   return (
     <div data-frame="1">

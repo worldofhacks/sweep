@@ -118,9 +118,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("--openmvs-bin", type=Path,
-                        help="Opt in to experimental local OpenMVS 2.4.0 textured meshes. "
-                             "Operator-provided binaries; review licensing before production.")
+    parser.add_argument(
+        "--openmvs-bin",
+        type=Path,
+        help="Opt in to experimental local OpenMVS 2.4.0 textured meshes. "
+        "Operator-provided binaries; review licensing before production.",
+    )
     parser.add_argument("--process-job", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.openmvs_bin:
@@ -130,8 +133,11 @@ def main():
             engine_files(args.openmvs_bin)
         except ValueError as error:
             parser.error(str(error))
-        print("Experimental dense engine enabled. OpenMVS/IBFS licensing requires review "
-              "before production deployment.", flush=True)
+        print(
+            "Experimental dense engine enabled. OpenMVS/IBFS licensing requires review "
+            "before production deployment.",
+            flush=True,
+        )
 
     def stop(_signal, _frame):
         raise KeyboardInterrupt

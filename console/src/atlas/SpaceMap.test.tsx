@@ -1,0 +1,95 @@
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import SpaceMap from './SpaceMap'
+import type { Space } from './types'
+
+const mock = vi.hoisted(() => ({
+  options: {} as Record<string, unknown>,
+  handlers: {} as Record<string, (event?: unknown) => void>,
+  easeTo: vi.fn(), remove: vi.fn(), resize: vi.fn(), setData: vi.fn(), setMinZoom: vi.fn(),
+  tilesLoaded: false,
+}))
+vi.mock('maplibre-gl', () => ({ default: {
+  Map: class {
+    constructor(options: Record<string, unknown>) { mock.options = options }
+    on(name: string, callback: (event?: unknown) => void) { mock.handlers[name] = callback }
+    addControl() {} addSource() {} addLayer() {}
+    getSource() { return { setData: mock.setData } }
+    easeTo = mock.easeTo
+    remove = mock.remove
+    resize = mock.resize
+    setMinZoom = mock.setMinZoom
+    areTilesLoaded() { return mock.tilesLoaded }
+  },
+  NavigationControl: class {}, ScaleControl: class {},
+  Marker: class { setLngLat() { return this } addTo() { return this } remove() {} },
+} }))
+beforeEach(() => {
+  vi.clearAllMocks()
+  mock.handlers = {}
+  mock.tilesLoaded = false
+  vi.stubGlobal('ResizeObserver', class {
+    callback: () => void
+    constructor(callback: () => void) { this.callback = callback }
+    observe() { this.callback() }
+    disconnect() {}
+  })
+  vi.stubGlobal('matchMedia', () => ({ matches: true }))
+})
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+const space: Space = { id: 'demo', title: 'Austin demo', category: 'community',
+  latitude: 30.2672, longitude: -97.7431, radius: 100, place: 'Austin, Texas', description: 'Demo only',
+  status: 'active', verification: 'unverified', created_at: 1, updated_at: 1,
+  capture_count: 0, coverage_percent: 0, contributors: 0 }
+const props = () => ({ spaces: [space], detail: null, center: [-97.7431, 30.2672] as [number, number],
+  picking: false, coverageVisible: false, selectedCell: null, position: null,
+  onSelect: vi.fn(), onPick: vi.fn(), onCell: vi.fn() })
+
+it('keeps real street tiles across the complete map zoom range, including close inspection', () => {
+  render(<SpaceMap {...props()} />)
+  expect(screen.getByRole('status')).toHaveTextContent('Loading street map…')
+  expect(screen.getByLabelText('Geographic map of spaces')).toHaveAttribute('aria-busy', 'true')
+  expect(mock.options).toMatchObject({ minZoom: 0, maxZoom: 22,
+    style: { sources: { streets: { maxzoom: 19, tileSize: 256 } },
+      layers: [expect.objectContaining({ id: 'streets', type: 'raster' })] } })
+  expect(screen.getByRole('button', { name: 'Recenter map' })).toBeDisabled()
+  act(() => mock.handlers.load())
+  expect(screen.queryByText('Loading street map…')).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Geographic map of spaces')).toHaveAttribute('aria-busy', 'false')
+  expect(screen.getByRole('button', { name: 'Recenter map' })).toBeEnabled()
+})
+
+it('reports an unavailable basemap without leaving the loading state indefinitely', () => {
+  render(<SpaceMap {...props()} />)
+  act(() => mock.handlers.error())
+  expect(screen.getByRole('status')).toHaveTextContent('Some map tiles could not load.')
+  expect(screen.queryByText('Loading street map…')).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Geographic map of spaces')).toHaveAttribute('aria-busy', 'false')
+})
+
+it('does not reset a manually chosen zoom during space polling, but provides explicit recentering', () => {
+  const value = props()
+  const view = render(<SpaceMap {...value} />)
+  act(() => mock.handlers.load())
+  const calls = mock.easeTo.mock.calls.length
+  view.rerender(<SpaceMap {...value} center={[...value.center]} spaces={[{ ...space, updated_at: 2 }]} />)
+  expect(mock.easeTo).toHaveBeenCalledTimes(calls)
+  fireEvent.click(screen.getByRole('button', { name: 'Recenter map' }))
+  expect(mock.easeTo).toHaveBeenLastCalledWith({ center: value.center, zoom: 14.5, duration: 0 })
+  view.unmount()
+  expect(mock.remove).toHaveBeenCalledTimes(1)
+})
+
+it.each(['community', 'survey', 'hazard'] as const)('retains the same basemap for %s spaces', category => {
+  render(<SpaceMap {...props()} spaces={[{ ...space, category }]} />)
+  act(() => mock.handlers.load())
+  expect(screen.getByLabelText('Geographic map of spaces')).toBeInTheDocument()
+  expect(mock.setData).toHaveBeenCalledWith(expect.objectContaining({ type: 'FeatureCollection' }))
+  expect(mock.options.maxZoom).toBe(22)
+})
+
+it.each([[250, 0], [512, 0], [1024, 1], [827, 0.69175]])('bounds zoom-out to a %ipx viewport without empty poles', (height, minimum) => {
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(height)
+  render(<SpaceMap {...props()} />)
+  expect(mock.setMinZoom.mock.calls[0][0]).toBeCloseTo(minimum, 3)
+})

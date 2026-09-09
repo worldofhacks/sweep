@@ -55,6 +55,7 @@ def decode_glb(data: bytes) -> tuple[dict, bytes]:
 
 def mesh_stats(document: dict, binary: bytes) -> dict:
     """Validate the narrow static triangle profile emitted by the pinned dense engine."""
+
     def integer(value, maximum):
         if type(value) is not int or not 0 <= value <= maximum:
             raise ValueError("The mesh contains an invalid buffer reference or count.")
@@ -114,8 +115,9 @@ def mesh_stats(document: dict, binary: bytes) -> dict:
         offset = integer(accessor.get("byteOffset", 0), view["byteLength"])
         if count == 0 or offset + count * stride > view["byteLength"]:
             raise ValueError("The mesh accessor exceeds its buffer.")
-        result = np.frombuffer(binary, dtype, count * width,
-                               view.get("byteOffset", 0) + offset).reshape(count, width)
+        result = np.frombuffer(
+            binary, dtype, count * width, view.get("byteOffset", 0) + offset
+        ).reshape(count, width)
         if not np.isfinite(result).all():
             raise ValueError("The mesh contains nonfinite geometry.")
         return result
@@ -143,7 +145,7 @@ def mesh_stats(document: dict, binary: bytes) -> dict:
     for image in images:
         view = views[integer(image.get("bufferView"), len(views) - 1)]
         start = view.get("byteOffset", 0)
-        data = binary[start:start + view["byteLength"]]
+        data = binary[start : start + view["byteLength"]]
         if image.get("mimeType") != "image/png" or len(data) < 33:
             raise ValueError("The mesh texture must be an embedded PNG.")
         if data[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR":
@@ -213,8 +215,12 @@ def pack_openmvs_glb(source: Path, destination: Path) -> dict:
         if type(index) is not int or not 0 <= index < len(offsets):
             raise ValueError("The engine exported an invalid buffer index.")
         offset, length = view.get("byteOffset", 0), view.get("byteLength")
-        if (type(offset) is not int or type(length) is not int or min(offset, length) < 0
-                or offset + length > buffers[index]["byteLength"]):
+        if (
+            type(offset) is not int
+            or type(length) is not int
+            or min(offset, length) < 0
+            or offset + length > buffers[index]["byteLength"]
+        ):
             raise ValueError("The engine exported an invalid buffer view.")
         view.update(buffer=0, byteOffset=offsets[index] + offset)
     pixels = 0
@@ -242,18 +248,33 @@ def pack_openmvs_glb(source: Path, destination: Path) -> dict:
         if decoded is None or decoded.shape[:2] != (height, width):
             raise ValueError("The texture is incomplete or cannot be decoded.")
         del decoded
-        textures.append({"sha256": hashlib.sha256(data).hexdigest(), "width": width,
-                         "height": height, "bytes": len(data)})
+        textures.append(
+            {
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "width": width,
+                "height": height,
+                "bytes": len(data),
+            }
+        )
         image.clear()
         image.update(bufferView=len(document["bufferViews"]), mimeType="image/png")
-        document["bufferViews"].append({"buffer": 0, "byteOffset": len(binary),
-                                        "byteLength": len(data)})
+        document["bufferViews"].append(
+            {"buffer": 0, "byteOffset": len(binary), "byteLength": len(data)}
+        )
         binary.extend(data)
         binary.extend(b"\0" * (-len(binary) % 4))
     document["buffers"] = [{"byteLength": len(binary)}]
-    document["extras"] = {"representation": "textured_mesh", "metric_scale": False,
-                          "coordinate_frame": "local_relative", "hole_filling": False}
+    document["extras"] = {
+        "representation": "textured_mesh",
+        "metric_scale": False,
+        "coordinate_frame": "local_relative",
+        "hole_filling": False,
+    }
     stats = mesh_stats(document, bytes(binary))
     checksum = write_glb(destination, document, bytes(binary))
-    return {**stats, "textures": textures, "artifact_sha256": checksum,
-            "artifact_bytes": destination.stat().st_size}
+    return {
+        **stats,
+        "textures": textures,
+        "artifact_sha256": checksum,
+        "artifact_bytes": destination.stat().st_size,
+    }

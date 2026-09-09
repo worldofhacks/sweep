@@ -2,6 +2,7 @@
 
 import asyncio
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -18,6 +19,7 @@ from relay.atlas import (
     CaptureRequest,
     Contributor,
     NewSpace,
+    SurfaceRequest,
 )
 
 
@@ -110,6 +112,28 @@ def install_atlas_routes(app: FastAPI, authorize):
     def detail(session: str, identifier: str, authorization: str | None = Header(default=None)):
         access(session, identifier, authorization)
         return JSONResponse(store().detail(identifier), headers={"Cache-Control": "no-store"})
+
+    @app.post(base + "/drafts/{draft_id}/publish", status_code=201)
+    async def publish_draft(
+        session: str,
+        draft_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        authorize(authorization)
+        if not 1 <= len(session) <= 128:
+            raise HTTPException(400, "Workspace identifier is too long.")
+        try:
+            if str(uuid.UUID(draft_id)) != draft_id:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(422, "Use the original draft identifier.") from None
+        value = await read_json(request, NewSpace)
+        return JSONResponse(
+            store().create(session, value, draft_id),
+            status_code=201,
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.post(base + "/{identifier}/reconstruction", status_code=202)
     def reconstruction(
@@ -258,3 +282,27 @@ def install_atlas_routes(app: FastAPI, authorize):
         access(session, identifier, authorization)
         value = await read_json(request, CaptureRequest)
         return store().request_capture(identifier, value)
+
+    @app.post(base + "/{identifier}/surface-requests", status_code=201)
+    async def surface_request(
+        session: str,
+        identifier: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        authorize(authorization)
+        store().check(identifier, session=session)
+        value = await read_json(request, SurfaceRequest)
+        return store().request_surface(identifier, value)
+
+    @app.post(base + "/{identifier}/surface-requests/{job_id}/{region_id}/dismiss")
+    def dismiss_surface_request(
+        session: str,
+        identifier: str,
+        job_id: str,
+        region_id: str,
+        authorization: str | None = Header(default=None),
+    ):
+        authorize(authorization)
+        store().check(identifier, session=session)
+        return store().dismiss_surface_request(identifier, job_id, region_id)

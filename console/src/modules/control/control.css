@@ -5,6 +5,14 @@
  */
 .ct-two { align-items: start; }
 .ct-column { min-width: 0; }
+.ct-work-card { padding: 24px; margin-bottom: 16px; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); background: var(--color-surface); }
+.ct-selection-hint { margin: 12px 0; font-size: 13px; line-height: 1.5; color: var(--color-ink-2); }
+.ct-work-card .ct-fleet-row { margin-bottom: 0; }
+.ct-work-card .ct-blockers { margin-bottom: 0; }
+.ct-ground h3 { margin: 0; font-size: 24px; font-weight: 550; letter-spacing: -.03em; }
+.ct-ground > p { color: var(--color-ink-2); font-size: 13px; max-width: 76ch; }
+.ct-ground-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 12px; margin: 24px 0; }
+@media (max-width: 600px) { .ct-work-card { padding: 16px; } }
 .ct-eyebrow {
   margin: 0 0 6px;
   font-family: var(--font-mono);
@@ -448,9 +456,12 @@
 .ct-requests-empty { margin: 0; font-size: var(--text-13); color: var(--color-ink-2); }
 
 /* Fleet */
+.ct-fleet-layout { display: grid; gap: 24px; }
+.ct-fleet-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; align-items: start; }
+.ct-fleet-history { padding: 16px; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); background: var(--color-surface); }
 .ct-fleet-eyebrow { margin: 0 0 10px; }
 .ct-registry-empty { margin: 0; font-size: var(--text-13); color: var(--color-ink-2); }
-.ct-registry-card { margin-bottom: 10px; padding: 13px 14px; background: var(--color-panel); border-radius: var(--radius-card); }
+.ct-registry-card { min-width: 0; padding: 16px; border: 1px solid var(--color-hairline); background: var(--color-surface); border-radius: var(--radius-card); }
 .ct-registry-head { display: flex; flex-wrap: wrap; gap: 3px 10px; align-items: baseline; }
 .ct-registry-head span { white-space: nowrap; }
 .ct-registry-id { font-family: var(--font-mono); font-size: var(--text-20); font-weight: var(--weight-600); letter-spacing: var(--tracking-tight-2); }
@@ -463,7 +474,7 @@
 .ct-metric-track { height: 3px; border-radius: var(--radius-track); background: var(--color-rule-inner); margin-top: 3px; overflow: hidden; }
 .ct-metric-fill { height: 3px; border-radius: var(--radius-track); background: currentColor; transition: var(--transition-meter); }
 .ct-registry-authority { margin: 9px 0 0; display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: var(--text-12); color: var(--color-ink-2); }
-.ct-registry-authority span { white-space: nowrap; }
+.ct-registry-authority span { overflow-wrap: anywhere; }
 .ct-registry-patterns { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .ct-registry-pattern { padding: 3px 8px; border-radius: var(--radius-chip); background: var(--color-ground); font-family: var(--font-mono); font-size: var(--text-11); color: var(--color-ink-2); }
 .ct-registry-reasons { margin-top: 8px; }
@@ -473,6 +484,7 @@
   width: 100%;
   min-height: var(--min-h-44);
   margin-top: 10px;
+  border-radius: var(--radius-control);
   border: 1px solid var(--color-ink);
   background: var(--color-surface);
   color: var(--color-ink);
@@ -481,9 +493,9 @@
   opacity: 1;
 }
 .ct-registry-select:hover:not(:disabled) { border-color: var(--color-ink); }
-.ct-registry-select.is-selected { background: var(--color-ink); color: #ffffff; }
+.ct-registry-select.is-selected { background: var(--color-accent); border-color: var(--color-accent); color: #ffffff; }
 .ct-registry-select:disabled { border-color: var(--color-rule); color: var(--color-ink-3); cursor: not-allowed; opacity: .6; }
-.ct-registry-select.is-selected:disabled { border-color: var(--color-ink); background: var(--color-ink); color: #ffffff; opacity: 1; }
+.ct-registry-select.is-selected:disabled { border-color: var(--color-accent); background: var(--color-accent); color: #ffffff; opacity: 1; }
 .ct-departed-none { margin: 0; font-size: var(--text-13); color: var(--color-ink-3); }
 .ct-departed { margin-bottom: 10px; padding: 12px 14px; background: var(--color-panel); border-radius: var(--radius-card); font-size: var(--text-12); color: var(--color-ink-2); }
 .ct-departed p { margin: 0; }

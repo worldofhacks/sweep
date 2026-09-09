@@ -1,0 +1,56 @@
+{
+  "date": "2026-09-08",
+  "scope": "Mesh-derived review regions and build-bound shared requests; not full product acceptance",
+  "job_id": "544db565-bec9-4bf9-aae9-5ef89a696d0d",
+  "space_id": "7fa157a0-6011-4706-81bd-f246da70b25c",
+  "source": "11 original COLMAP Strecha Fountain photographs, imported without asserted GPS",
+  "registered_views": 11,
+  "components": 1,
+  "dense_points": 540143,
+  "surface_triangles": 98951,
+  "render_vertices": 61021,
+  "artifact_bytes": 10051868,
+  "artifact_sha256": "e1ea6aa6c8f16a47e5ad83f9eaafa6e14b4cc6b632c26d5e879bfe1669b9f9b7",
+  "method": "open-mesh-edges-v1",
+  "boundary_edges": 4557,
+  "nonmanifold_edges": 0,
+  "eligible_groups": 16,
+  "displayed_regions": 6,
+  "maximum_sampled_edges_per_region": 128,
+  "authenticated_http": {
+    "artifact_textures_and_original_checksums": "pass",
+    "guidance_recomputed_from_downloaded_mesh_matches_manifest": "pass",
+    "summary_matches_manifest_without_edge_coordinates": "pass",
+    "gps_capture_coverage_remains_zero": "pass",
+    "observed_space_detail_bytes_with_one_request": 17541,
+    "review_summary_json_bytes": 1314
+  },
+  "shared_request": {
+    "region_id": "4c6a039d16a5ad51",
+    "label": "Region 3",
+    "owner_browser_submission": "pass; one explicitly labeled local demo request",
+    "fresh_contributor_invitation_reads_and_inspects_same_request": "pass",
+    "contributor_build_and_request_mutations": "refused with HTTP 401",
+    "fixture_http_tests": ["restart persistence", "retry idempotency", "cross-space isolation", "checksum and build mismatch refusal", "resolved space refusal", "owner-only dismissal", "upload does not resolve", "rebuild does not resolve"]
+  },
+  "browser": {
+    "desktop_web_viewports": [[1440,1000],[768,1024],[390,844],[320,568]],
+    "document_overflow": false,
+    "minimum_review_button_height_px": 44,
+    "selection_changes_rendered_pixels": true,
+    "android_asset_viewports": [[390,844],[320,568]],
+    "android_navigation_bottom_px": [844,568],
+    "android_new_page_or_texture_errors": 0,
+    "android_owner_controls_absent_for_contributor": true,
+    "native_ipc": "Simulated scoped read-only transport to real local Atlas HTTP",
+    "screenshots": "Ignored output/playwright/atlas-surface-*.png; desktop and Android phone images visually inspected"
+  },
+  "limits": [
+    "Open boundaries may be real object edges or scan extents, not missing surfaces",
+    "Fixed grouping, tiny-group filtering and six-region cap do not detect every gap",
+    "Sampled lines include occluded edges; no safe-route, GPS transform or metric claim",
+    "No proactive notifications or automatic post-capture resolution",
+    "Actual Android and physical input/fleet qualification remain open",
+    "Experimental dense-engine licensing and production qualification gate remains"
+  ]
+}

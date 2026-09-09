@@ -252,7 +252,7 @@ try {
 
   await page.getByRole('button', { name: 'Network stop', exact: true }).click()
   await waitForRequest(page, 'Estop', 'completed')
-  await page.getByRole('button', { name: 'Network stop', exact: true }).getByText('Stop active', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Network stop', exact: true }).getByText('Stopped', { exact: true }).waitFor()
   await pressSwarm(page, /^Land all/)
   await page.getByRole('button', { name: 'Confirm and send' }).click()
   await waitForRequest(page, 'Land all', 'completed')

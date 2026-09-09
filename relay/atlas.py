@@ -11,9 +11,9 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MAX_MEDIA_BYTES = 64 * 1024 * 1024
 MAX_SPACE_BYTES = 2 * 1024 * 1024 * 1024
@@ -49,19 +49,52 @@ class Contributor(AtlasModel):
     position: Position
 
 
+class LocationResponse(AtlasModel):
+    kind: Literal["location"]
+    cell_id: str = Field(pattern=r"^[0-9]{1,2}:[0-9]{1,2}$")
+
+
+class SurfaceResponse(AtlasModel):
+    kind: Literal["surface"]
+    job_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    region_id: str = Field(pattern=r"^[0-9a-f]{16}$")
+
+
+ResponseTarget = Annotated[LocationResponse | SurfaceResponse, Field(discriminator="kind")]
+
+
+def response_key(target: dict) -> str:
+    return json.dumps(target, sort_keys=True, separators=(",", ":"))
+
+
 class CaptureMetadata(AtlasModel):
     contributor_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{8,64}$")
     name: str = Field(min_length=1, max_length=40)
     kind: Literal["photo", "video", "panorama"]
     source: Literal["camera", "import"]
-    captured_at: int = Field(gt=0)
+    captured_at: int | None = Field(default=None, gt=0)
     position: Position | None = None
     note: str = Field(default="", max_length=500)
+    response_to: ResponseTarget | None = None
+
+    @model_validator(mode="after")
+    def camera_timestamp(self) -> CaptureMetadata:
+        if self.source == "camera" and self.captured_at is None:
+            raise ValueError("Camera captures require a capture-time timestamp.")
+        return self
 
 
 class CaptureRequest(AtlasModel):
     cell_id: str = Field(pattern=r"^[0-9]{1,2}:[0-9]{1,2}$")
     note: str = Field(default="An additional viewpoint would help fill this area.", max_length=240)
+
+
+class SurfaceRequest(AtlasModel):
+    job_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    region_id: str = Field(pattern=r"^[0-9a-f]{16}$")
+    note: str = Field(min_length=3, max_length=240)
 
 
 class AtlasError(Exception):
@@ -156,6 +189,15 @@ class AtlasStore:
               id TEXT PRIMARY KEY, space TEXT NOT NULL, status TEXT NOT NULL,
               updated_at INTEGER NOT NULL, data TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS reconstruction_space ON reconstructions(space);
+            CREATE TABLE IF NOT EXISTS surface_requests (
+              space TEXT NOT NULL, job TEXT NOT NULL, region TEXT NOT NULL, data TEXT NOT NULL,
+              PRIMARY KEY(space, job, region));
+            CREATE TABLE IF NOT EXISTS published_drafts (
+              session TEXT NOT NULL, draft TEXT NOT NULL, space TEXT NOT NULL,
+              payload_hash TEXT NOT NULL, PRIMARY KEY(session, draft));
+            CREATE TABLE IF NOT EXISTS capture_responses (
+              space TEXT NOT NULL, request TEXT NOT NULL, capture TEXT NOT NULL,
+              created_at INTEGER NOT NULL, PRIMARY KEY(space, request, capture));
         """)
 
     def close(self):
@@ -171,8 +213,29 @@ class AtlasStore:
             )
         return {"contributor_token": token}
 
-    def create(self, session: str, value: NewSpace) -> dict:
+    def create(self, session: str, value: NewSpace, draft_id: str | None = None) -> dict:
         with self.lock, self.db:
+            # Serialize lookup + admission across store connections, not only this process's lock.
+            self.db.execute("BEGIN IMMEDIATE")
+            fingerprint = hashlib.sha256(
+                json.dumps(value.model_dump(), sort_keys=True).encode()
+            ).hexdigest()
+            if draft_id is not None:
+                previous = self.db.execute(
+                    "SELECT space,payload_hash FROM published_drafts WHERE session=? AND draft=?",
+                    (session, draft_id),
+                ).fetchone()
+                if previous:
+                    if previous[1] != fingerprint:
+                        raise AtlasError(
+                            "This draft was already published with different content.", 409
+                        )
+                    # Never rotate or reveal an invitation on retry. Owners can explicitly share it.
+                    return {
+                        "space": self._space(previous[0]),
+                        "contributor_token": None,
+                        "draft_id": draft_id,
+                    }
             if (
                 self.db.execute(
                     "SELECT count(*) FROM spaces WHERE session=?", (session,)
@@ -193,7 +256,16 @@ class AtlasStore:
                 "INSERT INTO spaces VALUES (?,?,?,?)",
                 (identifier, session, hashlib.sha256(token.encode()).hexdigest(), json.dumps(data)),
             )
-            return {"space": data, "contributor_token": token}
+            if draft_id is not None:
+                self.db.execute(
+                    "INSERT INTO published_drafts VALUES (?,?,?,?)",
+                    (session, draft_id, identifier, fingerprint),
+                )
+            return {
+                "space": data,
+                "contributor_token": token,
+                **({"draft_id": draft_id} if draft_id is not None else {}),
+            }
 
     def check(self, identifier: str, *, session: str | None = None, token: str | None = None):
         with self.lock:
@@ -224,23 +296,55 @@ class AtlasStore:
             )
         ]
 
-    def summary(self, space: dict) -> dict:
-        captures = self.captures(space["id"])
+    def summary(self, space: dict, *, captures=None, grid=None) -> dict:
+        captures = self.captures(space["id"]) if captures is None else captures
+        grid = coverage(space, captures) if grid is None else grid
         return {
             **space,
             "capture_count": len(captures),
-            "coverage_percent": coverage(space, captures)["percent"],
+            "coverage_percent": grid["percent"],
             "contributors": len({item["contributor_id"] for item in captures}),
+            "open_request_count": self._open_request_count(space, grid),
         }
+
+    def _open_request_count(self, space: dict, grid: dict) -> int:
+        """Count actionable requests, not unobserved GPS cells or old build targets."""
+        if space["status"] != "active":
+            return 0
+        observed = {cell["id"] for cell in grid["cells"] if cell["captures"] > 0}
+        count = sum(
+            cell not in observed
+            for (cell,) in self.db.execute(
+                "SELECT cell FROM requests WHERE space=?", (space["id"],)
+            )
+        )
+        job = self.reconstruction(space["id"], 0)
+        if job["status"] == "ready":
+            regions = {item["id"] for item in (job.get("surface_review") or {}).get("regions", [])}
+            for (raw,) in self.db.execute(
+                "SELECT data FROM surface_requests WHERE space=? AND job=?",
+                (space["id"], job["id"]),
+            ):
+                request = json.loads(raw)
+                count += (
+                    request["status"] == "open"
+                    and request["artifact_sha256"] == job.get("artifact_sha256")
+                    and request["region_id"] in regions
+                )
+        return count
 
     def detail(self, identifier: str) -> dict:
         with self.lock:
-            space = json.loads(
-                self.db.execute("SELECT data FROM spaces WHERE id=?", (identifier,)).fetchone()[0]
-            )
+            space = self._space(identifier)
             captures = self.captures(identifier)
             grid = coverage(space, captures)
             observed = {cell["id"] for cell in grid["cells"] if cell["captures"] > 0}
+            responses: dict[str, list[str]] = {}
+            for key, capture in self.db.execute(
+                "SELECT request, capture FROM capture_responses WHERE space=? ORDER BY created_at",
+                (identifier,),
+            ):
+                responses.setdefault(key, []).append(capture)
             requests = [
                 json.loads(row[0])
                 for row in self.db.execute("SELECT data FROM requests WHERE space=?", (identifier,))
@@ -250,17 +354,46 @@ class AtlasStore:
                 for row in self.db.execute("SELECT data FROM presence WHERE space=?", (identifier,))
             ]
             return {
-                "space": self.summary(space),
+                "space": self.summary(space, captures=captures, grid=grid),
                 "captures": captures,
                 "coverage": grid,
                 "requests": [
-                    {**item, "status": "captured" if item["cell_id"] in observed else "open"}
+                    {
+                        **item,
+                        "status": "captured" if item["cell_id"] in observed else "open",
+                        "capture_ids": responses.get(
+                            response_key({"kind": "location", "cell_id": item["cell_id"]}), []
+                        ),
+                    }
                     for item in requests
                 ],
                 "people": [
                     p for p in people if 0 <= self.clock() - p["updated_at"] <= PRESENCE_AGE_MS
                 ],
                 "reconstruction": self.reconstruction(identifier, len(captures)),
+                "surface_requests": [
+                    {
+                        **item,
+                        "capture_ids": responses.get(
+                            response_key(
+                                {
+                                    "kind": "surface",
+                                    "job_id": item["job_id"],
+                                    "region_id": item["region_id"],
+                                    "artifact_sha256": item["artifact_sha256"],
+                                }
+                            ),
+                            [],
+                        ),
+                    }
+                    for item in (
+                        json.loads(row[0])
+                        for row in self.db.execute(
+                            "SELECT data FROM surface_requests WHERE space=? ORDER BY rowid DESC",
+                            (identifier,),
+                        )
+                    )
+                ],
             }
 
     def update_status(self, identifier: str, status: Literal["active", "resolved"]) -> dict:
@@ -276,7 +409,7 @@ class AtlasStore:
         size = staged.stat().st_size
         if not 0 < size <= MAX_MEDIA_BYTES:
             raise AtlasError("Choose a file between 1 byte and 64 MB.", 413)
-        if metadata.captured_at > self.clock() + 60_000:
+        if metadata.captured_at is not None and metadata.captured_at > self.clock() + 60_000:
             raise AtlasError("The capture timestamp is in the future.")
         if (
             metadata.kind == "video"
@@ -285,38 +418,89 @@ class AtlasStore:
             and not mime.startswith("image/")
         ):
             raise AtlasError("The file does not match the capture type.")
-        with self.lock, self.db:
-            space = self.db.execute("SELECT data FROM spaces WHERE id=?", (identifier,)).fetchone()
-            if not space or json.loads(space[0])["status"] != "active":
-                raise AtlasError("This space is resolved. Reopen it before contributing.", 409)
-            existing = self.captures(identifier)
-            identifier_capture = str(uuid.uuid4())
-            with staged.open("rb") as handle:
-                digest = hashlib.file_digest(handle, "sha256").hexdigest()
-            duplicate = next((c for c in existing if c["sha256"] == digest), None)
-            if duplicate:
-                return duplicate
-            if len(existing) >= 500 or sum(c["bytes"] for c in existing) + size > MAX_SPACE_BYTES:
-                raise AtlasError("This space has reached its capture storage limit.", 409)
-            data = {
-                **metadata.model_dump(),
-                "id": identifier_capture,
-                "uploaded_at": self.clock(),
-                "mime": mime,
-                "bytes": size,
-                "sha256": digest,
-            }
-            target = self.media / identifier_capture
-            staged.rename(target)
-            try:
-                self.db.execute(
-                    "INSERT INTO captures VALUES (?,?,?)",
-                    (identifier_capture, identifier, json.dumps(data)),
-                )
-            except BaseException:
+        target = None
+        try:
+            with self.lock, self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                space = self._space(identifier)
+                if space["status"] != "active":
+                    raise AtlasError("This space is resolved. Reopen it before contributing.", 409)
+                existing = self.captures(identifier)
+                with staged.open("rb") as handle:
+                    digest = hashlib.file_digest(handle, "sha256").hexdigest()
+                duplicate = next((c for c in existing if c["sha256"] == digest), None)
+                capture_id = duplicate["id"] if duplicate else str(uuid.uuid4())
+                key = self._admit_response(identifier, capture_id, metadata.response_to)
+                data = duplicate
+                if data is None:
+                    if (
+                        len(existing) >= 500
+                        or sum(c["bytes"] for c in existing) + size > MAX_SPACE_BYTES
+                    ):
+                        raise AtlasError("This space has reached its capture storage limit.", 409)
+                    # Request membership is a relation, not a rewrite of an original's provenance.
+                    data = {
+                        **metadata.model_dump(exclude={"response_to"}),
+                        "id": capture_id,
+                        "uploaded_at": self.clock(),
+                        "mime": mime,
+                        "bytes": size,
+                        "sha256": digest,
+                    }
+                    target = self.media / capture_id
+                    staged.rename(target)
+                    self.db.execute(
+                        "INSERT INTO captures VALUES (?,?,?)",
+                        (capture_id, identifier, json.dumps(data)),
+                    )
+                if key is not None:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO capture_responses VALUES (?,?,?,?)",
+                        (identifier, key, capture_id, self.clock()),
+                    )
+                    return {**data, "response_to": metadata.response_to.model_dump()}
+                return data
+        except BaseException:
+            if target is not None:
                 target.unlink(missing_ok=True)
-                raise
-            return data
+            raise
+
+    def _admit_response(
+        self, space: str, capture: str, target: ResponseTarget | None
+    ) -> str | None:
+        if target is None:
+            return None
+        if target.kind == "location":
+            row = self.db.execute(
+                "SELECT data FROM requests WHERE space=? AND cell=?", (space, target.cell_id)
+            ).fetchone()
+        else:
+            row = self.db.execute(
+                "SELECT data FROM surface_requests WHERE space=? AND job=? AND region=?",
+                (space, target.job_id, target.region_id),
+            ).fetchone()
+            if row and json.loads(row[0])["artifact_sha256"] != target.artifact_sha256:
+                row = None
+        if row is None:
+            raise AtlasError(
+                "The requested view does not exist in this space. Keep your original and refresh.",
+                409,
+            )
+        # Offline responses retain their original build even after rebuilding or dismissal.
+        # Neither upload admission nor membership asserts that the requested gap was filled.
+        key = response_key(target.model_dump())
+        existing = [
+            row[0]
+            for row in self.db.execute(
+                "SELECT request FROM capture_responses WHERE space=? AND capture=?",
+                (space, capture),
+            )
+        ]
+        if key not in existing and len(existing) >= 8:
+            raise AtlasError(
+                "This original is already linked to eight requests. Add a different view.", 409
+            )
+        return key
 
     def publish_presence(self, identifier: str, value: Contributor) -> dict:
         now = self.clock()
@@ -346,6 +530,13 @@ class AtlasStore:
         ).fetchone()
         if row:
             job = json.loads(row[0])
+            if job.get("surface_review"):
+                # Polling/cached space metadata must not repeatedly transport geometry.
+                # Full sampled edges remain in the authenticated immutable manifest.
+                job["surface_review"]["regions"] = [
+                    {key: value for key, value in region.items() if key != "segments"}
+                    for region in job["surface_review"]["regions"]
+                ]
             return {key: value for key, value in job.items() if key != "sources"} | {
                 "new_source_count": max(0, capture_count - job["source_count"]),
             }
@@ -471,10 +662,18 @@ class AtlasStore:
 
     def request_capture(self, identifier: str, value: CaptureRequest) -> dict:
         with self.lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            if self._space(identifier)["status"] != "active":
+                raise AtlasError("Reopen this space before requesting more views.", 409)
             cells = self.detail(identifier)["coverage"]["cells"]
             cell = next((cell for cell in cells if cell["id"] == value.cell_id), None)
             if cell is None or cell["captures"] > 0:
                 raise AtlasError("Select an area without a qualified capture.", 409)
+            existing = self.db.execute(
+                "SELECT data FROM requests WHERE space=? AND cell=?", (identifier, value.cell_id)
+            ).fetchone()
+            if existing:
+                return json.loads(existing[0])
             data = {
                 **value.model_dump(),
                 "created_at": self.clock(),
@@ -482,7 +681,76 @@ class AtlasStore:
                 "longitude": cell["longitude"],
             }
             self.db.execute(
-                "INSERT OR REPLACE INTO requests VALUES (?,?,?)",
+                "INSERT INTO requests VALUES (?,?,?)",
                 (identifier, value.cell_id, json.dumps(data)),
+            )
+            return data
+
+    def request_surface(self, identifier: str, value: SurfaceRequest) -> dict:
+        with self.lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            space = self._space(identifier)
+            if space["status"] != "active":
+                raise AtlasError("Reopen this space before requesting more views.", 409)
+            job = self.reconstruction(identifier, 0)
+            if (
+                job["status"] != "ready"
+                or job.get("id") != value.job_id
+                or job.get("artifact_sha256") != value.artifact_sha256
+            ):
+                raise AtlasError(
+                    "The build changed. Refresh and inspect the current model first.", 409
+                )
+            region = next(
+                (
+                    item
+                    for item in (job.get("surface_review") or {}).get("regions", [])
+                    if item["id"] == value.region_id
+                ),
+                None,
+            )
+            if region is None:
+                raise AtlasError("This model does not contain the selected review region.", 409)
+            # Network retries are idempotent and never reopen a dismissed request.
+            existing = self.db.execute(
+                "SELECT data FROM surface_requests WHERE space=? AND job=? AND region=?",
+                (identifier, value.job_id, value.region_id),
+            ).fetchone()
+            if existing:
+                return json.loads(existing[0])
+            data = {
+                **value.model_dump(),
+                "label": region["label"],
+                "status": "open",
+                "created_at": self.clock(),
+                "updated_at": self.clock(),
+            }
+            self.db.execute(
+                "INSERT INTO surface_requests VALUES (?,?,?,?)",
+                (identifier, value.job_id, value.region_id, json.dumps(data)),
+            )
+            return data
+
+    def _space(self, identifier: str) -> dict:
+        """Internal existence read; callers must already have authorized this space."""
+        row = self.db.execute("SELECT data FROM spaces WHERE id=?", (identifier,)).fetchone()
+        if row is None:
+            raise AtlasError("Space not found.", 404)
+        return json.loads(row[0])
+
+    def dismiss_surface_request(self, identifier: str, job_id: str, region_id: str) -> dict:
+        with self.lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute(
+                "SELECT data FROM surface_requests WHERE space=? AND job=? AND region=?",
+                (identifier, job_id, region_id),
+            ).fetchone()
+            if row is None:
+                raise AtlasError("Capture request not found.", 404)
+            data = json.loads(row[0])
+            data.update(status="dismissed", updated_at=self.clock())
+            self.db.execute(
+                "UPDATE surface_requests SET data=? WHERE space=? AND job=? AND region=?",
+                (json.dumps(data), identifier, job_id, region_id),
             )
             return data

@@ -21,11 +21,15 @@ def test_engine_directory_is_explicit_and_complete(tmp_path):
 def test_pipeline_uses_dense_points_and_disables_synthetic_fill(tmp_path, monkeypatch):
     # Wiring tests must also run in core CI without installing the optional real engine.
     undistort = []
-    monkeypatch.setitem(sys.modules, "pycolmap", SimpleNamespace(
-        __version__="4.2.0",
-        UndistortCameraOptions=lambda **kwargs: kwargs,
-        undistort_images=lambda *a, **kw: undistort.append((a, kw)),
-    ))
+    monkeypatch.setitem(
+        sys.modules,
+        "pycolmap",
+        SimpleNamespace(
+            __version__="4.2.0",
+            UndistortCameraOptions=lambda **kwargs: kwargs,
+            undistort_images=lambda *a, **kw: undistort.append((a, kw)),
+        ),
+    )
     store = AtlasStore(tmp_path / "store")
     try:
         job = store.queue_reconstruction(seed(store))
@@ -56,8 +60,9 @@ def test_pipeline_uses_dense_points_and_disables_synthetic_fill(tmp_path, monkey
             return subprocess.CompletedProcess(command, 0)
 
         monkeypatch.setattr(subprocess, "run", run)
-        result = dense_mesh(store, job["id"], tmp_path / "images", tmp_path / "model",
-                            working, working, binaries)
+        result = dense_mesh(
+            store, job["id"], tmp_path / "images", tmp_path / "model", working, working, binaries
+        )
         assert result["representation"] == "textured_mesh" and result["faces"] == 50
         assert result["dense_points"] == 540195 and result["experimental"] is True
         assert len(result["dense_engines"]) == 4
@@ -65,8 +70,12 @@ def test_pipeline_uses_dense_points_and_disables_synthetic_fill(tmp_path, monkey
         assert undistort[0][1] == {"undistort_options": {"max_image_size": 1600}, "num_threads": 4}
         stages = [command for command in calls if "--help" not in command]
         densify, mesh, texture = stages[1:]
-        for option, value in (("--tower-mode", "0"), ("--postprocess-dmaps", "1"),
-                              ("--number-views-fuse", "3"), ("--max-resolution", "1280")):
+        for option, value in (
+            ("--tower-mode", "0"),
+            ("--postprocess-dmaps", "1"),
+            ("--number-views-fuse", "3"),
+            ("--max-resolution", "1280"),
+        ):
             assert densify[densify.index(option) + 1] == value
         assert mesh[mesh.index("-p") + 1] == "scene_dense.ply"
         for command in (mesh, texture):

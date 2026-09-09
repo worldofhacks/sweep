@@ -67,6 +67,7 @@ export function Pane({
     <section id="pane" tabIndex={-1} className="sh-pane" data-pane="1" aria-label="Working pane">
       <div className="sh-pane-head">
         <div className="sh-pane-title-block">
+          <span className="sh-pane-eyebrow">FIELD WORKSPACE</span>
           <h1 className="sh-pane-h1">{title}</h1>
           <p className="sh-pane-note">{note}</p>
         </div>

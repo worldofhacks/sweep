@@ -120,11 +120,11 @@ export function ConnectivityModule({ controller, catalog, now }: ModuleProps) {
 
 function MetricTile({ metric }: { metric: HealthMetric }) {
   return (
-    <div>
+    <article className="con-metric" aria-label={metric.key}>
       <p className="con-metric-key">{metric.key}</p>
       <p className={`con-metric-value tone-${metric.tone}`}>{metric.value}</p>
       <p className="con-metric-note">{metric.note}</p>
-    </div>
+    </article>
   )
 }
 

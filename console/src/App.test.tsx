@@ -138,19 +138,24 @@ describe('Control / Capture console', () => {
   })
 
   test('is honestly disconnected when no production relay bootstrap exists', async () => {
+    const user = userEvent.setup()
     const clients = {
       console: new UnavailableRelayClient('Console relay missing.', clock),
       keyboard: new UnavailableRelayClient('Keyboard relay missing.', clock),
     }
     render(<App sessionId={session} clients={clients} />)
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/^Danger — /)
-    expect(screen.getByText('0 of 0 selected')).toBeInTheDocument()
+    expect(await screen.findByText('0 of 0 selected')).toBeInTheDocument()
     const stop = screen.getByRole('button', { name: 'Network stop' })
     expect(stop).toBeDisabled()
-    expect(stop).toHaveAccessibleDescription(
+    await waitFor(() => expect(stop).toHaveAccessibleDescription(
       /Disabled: the console socket is disconnected\. Console relay missing\./,
-    )
+    ))
+    // An unconfigured, fleet-free workspace is quiet, but its controls still
+    // refuse commands and the connection reason remains available on demand.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Session detail' }))
+    expect(screen.getByRole('region', { name: 'Session detail' })).toHaveTextContent('Console relay missing.')
     expect(screen.queryByText(/simulator active/i)).not.toBeInTheDocument()
   })
 

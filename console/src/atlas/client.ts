@@ -1,15 +1,20 @@
 import { relayHttpUrl } from '../relay/origin'
+import { responseMatches } from './captureRequests'
+import { BrowserSpaceDraftStore, type SpaceDraftStore } from './drafts'
 import { PlatformHttp, type PlatformConnection, type PlatformFetch } from '../platform/http'
-import type { Capture, CaptureMetadata, GeoPosition, NewSpace, Space, SpaceDetail } from './types'
+import type { Capture, CaptureMetadata, GeoPosition, NewSpace, Space, SpaceDetail, SurfaceFocus, SurfaceRegion } from './types'
 
 export class AtlasClient {
   readonly http: PlatformHttp
   readonly connection: PlatformConnection
   private readonly fetcher: PlatformFetch
+  private readonly browserDrafts: SpaceDraftStore
+  get drafts(): SpaceDraftStore { return this.browserDrafts }
   constructor(connection: PlatformConnection, fetcher: PlatformFetch = (input, init) => globalThis.fetch(input, init)) {
     this.fetcher = fetcher
     this.http = new PlatformHttp(connection, fetcher)
     this.connection = this.http.connection
+    this.browserDrafts = new BrowserSpaceDraftStore(this.connection)
   }
   async list(signal?: AbortSignal): Promise<Space[]> {
     const result = (await this.http.request('/atlas/spaces', undefined, signal)) as {
@@ -23,6 +28,13 @@ export class AtlasClient {
       space: Space
       contributor_token: string
     }
+  }
+  async publishDraft(id: string, space: NewSpace): Promise<{ space: Space; contributor_token: string | null }> {
+    const result = await this.http.request(`/atlas/spaces/drafts/${encodeURIComponent(id)}/publish`, space) as {
+      draft_id: string; space: Space; contributor_token: string | null
+    }
+    if (result.draft_id !== id || !result.space?.id) throw new Error('Publication was not confirmed. Retry this draft to check without duplicating it.')
+    return result
   }
   async detail(id: string, signal?: AbortSignal): Promise<SpaceDetail> {
     return (await this.http.request(
@@ -90,6 +102,23 @@ export class AtlasClient {
       ...(note ? { note } : {}),
     })
   }
+  async requestSurface(id: string, focus: SurfaceFocus, note: string) {
+    return this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/surface-requests`, {
+      job_id: focus.job_id, artifact_sha256: focus.artifact_sha256, region_id: focus.region.id, note,
+    })
+  }
+  async surfaceRegion(id: string, jobId: string, checksum: string, regionId: string, signal: AbortSignal): Promise<SurfaceRegion> {
+    const manifest = await this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/reconstruction/${encodeURIComponent(jobId)}/manifest.json`, undefined, signal) as {
+      job_id: string; artifact_sha256: string; surface_review?: { regions: SurfaceRegion[] }
+    }
+    const region = manifest.surface_review?.regions.find(item => item.id === regionId)
+    if (manifest.job_id !== jobId || manifest.artifact_sha256 !== checksum || !region?.segments?.length)
+      throw new Error('This region could not be verified against the displayed build. Refresh and try again.')
+    return region
+  }
+  async dismissSurfaceRequest(id: string, jobId: string, regionId: string) {
+    return this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/surface-requests/${encodeURIComponent(jobId)}/${encodeURIComponent(regionId)}/dismiss`, {})
+  }
   async presence(id: string, contributor_id: string, name: string, position: GeoPosition) {
     return this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/presence`, {
       contributor_id,
@@ -140,6 +169,8 @@ export class AtlasClient {
       throw new Error(
         typeof result.detail === 'string' ? result.detail : 'The upload could not be saved.',
       )
+    if (metadata.response_to && !responseMatches(metadata.response_to, result.response_to))
+      throw new Error('The upload was not confirmed against this request. Keep the original and retry.')
     return result as Capture
   }
   async media(id: string, captureId: string, signal: AbortSignal): Promise<Blob> {

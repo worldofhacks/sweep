@@ -6,17 +6,21 @@ import type { AtlasClient } from './client'
 import { Icon } from './Icon'
 import { validateAtlasGlb, type AtlasGeometry } from './glb'
 import { assertPhotoTextures, disposeModel, framingDistance } from './model'
+import { currentSurfaceRegion, surfaceOverlay } from './surfaceOverlay'
+import type { SurfaceFocus, SurfaceRegion } from './types'
 
 interface Props {
   client: AtlasClient
   spaceId: string
   jobId: string
   checksum: string
+  focus?: SurfaceFocus | null
 }
 
-export default function WorldViewer({ client, spaceId, jobId, checksum }: Props) {
+export default function WorldViewer({ client, spaceId, jobId, checksum, focus }: Props) {
   const container = useRef<HTMLDivElement>(null)
   const reset = useRef<() => void>(() => {})
+  const inspect = useRef<(region: SurfaceRegion | null) => void>(() => {})
   const [error, setError] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [geometry, setGeometry] = useState<AtlasGeometry | null>(null)
@@ -28,6 +32,7 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
     if (window.innerWidth <= 600) element.parentElement?.scrollIntoView({ block: 'start', inline: 'nearest' })
     const abort = new AbortController()
     reset.current = () => {}
+    inspect.current = () => {}
     queueMicrotask(() => {
       if (!abort.signal.aborted) { setLoaded(false); setError(''); setGeometry(null) }
     })
@@ -128,6 +133,7 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
         controls.minDistance = radius / 100
         controls.maxDistance = wholeRadius * 20
         reset.current = () => {
+          frameRadius = radius
           controls.target.copy(center)
           camera.position
             .copy(center)
@@ -137,6 +143,20 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
           render()
         }
         reset.current()
+        let annotation: THREE.LineSegments | null = null
+        inspect.current = region => {
+          if (annotation) { scene.remove(annotation); disposeModel(annotation); annotation = null }
+          if (!region) { reset.current(); return }
+          annotation = surfaceOverlay(region)
+          scene.add(annotation)
+          const target = new THREE.Vector3(...region.center).applyAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI)
+          const direction = camera.position.clone().sub(controls.target).normalize()
+          controls.target.copy(target)
+          frameRadius = region.radius
+          camera.position.copy(target).add(direction.multiplyScalar(framingDistance(region.radius, camera.aspect, camera.fov)))
+          camera.updateProjectionMatrix(); controls.update(); render()
+          if (window.innerWidth <= 600) element.parentElement?.scrollIntoView({ block: 'start', inline: 'nearest' })
+        }
         setGeometry(geometry)
         setLoaded(true)
       } catch (value) {
@@ -146,6 +166,7 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
     })()
     return () => {
       abort.abort()
+      inspect.current = () => {}
       resize.disconnect()
       controls.dispose()
       disposeModel(scene)
@@ -155,13 +176,17 @@ export default function WorldViewer({ client, spaceId, jobId, checksum }: Props)
     }
   }, [client, spaceId, jobId, checksum])
 
+  useEffect(() => {
+    if (loaded) inspect.current(currentSurfaceRegion(focus, jobId, checksum))
+  }, [focus, jobId, checksum, loaded])
+
   return (
     <div className="atlas-world-viewer">
       <div ref={container} className="atlas-world-canvas" />
       <div className="atlas-world-controls">
         <span>
           <Icon name="cube" />
-          Reconstructed perspectives
+          {currentSurfaceRegion(focus, jobId, checksum)?.label ?? 'Reconstructed perspectives'}
         </span>
         <button
           className="atlas-icon-button"

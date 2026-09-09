@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { NativeAtlasClient, nativeCall, nativeFetch, type NativeSession } from './native'
 import type { SpaceDetail } from './types'
+import { EMPTY_SPACE } from './drafts'
 
 const session: NativeSession = { id: 'credential-one', baseUrl: 'http://192.168.1.20:8000/root', sessionId: 'room', space: null }
 function port(handler: (op: string, payload: Record<string, unknown>) => unknown) {
@@ -66,4 +67,17 @@ it('does not update a closed screen when a native request completes after cancel
   const result = new NativeAtlasClient(session).list(controller.signal)
   controller.abort()
   await expect(result).rejects.toHaveProperty('name', 'AbortError')
+})
+it('keeps drafts in the native vault and binds every action to the original credential', async () => {
+  const draft = { version: 1, id: crypto.randomUUID(), revision: 1, updatedAt: Date.now(),
+    space: EMPTY_SPACE, coordinates: ['', ''], submitted: null }
+  const api = port(op => op === 'readDraft' ? draft : true)
+  const client = new NativeAtlasClient(session)
+  expect(await client.drafts.read()).toEqual(draft)
+  await client.drafts.write({ ...draft, version: 1, coordinates: ['', ''], revision: 2 }, await client.drafts.read())
+  await client.drafts.remove((await client.drafts.read())!)
+  const calls = api.postMessage.mock.calls.map(([raw]) => JSON.parse(raw))
+  expect(calls.every(value => value.payload.session === 'credential-one')).toBe(true)
+  expect(calls.map(value => value.op)).toEqual(['readDraft', 'readDraft', 'writeDraft', 'readDraft', 'removeDraft'])
+  expect(calls.some(value => value.op === 'request')).toBe(false)
 })

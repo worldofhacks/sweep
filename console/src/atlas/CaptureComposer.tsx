@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { AtlasClient, locate } from './client'
 import { Icon } from './Icon'
-import type { CaptureMetadata, GeoPosition } from './types'
+import { CaptureRequestNotice } from './CaptureRequestNotice'
+import type { CaptureMetadata, CaptureRequestContext, GeoPosition } from './types'
 
 interface Props {
   client: AtlasClient
@@ -9,8 +10,9 @@ interface Props {
   contributor: string
   name: string
   onSaved: () => void
+  captureRequest?: CaptureRequestContext
 }
-export function CaptureComposer({ client, spaceId, contributor, name, onSaved }: Props) {
+export function CaptureComposer({ client, spaceId, contributor, name, onSaved, captureRequest }: Props) {
   const video = useRef<HTMLVideoElement>(null)
   const stream = useRef<MediaStream | null>(null)
   const recorder = useRef<MediaRecorder | null>(null)
@@ -61,7 +63,7 @@ export function CaptureComposer({ client, spaceId, contributor, name, onSaved }:
       if (!mounted.current) return
       pending.current = null
       setCount((n) => n + 1)
-      setMessage('Capture saved to this space.')
+      setMessage(item.metadata.response_to ? 'Capture saved and linked to this request.' : 'Capture saved to this space.')
       onSaved()
     } catch (error) {
       if (!mounted.current) return
@@ -77,7 +79,7 @@ export function CaptureComposer({ client, spaceId, contributor, name, onSaved }:
   const save = async (
     file: File,
     source: 'camera' | 'import',
-    capturedAt: number,
+    capturedAt: number | null,
     fix: GeoPosition | null,
     kind = mode,
   ) => {
@@ -92,6 +94,7 @@ export function CaptureComposer({ client, spaceId, contributor, name, onSaved }:
         captured_at: capturedAt,
         position: source === 'camera' ? fix : null,
         note: '',
+        ...(captureRequest ? { response_to: { ...captureRequest.target } } : {}),
       },
     }
     await uploadPending()
@@ -227,6 +230,7 @@ export function CaptureComposer({ client, spaceId, contributor, name, onSaved }:
 
   return (
     <div className="atlas-composer">
+      {captureRequest && <CaptureRequestNotice request={captureRequest} />}
       <div className="atlas-capture-modes" role="group" aria-label="Capture type">
         {(['photo', 'video', 'panorama'] as const).map((type) => (
           <button
@@ -308,7 +312,7 @@ export function CaptureComposer({ client, spaceId, contributor, name, onSaved }:
               void save(
                 file,
                 'import',
-                Math.min(file.lastModified || Date.now(), Date.now()),
+                null,
                 null,
                 file.type.startsWith('video/') ? 'video' : 'photo',
               )
@@ -317,8 +321,8 @@ export function CaptureComposer({ client, spaceId, contributor, name, onSaved }:
         />
       </label>
       <p className="atlas-fine">
-        Imported media keeps its source history. Your current location is never assigned to an older
-        photo.
+        Originals are kept unchanged. File modification time is not capture time; imported media
+        has no verified capture time or location.
       </p>
       {message && (
         <p className="atlas-inline-notice" role="status">

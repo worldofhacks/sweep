@@ -60,6 +60,7 @@ class AtlasCaptureActivity : ComponentActivity() {
     private lateinit var camera: LifecycleCameraController
     private lateinit var sensors: AtlasSensors
     private lateinit var session: AtlasSession
+    private var captureRequest: AtlasCaptureRequest? = null
     private val queue by lazy { AtlasOutbox.get(this) }
     private var cameraAllowed by mutableStateOf(false)
     private var locationAllowed by mutableStateOf(false)
@@ -71,10 +72,13 @@ class AtlasCaptureActivity : ComponentActivity() {
     private var locationLabel by mutableStateOf("Location optional · no map coverage without GPS")
     private var message by mutableStateOf("Your originals are saved on this phone before uploading.")
     private var activeRecording: Recording? = null
-    private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        cameraAllowed = allowed(Manifest.permission.CAMERA)
-        locationAllowed = allowed(Manifest.permission.ACCESS_COARSE_LOCATION)
+    private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        cameraAllowed = granted
         if (cameraAllowed) bindCamera()
+    }
+    private val locationPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        locationAllowed = allowed(Manifest.permission.ACCESS_COARSE_LOCATION)
+        // Location is independent of capture; a permission reply must not rebind the camera.
         sensors.start()
     }
     private fun allowed(permission: String) = ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
@@ -83,6 +87,8 @@ class AtlasCaptureActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         session = AtlasVault(this).load(intent.getStringExtra("session").orEmpty()) ?: run { finish(); return }
         runCatching { session.endpoint(intent.getStringExtra("space").orEmpty()) }.getOrElse { finish(); return }
+        captureRequest = runCatching { intent.getStringExtra("request")?.let { AtlasCaptureRequest.parse(JSONObject(it)) } }
+            .getOrElse { finish(); return }
         sensors = AtlasSensors(this) { locationLabel = it }
         camera = LifecycleCameraController(this).apply {
             setEnabledUseCases(CameraController.IMAGE_CAPTURE)
@@ -111,12 +117,17 @@ class AtlasCaptureActivity : ComponentActivity() {
                         else Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                             Text("See the place.\nAdd your perspective.", color = Color.White, fontSize = 24.sp)
                             Text("Allow the camera to take a photo or silent video. Location is optional and is recorded only with your permission.", color = Color.White)
-                            Button(onClick = ::requestPermissions) { Text("Enable camera") }
+                            Button(onClick = ::requestCamera) { Text("Enable camera") }
                         }
                         if (recording) Text("RECORDING · ${elapsed}s / 60s", color = Color.White,
                             modifier = Modifier.align(Alignment.TopCenter).padding(16.dp).background(Ink, RoundedCornerShape(8.dp)).padding(8.dp))
                     }
                     Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        captureRequest?.let { request ->
+                            Text("REQUESTED VIEW · ${request.label}", color = Pine, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(request.note, fontSize = 14.sp, color = Ink)
+                            Text("Contribute only where safe and permitted. Uploads do not certify coverage or a safe route.", fontSize = 12.sp, color = Ink)
+                        }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             listOf("photo" to "Photo", "video" to "Video", "panorama" to "360 scan").forEach { (value, label) ->
                                 FilterChip(selected = mode == value, enabled = !saving && !recording,
@@ -130,7 +141,7 @@ class AtlasCaptureActivity : ComponentActivity() {
                         }, fontSize = 14.sp, color = Ink)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(locationLabel, fontSize = 12.sp, color = Pine, modifier = Modifier.weight(1f))
-                            if (!locationAllowed) TextButton(onClick = { permissions.launch(arrayOf(
+                            if (!locationAllowed) TextButton(onClick = { locationPermission.launch(arrayOf(
                                 Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }) {
                                 Text("Enable location", fontSize = 12.sp)
                             }
@@ -146,10 +157,9 @@ class AtlasCaptureActivity : ComponentActivity() {
                 }
             }
         }
-        if (cameraAllowed) bindCamera() else requestPermissions()
+        if (cameraAllowed) bindCamera() else requestCamera()
     }
-    private fun requestPermissions() = permissions.launch(arrayOf(Manifest.permission.CAMERA,
-        Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+    private fun requestCamera() = cameraPermission.launch(Manifest.permission.CAMERA)
     private fun bindCamera() {
         if (!cameraAllowed) return
         try {
@@ -161,6 +171,7 @@ class AtlasCaptureActivity : ComponentActivity() {
         .put("name", intent.getStringExtra("name").orEmpty().ifBlank { "Contributor" }).put("kind", mode)
         .put("source", "camera").put("captured_at", System.currentTimeMillis())
         .put("position", sensors.position() ?: JSONObject.NULL).put("note", "")
+        .put("response_to", captureRequest?.target())
 
     private fun capture() {
         if (saving || recording) return

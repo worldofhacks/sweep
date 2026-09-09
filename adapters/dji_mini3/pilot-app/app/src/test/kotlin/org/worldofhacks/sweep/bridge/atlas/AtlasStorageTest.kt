@@ -37,6 +37,20 @@ class AtlasStorageTest {
         assertFalse(session().publicJson().has("token"))
         assertFalse(session().toString().contains("test-key-one"))
     }
+    @Test fun `surface review routes stay inside the original space and expose no worker internals`() {
+        val scoped = session("place")
+        val job = "544db565-bec9-4bf9-aae9-5ef89a696d0d"
+        val region = "0123456789abcdef"
+        listOf("surface-requests", "surface-requests/$job/$region/dismiss",
+            "reconstruction/$job/manifest.json", "reconstruction/$job/cloud.glb").forEach { suffix ->
+            assertTrue(scoped.api("/atlas/spaces/place/$suffix").toString().endsWith(suffix))
+            assertThrows(IllegalArgumentException::class.java) { scoped.api("/atlas/spaces/other/$suffix") }
+        }
+        listOf("reconstruction/$job/worker.log", "surface-requests/$job/$region/approve",
+            "surface-requests/$job/invalid/dismiss", "reconstruction/$job/../control").forEach { suffix ->
+            assertThrows(IllegalArgumentException::class.java) { scoped.api("/atlas/spaces/place/$suffix") }
+        }
+    }
     @Test fun `plain HTTP is limited to explicit local addresses`() {
         assertTrue(AtlasSession.isLocalHost("192.168.1.1"))
         assertTrue(AtlasSession.isLocalHost("172.16.0.2"))

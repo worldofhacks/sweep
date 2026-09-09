@@ -82,6 +82,11 @@ class AtlasUploadWorker(context: Context, parameters: WorkerParameters) : Worker
                     return if (retry) Result.retry() else Result.failure()
                 }
                 check(result?.optString("sha256") == item.checksum) { "The saved capture checksum did not match. Keep the local copy and retry." }
+                JSONObject(item.metadata).optJSONObject("response_to")?.let { expected ->
+                    check(AtlasCaptureRequest.matches(expected, result.optJSONObject("response_to"))) {
+                        "The upload was not confirmed against this request. Keep the original and retry."
+                    }
+                }
                 queue.state(id, "saved", sent = item.size)
             }
             return Result.success()

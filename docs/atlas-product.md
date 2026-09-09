@@ -5,6 +5,9 @@ intuitive, and add collaborative, GPS-anchored incident spaces. People create a 
 phone photos, videos or a guided 360 capture, see contributors who choose to share location,
 explore a reconstructed 3D world, and request captures in missing areas.
 
+Current checkpoint and merge guidance: [PR handoff — 2026-09-08](atlas-pr-handoff-2026-09-08.md).
+The entries below are chronological implementation evidence, not blanket production acceptance.
+
 ## Experience
 
 The primary destination is **Spaces**: a geographic map alongside a concise incident feed.
@@ -84,9 +87,9 @@ capture-time sensors, a private SQLite/WorkManager outbox, encrypted Atlas acces
 fleet controls, original export, and credential-isolated offline space metadata. Both APK variants
 build; fake passes 63 and probe passes 83 local Android tests. The console now passes 1,175 tests and full lint.
 The built Android UI was visually checked at phone size using a simulated native bridge and real
-preview HTTP. It is not yet verified on an Android device or emulator. See
-[`atlas-android.md`](atlas-android.md) for architecture, reproduction, evidence limits, the emulator
-license approval dependency, and remaining Android lint warnings. Both Android lint variants now
+preview HTTP. That milestone did not verify an Android runtime; the final handoff adds a
+narrow actual AOSP emulator photo/upload check. See [`atlas-android.md`](atlas-android.md)
+for architecture, reproduction, evidence limits, and remaining Android lint warnings. Both Android lint variants now
 pass with zero errors; lint is included in CI. The full goal remains active.
 
 ### Cross-page continuity
@@ -153,6 +156,143 @@ tests), and the isolated M14 control/speech browser mission pass. Both APKs pass
 The model was visually inspected at desktop/tablet/phone sizes and under the Android asset CSP;
 selecting 3D reveals it on the short phone layout. Actual Android hardware is still unverified.
 
+### Mesh-derived surface review
+
+Dense builds now generate review candidates from actual open triangle edges, with exact-position
+welding across texture seams and duplicate-face removal. A bounded 4×4×4 partition excludes tiny
+groups and ranks the six displayed regions by boundary length, not urgency. Open edges may be
+natural object boundaries, scan extents, or reconstruction gaps: this is **not** complete missing-
+surface detection, a safe viewpoint, a GPS transform, or a metric coverage score.
+
+Selecting a region in **3D atlas → Surface review** focuses the model and overlays sampled actual
+edges, including occluded ones. Owners can share a request tied to the exact build, region ID,
+and artifact checksum. Invited contributors inspect the same target. Requests persist, retries
+do not duplicate them, and uploads/rebuilds never auto-resolve them. Earlier-build requests cannot
+highlight new geometry. Owner dismissal is not an assertion of reconstructed completeness.
+
+**Contribute this view** now binds a photo, video, or scan view to an existing location or
+current-build surface request. The web composer and Android camera/import chooser show the
+requested context. Request cards link to the contributed originals, including older captures
+beyond the initial 24-item page. Dismissed surface requests retain their linked originals.
+
+The upload metadata may contain `response_to`, either `{kind: "location", cell_id}` or
+`{kind: "surface", job_id, artifact_sha256, region_id}`. The relay validates this target against
+the authorized space and commits its relation with the capture in one SQLite transaction.
+Original-byte deduplication is unchanged: another request adds a relation, not another file or
+rewritten original metadata. Membership is limited to eight requests per original; retries of
+an existing membership remain idempotent. Detail responses expose each request's `capture_ids`.
+Clients require the exact `response_to` acknowledgment before reporting a linked upload saved.
+Delayed native uploads keep their old build binding after rebuilding or dismissal, but a resolved
+space must still be reopened before any upload. Uploads neither auto-dismiss surface requests nor
+turn imported media into qualified GPS coverage. Push notifications remain unimplemented.
+
+### Discovering requested views
+
+The directory's **Needs views** filter now uses an authoritative `open_request_count`,
+not GPS coverage below 100%. Counts include unobserved requested location cells and
+open regions from the current ready model with the exact artifact checksum. Resolved
+spaces, earlier builds, dismissed regions, and locations already captured do not
+solicit contributions. Empty coverage without a request is not a call for people to
+go there. The count is workspace-scoped and available in both list and detail responses.
+
+Opening a Needs views result goes directly to **Requests** inside the space. Overview
+also offers an open-request shortcut. The shared desktop/Android list combines map
+and model requests with inspection, source-bound contribution, and linked-original
+actions. **Show requested area** centers the actual requested cell; **Inspect in 3D**
+loads the exact immutable model region. Leaving retires that read, and ordinary
+navigation back to 3D shows the whole model. Previous requests remain inspectable
+without inviting contributions to stale geometry. Location-request retries preserve
+the original note/time, and resolved spaces refuse new requests.
+
+This is in-app discovery using existing polling, not background push delivery.
+Android's existing offline banner continues to identify cached space information.
+The [request discovery evidence](evidence/atlas-request-discovery-2026-09-08.md)
+records software and rendered-layout verification; full hardware and reconstruction
+qualification remains outstanding.
+
+Polling includes only a small summary; sampled edges load from the authenticated immutable
+manifest on selection. Navigation aborts pending reads, removes old highlights and disposes line
+resources. Android's narrowly scoped allowlist includes these routes without exposing worker
+internals or fleet APIs. No new framework or geometry library was added.
+
+A fresh complete 11-photo Fountain build (`544db565-bec9-4bf9-aae9-5ef89a696d0d`) produced 98,951
+triangles and 540,143 dense points. Its 4,557 open edges produced 16 eligible groups; six are
+displayed. HTTP verification recomputed guidance from the downloaded mesh and matched the manifest
+and summary; GPS coverage remains zero. A browser owner published one explicitly labeled local
+demo request, and an invited contributor inspected it under the Android asset CSP. This used
+simulated native IPC, not a physical Android runtime. See the
+[surface-review evidence](evidence/atlas-surface-review-2026-09-08.json).
+
+### Persistent Spaces-style shell
+
+The owner's updated design requirement makes the Spaces brand header and sidebar persistent
+across Control, Live, Gesture, Speech, Captures, Worlds, Devices, and Map. The branded header is
+one shared component. Following the owner's screenshot feedback, there is no second network-stop
+header or permanent development-fixture band. A compact stop action and on-demand session panel
+live inside the main header; demo status is explicitly labeled there. Active fleet warnings and
+pending confirmations remain accessible without opening the panel. Unconfigured fleet services
+do not add alarm bands to a quiet, fleet-free Spaces workspace.
+
+The operational pages share border-led cards, pine selections/actions, 44px controls, mineral
+surfaces and the Spaces heading hierarchy. Control separates device selection, fleet actions,
+and movement; Live keeps the complete dynamic camera wall; Speech/Gesture use grouped input and
+review panels; Worlds uses the available page width for room/job cards rather than a half-empty
+two-column wrapper. Existing event handlers, source-bound confirmation and media lifecycles are
+retained. No UI framework or new dependency was added.
+
+All five local preview examples are anchored in Austin, Texas, and new preview seeds also use
+Austin. These are demo scenarios, not incident reports. The imported Fountain photos explicitly
+remain non-geolocated: the Austin pin is demonstration placement, not capture metadata. All 11
+original capture records are unchanged.
+
+Survey, community and hazard views retain a dedicated map area beside the desktop details panel,
+or above independently scrolling details on phones. Map zoom is bounded to 0–22, with the minimum
+raised on tall viewports to avoid empty polar bands and no-op zoom-out clicks. Real OSM raster
+tiles stop at z19 and are overscaled above that level instead of requesting nonexistent tiles.
+Polling does not reset the operator's zoom; explicit recentering is available. Map imagery still
+requires WebGL and a reachable tile provider, and failures are reported rather than fabricating
+geography.
+
+### Existing-media contribution on Android
+
+The shared Android interface now offers camera capture or import from the system
+file picker. Selected photos/videos are durably copied and checksummed on-device
+before entering the existing upload pipeline. Scope remains bound to the original
+workspace and space. Partial copies, temporary provider failures, quota limits,
+read-permission cleanup and an in-place outbox schema migration have regression
+coverage. New imports on both web and Android retain unknown capture time as null;
+file modification dates and today's GPS are not substituted for capture evidence.
+The original bytes remain unchanged. Full Android runtime acceptance is still
+required. See the [native import evidence](evidence/atlas-native-import-2026-09-08.md).
+
+### Private new-space drafts
+
+Creating a space now starts one private, automatically saved draft per exact workspace
+credential. Text, category, partially entered coordinates and radius survive navigation
+and reopening. Desktop stores bounded JSON under a SHA-256-scoped key; Android uses
+the existing encrypted native vault rather than WebView storage. A contribution-only
+invitation cannot create or read an owner draft. These are local drafts, not shared
+reports, and clearing browser/app storage removes them.
+
+**Publish space** is explicit. Before sending anything, the app durably saves a frozen
+submission and a random draft ID. The relay transaction admits that ID once per workspace;
+a lost reply, restart, or simultaneous retry returns the same space. Conflicting content
+is refused and retries do not rotate invitations or reopen resolved incidents. Until
+confirmation, the form is locked and **Check publication** retries the exact saved report.
+There is no automatic background incident publication or non-idempotent fallback.
+
+Browser writes use a cross-tab lock and revision comparison; stale editors cannot overwrite
+a newer draft. The saved indicator follows storage acknowledgment, not just a field change.
+**Keep for later** waits for that acknowledgment; **Discard draft** requires confirmation
+and only removes local text/location. Creation notices stay inside the form instead of
+covering its phone controls. The map remains visible while editing and retrying.
+
+See the [draft acceptance evidence](evidence/atlas-drafts-2026-09-08.md). Bundled Android UI
+and native JVM storage tests pass, but actual handset cold-start/storage-failure acceptance
+remains open. Desktop recovery needs the app assets to load; this does not add a service
+worker or promise a cold offline website launch. Browser drafts require HTTPS/localhost
+and Web Locks support. Updated clients require the new draft-publication relay endpoint.
+
 ## Repeat locally
 
 From the repository root:
@@ -212,11 +352,13 @@ with `--verify-space SPACE_ID`. The tool targets only the local preview.
    and actual Android performance. The Fountain build is now a real photo-textured mesh, but
    its scale is relative and it is not georeferenced. Geographic alignment requires sufficient
    measured evidence; a space's map pin is not proof of a 3D transform.
-3. Reconstruction-aware surface gaps and targeted capture guidance. Current gray cells represent
-   qualified camera positions, not which surfaces have been reconstructed. Viewpoint requests
-   are visible in the shared space; proactive contributor notifications are not implemented.
+3. Extend open-edge review into qualified missing-surface and targeted-viewpoint guidance using
+   camera support, occlusion and geographic evidence. Boundaries alone do not establish what is
+   missing; small and undetected areas remain unclassified. Gray cells still represent camera
+   positions, not surface coverage. Proactive notifications and verified post-capture resolution
+   are not implemented.
 4. Full multi-contributor / second-device invitation testing, reliable identity/session boundaries,
-   durable offline new-space drafts, native library imports, thumbnail/storage lifecycle policy,
+   actual-device qualification of the implemented private drafts, physical library-import verification, thumbnail/storage lifecycle policy,
    and cross-device HTTPS deployment. Android's native-capture outbox and cached space metadata
    exist, but are not proof that every offline workflow is complete.
 5. Further mobile navigation, type/contrast, focus, large-text and capture-preview refinements.

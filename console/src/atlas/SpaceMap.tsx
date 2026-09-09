@@ -48,7 +48,8 @@ export default function SpaceMap(props: Props) {
         container: container.current,
         center: callbacks.current.center,
         zoom: 14.5,
-        maxZoom: 19,
+        minZoom: 0,
+        maxZoom: 22,
         attributionControl: { compact: true },
         style: {
           version: 8,
@@ -57,6 +58,8 @@ export default function SpaceMap(props: Props) {
               type: 'raster',
               tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
               tileSize: 256,
+              // Reuse the last real street tile when inspecting a small area.
+              // Zooming closer must never request nonexistent z20–22 tiles.
               maxzoom: 19,
               attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
             },
@@ -167,7 +170,14 @@ export default function SpaceMap(props: Props) {
     instance.on('error', () =>
       setError('Some map tiles could not load. Space locations and captures remain available.'),
     )
-    const resize = new ResizeObserver(() => instance.resize())
+    const resize = new ResizeObserver(() => {
+      instance.resize()
+      // Mercator's world is 512 logical pixels at z0. A taller viewport cannot
+      // zoom that far out without showing empty poles. Match the control's bound
+      // to that real limit (round up to avoid floating-point enabled/no-op clicks).
+      const height = container.current?.clientHeight ?? 0
+      instance.setMinZoom(Math.max(0, Math.ceil(Math.log2(Math.max(512, height) / 512) * 1e6) / 1e6))
+    })
     resize.observe(container.current)
     return () => {
       resize.disconnect()
@@ -186,7 +196,7 @@ export default function SpaceMap(props: Props) {
     if (!instance || !ready) return
     instance.easeTo({
       center: [longitude, latitude],
-      zoom: detailId || picking ? 17.5 : hasPlace ? 14.5 : 3,
+      zoom: detailId || picking ? 17.5 : 14.5,
       duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 650,
     })
   }, [longitude, latitude, detailId, ready, picking, hasPlace])
@@ -289,12 +299,18 @@ export default function SpaceMap(props: Props) {
 
   return (
     <div className={`atlas-map ${picking ? 'is-picking' : ''}`}>
-      <div ref={container} className="atlas-map-canvas" aria-label="Geographic map of spaces" />
+      <div ref={container} className="atlas-map-canvas" aria-label="Geographic map of spaces" aria-busy={!ready && !error} />
+      <button className="atlas-map-recenter atlas-secondary" disabled={!ready}
+        onClick={() => map.current?.easeTo({ center: props.center, zoom: detailId || picking ? 17.5 : 14.5,
+          duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 650 })}>
+        {detailId ? 'Recenter area' : 'Recenter map'}
+      </button>
       {picking && (
         <div className="atlas-map-crosshair" aria-hidden="true">
           +
         </div>
       )}
+      {!ready && !error && <p className="atlas-map-error" role="status">Loading street map…</p>}
       {error && (
         <p className="atlas-map-error" role="status">
           {error}

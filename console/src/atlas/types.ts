@@ -25,15 +25,27 @@ export interface Space extends NewSpace {
   capture_count: number
   coverage_percent: number
   contributors: number
+  /** Actionable location/current-build requests, not a surface-completeness estimate. */
+  open_request_count?: number
+}
+export type CaptureResponseTarget =
+  | { kind: 'location'; cell_id: string }
+  | { kind: 'surface'; job_id: string; artifact_sha256: string; region_id: string }
+export interface CaptureRequestContext {
+  target: CaptureResponseTarget
+  label: string
+  note: string
 }
 export interface CaptureMetadata {
   contributor_id: string
   name: string
   kind: 'photo' | 'video' | 'panorama'
   source: 'camera' | 'import'
-  captured_at: number
+  /** Null for imports when the original capture time has not been established. */
+  captured_at: number | null
   position: GeoPosition | null
   note: string
+  response_to?: CaptureResponseTarget
 }
 export interface Capture extends CaptureMetadata {
   id: string
@@ -52,6 +64,7 @@ export interface CoverageCell {
   longitude: number
 }
 export interface SpaceRequest {
+  capture_ids?: string[]
   cell_id: string
   note: string
   created_at: number
@@ -79,6 +92,40 @@ export interface Reconstruction {
   vertices?: number
   dense_points?: number
   experimental?: boolean
+  surface_review?: SurfaceReview | null
+}
+export interface SurfaceRegionSummary {
+  id: string
+  label: string
+  center: [number, number, number]
+  radius: number
+  boundary_edges: number
+}
+export interface SurfaceRegion extends SurfaceRegionSummary {
+  segments: [number, number, number][]
+}
+export interface SurfaceReview {
+  method: string
+  boundary_edges: number
+  nonmanifold_edges: number
+  candidate_regions?: number
+  regions: SurfaceRegionSummary[]
+}
+export interface SurfaceFocus {
+  job_id: string
+  artifact_sha256: string
+  region: SurfaceRegion
+}
+export interface SurfaceRequest {
+  capture_ids?: string[]
+  job_id: string
+  artifact_sha256: string
+  region_id: string
+  label: string
+  note: string
+  status: 'open' | 'dismissed'
+  created_at: number
+  updated_at: number
 }
 export interface SpaceDetail {
   space: Space
@@ -99,6 +146,7 @@ export interface SpaceDetail {
   }[]
   requests: SpaceRequest[]
   reconstruction: Reconstruction
+  surface_requests?: SurfaceRequest[]
 }
 export const CATEGORY_LABEL: Record<SpaceCategory, string> = {
   incident: 'Incident report',

@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import App from '../../App'
@@ -196,6 +196,7 @@ describe('Gesture module', () => {
     expect(target.getByRole('button', { name: 'Select D-03' })).toBeDisabled()
     expect(target.getByText(/D-03 telemetry stale — these cannot be selected or commanded/)).toBeInTheDocument()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Session detail' }))
     const links = within(screen.getByRole('list', { name: 'Connections' }))
     expect(links.getByTitle('Webcam')).toHaveTextContent(/^webcam\s*connected$/)
   })
@@ -340,6 +341,7 @@ describe('Gesture module', () => {
     await act(async () => {})
 
     expect(trackingState()).toHaveTextContent('webcam source disconnected — Webcam relay source is unavailable.')
+    fireEvent.click(screen.getByRole('button', { name: 'Session detail' }))
     const links = within(screen.getByRole('list', { name: 'Connections' }))
     expect(links.queryByTitle('Webcam')).not.toBeInTheDocument()
 
@@ -363,6 +365,7 @@ describe('Gesture module', () => {
     await act(async () => {})
 
     act(() => clients.console.emitConnection('disconnected', 'Relay socket closed.'))
+    fireEvent.click(screen.getByRole('button', { name: 'Session detail' }))
     const links = within(screen.getByRole('list', { name: 'Connections' }))
     expect(links.getByTitle('Relay (console)')).toHaveTextContent(/disconnected$/)
     expect(links.getByTitle('Webcam')).toHaveTextContent(/^webcam\s*connected$/)
