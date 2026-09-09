@@ -97,11 +97,14 @@ def install_atlas_routes(app: FastAPI, authorize):
 
     install_atlas_account_routes(app, authorize, store)
     from relay.atlas_timeline import install_timeline_routes
+
     install_timeline_routes(app, authorize, resolve, store)
     from relay.atlas_removal import install_removal_routes
+
     install_removal_routes(app, authorize, resolve, store)
 
     from relay.memory_routes import install_memory_routes
+
     install_memory_routes(app, authorize, access, store, resolve)
 
     @app.exception_handler(AtlasError)
@@ -249,9 +252,7 @@ def install_atlas_routes(app: FastAPI, authorize):
                 # invalidates an in-flight upload before it is committed.
                 if account_id is None:
                     resolve(session, identifier, authorization, write=True)
-                return store().add_capture(
-                    identifier, metadata, path, mime, account_id=account_id
-                )
+                return store().add_capture(identifier, metadata, path, mime, account_id=account_id)
         except TimeoutError:
             raise HTTPException(408, "The upload timed out. Please try again.") from None
         finally:

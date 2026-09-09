@@ -201,12 +201,16 @@ class AtlasStore:
               created_at INTEGER NOT NULL, PRIMARY KEY(space, request, capture));
         """)
         from relay.memory_store import MemoryStore
+
         self.memories = MemoryStore(self)
         from relay.atlas_accounts import AtlasAccounts
+
         self.accounts = AtlasAccounts(self)
         from relay.atlas_timeline import AtlasTimeline
+
         self.timeline = AtlasTimeline(self)
         from relay.atlas_removal import AtlasRemoval
+
         self.removal = AtlasRemoval(self)
 
     def close(self):
@@ -223,8 +227,12 @@ class AtlasStore:
         return {"contributor_token": token}
 
     def create(
-        self, session: str, value: NewSpace, draft_id: str | None = None,
-        *, account_id: str | None = None,
+        self,
+        session: str,
+        value: NewSpace,
+        draft_id: str | None = None,
+        *,
+        account_id: str | None = None,
     ) -> dict:
         with self.lock, self.db:
             # Serialize lookup + admission across store connections, not only this process's lock.
@@ -424,8 +432,11 @@ class AtlasStore:
             }
 
     def update_status(
-        self, identifier: str, status: Literal["active", "resolved"],
-        *, account_id: str | None = None,
+        self,
+        identifier: str,
+        status: Literal["active", "resolved"],
+        *,
+        account_id: str | None = None,
     ) -> dict:
         with self.lock, self.db:
             self.db.execute("BEGIN IMMEDIATE")
@@ -437,8 +448,13 @@ class AtlasStore:
         return self.detail(identifier)
 
     def add_capture(
-        self, identifier: str, metadata: CaptureMetadata, staged: Path, mime: str,
-        *, account_id: str | None = None,
+        self,
+        identifier: str,
+        metadata: CaptureMetadata,
+        staged: Path,
+        mime: str,
+        *,
+        account_id: str | None = None,
     ) -> dict:
         size = staged.stat().st_size
         if not 0 < size <= MAX_MEDIA_BYTES:
@@ -639,8 +655,10 @@ class AtlasStore:
                     json.dumps(job),
                 ),
             )
-            self.db.executemany("INSERT INTO atlas_build_sources VALUES (?,?,?)",
-                [(job["id"], identifier, c["id"]) for c in captures])
+            self.db.executemany(
+                "INSERT INTO atlas_build_sources VALUES (?,?,?)",
+                [(job["id"], identifier, c["id"]) for c in captures],
+            )
             return self.reconstruction(identifier, len(captures))
 
     def claim_reconstruction(self) -> dict | None:

@@ -6,6 +6,7 @@ The optional examples are explicitly marked demonstrations, never real incident 
 """
 
 import argparse
+import re
 import secrets
 from pathlib import Path
 
@@ -15,21 +16,31 @@ from fastapi.staticfiles import StaticFiles
 
 from relay.app import create_app
 from relay.atlas import AtlasStore, NewSpace
-from relay.settings import RelaySettings
+from relay.settings import AdapterBackend, RelaySettings
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8177)
     parser.add_argument("--examples", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--data-dir", type=Path, help="Durable preview directory containing atlas/."
+    )
+    parser.add_argument("--session-id", default="atlas-preview")
+    args = parser.parse_args(argv)
+    if not 1 <= args.port <= 65535:
+        parser.error("Choose a port from 1 through 65535.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.session_id):
+        parser.error("Use 1–64 letters, numbers, underscores or hyphens for the session ID.")
     root = Path(__file__).resolve().parents[1]
     dist = root / "console" / "dist"
     if not (dist / "index.html").is_file():
         parser.error("Build console first: cd console && pnpm build")
     token = secrets.token_urlsafe(32)
-    session = "atlas-preview"
-    log_dir = root / ".sweep" / "atlas-preview"
+    session = args.session_id
+    log_dir = (
+        args.data_dir.expanduser().resolve() if args.data_dir else root / ".sweep" / "atlas-preview"
+    )
     if args.examples:
         store = AtlasStore(log_dir / "atlas")
         try:
@@ -80,6 +91,8 @@ def main():
     application = create_app(
         RelaySettings(
             relay_token=token.encode(),
+            # No simulator roster, adapter credentials, or physical command destinations.
+            adapter_backend=AdapterBackend.REMOTE,
             log_dir=log_dir,
             console_origins=(f"http://127.0.0.1:{args.port}",),
         )
