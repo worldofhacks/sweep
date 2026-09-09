@@ -10,13 +10,13 @@ export interface FrameProps {
   tabBar: ReactNode
 }
 
-/** The persistent 100dvh grid: header, body (rail, pane, context), footer (dock, tab bar). */
+/** One header and persistent navigation; each working page owns its content. */
 export function Frame({ header, rail, pane, context, dock, tabBar }: FrameProps) {
   return (
     <div data-frame="1">
       <SkipLink />
       {header}
-      <div data-body="1">
+      <div data-body="1" data-wide={context === null ? '1' : undefined}>
         {rail}
         {pane}
         {context}

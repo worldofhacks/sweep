@@ -125,7 +125,8 @@ class WifiRelayNetwork(context: Context, private val timing: LinkTiming = LinkTi
     }
 
     private fun label(network: Network, caps: NetworkCapabilities? = connectivity?.getNetworkCapabilities(network)): String {
-        val wifiInfo = (caps?.transportInfo as? WifiInfo) ?: legacyWifiInfo()
+        val wifiInfo = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) caps?.transportInfo as? WifiInfo else null)
+            ?: legacyWifiInfo()
         val ssid = wifiInfo?.ssid?.trim('"')?.takeIf { it.isNotEmpty() && it != WifiManager.UNKNOWN_SSID }
         val bssid = wifiInfo?.bssid?.takeIf { it.isNotEmpty() && it != "02:00:00:00:00:00" }
         val iface = connectivity?.getLinkProperties(network)?.let(LinkProperties::getInterfaceName)

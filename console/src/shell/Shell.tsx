@@ -14,6 +14,8 @@ import { Header } from './Header'
 import { NoticeLine } from './NoticeLine'
 import { Rail } from './Rail'
 import { TabBar } from './TabBar'
+import { WorkspaceHeader } from './WorkspaceHeader'
+import './refinement.css'
 import {
   STOP_CLEARED_NOTICE_MS,
   deriveInvalidation,
@@ -65,6 +67,8 @@ export function Shell({
   const isFixture =
     state.connection.transport === 'fixture' || state.keyboardConnection.transport === 'fixture'
   const invalidation = deriveInvalidation(state.requests, pendingRequest)
+  const fleetActive = Object.keys(state.aircraft).length > 0 || state.armed || state.estop ||
+    Boolean(pendingRequest) || stopTimes.seenActiveAt !== null
   // The webcam pill appears only once a webcam-bound relay client reports; without one the
   // gesture producer says so itself and the header stays as it was.
   const webcam =
@@ -83,7 +87,7 @@ export function Shell({
 
   return (
     <Frame
-      header={
+      header={<WorkspaceHeader onOpenFleet={() => setActiveId('control')} controls={activeId === 'spaces' && !fleetActive ? null :
         <Header
           state={state}
           stopTimes={stopTimes}
@@ -93,24 +97,19 @@ export function Shell({
           onToggleDetail={() => setDetailOpen((open) => !open)}
           isFixture={isFixture}
           webcam={webcam}
-        >
-          {isFixture && (
-            <p className="sh-fixture-line" role="status">
-              Development fixture active — no device commands leave this browser.
-            </p>
-          )}
-          <DangerBanner notice={newestDanger(state.notices)} />
-          <NoticeLine notice={newestAdvisory(state.notices)} />
-        </Header>
-      }
+        />
+      } />}
       rail={<Rail modules={MODULES} active={activeId} onSelect={setActiveId} />}
       pane={<ModuleComponent {...moduleProps} />}
-      context={
+      context={activeId === 'spaces' ? null :
         <ContextColumn rosterVersion={state.rosterVersion}>
           <ModuleContext {...moduleProps} />
         </ContextColumn>
       }
       dock={
+        <>
+        <DangerBanner notice={fleetActive ? newestDanger(state.notices) : null} />
+        <NoticeLine notice={fleetActive ? newestAdvisory(state.notices) : null} />
         <Dock
           pending={pendingRequest}
           invalidation={invalidation}
@@ -119,6 +118,7 @@ export function Shell({
           onCancel={cancelRequest}
           label={deviceLabeller(state.aircraft)}
         />
+        </>
       }
       tabBar={<TabBar modules={MODULES} active={activeId} onSelect={setActiveId} />}
     />

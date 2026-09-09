@@ -500,7 +500,9 @@ class LoopbackDemoRehearsal:
         self.relay_url = f"ws://{RELAY_HOST}:{self.relay_port}"
         self.console_url = f"http://{RELAY_HOST}:{self.console_port}/"
         self._temporary = tempfile.TemporaryDirectory(prefix="sweep-loopback-rehearsal-")
-        self.directory = Path(self._temporary.name)
+        # macOS may supply /var/... as its temp root; artifact inputs require
+        # canonical ancestors. Resolve only this newly created, owned directory.
+        self.directory = Path(self._temporary.name).resolve()
         self.bootstrap_path = bootstrap_path or self.directory / "console-bootstrap.json"
         self._server: uvicorn.Server | None = None
         self._server_thread: threading.Thread | None = None

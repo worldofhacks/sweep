@@ -13,24 +13,15 @@ import org.worldofhacks.sweep.bridge.session.AircraftSession
  * [publisher] owns the WHIP video session (Phase F) and follows the link and the aircraft.
  */
 class BridgeApplication : Application() {
-    lateinit var session: AircraftSession
-        private set
-
-    lateinit var node: BridgeNode
-        private set
-
-    lateinit var publisher: Publisher
-        private set
+    // Opening Atlas or retrying a background upload must not create a DJI session.
+    // USB attach and the explicit Fleet entry still initialize these same singletons.
+    val session: AircraftSession by lazy { AircraftVariant.createSession(this) }
+    val node: BridgeNode by lazy { BridgeNode(this, session) }
+    val publisher: Publisher by lazy { Publisher(this, node, session, AircraftVariant.publishSources(this)) }
 
     override fun attachBaseContext(base: Context) {
         super.attachBaseContext(base)
         AircraftVariant.installSdk(this)
     }
 
-    override fun onCreate() {
-        super.onCreate()
-        session = AircraftVariant.createSession(this)
-        node = BridgeNode(this, session)
-        publisher = Publisher(this, node, session, AircraftVariant.publishSources(this))
-    }
 }

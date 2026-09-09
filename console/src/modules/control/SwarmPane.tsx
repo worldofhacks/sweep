@@ -51,8 +51,9 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
   }
 
   return (
-    <div data-two="1" className="ct-two">
+    <div data-two="1" className="ct-two ct-swarm">
       <div className="ct-column">
+        <section className="ct-work-card" aria-label="Choose your devices">
         <div className="ct-target-row">
           <p className="ct-target">
             <span className="ct-eyebrow">Target</span>
@@ -84,7 +85,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
             </button>
           })}
         </div>
-        <p className="ct-dpad-note">Toggle devices to build a group, or choose Only to move one device.</p>
+        <p className="ct-selection-hint">Toggle devices to build a group, or choose Only to move one device.</p>
         <div className="ct-chips" role="group" aria-label="Devices">
           {chips.map((chip) => (
             <span key={chip.droneId} className="ct-chip-group"><button
@@ -111,13 +112,16 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
           </p>
         )}
 
+        </section>
+        <section className="ct-work-card" aria-label="Fleet actions">
         <p className="ct-eyebrow">Fleet</p>
         <div className="ct-fleet-row" role="group" aria-label="Fleet controls">
           {fleetControls(state).map((spec) => (
             <ControlButton key={spec.key} spec={spec} onPress={run} />
           ))}
         </div>
-
+        </section>
+        <section className="ct-work-card" aria-label="Movement">
         <div className="ct-motion-wrap">
           <div className="ct-motion">
             <p className="ct-eyebrow">Motion — every selected {rosterWord}</p>
@@ -151,6 +155,7 @@ export function SwarmPane({ controller, steps, onSteps, formationPreview, onForm
             {dpadReason && <p className="ct-dpad-note">{dpadReason}</p>}
           </div>
         </div>
+        </section>
       </div>
 
       <div className="ct-column">

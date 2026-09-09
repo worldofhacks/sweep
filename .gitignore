@@ -11,6 +11,7 @@ dist/
 # Node (console)
 node_modules/
 console/public/mapping-preview/
+console/dist-android/
 
 # Secrets and local config
 .env

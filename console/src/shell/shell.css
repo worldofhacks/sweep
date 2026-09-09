@@ -12,13 +12,13 @@
 [data-body] {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  /* One bounded row: an implicit auto row would size to content and paint over the footer. */
   grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   gap: 0;
 }
 [data-context] { display: none; }
-[data-rail] { display: none; }
+[data-rail] { display: none; grid-row: 1 / -1; }
+[data-pane] { grid-column: 1; }
 [data-tabbar] {
   display: flex;
   gap: 2px;
@@ -47,17 +47,19 @@
 @media (min-width: 1100px) {
   [data-body] { grid-template-columns: var(--size-rail) minmax(0, 1fr); }
   [data-rail] { display: block; }
+  [data-pane] { grid-column: 2; }
   [data-tabbar] { display: none; }
 }
 @media (min-width: 1240px) {
   [data-body] {
     grid-template-columns: var(--size-rail) minmax(0, 1fr) minmax(var(--size-context-min), var(--size-context-max));
   }
-  [data-context] { display: grid; }
+  [data-context] { display: grid; grid-column: 3; }
 }
 @media (max-width: 879px) {
   [data-frame] button { min-height: 44px !important; }
-  [data-frame] input, [data-frame] textarea { min-height: 44px !important; }
+  [data-frame] input:not([type=radio]):not([type=checkbox]), [data-frame] textarea,
+  [data-frame] select { min-height: 44px !important; }
 }
 
 /* Skip link */
@@ -74,15 +76,7 @@
 }
 .sh-skip:focus-visible { top: 8px; }
 
-/* Header */
-.sh-header { background: var(--color-surface); border-bottom: 1px solid var(--color-hairline); }
-.sh-header-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 18px;
-  align-items: center;
-  padding: 10px var(--gutter-header);
-}
+/* Compact main-header controls and their on-demand session panel. */
 .sh-stop {
   display: flex;
   flex-direction: column;
@@ -111,13 +105,6 @@
   font-weight: var(--weight-700);
   letter-spacing: var(--tracking-tight-1);
   line-height: var(--leading-1-1);
-  white-space: nowrap;
-}
-.sh-stop-sub {
-  font-family: var(--font-mono);
-  font-size: var(--text-11);
-  letter-spacing: var(--tracking-stop-sub);
-  opacity: .85;
   white-space: nowrap;
 }
 .sh-header-middle { flex: 1 1 240px; min-width: 0; }
@@ -277,17 +264,6 @@
 .sh-notice-line.is-info strong { color: var(--color-ink-2); }
 /* Stays mounted while empty so the live region exists before the first notice arrives. */
 .sh-notice-line.is-empty { padding: 0; border: 0; }
-.sh-fixture-line {
-  margin: 0;
-  padding: 6px var(--gutter-header);
-  border-top: 1px solid var(--color-hairline);
-  background: var(--color-panel);
-  font-family: var(--font-mono);
-  font-size: var(--text-11);
-  letter-spacing: var(--tracking-metric);
-  text-transform: uppercase;
-  color: var(--color-ink-3);
-}
 
 /* Rail and tab bar */
 .sh-rail { padding: 12px 8px; background: var(--color-panel); border-right: 1px solid var(--color-hairline); overflow: auto; }
@@ -334,25 +310,26 @@
 .sh-pane-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 18px;
+  gap: 16px;
   align-items: center;
   justify-content: space-between;
-  padding: 12px var(--gutter-pane);
+  padding: 20px var(--gutter-pane);
   border-bottom: 1px solid var(--color-hairline);
 }
-.sh-pane-title-block { flex: 1 1 240px; min-width: 0; }
+.sh-pane-title-block { flex: 1 1 100%; min-width: 0; }
+.sh-pane-eyebrow { display: block; margin-bottom: 4px; font-size: 10px; font-weight: 650; letter-spacing: .15em; color: var(--color-ink-2); }
 .sh-pane-h1 {
   margin: 0;
   font-size: var(--text-module-h1);
-  font-weight: var(--weight-700);
-  letter-spacing: var(--tracking-tight-3);
+  font-weight: var(--weight-550);
+  letter-spacing: -.045em;
   line-height: var(--leading-1-1);
 }
-.sh-pane-note { margin: 2px 0 0; max-width: 88ch; font-size: var(--text-12-5); line-height: var(--leading-1-45); color: var(--color-ink-2); }
+.sh-pane-note { margin: 8px 0 0; max-width: 72ch; font-size: var(--text-13); line-height: var(--leading-1-5); color: var(--color-ink-2); }
 .sh-pane-tabs-wrap { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; max-width: 100%; }
 .sh-tabs { display: flex; gap: 2px; padding: 3px; background: var(--color-ground); border-radius: var(--radius-tab-group); }
 .sh-tab {
-  min-height: var(--min-h-36);
+  min-height: var(--min-h-44);
   padding: 6px 13px;
   border: 0;
   background: transparent;
@@ -362,10 +339,10 @@
   cursor: pointer;
 }
 .sh-tab:hover { color: var(--color-ink); }
-.sh-tab.is-active { background: var(--color-ink); color: #ffffff; }
+.sh-tab.is-active { background: var(--color-accent); color: #ffffff; }
 .sh-tab.is-active:hover { color: #ffffff; }
-.sh-tabs.is-reference .sh-tab { padding: 6px 12px; font-weight: var(--weight-400); color: var(--color-ink-2-reference); }
-.sh-tabs.is-reference .sh-tab.is-active { background: var(--color-ink); color: #ffffff; }
+.sh-tabs.is-reference .sh-tab { padding: 6px 12px; font-weight: var(--weight-550); color: var(--color-ink-2-reference); }
+.sh-tabs.is-reference .sh-tab.is-active { background: var(--color-accent); color: #ffffff; }
 .sh-pane-scroll { padding: var(--gutter-pane-top) var(--gutter-pane) 22px; }
 .sh-swap { animation: swap var(--duration-swap) var(--ease-out); }
 .sh-empty {
@@ -398,7 +375,7 @@
 /* Fleet cards (context column and the Control › Fleet pane) */
 .fleet-card {
   margin-bottom: 10px;
-  padding: 12px 13px;
+  padding: 16px;
   background: var(--color-surface);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-card);
@@ -436,9 +413,9 @@
   opacity: 1;
 }
 .fleet-select:hover:not(:disabled) { border-color: var(--color-ink); }
-.fleet-select.is-selected { background: var(--color-ink); color: #ffffff; }
+.fleet-select.is-selected { background: var(--color-accent); color: #ffffff; border-color: var(--color-accent); }
 .fleet-select:disabled { border-color: var(--color-rule); color: var(--color-ink-3); background: var(--color-surface); opacity: .6; cursor: not-allowed; }
-.fleet-select.is-selected:disabled { background: var(--color-ink); color: #ffffff; opacity: 1; border-color: var(--color-ink); }
+.fleet-select.is-selected:disabled { background: var(--color-accent); color: #ffffff; opacity: 1; border-color: var(--color-accent); }
 .fleet-eyebrow {
   margin: 16px 0 8px;
   font-family: var(--font-mono);
@@ -468,9 +445,12 @@
 .fleet-footnote { margin: 12px 0 0; font-size: var(--text-11-5); line-height: var(--leading-1-5); color: var(--color-ink-3); }
 
 /* Footer: dock, invalidation line, tab bar */
-.sh-footer { background: var(--color-surface); border-top: 1px solid var(--color-hairline); }
+.sh-footer { display: flex; flex-direction: column; min-height: 0; max-height: 40dvh; background: var(--color-surface); border-top: 1px solid var(--color-hairline); }
+.sh-footer [data-tabbar] { flex-shrink: 0; }
+.sh-footer > .sh-invalidated { min-height: 0; overflow-y: auto; }
 .sh-dock {
   max-height: 48dvh;
+  min-height: 0;
   overflow: auto;
   padding: 11px var(--gutter-header);
   background: var(--color-panel);
@@ -511,14 +491,14 @@
   min-height: var(--min-h-48);
   padding: 10px 16px;
   border: 0;
-  background: var(--color-ink);
+  background: var(--color-accent);
   color: #fff;
   font-size: var(--text-15);
   font-weight: var(--weight-700);
   cursor: pointer;
   box-shadow: var(--shadow-confirm);
 }
-.sh-confirm:hover { background: var(--color-ink-hover); box-shadow: var(--shadow-hover); }
+.sh-confirm:hover { background: var(--color-accent-hover); box-shadow: var(--shadow-hover); }
 .sh-cancel {
   flex: 0 0 auto;
   min-height: var(--min-h-48);
@@ -583,13 +563,21 @@
   .sh-rc { white-space: normal; overflow: visible; text-overflow: clip; }
   /* A multi-aircraft selection wraps between ids instead of running off the row. */
   .sh-selection { flex-wrap: wrap; white-space: normal; }
-  /* Connection pills take a full row and scroll horizontally within it; the console
-     and keyboard pills stay in view, and the detail toggle sits right-aligned beneath. */
-  .sh-header-right { flex: 1 1 100%; flex-wrap: wrap; min-width: 0; }
+  /* Scroll connection pills beside the detail toggle, preserving a row of content
+     on short phones. Their full status labels remain available in Session detail. */
+  .sh-header-right { display: grid; grid-template-columns: minmax(0, 1fr) auto; flex: 1 1 100%; min-width: 0; }
   .sh-links { flex: 1 1 100%; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .sh-links::-webkit-scrollbar { display: none; }
   .sh-links > li { flex: 0 0 auto; }
   .sh-detail-toggle { margin-left: auto; }
   /* Roster, source and intent id wrap inside the dock summary. */
   .sh-dock-meta { white-space: normal; }
+}
+
+/* Short phones and landscape/zoomed windows: scroll the heading with its page,
+   instead of reducing the usable editor to a few pixels. Stop and navigation
+   remain in the persistent shell; no safety controls or notes are hidden. */
+@media (max-height: 700px) and (max-width: 1099px) {
+  .sh-pane { overflow-y: auto; overscroll-behavior: contain; }
+  .sh-pane > [data-scroll] { flex: 0 0 auto; overflow: visible; }
 }

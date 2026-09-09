@@ -428,7 +428,9 @@ def test_consensus_uses_joint_pnp_after_single_tag_ambiguity(tmp_path):
     transforms = []
     for identifier in range(2):
         transform = np.eye(4)
-        transform[:3, :3] = cv2.Rodrigues(np.array([0.005 if identifier else 0.0, 0.0, 0.0]))[0]
+        # Enough nonplanarity for a unique joint fit across OpenCV builds, while
+        # each individual tag remains ambiguous (asserted below).
+        transform[:3, :3] = cv2.Rodrigues(np.array([0.05 if identifier else 0.0, 0.0, 0.0]))[0]
         transform[:3, 3] = [identifier * 0.55, 0, 0]
         transforms.append(transform.tolist())
     camera = np.eye(4)

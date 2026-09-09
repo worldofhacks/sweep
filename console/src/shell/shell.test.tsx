@@ -1,11 +1,13 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import App from '../App'
 import { UnavailableRelayClient } from '../relay/client'
 import { C1_BASIC_CONTROL_INTENTS } from '../relay/contract'
 import { FixtureRelayClient, fixtureAircraft } from '../testing/fixture-relay-client'
 import { formatTime } from './format'
+
+vi.mock('../atlas/SpaceMap', () => ({ default: () => <div aria-label="Geographic map test boundary" /> }))
 
 const session = 'shell-test-session'
 const clock = () => 1_756_700_000_000
@@ -61,6 +63,36 @@ function emitEstop(client: FixtureRelayClient, estop: boolean, eventId: string) 
 }
 
 describe('persistent shell', () => {
+  test('every page retains one Spaces header and sidebar without extra status bands', async () => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} initialModule="spaces" />)
+    await screen.findByText(/Development fixture active/i)
+    const header = screen.getByRole('banner', { name: 'Workspace header' })
+    const rail = screen.getByRole('navigation', { name: 'Modules' })
+    expect(header).toHaveTextContent('sweepATLAS')
+    expect(header).toHaveTextContent('See more. Understand together.')
+    for (const name of ['Control', 'Live', 'Gesture', 'Speech', 'Search', 'Captures', 'Worlds', 'Devices', 'Map', 'Spaces']) {
+      await openModule(user, name)
+      expect(screen.getAllByRole('banner')).toEqual([header])
+      expect(screen.getByRole('navigation', { name: 'Modules' })).toBe(rail)
+      expect(header).toHaveClass('sh-atlas-header')
+      expect(header).toContainElement(screen.getByRole('button', { name: 'Network stop' }))
+      expect(document.querySelector('[data-session-controls], .sh-fixture-line, .sh-header')).toBeNull()
+      expect(screen.getByText(/Development fixture active/i)).not.toBeVisible()
+      expect(rail).toHaveClass('sh-rail')
+      if (name !== 'Spaces') expect(screen.getByRole('region', { name: 'Working pane' })).toHaveClass('sh-pane')
+      expect(screen.getByRole('region', { name: 'Fleet session controls' })).toContainElement(screen.getByRole('button', { name: 'Network stop' }))
+      expect(clients.console.sent).toHaveLength(0)
+    }
+    await user.click(within(header).getByRole('button', { name: 'Session detail' }))
+    expect(screen.getByText(/Development fixture active/i)).toBeVisible()
+    await user.keyboard('{Escape}')
+    expect(screen.getByText(/Development fixture active/i)).not.toBeVisible()
+    expect(within(header).getByRole('button', { name: 'Session detail' })).toHaveFocus()
+    expect(clients.console.sent).toHaveLength(0)
+  })
+
   test('connected and quiet: stop enabled, tags, selection, RC line, link pills, no dock', async () => {
     const clients = fixtureClients()
     render(<App sessionId={session} clients={clients} />)
@@ -72,6 +104,7 @@ describe('persistent shell', () => {
     expect(stop).toHaveTextContent('estop · Shift+Escape')
     expect(stop).toHaveAccessibleDescription('Sends estop to every aircraft in the roster.')
 
+    fireEvent.click(screen.getByRole('button', { name: 'Session detail' }))
     const tags = within(screen.getByRole('list', { name: 'Session state' }))
     expect(tags.getByText('Armed')).toBeInTheDocument()
     expect(tags.getByText('Stop clear')).toBeInTheDocument()
@@ -89,6 +122,7 @@ describe('persistent shell', () => {
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     expect(modulesRail().getByRole('button', { name: 'Control' })).toHaveAttribute('aria-current', 'page')
     expect(modulesRail().getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'Spaces',
       'Control',
       'Live',
       'Gesture',
@@ -99,7 +133,7 @@ describe('persistent shell', () => {
       'Devices',
       'Map',
     ])
-    expect(within(screen.getByRole('navigation', { name: 'Primary' })).getAllByRole('button')).toHaveLength(9)
+    expect(within(screen.getByRole('navigation', { name: 'Primary' })).getAllByRole('button')).toHaveLength(10)
   })
 
   test('pending confirmation: the dock shows the plan with its Intent v1 JSON expanded by default', async () => {
@@ -160,13 +194,41 @@ describe('persistent shell', () => {
     const dock = screen.getByRole('region', { name: 'Pending confirmation' })
     expect(within(dock).getByText(/"intent_id": "survives-switch"/)).toBeInTheDocument()
 
-    await openModule(user, 'Devices')
+    for (const name of ['Spaces', 'Gesture', 'Speech', 'Captures', 'Worlds', 'Devices', 'Map']) {
+      await openModule(user, name)
+      expect(screen.getByRole('button', { name: 'Network stop' })).toBeEnabled()
+      expect(modulesRail().getByRole('button', { name })).toHaveAttribute('aria-current', 'page')
+      expect(within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('button', { name }))
+        .toHaveAttribute('aria-current', 'page')
+      expect(document.getElementById('pane')).toHaveAttribute('tabindex', '-1')
+      expect(screen.getByRole('region', { name: 'Pending confirmation' })).toHaveTextContent('survives-switch')
+      expect(clients.console.sent).toHaveLength(0)
+    }
     await openModule(user, 'Control')
     expect(screen.getByRole('region', { name: 'Pending confirmation' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Confirm and send' }))
     await waitFor(() => expect(clients.console.sent).toHaveLength(1))
     expect(clients.console.sent[0]).toMatchObject({ intent_id: 'survives-switch', confirm: true })
+  })
+
+  test.each([true, false])('Spaces preserves fleet safety state when the last device leaves (stop %s)', async (estop) => {
+    const clients = fixtureClients()
+    const user = userEvent.setup()
+    render(<App sessionId={session} clients={clients} />)
+    await screen.findByText(/Development fixture active/i)
+    act(() => clients.console.emitServer({
+      v: 1, t: clock() + 1, type: 'state', event_id: 'empty-fleet', session,
+      roster_version: 8, armed: true, estop, selection: [], formation: 'none', spacing: 0.8,
+      mode: 'indoor', capability_profile: 'c1_basic_control', enabled_intent_names: [...C1_BASIC_CONTROL_INTENTS],
+      pending: null, accepted_plan: null, drones: [],
+    }))
+    await openModule(user, 'Spaces')
+    expect(screen.getByRole('button', { name: 'Network stop' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Session detail' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Session detail' }))
+    expect(screen.getByRole('list', { name: 'Session state' })).toHaveTextContent(estop ? 'Stop active' : 'Armed')
+    expect(clients.console.sent).toHaveLength(0)
   })
 
   test('invalidation shows its reason in the footer until the next draft', async () => {
@@ -197,14 +259,14 @@ describe('persistent shell', () => {
     expect(stop).toHaveAccessibleDescription(
       'Disabled: the console socket is disconnected. Console relay missing. Use the physical RC or Shift+Escape on the keyboard connection.',
     )
+    await user.click(screen.getByRole('button', { name: 'Session detail' }))
     const links = within(screen.getByRole('list', { name: 'Connections' }))
     expect(links.getByTitle('Relay (console)')).toHaveTextContent(/^relay\s*disconnected$/)
     expect(links.getByTitle('Keyboard stop')).toHaveTextContent(/^keys\s*disconnected$/)
     expect(screen.getByText('no devices reported')).toBeInTheDocument()
     expect(screen.getByText('0 of 0 ready')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Session detail' }))
-    const sheet = within(screen.getByLabelText('Session detail'))
+    const sheet = within(screen.getByRole('region', { name: 'Session detail' }))
     expect(sheet.getByText(/Disabled: the console socket is disconnected/)).toBeInTheDocument()
     expect(sheet.getByText('Notices — 2 danger · 0 warning · 0 info')).toBeInTheDocument()
     expect(sheet.getByText('operating_state unreported')).toBeInTheDocument()
@@ -226,7 +288,7 @@ describe('persistent shell', () => {
       expect(line).toHaveTextContent('Warning — Relay degraded: Heartbeat late by 4 s.'),
     )
     expect(screen.getByRole('status', { name: 'Latest notice' })).toBe(line)
-    expect(screen.queryByLabelText('Session detail')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Session detail' })).not.toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 
     clients.keyboard.emitConnection('disconnected', 'Keyboard socket closed.')
@@ -237,7 +299,7 @@ describe('persistent shell', () => {
     expect(line).not.toHaveTextContent('Keyboard socket closed')
 
     await user.click(screen.getByRole('button', { name: 'Session detail' }))
-    const sheet = within(screen.getByLabelText('Session detail'))
+    const sheet = within(screen.getByRole('region', { name: 'Session detail' }))
     expect(sheet.getByText('Notices — 1 danger · 1 warning · 0 info')).toBeInTheDocument()
   })
 
@@ -270,6 +332,7 @@ describe('persistent shell', () => {
     expect(stop).toBeEnabled()
     expect(stop).toHaveTextContent(`seen ${formatTime(clock())} · Shift+Escape`)
     expect(stop).toHaveAccessibleDescription(/Pressing again re-sends estop/)
+    await user.click(screen.getByRole('button', { name: 'Session detail' }))
     const tags = within(screen.getByRole('list', { name: 'Session state' }))
     expect(tags.getByText('Stop active')).toHaveClass('is-stop-active')
 
@@ -287,7 +350,7 @@ describe('persistent shell', () => {
     expect(stop).toHaveAccessibleDescription(
       `Stop cleared, seen ${formatTime(clock())}, reported by the relay.`,
     )
-    expect(tags.getByText('Stop clear')).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: 'Session state' })).toHaveTextContent('Stop clear')
   })
 
   test('Devices keeps real health and configuration without a reference gallery', async () => {

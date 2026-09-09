@@ -64,9 +64,10 @@ export function Pane({
 }: PaneProps) {
   const hasTabs = Boolean(tabs && tabs.length > 1 && activeTab !== undefined && onTabChange)
   return (
-    <section id="pane" className="sh-pane" data-pane="1" aria-label="Working pane">
+    <section id="pane" tabIndex={-1} className="sh-pane" data-pane="1" aria-label="Working pane">
       <div className="sh-pane-head">
         <div className="sh-pane-title-block">
+          <span className="sh-pane-eyebrow">FIELD WORKSPACE</span>
           <h1 className="sh-pane-h1">{title}</h1>
           <p className="sh-pane-note">{note}</p>
         </div>

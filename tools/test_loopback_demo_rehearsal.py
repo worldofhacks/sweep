@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 from dataclasses import asdict
 from hashlib import sha256
@@ -171,6 +172,25 @@ def test_rehearsal_deployment_reloads_a_signed_fresh_session(tmp_path) -> None:
         ("demo-east", "demo-east-slot"),
     }
     assert all(zone.owner_approved for zone in artifact.zones)
+
+
+def test_rehearsal_canonicalizes_its_owned_temporary_directory(tmp_path, monkeypatch) -> None:
+    directory = tmp_path / "real-temp"
+    directory.mkdir()
+    alias = tmp_path / "temp-alias"
+    alias.symlink_to(directory, target_is_directory=True)
+    monkeypatch.setattr(tempfile, "tempdir", str(alias))
+    rehearsal = LoopbackDemoRehearsal(start_console=False)
+    try:
+        assert rehearsal.directory.parent == directory.resolve()
+        _rehearsal_deployment(
+            rehearsal.directory / "navigation",
+            session_id="canonical-path-fixture",
+            now_ms=epoch_ms(),
+            lifetime_ms=60_000,
+        )
+    finally:
+        rehearsal.stop()
 
 
 def test_loopback_rehearsal_publishes_a_fresh_signed_pose_and_private_bootstrap(tmp_path) -> None:

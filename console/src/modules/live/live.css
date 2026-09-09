@@ -58,7 +58,7 @@
   gap: 2px 14px;
   font-size: var(--text-12);
 }
-.lv-meta span { white-space: nowrap; }
+.lv-meta span { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .lv-metric { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .lv-actions { display: flex; gap: 6px; margin-top: 8px; }
 .lv-focus,

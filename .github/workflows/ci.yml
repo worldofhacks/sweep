@@ -86,6 +86,17 @@ jobs:
         working-directory: adapters/dji_mini3/pilot-app
     steps:
       - uses: actions/checkout@v7
+      # Android bundles the shared Atlas UI. Install its locked toolchain before Gradle.
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: console/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: console
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -94,7 +105,7 @@ jobs:
           cache-dependency-path: adapters/dji_mini3/pilot-app/gradle/wrapper/gradle-wrapper.properties
       - uses: android-actions/setup-android@v3
       - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
-      - run: ./gradlew --no-daemon :app:testFakeDebugUnitTest :app:testProbeDebugUnitTest
+      - run: ./gradlew --no-daemon :app:lintFakeDebug :app:lintProbeDebug :app:testFakeDebugUnitTest :app:testProbeDebugUnitTest
       # Build both native-library sets without a registration credential. APKs stay local
       # to the runner; successful binary checks do not qualify physical flight.
       - run: ./gradlew --no-daemon -PDJI_API_KEY= -PsweepSupervisedVertical=false :app:assembleFakeDebug :app:assembleProbeDebug

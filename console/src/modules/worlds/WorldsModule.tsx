@@ -113,7 +113,7 @@ export function WorldsModule({ controller, catalog }: ModuleProps) {
     >
       <LinkNotice link={link} label="World Builder connection" />
       <CatalogNote label="World Builder notice" note={note} />
-      <div data-two="1">
+      <div className="wld-content">
         {pane === 'rooms' &&
           (snapshot.building === null ? (
             <EmptyModule what="rooms, bundles, or generation jobs" />

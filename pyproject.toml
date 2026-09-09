@@ -16,6 +16,11 @@ dependencies = [
   "websockets>=15,<17",
 ]
 
+[project.optional-dependencies]
+atlas = [
+    "pycolmap==4.2.0",
+]
+
 [dependency-groups]
 dev = [
   "jsonschema>=4.19,<5",

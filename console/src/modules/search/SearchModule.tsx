@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { SearchCatalog, SearchPreview, SearchStatus } from '../../search/client'
+import { Pane } from '../../shell/Pane'
 import './search.css'
 import type { ModuleProps } from '../types'
 
@@ -104,6 +105,7 @@ export function SearchModule({ controller, services }: ModuleProps) {
   }
 
   return (
+    <Pane title="Visual search" note="Review an approved route, confirm the mission, and follow coverage and findings.">
     <section className="se-module" aria-label="Visual search">
       <div className="se-panel">
         <h2>Search configuration</h2>
@@ -172,6 +174,7 @@ export function SearchModule({ controller, services }: ModuleProps) {
       {preview?.intent_id === searchIntentId && <SearchPreviewView preview={preview} />}
       {status?.intent_id === searchIntentId && <SearchStatusView status={status} acknowledging={acknowledging} onAcknowledge={acknowledge} />}
     </section>
+    </Pane>
   )
 }
 

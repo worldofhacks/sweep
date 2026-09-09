@@ -173,7 +173,7 @@
   margin-top: 16px;
   border: 0;
   color: #ffffff;
-  background: var(--color-ink);
+  background: var(--color-accent);
   font-size: var(--text-capture-button);
   font-weight: var(--weight-700);
   letter-spacing: var(--tracking-tight);

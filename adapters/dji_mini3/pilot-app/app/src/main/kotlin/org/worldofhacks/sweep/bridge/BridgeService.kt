@@ -1,5 +1,6 @@
 package org.worldofhacks.sweep.bridge
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -73,7 +75,7 @@ class BridgeService : Service() {
         if (observer == null) {
             observer = scope.launch {
                 node.link.map { summary(it) }.distinctUntilChanged().collect { text ->
-                    NotificationManagerCompat.from(this@BridgeService).notify(NOTIFICATION_ID, notification(text))
+                    updateNotification(notification(text))
                 }
             }
         }
@@ -96,6 +98,17 @@ class BridgeService : Service() {
     }
 
     private fun notification(state: LinkState): Notification = notification(summary(state))
+
+    internal fun updateNotification(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        try {
+            NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification)
+        } catch (_: SecurityException) {
+            // Permission can be revoked between the check and notify. The foreground service
+            // and relay link must not be torn down because a status update cannot be shown.
+        }
+    }
 
     private fun notification(text: String): Notification {
         val open = PendingIntent.getActivity(

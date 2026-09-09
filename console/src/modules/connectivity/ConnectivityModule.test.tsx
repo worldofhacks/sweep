@@ -22,6 +22,8 @@ describe('Connectivity module', () => {
     await openHealth(user)
 
     const metrics = within(screen.getByRole('region', { name: 'Health metrics' }))
+    expect(metrics.getAllByRole('article')).toHaveLength(9)
+    expect(metrics.getByRole('article', { name: 'unsafe commands dispatched' })).toHaveClass('con-metric')
     expect(metrics.getByText('unsafe commands dispatched').nextElementSibling).toHaveTextContent('0')
     expect(metrics.getByText('refusals this session').nextElementSibling).toHaveClass('tone-warn')
     expect(metrics.getAllByText(/^(0|41 ms|84 ms|118 ms|29\.4 Hz|210 ms|640 ms|6|0\.4 \/ 5 min)$/)).toHaveLength(9)

@@ -4,6 +4,17 @@ import { createConsoleRuntime } from './runtime'
 const token = 'relay-token-that-is-at-least-32-characters-long'
 
 describe('console runtime media source', () => {
+  test('retains Atlas, semantic speech, search and ordered photos in the same runtime', () => {
+    const runtime = createConsoleRuntime({ baseUrl: 'wss://relay.example.internal', sessionId: 'sweep-4', token })
+    expect(runtime.atlas).not.toBeNull()
+    expect(runtime.transcriptClient).not.toBeNull()
+    expect(runtime.searchClient).not.toBeNull()
+    expect(runtime.multiviewClient).not.toBeNull()
+    expect(runtime.platform).not.toBeNull()
+    const unconfigured = createConsoleRuntime(undefined)
+    expect([unconfigured.atlas, unconfigured.transcriptClient, unconfigured.searchClient, unconfigured.multiviewClient, unconfigured.platform]).toEqual([null, null, null, null, null])
+  })
+
   test('derives the relay media bootstrap source from the WebSocket origin and bearer', () => {
     const runtime = createConsoleRuntime({
       baseUrl: 'ws://10.10.1.60:8000/ws',

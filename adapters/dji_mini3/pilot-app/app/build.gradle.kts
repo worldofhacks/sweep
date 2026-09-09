@@ -1,6 +1,6 @@
 // Android pilot app. The MSDK wiring below (key resolution, probe flavor, arm64 filter,
 // native-library packaging, DJI dependency scopes) is ported from techmexdev/drone-maps
-// app/build.gradle.kts; the Room, WorkManager, and KSP pieces of that file were left behind.
+// app/build.gradle.kts. Atlas uses WorkManager for phone capture uploads, independently of flight.
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -92,6 +92,7 @@ android {
         buildConfig = true
         compose = true
     }
+    testOptions.unitTests.isIncludeAndroidResources = true
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -132,6 +133,12 @@ dependencies {
     implementation(libs.coroutines.android)
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.security.crypto)
+    implementation(libs.camera.camera2)
+    implementation(libs.camera.lifecycle)
+    implementation(libs.camera.view)
+    implementation(libs.camera.video)
+    implementation(libs.work.runtime)
+    implementation(libs.webkit)
     // WHIP publish path (Phase F): libwebrtc prebuilt used by the vendored WildBridge package.
     implementation(libs.stream.webrtc)
     debugImplementation(libs.compose.ui.tooling)
@@ -142,8 +149,44 @@ dependencies {
 
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.work.testing)
+    testImplementation(libs.mockwebserver)
+    testRuntimeOnly(libs.junit.vintage)
 }
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+    jvmArgs("--add-opens=java.base/java.lang=ALL-UNNAMED", "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED", "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.security=ALL-UNNAMED", "--add-opens=java.base/java.text=ALL-UNNAMED",
+        "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED", "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED")
+}
+
+// Bundle the existing Atlas source, not a remote page or a copy of its components.
+// A clean checkout needs `pnpm --dir console install --frozen-lockfile` before the Android build.
+val atlasConsole = rootProject.projectDir.resolve("../../../console")
+val buildAtlasUi = tasks.register<Exec>("buildAtlasUi") {
+    workingDir(atlasConsole)
+    commandLine("pnpm", "build:android")
+    inputs.dir(atlasConsole.resolve("src"))
+    inputs.files("${atlasConsole}/atlas-native.html", "${atlasConsole}/vite.native.config.ts",
+        "${atlasConsole}/package.json", "${atlasConsole}/pnpm-lock.yaml")
+    outputs.dir(atlasConsole.resolve("dist-android"))
+}
+abstract class AtlasAssetsTask : DefaultTask() {
+    @get:InputDirectory abstract val webBundle: DirectoryProperty
+    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+    @get:Inject abstract val fileOperations: FileSystemOperations
+    @TaskAction fun bundle() {
+        fileOperations.sync { from(webBundle); into(outputDirectory.dir("atlas")) }
+    }
+}
+val bundleAtlasUi = tasks.register<AtlasAssetsTask>("bundleAtlasUi") {
+    dependsOn(buildAtlasUi)
+    webBundle.set(atlasConsole.resolve("dist-android"))
+    outputDirectory.set(layout.buildDirectory.dir("generated/atlasAssets"))
+}
+androidComponents.onVariants { variant ->
+    variant.sources.assets?.addGeneratedSourceDirectory(bundleAtlasUi, AtlasAssetsTask::outputDirectory)
 }

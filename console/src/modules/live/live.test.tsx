@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import App from '../../App'
 import type { PlaybackDescriptor } from '../../media/playback'
 import type { PlaybackSession, PlaybackStateListener } from '../../media/player'
@@ -8,6 +8,8 @@ import type { MediaRuntime } from '../../media/runtime'
 import { UnavailableRelayClient } from '../../relay/client'
 import { C1_BASIC_CONTROL_INTENTS, type DroneId, type RelayAircraftState } from '../../relay/contract'
 import { FixtureRelayClient, fixtureAircraft, fixtureScenario } from '../../testing/fixture-relay-client'
+
+vi.mock('../../atlas/SpaceMap', () => ({ default: () => <div aria-label="Geographic map test boundary" /> }))
 
 const session = 'live-module-session'
 const clock = () => 1_756_700_000_000
@@ -302,6 +304,48 @@ describe('Live module focus', () => {
 })
 
 describe('Live module playback', () => {
+  test('returning from Spaces restores every current camera and includes devices that joined while away', async () => {
+    const clients = {
+      console: new FixtureRelayClient(session, clock, 'console', 'mixed'),
+      keyboard: new FixtureRelayClient(session, clock, 'keyboard', 'mixed'),
+    }
+    const log = new SessionLog()
+    const user = userEvent.setup()
+    const view = renderLive(clients, log.media)
+    await screen.findByRole('region', { name: 'All devices' })
+    const drones = fixtureScenario('mixed').fleet(clock()).map((device) => ({
+      ...device, video: { status: 'live' as const, last_frame_at: clock() },
+    }))
+    const rosterVersion = fixtureScenario('mixed').rosterVersion
+    act(() => emitState(clients.console, 'all-five-live', drones, [1], rosterVersion))
+    await waitFor(() => expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(5))
+    expect(log.closed).toBe(0)
+
+    await openModule(user, 'Spaces')
+    await waitFor(() => expect(log.closed).toBe(5))
+    expect(screen.getByRole('button', { name: 'Network stop' })).toBeEnabled()
+    // The persistent relay still receives membership and stream changes off-page.
+    const robot = drones.find((device) => device.drone_id === 11)!
+    act(() => emitState(clients.console, 'joined-while-in-spaces', [
+      ...drones.map((device) => device.drone_id === 2
+        ? { ...device, video: { status: 'offline' as const, last_frame_at: clock() - 1000 } }
+        : device),
+      { ...robot, drone_id: 14, unit: 4 },
+    ], [1], rosterVersion + 1))
+
+    await openModule(user, 'Live')
+    await waitFor(() => expect(log.started).toHaveLength(10))
+    expect(within(screen.getByRole('region', { name: 'All devices' })).getAllByRole('article')).toHaveLength(6)
+    expect(screen.getAllByLabelText(/Live feed/)).toHaveLength(5)
+    expect(log.started.slice(5)).toEqual(['drone1', 'ground1', 'ground2', 'ground3', 'ground4'])
+    expect(tile('D-02').getByText('No video. The adapter reports the stream offline.')).toBeInTheDocument()
+    expect(tile('G-04').getByLabelText('Live feed G-04')).toBeInTheDocument()
+    expect(clients.console.sent).toEqual([])
+    expect(clients.keyboard.sent).toEqual([])
+    view.unmount()
+    expect(log.closed).toBe(10)
+  })
+
   test('the default wall grows from aircraft to a joining robot and all eight configured devices without empty slots or restarting existing feeds', async () => {
     const clients = fixtureClients()
     const log = new SessionLog()

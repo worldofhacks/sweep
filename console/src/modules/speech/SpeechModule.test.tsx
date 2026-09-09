@@ -10,6 +10,8 @@ import type { VoiceDependencies } from '../types'
 import type { NavigationCatalog, NavigationClient } from '../../navigation'
 import type { MultiviewClient, MultiviewPreview, MultiviewPreviewRequest } from '../../relay/multiview'
 
+vi.mock('../../atlas/SpaceMap', () => ({ default: () => <div aria-label="Geographic map test boundary" /> }))
+
 const session = 'speech-module-session'
 const T0 = 1_756_700_000_000
 
@@ -320,6 +322,47 @@ test('typed text without a relay compiler reports an unavailable route and emits
 })
 
 describe('Speech module', () => {
+  test('a Spaces round trip discards an active recording, restores speech, and keeps a staged language plan confirmable', async () => {
+    const transcript = new QueuedTranscriptClient()
+    transcript.answer(outcome({
+      transcript: 'Hold position.',
+      plan: relayPlan({ transcript: 'Hold position.', steps: [step(0, 'hold', [1])] }),
+    }))
+    const { clients, recorder, stopTrack } = mount({ transcript })
+    const u = user()
+    const openModule = async (name: string) => {
+      await u.click(within(screen.getByRole('navigation', { name: 'Modules' })).getByRole('button', { name }))
+    }
+    await screen.findByText(/Development fixture active/i)
+    fireEvent.pointerDown(listenButton())
+    await act(async () => {})
+    expect(recorder.start).toHaveBeenCalledTimes(1)
+
+    await openModule('Spaces')
+    expect(recorder.stop).toHaveBeenCalledTimes(1)
+    expect(stopTrack).toHaveBeenCalledTimes(1)
+    expect(transcript.requests).toHaveLength(0)
+    expect(clients.language.sent).toHaveLength(0)
+
+    await openModule('Speech')
+    expect(listenButton()).toBeEnabled()
+    expect(listenButton()).toHaveAttribute('aria-pressed', 'false')
+    expect(recorder.start).toHaveBeenCalledTimes(1)
+    await record()
+    await u.click(await screen.findByRole('button', { name: 'Stage step 1: hold' }))
+    expect(recorder.start).toHaveBeenCalledTimes(2)
+    expect(transcript.requests).toHaveLength(1)
+    expect(clients.language.sent).toHaveLength(0)
+
+    await openModule('Spaces')
+    const dock = within(screen.getByRole('region', { name: 'Pending confirmation' }))
+    expect(dock.getByText(/source language/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Network stop' })).toBeEnabled()
+    await u.click(dock.getByRole('button', { name: 'Confirm and send' }))
+    await waitFor(() => expect(clients.language.sent).toHaveLength(1))
+    expect(clients.language.sent[0]).toMatchObject({ name: 'hold', source: 'language', selection: [1], confirm: true })
+    expect(clients.console.sent).toHaveLength(0)
+  })
   test('a relay-compiled plan previews every step and stages them one at a time through the dock', async () => {
     const transcript = new QueuedTranscriptClient()
     transcript.answer(
@@ -615,7 +658,9 @@ describe('Speech module', () => {
     // The clock passes the deadline between two ticks, so Confirm is still enabled
     // when it is pressed: the control flow refuses and sends nothing.
     drift(10_000)
-    await u.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
+    // Dispatch within this turn: userEvent yields between pointer events and can
+    // allow the real one-second ticker to disable the button before the click.
+    fireEvent.click(within(dock).getByRole('button', { name: 'Confirm and send' }))
     expect(clients.language.sent).toHaveLength(0)
     expect(screen.queryByRole('region', { name: 'Pending confirmation' })).not.toBeInTheDocument()
     const alert = screen.getByText(/Preview invalidated, nothing sent/).closest('[role="alert"]')

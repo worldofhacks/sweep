@@ -446,6 +446,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pycolmap"
+version = "4.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/47/2272c464b974e457e61b0818ba471def232117aa0562c02fc5e805accad3/pycolmap-4.2.0-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:905b8c3a0ff2419059d8935b77e9a535b35cb3c4c8ebad5f3f05950f2f97e5d7", size = 21014273, upload-time = "2026-09-01T09:31:22.981Z" },
+    { url = "https://files.pythonhosted.org/packages/66/8e/9109b18315646900e45a67600d8e9e77d4e07a438a7cb114b4962118cf27/pycolmap-4.2.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:c3bded2ded4f1831015c76ceca061dbbeebed1c7eb2b9d6335f680d89a5c5d16", size = 38246595, upload-time = "2026-09-01T09:31:26.759Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/ab/18a16d92fcdc649898a29f8ff4ac66bd0ba7a4e3733766a24f3285251932/pycolmap-4.2.0-cp312-cp312-win_amd64.whl", hash = "sha256:6fac64ee716335d437637d798eaafb89c76cfa06dfd53ef8384e38d09008879d", size = 24147180, upload-time = "2026-09-01T09:31:29.938Z" },
+]
+
+[[package]]
 name = "pydantic"
 version = "2.13.5"
 source = { registry = "https://pypi.org/simple" }
@@ -622,6 +635,11 @@ dependencies = [
     { name = "websockets" },
 ]
 
+[package.optional-dependencies]
+atlas = [
+    { name = "pycolmap" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "jsonschema" },
@@ -638,10 +656,12 @@ requires-dist = [
     { name = "mcap", specifier = ">=1.4,<2" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "opencv-python-headless", specifier = ">=4.13,<5" },
+    { name = "pycolmap", marker = "extra == 'atlas'", specifier = "==4.2.0" },
     { name = "pydantic", specifier = ">=2.13,<3" },
     { name = "uvicorn", specifier = ">=0.35,<1" },
     { name = "websockets", specifier = ">=15,<17" },
 ]
+provides-extras = ["atlas"]
 
 [package.metadata.requires-dev]
 dev = [

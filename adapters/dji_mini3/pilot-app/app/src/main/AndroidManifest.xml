@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -20,6 +24,8 @@
     <application
         android:name=".BridgeApplication"
         android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/atlas_data_extraction_rules"
         android:usesCleartextTraffic="true"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
@@ -32,11 +38,16 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="landscape">
+        </activity>
+        <activity android:name=".atlas.AtlasActivity" android:exported="true"
+            android:screenOrientation="portrait" android:label="Sweep Atlas">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".atlas.AtlasCaptureActivity" android:exported="false"
+            android:screenOrientation="portrait" />
 
         <!-- The relay link's foreground service (connectedDevice covers the USB-attached RC). -->
         <service

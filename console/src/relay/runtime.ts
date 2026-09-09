@@ -9,6 +9,7 @@ import { HttpMultiviewClient, type MultiviewClient } from './multiview'
 import { PlatformHttp } from '../platform/http'
 import { PlatformRuntime } from '../platform/runtime'
 import { HttpSearchClient, type SearchClient } from '../search/client'
+import { AtlasClient } from '../atlas/client'
 
 export interface SweepRelayRuntimeConfig {
   baseUrl: string
@@ -40,6 +41,7 @@ export interface ConsoleRuntime {
   platform: PlatformRuntime | null
   searchClient: SearchClient | null
   multiviewClient: MultiviewClient | null
+  atlas: AtlasClient | null
 }
 
 declare global {
@@ -71,6 +73,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
       platform: null,
       searchClient: null,
       multiviewClient: null,
+      atlas: null,
     }
   }
 
@@ -80,6 +83,7 @@ export function createConsoleRuntime(config = window.__SWEEP_RELAY_CONFIG__): Co
     platform: new PlatformRuntime(config),
     searchClient: new HttpSearchClient(config),
     multiviewClient: new HttpMultiviewClient(new PlatformHttp(config)),
+    atlas: new AtlasClient(config),
     client: new WebSocketRelayClient({
       baseUrl: config.baseUrl,
       sessionId: config.sessionId,
