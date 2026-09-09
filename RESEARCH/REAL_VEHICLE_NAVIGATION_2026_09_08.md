@@ -103,6 +103,11 @@ exercise both races, an empty captured map, and immutability of the copied mappi
 This consistency fix leaves physical sample-time alignment as a separate field
 measurement requirement.
 
+The final HOVER could also finish before another localization sample arrived.
+GOTO still requires a position observation captured after dispatch. The following
+HOVER validates the proven arrival position, current hover state and its own
+completion window without requiring a new observation of unchanged position.
+
 Route preparation and tracking publication now serialize evidence creation and
 audit admission. Previously, a tracking update could enter the audit before an
 older route authorization and cause the authorization to be rejected. HOLD does
@@ -140,6 +145,9 @@ Coverage activation also compared raw adapter ENU coordinates with world-frame
 task positions. A non-identity deployment could finish its route without activating
 any camera tasks. Activation now converts the aircraft position through its
 configured navigation frame before comparing it with the planned task location.
+The dispatcher now notifies coverage activation after validated asynchronous
+navigation completion as well as synchronous completion. Both paths preserve
+position checks; the asynchronous callback also verifies retained mission ownership.
 
 ## Camera readiness after navigation
 
