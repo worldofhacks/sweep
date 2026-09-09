@@ -96,6 +96,7 @@ class SafetyConfig:
 
     geofence: Geofence
     ceiling_m: float
+    operator_declared_vertical_clearance_m: float
     min_spacing_m: float
     battery_reserve_fraction: float
     battery_critical_fraction: float
@@ -113,11 +114,18 @@ class SafetyConfig:
     motion_conflict_window_ms: int
     max_capture_blackout_s: float = 8.0
 
+    @property
+    def effective_ceiling_m(self) -> float:
+        """The room's declared clearance can be lower than the operating ceiling."""
+        return min(self.ceiling_m, self.operator_declared_vertical_clearance_m)
+
     def __post_init__(self) -> None:
         if not isinstance(self.geofence, Geofence):
             raise ValueError("geofence must be a validated Geofence")
         positive = {
             "ceiling_m": self.ceiling_m,
+            "operator_declared_vertical_clearance_m": self.operator_declared_vertical_clearance_m,
+            "operator_declared_vertical_clearance_m": self.operator_declared_vertical_clearance_m,
             "min_spacing_m": self.min_spacing_m,
         }
         for name, value in positive.items():
@@ -746,7 +754,7 @@ class SafetyArbiter:
                     RefusalReason.GEOFENCE,
                     "planned target is outside the configured geofence",
                 )
-            if target.z > self.config.ceiling_m:
+            if target.z > self.config.effective_ceiling_m:
                 return self._command_refusal(
                     command,
                     snapshot,
@@ -828,7 +836,7 @@ class SafetyArbiter:
                 RefusalReason.GEOFENCE,
                 "attained altitude is outside the configured geofence",
             )
-        if aircraft.pose.z > self.config.ceiling_m:
+        if aircraft.pose.z > self.config.effective_ceiling_m:
             return self._command_refusal(
                 command,
                 snapshot,
@@ -2171,7 +2179,7 @@ class SafetyArbiter:
                 RefusalReason.GEOFENCE,
                 "vertical motion starts outside the configured geofence",
             )
-        if start.z > self.config.ceiling_m:
+        if start.z > self.config.effective_ceiling_m:
             return self._command_refusal(
                 command,
                 snapshot,

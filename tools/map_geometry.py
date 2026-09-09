@@ -916,7 +916,7 @@ def _v2_visibility(route, tags, floor_id, model, hazards):
     }
 
 
-def _v2_checkpoint_report(validated, checkpoints):
+def _v2_checkpoint_report(validated, checkpoints, *, require_tape_verified_checkpoints=True):
     registration = validated.registration()
     observed = parse_document(
         validated.source_bytes(validated["registration"]["observed_tags"]["path"]), "observed tags"
@@ -952,9 +952,11 @@ def _v2_checkpoint_report(validated, checkpoints):
         )
         _require(tag_id not in fit_ids, "checkpoint tag cannot be a registration fit tag")
         tag = tags[tag_id]
-        _require(
-            tag["verified_for_flight"] is True, "checkpoint tag needs independent tape verification"
-        )
+        if require_tape_verified_checkpoints:
+            _require(
+                tag["verified_for_flight"] is True,
+                "checkpoint tag needs independent tape verification",
+            )
         registered = apply_transform(registration["T_target_source"], local[tag_id])
         measured = (world[tag_id][0], world[tag_id][1])
         error = math.dist(registered, measured)
@@ -999,6 +1001,9 @@ def _v2_authoring_bytes(authoring):
     return payload
 
 
+_V2_OPTIONAL_KEYS = frozenset({"require_tape_verified_checkpoints"})
+
+
 def _generate_v2(bundle, authoring, output, accepted_versions, *, payload=None):
     validated = validate_bundle(bundle, accepted_versions)
     _require(validated.get("schema_version") == 2, "geometry schema version 2 needs a world bundle")
@@ -1006,7 +1011,7 @@ def _generate_v2(bundle, authoring, output, accepted_versions, *, payload=None):
         payload = _v2_authoring_bytes(authoring)
     request = parse_document(payload, str(authoring))
     _require(
-        set(request)
+        set(request) - _V2_OPTIONAL_KEYS
         == {
             "schema_version",
             "units",
@@ -1373,7 +1378,13 @@ def _generate_v2(bundle, authoring, output, accepted_versions, *, payload=None):
                 ),
             }
         )
-    checkpoints = _v2_checkpoint_report(validated, request["held_out_checkpoints"])
+    checkpoints = _v2_checkpoint_report(
+        validated,
+        request["held_out_checkpoints"],
+        require_tape_verified_checkpoints=request.get(
+            "require_tape_verified_checkpoints", True
+        ),
+    )
     _require(not output.exists(), "output directory already exists; use a new path")
     output_target = output
     output_target.parent.mkdir(parents=True, exist_ok=True)

@@ -48,6 +48,7 @@ def safety_config() -> SafetyConfig:
     return SafetyConfig(
         geofence=Geofence(-10.0, 10.0, -10.0, 10.0, 0.0, 5.0),
         ceiling_m=4.0,
+        operator_declared_vertical_clearance_m=5.0,
         min_spacing_m=0.8,
         battery_reserve_fraction=0.2,
         battery_critical_fraction=0.1,

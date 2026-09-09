@@ -861,3 +861,26 @@ def test_non_capture_plan_is_unaffected_by_the_blackout_declaration_gate() -> No
     assert result.refusal is None
     assert flight.calls != []
     assert camera.calls == []
+
+
+def test_declared_room_clearance_lowers_the_operating_ceiling():
+    config = replace(
+        safety_config(),
+        ceiling_m=2.1336,
+        operator_declared_vertical_clearance_m=1.5,
+    )
+    assert config.effective_ceiling_m == 1.5
+
+
+def test_operating_ceiling_binds_when_the_room_clears_more():
+    config = replace(
+        safety_config(),
+        ceiling_m=2.1336,
+        operator_declared_vertical_clearance_m=2.4,
+    )
+    assert config.effective_ceiling_m == 2.1336
+
+
+def test_a_non_positive_declared_clearance_is_refused():
+    with pytest.raises(ValueError):
+        replace(safety_config(), operator_declared_vertical_clearance_m=0.0)
