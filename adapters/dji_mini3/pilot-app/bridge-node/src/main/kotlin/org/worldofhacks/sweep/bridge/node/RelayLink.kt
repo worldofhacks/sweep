@@ -85,7 +85,7 @@ import org.worldofhacks.sweep.bridge.core.watchdog.WatchdogState
  *    `node_status` is resent whenever its body changes; `readiness` is resent when a pilot
  *    toggle or the aircraft/RC connection changes (aircraft or RC loss reports
  *    `control_authority=false` while the socket stays up). With a [captureReadiness]
- *    source (Phase G), `capture_readiness` goes out on join and whenever its gates change,
+ *    source, `capture_readiness` goes out on join, every two seconds, and when its gates change,
  *    and the camera path sends `media_file` frames through [frames] before the terminal
  *    acknowledgement of the capture or retrieval command that produced them.
  * 6. `command` frames are verified and admitted; `accepted` is acknowledged on admission and
@@ -168,6 +168,7 @@ class RelayLink(
     private var lastNodeStatus: NodeStatusBody? = null
     private var lastNodeStatusLocalHeightReceiptMs: Long? = null
     private var lastCaptureReadiness: CaptureReadinessBody? = null
+    private var lastCaptureReadinessSentAtMs: Long? = null
     private val telemetryTimes = ArrayDeque<Long>()
     private val commands = LinkedHashMap<String, CommandRecord>()
 
@@ -671,11 +672,12 @@ class RelayLink(
         }
         log.log((if (rejoin) "rejoined" else "joined") + " as drone ${config.droneId}, connection epoch $epoch; watchdog armed")
         lastCaptureReadiness = null
+        lastCaptureReadinessSentAtMs = null
         if (snapshot.aircraftConnected) sendTelemetry(snapshot)
         sendReadiness()
         sendCapabilities(snapshot)
         sendNodeStatusIfChanged(force = true)
-        sendCaptureReadinessIfChanged(force = true)
+        sendCaptureReadinessIfDue(force = true)
     }
 
     private fun onRefusal(json: JsonObject) {
@@ -909,15 +911,20 @@ class RelayLink(
         suggestedDelta = body.suggestedDelta,
     )
 
-    private fun sendCaptureReadinessIfChanged(force: Boolean = false) {
+    private fun sendCaptureReadinessIfDue(force: Boolean = false) {
         val source = captureReadiness ?: return
         val current = _state.value
         if (!current.joined) return
         val epoch = current.connectionEpoch ?: return
         val body = source.current()
-        if (!force && body == lastCaptureReadiness) return
+        val now = monotonicNowMs()
+        val lastSent = lastCaptureReadinessSentAtMs
+        if (!force && body == lastCaptureReadiness && lastSent != null &&
+            now - lastSent < CAPTURE_READINESS_REFRESH_MS
+        ) return
         if (send(captureReadinessFrame(body, epoch).toEvent())) {
             lastCaptureReadiness = body
+            lastCaptureReadinessSentAtMs = now
             log.log("capture_readiness sent: camera_ok=${body.cameraOk} storage_ok=${body.storageOk} capture=${body.captureId} missing=${body.coverageMissing.size} sectors")
         }
     }
@@ -939,6 +946,7 @@ class RelayLink(
                 send(captureReadinessFrame(body, epoch).toEvent()).also { sent ->
                     if (sent) {
                         lastCaptureReadiness = body
+                        lastCaptureReadinessSentAtMs = monotonicNowMs()
                         log.log("capture_readiness sent: camera_ok=${body.cameraOk} storage_ok=${body.storageOk} capture=${body.captureId}")
                     }
                 }
@@ -1242,7 +1250,7 @@ class RelayLink(
         }
         checkAircraft()
         sendNodeStatusIfChanged()
-        sendCaptureReadinessIfChanged()
+        sendCaptureReadinessIfDue()
     }
 
     /**
@@ -1365,6 +1373,7 @@ class RelayLink(
         const val MAX_COMMANDS = 50
         const val MAX_DETAIL = 512
         const val MAXIMUM_LOCAL_HEIGHT_AGE_MS = 500L
+        const val CAPTURE_READINESS_REFRESH_MS = 2_000L
         const val RATE_WINDOW_MS = 2_000L
         const val WATCHDOG_HOLD = "watchdog_hold"
         const val WATCHDOG_FAILSAFE = "watchdog_failsafe"

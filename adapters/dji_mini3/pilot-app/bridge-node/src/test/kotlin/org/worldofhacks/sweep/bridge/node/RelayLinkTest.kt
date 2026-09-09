@@ -2,6 +2,7 @@ package org.worldofhacks.sweep.bridge.node
 
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import java.io.File
 import kotlin.math.abs
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -10,6 +11,8 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.worldofhacks.sweep.bridge.core.admission.Clock
+import org.worldofhacks.sweep.bridge.camera.CaptureReadinessBody
+import org.worldofhacks.sweep.bridge.camera.CaptureReadinessSource
 import org.worldofhacks.sweep.bridge.core.frames.AcknowledgementFrame
 import org.worldofhacks.sweep.bridge.core.frames.CommandArgs
 import org.worldofhacks.sweep.bridge.core.frames.NodeSettings
@@ -162,6 +165,57 @@ class RelayLinkTest {
 
         fun advance(ms: Long) {
             now += ms
+        }
+    }
+
+    @Test
+    fun `unchanged camera readiness refreshes by monotonic time after either send path`() {
+        StubRelay(key).use { stub ->
+            val clock = SteppedClock(1_000)
+            val monotonic = SteppedClock(0)
+            val aircraft = FakeAircraft(connected = true)
+            val body = AtomicReference(CaptureReadinessBody(cameraOk = true, storageOk = true))
+            val polls = AtomicInteger()
+            val source = CaptureReadinessSource {
+                polls.incrementAndGet()
+                body.get()
+            }
+            RelayLink(
+                config(stub), aircraft, aircraft, phone,
+                clock = clock, monotonicNowMs = monotonic::nowMs,
+                timing = timing, captureReadiness = source,
+            ).use { link ->
+                link.start()
+                val initial = stub.awaitFrame("capture_readiness")
+                clock.advance(10_000)
+                monotonic.advance(1_999)
+                val beforeRefresh = polls.get()
+                await("readiness polls before refresh") { polls.get() > beforeRefresh + 1 }
+                assertEquals(1, stub.frames("capture_readiness").size)
+
+                monotonic.advance(1)
+                val refreshed = stub.awaitFrames("capture_readiness", 2).last()
+                assertTrue(refreshed.bool("camera_ok") && refreshed.bool("storage_ok"))
+                assertTrue(refreshed.int("t") > initial.int("t"))
+                assertFalse(refreshed.str("event_id") == initial.str("event_id"))
+                assertEquals(link.state.value.connectionEpoch?.toLong(), refreshed.int("connection_epoch"))
+
+                body.set(body.get().copy(cameraOk = false))
+                stub.awaitFrame("capture_readiness") { !it.bool("camera_ok") }
+                assertEquals(3, stub.frames("capture_readiness").size)
+                monotonic.advance(1_500)
+                assertTrue(link.frames.sendCaptureReadiness(body.get()))
+                stub.awaitFrames("capture_readiness", 4)
+                monotonic.advance(500)
+                val afterExplicitSend = polls.get()
+                await("readiness polls after explicit send") { polls.get() > afterExplicitSend + 1 }
+                assertEquals(4, stub.frames("capture_readiness").size)
+
+                monotonic.advance(1_500)
+                val afterRefresh = stub.awaitFrames("capture_readiness", 5).last()
+                assertFalse(afterRefresh.bool("camera_ok"))
+                assertTrue(afterRefresh.bool("storage_ok"))
+            }
         }
     }
 

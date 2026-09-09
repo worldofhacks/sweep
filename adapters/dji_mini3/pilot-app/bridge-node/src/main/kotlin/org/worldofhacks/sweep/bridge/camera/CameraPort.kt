@@ -102,7 +102,7 @@ data class CaptureReadinessBody(
     val suggestedDelta: SuggestedDelta? = null,
 )
 
-/** Where the camera path reads its readiness from; the link sends a frame on join and on every change. */
+/** The link publishes current readiness on join, on change, and at a bounded refresh interval. */
 fun interface CaptureReadinessSource {
     fun current(): CaptureReadinessBody
 }
