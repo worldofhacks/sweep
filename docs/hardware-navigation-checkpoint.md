@@ -14,6 +14,23 @@ pins the exact snapshot. The original capture record remains unchanged so its
 provenance survives. Measurements of walls and heights, plus verification of
 replacement tags, remain part of the upcoming map test.
 
+## Software verification
+
+The combined loopback suite passed all five tests on 9 September 2026. It exercises
+deployment setup, signed relay/device bootstrap, two arrived photo stops with both
+images retrieved, a complete empty survey, and HOLD preventing a later photo stop.
+The survey requires six GOTOs, a completed final HOVER, a completed mission and all
+32 coverage cells. The node supplies synthetic motion and media through the real
+relay WebSocket and navigation admission path.
+
+The final source changes also passed 106 adapter/navigation/search regressions and
+29 position and HOVER checks. A broad relay/planner run passed 1,658 tests and found
+two outdated fixture expectations; after correction, the affected search, fleet and
+map API group passed all 18 tests. Console verification passed 1,199 tests, lint,
+the production build and the M14 browser mission. Android unit and signed-frame
+interoperability checks cover the phone changes separately. Repository-wide CI is
+reported on the checkpoint PR.
+
 ## What to prepare for the map test
 
 | Input | Record | Used by |
