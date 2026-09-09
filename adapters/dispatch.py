@@ -1066,6 +1066,17 @@ class AdapterDispatcher:
                     acknowledgements=(*prior_acks, *holds),
                 )
 
+        if plan.navigation is not None and self.on_navigation_command_completed is not None:
+            if owner_still_valid is not None and not owner_still_valid():
+                return self._invalidated_resume(
+                    plan,
+                    current,
+                    RefusalReason.CONFLICTING_MOTION,
+                    "execution ownership was retired before arrival notification",
+                    acknowledgements=tuple(prior_acks),
+                )
+            self.on_navigation_command_completed(plan, command, current)
+
         if command_index + 1 == len(plan.commands):
             return ExecutionResult(
                 intent_id=plan.intent_id,

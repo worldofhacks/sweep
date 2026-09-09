@@ -498,12 +498,14 @@ def test_live_detection_callbacks_status_and_acknowledgement_share_search_runtim
     assert candidates and candidates[0]["acknowledged"]
 
 
-def test_search_counts_real_worker_frames_during_frozen_route_execution() -> None:
+@pytest.mark.parametrize("late_completion", [False, True])
+def test_search_counts_real_worker_frames_during_frozen_route_execution(late_completion) -> None:
     from collections import deque
     from dataclasses import replace
 
     import numpy as np
 
+    from adapters.sim.flight import SimFlightAdapter
     from perception.object_detection import DEFAULT_TARGET_LABELS, DetectionCandidate
     from perception.search_events import FramePoseEvidence
     from perception.search_localization import SearchCameraModel
@@ -529,6 +531,16 @@ def test_search_counts_real_worker_frames_during_frozen_route_execution() -> Non
     preview = runtime.prepare(_intent(), snapshot)
     assert isinstance(preview, SearchMissionPreview)
     _, _, _, dispatcher, flight, _ = make_stack(snapshot)
+    if late_completion:
+
+        class DeferredFlight(SimFlightAdapter):
+            def goto(self, drone_id, x, y, z, speed):
+                return replace(
+                    super().goto(drone_id, x, y, z, speed), status=LifecycleStatus.EXECUTING
+                )
+
+        flight = DeferredFlight.from_snapshot(snapshot)
+        dispatcher.flight = flight
     dispatcher.navigation_runtime = runtime.navigation
     frames = Frames()
     clock = [snapshot.now_ms]
@@ -589,6 +601,19 @@ def test_search_counts_real_worker_frames_during_frozen_route_execution() -> Non
 
     dispatcher.on_navigation_command_completed = process_arrival
     result = runtime.execute("search-runtime", dispatcher, snapshot, current_snapshot=current)
+
+    if late_completion:
+        for _ in preview.plan.commands:
+            if result.status is not LifecycleStatus.EXECUTING:
+                break
+            result = dispatcher.resume_after_completion(
+                preview.plan,
+                result,
+                replace(result.acknowledgements[-1], status=LifecycleStatus.COMPLETED),
+                snapshot,
+                current_snapshot=current,
+            )
+        runtime.complete_execution("search-runtime", result)
 
     assert result.status is LifecycleStatus.COMPLETED, result.refusal
     assert any(count > 0 for count in covered_during_flight[:-1])

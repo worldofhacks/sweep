@@ -399,6 +399,8 @@ def test_loopback_rehearsal_completes_an_empty_aircraft_survey(tmp_path) -> None
             raise AssertionError(diagnostics)
         assert status["mode"] == "survey"
         assert status["candidates"] == []
+        assert len(status["tasks"]) == 1
+        assert status["tasks"][0]["covered_cells"] == status["tasks"][0]["total_cells"] == 32
 
 
 def test_loopback_rehearsal_hold_prevents_a_future_multiview_leg(tmp_path) -> None:

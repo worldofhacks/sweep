@@ -1,5 +1,7 @@
 from dataclasses import replace
 
+import pytest
+
 from adapters.dispatch import AdapterDispatcher
 from adapters.sim.camera import SimCamera
 from adapters.test_dispatch import ExecutingOnceFlight
@@ -22,7 +24,8 @@ def _camera(snapshot, flight):
     )
 
 
-def test_navigation_resume_rechecks_each_arrival_with_the_original_issue_time() -> None:
+@pytest.mark.parametrize("completion", ["arrived", "stale_pose", "retired_owner"])
+def test_navigation_resume_notifies_arrival_only_after_validation_and_ownership(completion) -> None:
     runtime, snapshot, intent, _ = setup_runtime()
     plan = runtime.prepare(intent, snapshot)
     assert isinstance(plan, Plan)
@@ -41,6 +44,12 @@ def test_navigation_resume_rechecks_each_arrival_with_the_original_issue_time() 
     )
     hovered = replace(arrived, now_ms=100_100)
     hovered = replace_aircraft(hovered, 1, position_last_seen_ms=100_100)
+    if completion == "stale_pose":
+        arrived = replace_aircraft(arrived, 1, position_last_seen_ms=snapshot.now_ms - 1)
+    notifications = []
+    dispatcher.on_navigation_command_completed = lambda plan, command, current: (
+        notifications.append((command.command_id, current))
+    )
 
     def current():
         if len(flight.calls) == 0:
@@ -52,11 +61,24 @@ def test_navigation_resume_rechecks_each_arrival_with_the_original_issue_time() 
     terminal = replace(pending.acknowledgements[-1], status=LifecycleStatus.COMPLETED)
 
     result = dispatcher.resume_after_completion(
-        plan, pending, terminal, snapshot, current_snapshot=current
+        plan,
+        pending,
+        terminal,
+        snapshot,
+        current_snapshot=current,
+        owner_still_valid=lambda: completion != "retired_owner",
     )
 
-    assert result.status is LifecycleStatus.COMPLETED
-    assert [call.operation.value for call in flight.calls] == ["goto", "hover"]
+    if completion == "arrived":
+        assert result.status is LifecycleStatus.COMPLETED
+        assert [call.operation.value for call in flight.calls] == ["goto", "hover"]
+        assert notifications == [
+            (plan.commands[0].command_id, arrived),
+            (plan.commands[1].command_id, hovered),
+        ]
+    else:
+        assert result.status is LifecycleStatus.INVALIDATED
+        assert notifications == []
 
 
 def test_navigation_completion_without_the_original_issue_time_is_invalidated() -> None:
