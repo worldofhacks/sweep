@@ -66,8 +66,11 @@ export class AtlasClient {
   async saveMemory(space: string, capture: string, revision: number, notes: MemoryNotes): Promise<MemoryContext> {
     return await this.http.request(this.memoryPath(space, capture), { revision, notes }) as MemoryContext
   }
-  async inspectMemory(space: string, capture: string): Promise<MemoryContext> {
-    return await this.http.request(this.memoryPath(space, capture) + '/inspect', {}, undefined, 25_000) as MemoryContext
+  async inspectMemory(space: string, capture: string, signal?: AbortSignal): Promise<MemoryContext> {
+    return await this.http.request(this.memoryPath(space, capture) + '/inspect', {}, signal, 25_000) as MemoryContext
+  }
+  async reviewMemory(space: string, capture: string, revision: number, analysis_id: string | null): Promise<MemoryContext> {
+    return await this.http.request(this.memoryPath(space, capture) + '/review', { revision, analysis_id }) as MemoryContext
   }
   async analyzeMemory(space: string, capture: string, options: { revision: number; weather: boolean; ai: boolean; audio_asset_id: string | null }): Promise<MemoryContext> {
     return await this.http.request(this.memoryPath(space, capture) + '/analyze', options) as MemoryContext

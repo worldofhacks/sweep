@@ -40,7 +40,7 @@ class AtlasStorageTest {
     @Test fun `memory JSON and playback stay capture and space scoped`() {
         val scoped = session("place")
         val asset = "544db565-bec9-4bf9-aae9-5ef89a696d0d"
-        listOf("", "/inspect", "/analyze", "/assets/$asset/media").forEach { suffix ->
+        listOf("", "/inspect", "/analyze", "/review", "/assets/$asset/media").forEach { suffix ->
             val path = "/atlas/spaces/place/captures/photo/memory$suffix"
             assertTrue(scoped.api(path).toString().endsWith(path))
             assertThrows(IllegalArgumentException::class.java) { scoped.api(path.replace("/place/", "/other/")) }

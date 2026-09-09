@@ -18,12 +18,20 @@ export default function MemoryDialog({
   const [dirty, setDirty] = useState(false)
   return (
     <AtlasDialog
-      title="The story of this moment"
+      title="Your memory"
+      className="memory-dialog"
       onClose={() => {
         if (!dirty || window.confirm('Leave without saving your memory details?')) onClose()
       }}
     >
-      <MemoryPanel client={client} spaceId={spaceId} capture={capture} onDirtyChange={setDirty} />
+      <MemoryPanel
+        key={`${spaceId}/${capture.id}`}
+        client={client}
+        spaceId={spaceId}
+        capture={capture}
+        onDirtyChange={setDirty}
+        onDone={onClose}
+      />
     </AtlasDialog>
   )
 }

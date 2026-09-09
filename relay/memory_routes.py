@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from relay.atlas import AtlasError
 from relay.memory_context import analyze, capabilities
 from relay.memory_media import admitted_asset, inspect_media
-from relay.memory_store import AnalyzeMemory, MemoryAsset, SaveMemory
+from relay.memory_store import AnalyzeMemory, MemoryAsset, ReviewMemory, SaveMemory
 
 
 def install_memory_routes(app, authorize, access, atlas):
@@ -72,6 +72,8 @@ def install_memory_routes(app, authorize, access, atlas):
     ):
         owner(session, identifier, authorization)
         capture = atlas().memories.capture(identifier, capture_id)
+        if atlas().memories.get(identifier, capture_id).get("inspection"):
+            return response(session, identifier, capture_id, authorization)
         if not jobs.acquire(blocking=False):
             raise AtlasError("Two context operations are running. Please try again shortly.", 429)
         try:
@@ -79,6 +81,18 @@ def install_memory_routes(app, authorize, access, atlas):
             atlas().memories.inspected(identifier, capture_id, result)
         finally:
             jobs.release()
+        return response(session, identifier, capture_id, authorization)
+
+    @app.post(base + "/review")
+    async def review_memory(
+        session: str,
+        identifier: str,
+        capture_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ):
+        owner(session, identifier, authorization)
+        atlas().memories.review(identifier, capture_id, await read_json(request, ReviewMemory))
         return response(session, identifier, capture_id, authorization)
 
     @app.post(base + "/assets", status_code=201)

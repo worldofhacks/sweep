@@ -27,7 +27,7 @@ data class AtlasSession(val id: String, val baseUrl: String, val workspace: Stri
     /** The web surface can reach Atlas only, never the adjacent control APIs. */
     fun api(path: String): HttpUrl {
         val draftPublish = path.matches(Regex("/atlas/spaces/drafts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/publish"))
-        val memory = path.matches(Regex("/atlas/spaces/[a-zA-Z0-9_-]{1,64}/captures/[a-zA-Z0-9_-]{1,64}/memory(?:/(?:inspect|analyze|assets/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/media))?"))
+        val memory = path.matches(Regex("/atlas/spaces/[a-zA-Z0-9_-]{1,64}/captures/[a-zA-Z0-9_-]{1,64}/memory(?:/(?:inspect|analyze|review|assets/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/media))?"))
         require(memory || draftPublish || path.matches(Regex("/atlas/spaces(?:/[a-zA-Z0-9_-]{1,64}(?:/(?:status|invitation|requests|presence|leave|reconstruction|surface-requests|surface-requests/[0-9a-f-]{36}/[0-9a-f]{16}/dismiss|captures/[a-zA-Z0-9_-]{1,64}/media|reconstruction/[a-zA-Z0-9_-]{1,64}/(?:cloud\\.glb|manifest\\.json)))?)?"))) {
             "This endpoint is not available in Atlas."
         }

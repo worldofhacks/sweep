@@ -98,6 +98,9 @@ def probe(path: Path):
 
 
 def admitted_asset(path, claimed):
+    # MediaRecorder includes codec parameters (e.g. audio/webm;codecs=opus).
+    # Container validation still happens against the actual bytes below.
+    claimed = claimed.split(";", 1)[0].strip().lower()
     supported = {
         "audio/mpeg",
         "audio/mp4",

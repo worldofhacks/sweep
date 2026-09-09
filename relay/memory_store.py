@@ -78,6 +78,11 @@ class AnalyzeMemory(AtlasModel):
     audio_asset_id: str | None = Field(default=None, pattern=r"^[0-9a-f-]{36}$")
 
 
+class ReviewMemory(AtlasModel):
+    revision: int = Field(ge=0)
+    analysis_id: str | None = Field(default=None, pattern=r"^[0-9a-f-]{36}$")
+
+
 class MemoryStore:
     def __init__(self, atlas):
         self.atlas = atlas
@@ -117,6 +122,7 @@ class MemoryStore:
                     "notes": MemoryNotes().model_dump(),
                     "inspection": None,
                     "analysis": None,
+                    "review": None,
                 }
             )
             analysis = context.get("analysis")
@@ -161,6 +167,7 @@ class MemoryStore:
             self._editable(value, request.revision)
             value["notes"] = request.notes.model_dump()
             value["revision"] += 1
+            value["review"] = None
             if value["analysis"]:
                 value["analysis"]["status"] = "outdated"
             self._write(space, capture, value)
@@ -213,6 +220,7 @@ class MemoryStore:
                     (asset["id"], space, capture, json.dumps(asset)),
                 )
                 value["revision"] += 1
+                value["review"] = None
                 if value["analysis"]:
                     value["analysis"]["status"] = "outdated"
                 self._write(space, capture, value)
@@ -238,6 +246,27 @@ class MemoryStore:
                 "started_at": self.atlas.clock(),
                 "inputs": request.model_dump(),
             }
+            value["review"] = None
+            self._write(space, capture, value)
+            return value
+
+    def review(self, space, capture, request):
+        """Record an owner's review, never promote generated context into original evidence."""
+        with self.atlas.lock, self.atlas.db:
+            self.atlas.db.execute("BEGIN IMMEDIATE")
+            value = self.get(space, capture)
+            self._editable(value, request.revision)
+            analysis = value.get("analysis") or {}
+            if request.analysis_id and (
+                analysis.get("id") != request.analysis_id
+                or analysis.get("status") not in {"complete", "partial"}
+            ):
+                raise AtlasError("This draft changed. Reload before keeping this memory.", 409)
+            value["review"] = {
+                "revision": value["revision"],
+                "analysis_id": request.analysis_id,
+                "reviewed_at": self.atlas.clock(),
+            }
             self._write(space, capture, value)
             return value
 
@@ -245,10 +274,14 @@ class MemoryStore:
         with self.atlas.lock, self.atlas.db:
             self.atlas.db.execute("BEGIN IMMEDIATE")
             value = self.get(space, capture)
-            if (value.get("analysis") or {}).get("id") == job["id"] and value["revision"] == job[
-                "inputs"
-            ]["revision"]:
+            current = value.get("analysis") or {}
+            if (
+                current.get("id") == job["id"]
+                and current.get("status") in {"running", "interrupted"}
+                and value["revision"] == job["inputs"]["revision"]
+            ):
                 value["analysis"] = {**job, **result, "finished_at": self.atlas.clock()}
+                value["review"] = None
                 if result.get("inspection"):
                     value["inspection"] = result["inspection"]
                 self._write(space, capture, value)

@@ -56,6 +56,7 @@ export interface MemoryAnalysis {
   } | null
 }
 export interface MemoryContext {
+  review?: { revision: number; analysis_id: string | null; reviewed_at: number } | null
   revision: number
   capture: Capture
   notes: MemoryNotes

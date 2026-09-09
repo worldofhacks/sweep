@@ -73,7 +73,7 @@ def test_notes_are_versioned_private_and_leave_original_unchanged(memory_api):
     assert client.get(base.removesuffix("/memory") + "/media", headers=AUTH).content == PNG
     assert client.get(base, headers=invited).json()["notes"] == NOTES
     assert client.post(base, headers=AUTH, json={"revision": 0, "notes": {}}).status_code == 409
-    for suffix in ("", "/inspect", "/analyze", "/assets"):
+    for suffix in ("", "/inspect", "/analyze", "/review", "/assets"):
         assert client.post(base + suffix, headers=invited, json={}).status_code == 401
     second = client.post(BASE, headers=AUTH, json=SPACE).json()["space"]["id"]
     assert client.get(base.replace(created["space"]["id"], second), headers=AUTH).status_code == 404
@@ -94,6 +94,74 @@ def test_notes_are_versioned_private_and_leave_original_unchanged(memory_api):
 def test_notes_reject_unusable_time_location_and_links(notes):
     with pytest.raises(ValidationError):
         MemoryNotes.model_validate(notes)
+
+
+def test_owner_review_persists_without_promoting_generated_evidence(memory_api):
+    client, base, _, original, created = memory_api
+    client.post(base, headers=AUTH, json={"revision": 0, "notes": NOTES})
+    client.post(base + "/analyze", headers=AUTH, json={"revision": 1})
+    before = client.get(base, headers=AUTH).json()
+    request = {"revision": 1, "analysis_id": before["analysis"]["id"]}
+    response = client.post(base + "/review", headers=AUTH, json=request)
+    assert response.status_code == 200, response.text
+    kept = response.json()
+    assert kept["notes"] == NOTES and kept["capture"] == original
+    assert kept["analysis"] == before["analysis"]
+    assert kept["revision"] == 1
+    assert kept["review"]["analysis_id"] == before["analysis"]["id"]
+    assert kept["review"]["revision"] == 1
+    # A duplicate worker callback cannot replace an already-reviewed result.
+    store = client.app.state.atlas_store.memories
+    store.finish(created["space"]["id"], original["id"], before["analysis"], {"status": "failed"})
+    assert client.get(base, headers=AUTH).json()["analysis"] == kept["analysis"]
+    reopened = AtlasStore(client.app.state.atlas_store.root)
+    try:
+        persisted = reopened.memories.get(created["space"]["id"], original["id"])
+        assert persisted["review"] == kept["review"]
+    finally:
+        reopened.close()
+    stale = {"revision": 0, "analysis_id": before["analysis"]["id"]}
+    assert client.post(base + "/review", headers=AUTH, json=stale).status_code == 409
+    wrong_job = {"revision": 1, "analysis_id": "00000000-0000-0000-0000-000000000000"}
+    assert client.post(base + "/review", headers=AUTH, json=wrong_job).status_code == 409
+    changed = client.post(base, headers=AUTH, json={"revision": 1, "notes": NOTES}).json()
+    assert changed["review"] is None
+    assert changed["analysis"]["status"] == "outdated"
+    assert (
+        client.post(base + "/review", headers=AUTH, json={**request, "revision": 2}).status_code
+        == 409
+    )
+    # Keeping only the contributor's original account is also valid.
+    assert client.post(base + "/review", headers=AUTH, json={"revision": 2}).status_code == 200
+    client.post(base + "/analyze", headers=AUTH, json={"revision": 2})
+    assert client.get(base, headers=AUTH).json()["review"] is None
+
+
+def test_running_context_cannot_be_reviewed(memory_api):
+    client, base, _, original, created = memory_api
+    memory = client.app.state.atlas_store.memories
+    value = memory.begin(created["space"]["id"], original["id"], AnalyzeMemory(revision=0))
+    response = client.post(
+        base + "/review", headers=AUTH, json={"revision": 0, "analysis_id": value["analysis"]["id"]}
+    )
+    assert response.status_code == 409
+
+
+def test_reopening_immutable_capture_reuses_local_inspection(memory_api, monkeypatch):
+    client, base, _, _, _ = memory_api
+    inspect = Mock(wraps=inspect_media)
+    provider = Mock(side_effect=AssertionError("No external call was authorized"))
+    monkeypatch.setattr("relay.memory_routes.inspect_media", inspect)
+    monkeypatch.setattr("relay.memory_context.bounded_json", provider)
+    first = client.post(base + "/inspect", headers=AUTH)
+    second = client.post(base + "/inspect", headers=AUTH)
+    assert first.status_code == second.status_code == 200
+    assert first.json()["inspection"] == second.json()["inspection"]
+    assert second.json()["notes"]["location"] is None
+    assert second.json()["notes"]["occurred_at"] is None
+    assert second.json()["revision"] == 0
+    inspect.assert_called_once()
+    provider.assert_not_called()
 
 
 @pytest.mark.skipif(not shutil.which("ffprobe"), reason="ffprobe required")
@@ -235,6 +303,7 @@ def test_local_derivatives_decode_real_media_without_changing_it(tmp_path):
     path = tmp_path / "sound.wav"
     path.write_bytes(wav_bytes())
     assert admitted_asset(path, "audio/wav") == "audio/wav"
+    assert admitted_asset(path, "audio/wav; codecs=pcm") == "audio/wav"
     sample = audio_sample(path)
     with wave.open(io.BytesIO(sample)) as audio:
         assert audio.getframerate() == 16000 and audio.getnchannels() == 1

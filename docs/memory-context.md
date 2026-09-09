@@ -7,6 +7,15 @@ generation jobs retain their existing workflow.
 
 ## What this checkpoint implements
 
+- Assist-first composer: one optional caption, quick feeling choices, and focused
+  sound/music/place editors instead of an always-visible long form. Desktop uses
+  a media-first card; phones use a bottom sheet with a sticky, task-specific action.
+  Detailed metadata, provider limitations, transcripts, measurements, and export
+  remain available under **Details & sources**.
+- **Keep this memory** saves changed notes and then records an owner review of the
+  current revision/draft. Review does not copy AI text into contributor notes,
+  verify estimated conditions, or publish anything publicly. Subsequent edits or
+  analysis invalidate that review; conflicts and save failures do not fake success.
 - Contributor-written descriptions and feelings, a confirmed date with UTC offset,
   confirmed coordinates, and an optional music title/reference link.
 - Immutable original audio/video attachments: ambience, narration, or soundtrack.
@@ -16,6 +25,16 @@ generation jobs retain their existing workflow.
 - Local EXIF/video metadata inspection. Time without a timezone stays unknown for
   weather purposes. GPS/date are offered for review, never silently copied into
   confirmed notes. Current device location requires a separate explicit action.
+- Automatic, reusable local metadata inspection when the owner opens a capture;
+  it does not authorize external processing. Slow inspection cannot replace newer
+  notes or revisions. Photos under 8 MB preview automatically and stay loaded while
+  changing editors; larger originals and videos load on request. No media autoplay.
+- Optional browser voice memories, capped at 60 seconds and 8 MB. Microphone
+  permission follows an explicit tap; tracks stop on completion, cancellation,
+  page backgrounding, and editor unmount. Late permission results are released.
+  Unsupported/denied recording falls back to file upload. Sharing rights are still
+  confirmed before attachment. An eligible single recording is preselected for AI
+  when the original has no audio; AI itself remains unchecked until chosen.
 - Optional Open-Meteo weather at the confirmed UTC hour and coordinates. Old dates
   use ERA5 reanalysis; recent dates use forecast-model history. These are hourly
   grid estimates, not exact observations at the microphone. Wind is at 10 metres.
@@ -28,8 +47,14 @@ generation jobs retain their existing workflow.
   an environmental sound classifier, or an estimate of wind from audio.
 - Versioned notes, optimistic conflict handling, progress polling, partial-error
   reporting, interrupted-job recovery by explicit retry, and saved JSON export.
-  The dialog guards unsaved notes on close/Escape; analysis continues server-side
+  The dialog guards unsaved notes, pending files, and recordings on close/Escape; analysis continues server-side
   if the view closes after the start request succeeds.
+
+Interaction details: 44–48 px controls, 16 px inputs, safe-area-aware footer,
+keyboard focus return, ~150 ms transitions with reduced-motion support. No new
+frontend dependencies, feed ranking, engagement timers, streaks, or notifications
+were added. The existing capture, speech-control, gesture, and multi-camera modules
+are outside this UI change.
 
 ## Provider setup
 
@@ -59,6 +84,12 @@ References: [Open-Meteo historical weather](https://open-meteo.com/en/docs/histo
 [image inputs](https://developers.openai.com/api/docs/guides/images-vision),
 [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
 
+Browser recording uses runtime [MediaRecorder format support](https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/isTypeSupported_static)
+and [getUserMedia permissions](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia).
+HTTPS (or localhost) is needed. Runtime capability detection and codec-parameter
+normalization allow compatible Safari/Chromium recordings without bypassing the
+server's actual audio-container validation.
+
 ## Data and authorization boundaries
 
 `memory_contexts` and `memory_assets` live in the existing Atlas SQLite database.
@@ -76,7 +107,7 @@ Account-bound contributor editing requires the separate identity/authorization w
 
 Routes extend `/api/sessions/{session}/atlas/spaces/{space}/captures/{capture}/memory`:
 GET reads, POST saves versioned notes, POST `/inspect` reads local metadata,
-POST `/analyze` starts a bounded background operation, POST `/assets` attaches a
+POST `/review` records owner review, POST `/analyze` starts a bounded background operation, POST `/assets` attaches a
 recording, and GET `/assets/{asset}/media` reads its original. All use existing
 workspace/space authorization, with no public asset URL or client-side provider key.
 
@@ -102,22 +133,33 @@ after three minutes; there is no automatic paid job replay or durable worker que
 
 ## Verification and local review
 
-- Full current console suite: **1,339 tests in 108 files pass**, including six new
-  memory-panel tests and the concurrent landing worktree's three tests. All 1,330
+- Full current console suite: **1,353 tests in 109 files pass**, including 20
+  memory/recorder tests and the concurrent landing worktree's three tests. All 1,330
   prior console tests still pass. Run with `pnpm test --maxWorkers=2`; an initial
   unrestricted-worker run exhausted test-worker timing on this host.
-- **41 Atlas/backend tests pass**, including 14 memory tests: originals and scoped
+- **44 Atlas/backend tests pass**, including 17 memory tests: originals and scoped
   access, version conflicts, real WAV decoding, metadata/time uncertainty, opt-in
-  providers, soundtrack exclusion, and stale/interrupted job completion handling.
-- **11 Android AtlasStorageTest JVM tests pass**, including the new route-scope test.
+  providers, soundtrack exclusion, review persistence/invalidation, reusable
+  inspection, and stale/interrupted/duplicate job completion handling.
+- **11 Android AtlasStorageTest JVM tests pass**, including the review route scope.
 - Web and Android web-bundle builds, frontend lint, and changed-backend Ruff checks
   pass. Existing large map/3D/main bundle warnings remain. The memory panel is about
-  5.6 KB gzip and the library about 1.6 KB gzip, loaded only when opened.
+  9.7 KB gzip and the library about 1.6 KB gzip, loaded only when opened.
 - Browser against real local Atlas routes: saved QA notes/time/location, attached a
   clearly named synthetic test tone, decoded/played it muted, and retrieved real
   Open-Meteo historical weather for sample Austin coordinates. The source capture
   is a UI screenshot, not a scene photo; these notes explicitly identify test data.
   Its original capture time and map location remain unknown, with no new coverage.
+- Assist-first browser acceptance: Chrome at 1440×1000 and phone widths; WebKit
+  with iPhone emulation at 393×659. Reviewed memories survive a server restart and
+  cold reload. A new weather-only request completed through the mobile assistance
+  screen and could be reviewed/kept. Existing synthetic audio decodes without
+  autoplay. The phone assistance action remains visible, about 48 px tall, with no
+  horizontal overflow. Runtime WebKit checks report MP4/WebM recording support;
+  microphone capture/cleanup has unit coverage, not a physical iPhone acceptance run.
+- Final screenshots: `output/playwright/assist-desktop-final.png`,
+  `assist-phone-webkit-final.png`, and `assist-permissions-webkit-final.png`.
+  These show explicitly labeled QA content, not fabricated field memories.
 
 Local manual review: `http://127.0.0.1:8177/`, then Worlds → Memories →
 Preview · Shoal Creek neighbors. Screenshots are under `output/playwright/` and are

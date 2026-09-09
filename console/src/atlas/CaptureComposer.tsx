@@ -337,7 +337,7 @@ export function CaptureComposer({ client, spaceId, contributor, name, onSaved, c
         has no verified capture time or location.
       </p>
       {mode === 'video' && <label className="atlas-microphone-option"><input type="checkbox" checked={includeAudio} disabled={active || busy || recording} onChange={event => setIncludeAudio(event.target.checked)} />Include microphone audio when opening the video camera (with permission from people nearby).</label>}
-      {savedCapture && <button className="atlas-secondary atlas-full" disabled={busy || recording} onClick={() => setMemoryOpen(true)}><Icon name="spark" size={18} />Add sounds, weather & the story of this capture</button>}
+      {savedCapture && <button className="atlas-secondary atlas-full" disabled={busy || recording} onClick={() => setMemoryOpen(true)}><Icon name="spark" size={18} />Make it a memory · optional</button>}
       {memoryOpen && savedCapture && <Suspense fallback={<p role="status">Opening memory tools…</p>}><MemoryDialog client={client} spaceId={spaceId} capture={savedCapture} onClose={() => setMemoryOpen(false)} /></Suspense>}
       {message && (
         <p className="atlas-inline-notice" role="status">
