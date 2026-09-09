@@ -41,6 +41,7 @@ from relay.capabilities import (
     C1_CAPABILITY_PROFILE,
     C1_IMPLEMENTED_INTENT_NAMES,
     C2_CAPABILITY_PROFILE,
+    C3_CAPABILITY_PROFILE,
     IntentName,
 )
 from relay.intent_v1 import AcceptedIntent, validate_intent
@@ -339,6 +340,17 @@ def test_speech_pair_qualification_configuration_is_closed_and_immutable() -> No
     for raw in ("disarm", "formation_next", "formation_set", "spacing", "sweep"):
         with pytest.raises(SettingsError, match="unique enabled language-source names"):
             _qualified_voice_intents({"SWEEP_QUALIFIED_VOICE_INTENTS": raw}, C2_CAPABILITY_PROFILE)
+
+
+def test_c3_qualifies_ground_velocity_but_keeps_navigation_and_field_intents_review_only() -> None:
+    assert _qualified_voice_intents(
+        {"SWEEP_QUALIFIED_VOICE_INTENTS": "ground_velocity"}, C3_CAPABILITY_PROFILE
+    ) == ("ground_velocity",)
+
+    for raw in ("navigate", "search", "survey_area"):
+        assert C3_CAPABILITY_PROFILE.supports(IntentName(raw))
+        with pytest.raises(SettingsError, match="unique enabled language-source names"):
+            _qualified_voice_intents({"SWEEP_QUALIFIED_VOICE_INTENTS": raw}, C3_CAPABILITY_PROFILE)
 
 
 def test_endpoint_without_anthropic_key_returns_typed_compiler_unavailable(

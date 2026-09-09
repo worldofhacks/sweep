@@ -13,6 +13,8 @@ from relay.capabilities import (
     C1_IMPLEMENTED_INTENT_NAMES,
     C2_ADDITIONAL_INTENT_NAMES,
     C2_CAPABILITY_PROFILE,
+    C3_ADDITIONAL_INTENT_NAMES,
+    C3_CAPABILITY_PROFILE,
     GROUND_ADDITIONAL_INTENT_NAMES,
     IMPLEMENTED_INTENT_NAMES,
     SURVEY_ADDITIONAL_INTENT_NAMES,
@@ -60,6 +62,21 @@ def test_c2_profile_is_a_strict_c1_superset() -> None:
         | SURVEY_ADDITIONAL_INTENT_NAMES
         | {IntentName.NAVIGATE, IntentName.SEARCH}
     )
+
+
+def test_c3_profile_adds_navigation_and_field_intents_without_fleet_intents() -> None:
+    assert C3_CAPABILITY_PROFILE.enabled_intent_names == (
+        C1_CAPABILITY_PROFILE.enabled_intent_names | C3_ADDITIONAL_INTENT_NAMES
+    )
+    assert {name.value for name in C3_ADDITIONAL_INTENT_NAMES} == {
+        "ground_velocity",
+        "navigate",
+        "search",
+        "survey_area",
+    }
+    assert C1_CAPABILITY_PROFILE.enabled_intent_names < C3_CAPABILITY_PROFILE.enabled_intent_names
+    assert C3_CAPABILITY_PROFILE.enabled_intent_names.isdisjoint(C2_ADDITIONAL_INTENT_NAMES)
+    assert with_ground_capabilities(C3_CAPABILITY_PROFILE) is C3_CAPABILITY_PROFILE
 
 
 def test_ground_profile_is_a_distinct_extension_of_the_configured_base_profile() -> None:
