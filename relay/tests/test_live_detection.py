@@ -18,6 +18,7 @@ from relay.app import RelayRuntime, create_app
 from relay.live_detection import (
     LiveDetectionService,
     LiveDetectionSource,
+    DEFAULT_CONFIDENCE_THRESHOLD,
     load_live_detection_sources,
 )
 from relay.settings import RelaySettings, SettingsError
@@ -211,3 +212,37 @@ def test_settings_load_detection_path_without_navigation_policy(tmp_path):
     )
     assert settings.live_detection_config_path == tmp_path / "live.json"
     assert replace(settings, live_detection_config_path=None).live_detection_config_path is None
+
+
+def _confidence_config(tmp_path, **patch):
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"isolated model bytes")
+    config = tmp_path / "confidence.json"
+    entry = {
+        "device_id": 11,
+        "camera_id": "front",
+        "stream": "ground-1-front",
+        "stream_url": "rtsp://127.0.0.1/front",
+        "resolution": [1280, 720],
+        "model_path": "model.onnx",
+        "model_sha256": sha256(model.read_bytes()).hexdigest(),
+        **patch,
+    }
+    config.write_text(json.dumps({"schema_version": 1, "sources": [entry]}))
+    return config
+
+
+def test_source_without_a_declared_threshold_keeps_the_conservative_default(tmp_path):
+    parsed = load_live_detection_sources(_confidence_config(tmp_path))
+    assert parsed[0].confidence_threshold == DEFAULT_CONFIDENCE_THRESHOLD
+
+
+def test_a_declared_threshold_is_carried_onto_the_source(tmp_path):
+    parsed = load_live_detection_sources(_confidence_config(tmp_path, confidence_threshold=0.35))
+    assert parsed[0].confidence_threshold == 0.35
+
+
+def test_a_threshold_outside_the_unit_interval_is_refused(tmp_path):
+    for value in (0, 1.5, -0.1, True, "0.4"):
+        with pytest.raises(SettingsError):
+            load_live_detection_sources(_confidence_config(tmp_path, confidence_threshold=value))

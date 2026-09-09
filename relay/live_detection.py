@@ -23,6 +23,20 @@ MAX_FRAME_AGE_S = 1.5
 IDLE_SECONDS = 30
 
 
+DEFAULT_CONFIDENCE_THRESHOLD = 0.6
+
+
+def _confidence(value: object) -> float:
+    """A lower bar finds small distant objects; too low and every texture is furniture."""
+    if value is None:
+        return DEFAULT_CONFIDENCE_THRESHOLD
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("confidence_threshold must be a number")
+    if not 0 < float(value) <= 1:
+        raise ValueError("confidence_threshold must be within (0, 1]")
+    return float(value)
+
+
 @dataclass(frozen=True)
 class LiveDetectionSource:
     device_id: int
@@ -33,6 +47,7 @@ class LiveDetectionSource:
     model_path: Path
     model_sha256: str
     target_labels: tuple[str, ...] = COCO_LABELS
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD
 
 
 def load_live_detection_sources(path: Path | None) -> tuple[LiveDetectionSource, ...]:
@@ -63,7 +78,8 @@ def load_live_detection_sources(path: Path | None) -> tuple[LiveDetectionSource,
                 "model_sha256",
             }
             if not isinstance(source, dict) or not required <= source.keys() <= required | {
-                "target_labels"
+                "target_labels",
+                "confidence_threshold",
             }:
                 raise ValueError("camera source fields are invalid")
             if type(source["device_id"]) is not int or source["device_id"] <= 0:
@@ -106,6 +122,7 @@ def load_live_detection_sources(path: Path | None) -> tuple[LiveDetectionSource,
                     model,
                     source["model_sha256"],
                     tuple(labels),
+                    _confidence(source.get("confidence_threshold")),
                 )
             )
         return tuple(sources)
@@ -119,6 +136,7 @@ def _detector(source: LiveDetectionSource):
         source.model_path,
         expected_model_sha256=source.model_sha256,
         target_labels=source.target_labels,
+        confidence_threshold=source.confidence_threshold,
     )
 
 
