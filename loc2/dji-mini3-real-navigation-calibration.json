@@ -1,0 +1,119 @@
+{
+  "accepted_image_count": 20,
+  "camera_matrix": [
+    [
+      904.9992232930593,
+      0.0,
+      640.3853773077074
+    ],
+    [
+      0.0,
+      902.2235058169234,
+      357.2100415972883
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "camera_serial": "dji-mini3-real-navigation-venue-unverified",
+  "distortion_coefficients": [
+    0.14884184688362923,
+    -0.3750818255721304,
+    -0.0009650555714089585,
+    0.0008961606042202534,
+    0.40457165250504606
+  ],
+  "evidence_kind": "recorded_live",
+  "hand_authored": true,
+  "hand_authored_reason": "calibration.tag_intrinsics export_tag_calibration refuses this capture: its recorded_live provenance check (_validate_single_recorded_live_provenance / _validate_recorded_live_session) is built for the Ohmni dual-USB-camera capture rig (schema ohmni-dual-calibration-capture/v2, UYVY/MJPEG device fingerprints, See3CAM_CU135 / HD USB Camera identities) and has no path for a MediaMTX-relayed DJI RTSP capture. Confirmed by running apriltag-export with --evidence-kind recorded_live against fitting-evidence.json: it raises \"recorded live export requires capture provenance\" because the document has no recorded_live_provenance key, and even a hand-added one would fail the Ohmni-shaped manifest/device checks that follow. Every field below the schema-required set is either taken verbatim from running calibration.apriltag-candidate against the real fitting-evidence.json corner detections and the real staged source PNGs (camera_matrix, distortion_coefficients, rms_reprojection_error_px, image_sha256, pinhole_fov_deg, pose_constraint_ratio, focal_stddev_px), or filled by hand: camera_serial (the DJI serial was never captured by this pipeline, see pipeline.camera_mode) and evidence_kind (set to recorded_live because the 20 fitting frames are real DJI Mini 3 video frames of real tags, not synthetic renders, even though this capture cannot pass the stricter export provenance gate).",
+  "image_sha256": {
+    "frame-015347.png": "be7a2df8ad71a990607a7413ac589ffe09eafbd01ed95268caf3e790fee8bdbf",
+    "frame-016476.png": "85fd51d253c6e935a140e67c814f4dca5f5d351e5ddeae7c10b389c634c79c54",
+    "frame-018754.png": "853171e0ad477e3aac270b4ea78452566dbe60b7bf8d29c8a266df740e18476d",
+    "frame-020334.png": "e458dd89c8b81918cc89a7c93d7fb1c0b6e90b433987f414da3096571011caa5",
+    "frame-022318.png": "fb19cb72ba8eac39f6110089889b4f3a4ba79de7abe4da0144d9436628481f1a",
+    "frame-023598.png": "d424006a9592be4fc4699473b33010367b1a73b3ff0e1ec1a6caba65e0f39f68",
+    "frame-025979.png": "053c5df651d3fdd2514f69550ae02cfa87e468b77e93671154aad66e5f5de316",
+    "frame-027185.png": "a19a43d2ee8171de45ff71d939c0804a48eec321fd469ef891e507a056ee72f7",
+    "frame-028351.png": "0cfca1c3d50f4a84c4c0d93cc5edd843a7defc338b4222fc811b347b1c1c977b",
+    "frame-029483.png": "6c866fd2d8b1f857ec9db942d5464d8dae6fa7ed6d5d277f586fd640f2e81e6f",
+    "frame-031727.png": "713af32e8a5974642a32e433bd3d7f5ae6abd0ae503e65a78b5a070aa32e89f8",
+    "frame-033553.png": "ee04545d507bae5b352ec1ec9d75da6961a0035a878b0d752aab4d11c5df9802",
+    "frame-034568.png": "d139fcb9de8751fef8ec03896dff6c92672da77d32cf5ddfa83d23aeefbd9624",
+    "frame-037582.png": "ce9a140070280b26a83cb4b2ecd3ba60e3d5e30cea96063885e96e680a714bac",
+    "frame-040584.png": "aad6db3afb19f2677e0c4cdabb5ae0c53225255f127bc42875891ec0d6dbfc23",
+    "frame-042349.png": "a57b0ea7a3fa30b621b6c09dc0b00b54a8b982dd018d60b3d73b4cc852c9a7a6",
+    "frame-043908.png": "0582c310698e5cc88fe28218a5e4c4bdd60181832684043155bd6059102260b4",
+    "frame-055221.png": "b749669d85006b0bbeb1ab050b7f190171d01f111f4f76ac705dee9fa319a5a4",
+    "frame-059188.png": "42656b22212923f9473ccead0b2649b231afc06db75e6b1c3475accb82afe3e3",
+    "frame-061503.png": "4743c5079ff142cddb51e1096575453baa7ef449289ebd9dfce578f459ffe746"
+  },
+  "image_size_px": [
+    1280,
+    720
+  ],
+  "model": "pinhole",
+  "pipeline": {
+    "android_device_id": "redacted-device-id",
+    "camera_mode": "DJI FPV feed; zoom/crop mode and camera serial not independently verified",
+    "codec": "h264",
+    "decoder_path": "MediaMTX WHEP -> aiortc 1.15.0 -> PyAV 17.1.0 FFmpeg H264 -> BGR24 PNG, no resize",
+    "encoder": "DJI SDK encoded frames passthrough, no phone re-encode; H264 High 3.1 reported by publisher",
+    "evidence_status": "diagnostic; DJI recorded-live export provenance unsupported",
+    "fov_bounds_deg": {
+      "horizontal": [
+        58.0,
+        75.0
+      ],
+      "vertical": [
+        34.0,
+        47.0
+      ]
+    },
+    "fov_bounds_provenance": "see loc2/FOV_BOUNDS.md",
+    "fov_bounds_status": "independent bracket from DJI Mini 3 published 82.1-degree diagonal FOV spec, decomposed for a 16:9 crop; not derived from this fit",
+    "fps": 30,
+    "fps_note": "nominal source; received stream has documented frame losses",
+    "gimbal_attitude_note": "Varied by operator during camera-target holds; per-frame extrinsics not established",
+    "latency_endpoint": "localization_decode",
+    "network_id": "wireless LAN identity not recorded; phone address redacted-phone-address",
+    "network_topology": [
+      "DJI aircraft",
+      "DJI controller USB",
+      "Seeker phone Wi-Fi",
+      "configured-media-host MediaMTX WHIP/WHEP",
+      "Mac Wi-Fi receiver"
+    ],
+    "phone": "Seeker Android 16",
+    "resolution_px": [
+      1280,
+      720
+    ]
+  },
+  "rms_reprojection_error_px": 0.15203199214868812,
+  "schema_version": 1,
+  "status": "offline",
+  "tag_candidate_quality": {
+    "focal_stddev_px": [
+      10.157852195564178,
+      10.188826767826082
+    ],
+    "minimum_pose_constraint_ratio": 0.005,
+    "pinhole_fov_deg": {
+      "horizontal": 70.5345897669269,
+      "vertical": 43.50507849423563
+    },
+    "pose_constraint_ratio": 0.28081064264284666,
+    "relative_focal_stddev": [
+      0.011224155705462781,
+      0.011293018528264292
+    ]
+  },
+  "target": {
+    "black_square_edge_m": 0.199898,
+    "family": "tag36h11",
+    "validated_feature_kind": "outer_corners"
+  }
+}

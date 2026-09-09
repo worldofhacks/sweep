@@ -1,0 +1,66 @@
+{
+  "body_extrinsics_id": "dji-mini3-real-navigation-venue-gimbal-locked-nadir-v1",
+  "camera_calibration_id": "dji-mini3-real-navigation-venue-unverified",
+  "capture_alignment": {
+    "alignment_id": "dji-mini3-real-navigation-venue-gimbal-locked-nadir-v1",
+    "body_to_gimbal": {
+      "child_frame": "gimbal",
+      "parent_frame": "body",
+      "qw": 1.0,
+      "qx": 0.0,
+      "qy": 0.0,
+      "qz": 0.0,
+      "x_m": "MEASURE_METERS_FORWARD_POSITIVE",
+      "y_m": "MEASURE_METERS_LEFT_POSITIVE",
+      "z_m": "MEASURE_METERS_UP_POSITIVE"
+    },
+    "gimbal_attitude_convention": "intrinsic_zyx_degrees",
+    "gimbal_to_camera": {
+      "child_frame": "camera",
+      "parent_frame": "gimbal",
+      "qw": -0.5,
+      "qx": 0.5,
+      "qy": -0.5,
+      "qz": 0.5,
+      "x_m": "MEASURE_METERS_FORWARD_POSITIVE_FROM_GIMBAL_ROLL_AXIS_TO_LENS",
+      "y_m": "MEASURE_METERS_LEFT_POSITIVE_FROM_GIMBAL_ROLL_AXIS_TO_LENS",
+      "z_m": "MEASURE_METERS_UP_POSITIVE_FROM_GIMBAL_ROLL_AXIS_TO_LENS"
+    },
+    "v": 1
+  },
+  "clock_id": "shared-host-monotonic-identity",
+  "drone_id": 1,
+  "geometry_id": "PENDING_navigation_deployment_geometry_id",
+  "gimbal_attitude_deg": {
+    "pitch_deg": -90.0,
+    "roll_deg": 0.0,
+    "yaw_deg": 0.0
+  },
+  "gimbal_locked": true,
+  "map_id": "real-navigation-unit11-atrium-localizer-v1",
+  "map_to_map_enu": {
+    "matrix": "PENDING_SURVEY: physically surveyed rigid transform from the tag-map-53/localizer-bundle frame into the deployment map_enu frame; do not default to identity without a survey",
+    "measured": true
+  },
+  "position_covariance_map_enu_m2": [
+    [
+      0.01,
+      0,
+      0
+    ],
+    [
+      0,
+      0.01,
+      0
+    ],
+    [
+      0,
+      0,
+      0.03
+    ]
+  ],
+  "source_id": "drone1",
+  "source_verified": false,
+  "timing_verified": false,
+  "v": 1
+}

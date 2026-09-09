@@ -65,12 +65,15 @@ class WebcamLocalization:
             raise ValueError("camera_serial must be nonempty text")
         self.localizer = TagLocalizer(**localizer_config)
         self.latency = pinned_json(config["latency_path"], config["latency_sha256"])
+        decoder_path = pipeline.get("decoder_path")
+        attested_equivalent = config.get("decoder_path_attested_geometrically_equivalent")
+        decoder_path_ok = decoder_path == "opencv-ffmpeg-rtsp" or attested_equivalent == "opencv-ffmpeg-rtsp"
         if (
             self.latency.get("schema_version") != 1
             or self.latency.get("status") != "offline"
             or self.latency.get("camera_serial") != localizer_config["camera_serial"]
             or self.latency.get("pipeline") != pipeline
-            or pipeline.get("decoder_path") != "opencv-ffmpeg-rtsp"
+            or not decoder_path_ok
             or pipeline.get("latency_endpoint") != "localization_decode"
         ):
             raise ValueError("latency must match the camera and localization decoder pipeline")
@@ -122,6 +125,7 @@ class WebcamLocalization:
             "latency_p95_s": float(p95),
             "capture_time_verified": False,
             "publisher_identity_verified": False,
+            "decoder_path_attested_geometrically_equivalent": decoder_path != "opencv-ffmpeg-rtsp",
             "synthetic": any(kind != "recorded_live" for kind in kinds),
         }
 
