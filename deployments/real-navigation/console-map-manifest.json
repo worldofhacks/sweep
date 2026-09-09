@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "title": "Office map \u00b7 9 September 2026",
+  "description": "Owner-approved tag positions and six measured wall segments. Tags 35 and 49 are unusable and excluded from localization candidates. Lobby opening: 56 inches; atrium opening: 59 inches. Wall lengths are approximately 2 metres; height limits are 7 ft soft and 8 ft hard. The historical overview now includes these measured walls. Gray LiDAR remains an offset visual reference. Ground robots continue using live LiDAR.",
+  "images": [
+    {
+      "file": "entrance-walls-9fe4eaf4369f.png",
+      "caption": "Measured entrance walls"
+    },
+    {
+      "file": "tags.png",
+      "caption": "Historical 53-tag layout"
+    },
+    {
+      "file": "measured-walls-lidar-882985edc61d.png",
+      "caption": "Historical LiDAR + measured walls"
+    }
+  ],
+  "ownerApproved": true
+}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import './captured-map.css'
 
-type Preview = { version: 1; title: string; description: string; images: { file: string; caption: string }[] }
+type Preview = { version: 1; title: string; description: string; ownerApproved: boolean; images: { file: string; caption: string }[] }
 
 function readPreview(value: unknown): Preview {
   if (!value || typeof value !== 'object' || !('version' in value) || value.version !== 1
@@ -18,7 +18,8 @@ function readPreview(value: unknown): Preview {
     }
     return { file: image.file, caption: image.caption }
   })
-  return { version: 1, title: value.title, description: value.description, images }
+  const ownerApproved = 'ownerApproved' in value && value.ownerApproved === true
+  return { version: 1, title: value.title, description: value.description, ownerApproved, images }
 }
 
 const directory = `${import.meta.env.BASE_URL}mapping-preview/`
@@ -46,7 +47,9 @@ export function CapturedMap() {
   if (!preview) return <p role="status" className="mp-status">Loading captured map…</p>
   const current = preview.images[selected]
   return <section className="cm" aria-label="Captured map preview">
-    <header><h2>{preview.title}</h2><p className="cm-status">Provisional · awaiting calibration and map approval</p></header>
+    <header><h2>{preview.title}</h2><p className="cm-status">{preview.ownerApproved
+      ? 'Map approved · flight setup pending'
+      : 'Provisional · awaiting calibration and map approval'}</p></header>
     <p>{preview.description}</p>
     <p className="cm-boundary">Static capture evidence. This view does not enable navigation or flight.</p>
     <div className="cm-toolbar">

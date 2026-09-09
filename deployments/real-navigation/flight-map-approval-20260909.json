@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "scope": "static_map_inputs",
+  "ownerApproved": true,
+  "recordedAt": "2026-09-09T03:45:12.048996+00:00",
+  "coordinateFrame": "unit11_atrium_38_to_39_v1",
+  "basis": "Owner approved the map and requested measured walls in the drone flight-navigation map while calibration is in progress. Ground robots retain live LiDAR.",
+  "inputs": [
+    {
+      "path": "deployments/real-navigation/tag-map-53.json",
+      "sha256": "7f4f1f2bf3e2ba0285568a7a0a78bd25587fcba82b5b31a97b4c592b00ca2009"
+    },
+    {
+      "path": "deployments/real-navigation/entrance-wall-geometry.json",
+      "sha256": "57463822667c1eea6366936414f850d1cf5ee13fc056f7865f4af03440c04061"
+    },
+    {
+      "path": "deployments/real-navigation/entrance-obstacles.yaml",
+      "sha256": "14faa49b034f82542512629099a0b53b32c17ceae7429e4477a30d8f14a7751f"
+    },
+    {
+      "path": "deployments/real-navigation/tag-availability-20260909.json",
+      "sha256": "badf4792db94cd536f7927995953f57671fb5df58114a5dd7f1bf6ce04dfa747"
+    }
+  ],
+  "calibrationStatus": "in_progress_in_separate_session",
+  "historicalLidarUse": "visual_reference_only"
+}

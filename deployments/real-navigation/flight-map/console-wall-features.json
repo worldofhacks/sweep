@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "coordinateFrame": "unit11_atrium_38_to_39_v1",
+  "approval": {
+    "path": "deployments/real-navigation/flight-map-approval-20260909.json",
+    "sha256": "8add18365877bf823bf9a3ff4005a55c6822ab25163d2505eedf40dcfb6f9c76"
+  },
+  "worldRegistration": {
+    "status": "missing",
+    "sourceFrame": "unit11_atrium_38_to_39_v1",
+    "targetFrame": "world"
+  },
+  "flightAuthorized": false,
+  "kind": "console_wall_features",
+  "features": [
+    {
+      "id": "tag-19-right-wall",
+      "kind": "obstacle",
+      "name": "tag 19 right wall",
+      "aliases": [],
+      "points": [
+        {
+          "x": 20.167938677834368,
+          "y": -0.16439828628628267
+        },
+        {
+          "x": 22.16790402780155,
+          "y": -0.152625481580639
+        },
+        {
+          "x": 22.168492668036833,
+          "y": -0.2526237490789982
+        },
+        {
+          "x": 20.16852731806965,
+          "y": -0.2643965537846419
+        },
+        {
+          "x": 20.167938677834368,
+          "y": -0.16439828628628267
+        }
+      ],
+      "widthM": null,
+      "flightHeightM": null,
+      "heightToleranceM": null,
+      "heightEvidence": ""
+    },
+    {
+      "id": "tag-19-left-wall",
+      "kind": "obstacle",
+      "name": "tag 19 left wall",
+      "aliases": [],
+      "points": [
+        {
+          "x": 22.159531209094897,
+          "y": 1.2697498753160226
+        },
+        {
+          "x": 20.159565859127714,
+          "y": 1.257977070610379
+        },
+        {
+          "x": 20.15897721889243,
+          "y": 1.3579753381087383
+        },
+        {
+          "x": 22.158942568859615,
+          "y": 1.3697481428143818
+        },
+        {
+          "x": 22.159531209094897,
+          "y": 1.2697498753160226
+        }
+      ],
+      "widthM": null,
+      "flightHeightM": null,
+      "heightToleranceM": null,
+      "heightEvidence": ""
+    },
+    {
+      "id": "tag-33-right-wall",
+      "kind": "obstacle",
+      "name": "tag 33 right wall",
+      "aliases": [],
+      "points": [
+        {
+          "x": 6.935431897015382,
+          "y": -0.0659034782429518
+        },
+        {
+          "x": 8.935397246982566,
+          "y": -0.05413067353730809
+        },
+        {
+          "x": 8.935985887217848,
+          "y": -0.15412894103566732
+        },
+        {
+          "x": 6.9360205372506645,
+          "y": -0.165901745741311
+        },
+        {
+          "x": 6.935431897015382,
+          "y": -0.0659034782429518
+        }
+      ],
+      "widthM": null,
+      "flightHeightM": null,
+      "heightToleranceM": null,
+      "heightEvidence": ""
+    },
+    {
+      "id": "tag-33-left-wall",
+      "kind": "obstacle",
+      "name": "tag 33 left wall",
+      "aliases": [],
+      "points": [
+        {
+          "x": 8.926575884416629,
+          "y": 1.444443363193103
+        },
+        {
+          "x": 6.926610534449444,
+          "y": 1.4326705584874595
+        },
+        {
+          "x": 6.926021894214162,
+          "y": 1.5326688259858188
+        },
+        {
+          "x": 8.925987244181346,
+          "y": 1.5444416306914623
+        },
+        {
+          "x": 8.926575884416629,
+          "y": 1.444443363193103
+        }
+      ],
+      "widthM": null,
+      "flightHeightM": null,
+      "heightToleranceM": null,
+      "heightEvidence": ""
+    },
+    {
+      "id": "tag-48-back-wall",
+      "kind": "obstacle",
+      "name": "tag 48 back wall",
+      "aliases": [],
+      "points": [
+        {
+          "x": -0.8097005432188714,
+          "y": -2.548142905567344
+        },
+        {
+          "x": 1.1902905635262973,
+          "y": -2.554107211078932
+        },
+        {
+          "x": 1.189992348250718,
+          "y": -2.65410676641619
+        },
+        {
+          "x": -0.8099987584944508,
+          "y": -2.6481424609046025
+        },
+        {
+          "x": -0.8097005432188714,
+          "y": -2.548142905567344
+        }
+      ],
+      "widthM": null,
+      "flightHeightM": null,
+      "heightToleranceM": null,
+      "heightEvidence": ""
+    },
+    {
+      "id": "tag-48-left-wall",
+      "kind": "obstacle",
+      "name": "tag 48 left wall",
+      "aliases": [],
+      "points": [
+        {
+          "x": -0.8097005432188714,
+          "y": -2.548142905567344
+        },
+        {
+          "x": -0.8037362377072838,
+          "y": -0.5481517988221756
+        },
+        {
+          "x": -0.9037357930445422,
+          "y": -0.5478535835465962
+        },
+        {
+          "x": -0.9097000985561299,
+          "y": -2.5478446902917646
+        },
+        {
+          "x": -0.8097005432188714,
+          "y": -2.548142905567344
+        }
+      ],
+      "widthM": null,
+      "flightHeightM": null,
+      "heightToleranceM": null,
+      "heightEvidence": ""
+    }
+  ]
+}

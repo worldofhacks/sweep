@@ -16,6 +16,12 @@ the existing height limits. The offsets are incorporated into entrance wall geom
 and the staging package. Replacement tags and complete route clearance still need
 verification during the map test.
 
+The owner approved adding the measured walls to the flight map on 9 September.
+The [flight-map preparation](../deployments/real-navigation/FLIGHT-MAP.md) records
+that approval, exports the matching wall polygons, and lists the registration and
+calibration inputs needed to finalize the runtime map. The historical LiDAR
+overview now includes the measured walls. Ground robots retain live LiDAR.
+
 On 9 September the owner reported tags 35 and 49 ripped and unusable. The
 [availability record](../deployments/real-navigation/tag-availability-20260909.json)
 excludes them from the staging package's 51 localization candidates. The console

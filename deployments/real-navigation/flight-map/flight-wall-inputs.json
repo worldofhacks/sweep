@@ -1,0 +1,342 @@
+{
+  "schemaVersion": 1,
+  "coordinateFrame": "unit11_atrium_38_to_39_v1",
+  "approval": {
+    "path": "deployments/real-navigation/flight-map-approval-20260909.json",
+    "sha256": "8add18365877bf823bf9a3ff4005a55c6822ab25163d2505eedf40dcfb6f9c76"
+  },
+  "worldRegistration": {
+    "status": "missing",
+    "sourceFrame": "unit11_atrium_38_to_39_v1",
+    "targetFrame": "world"
+  },
+  "flightAuthorized": false,
+  "kind": "flight_wall_inputs",
+  "status": "prepared_pending_calibration_and_registration",
+  "sourceFrame": {
+    "id": "unit11_atrium_38_to_39_v1",
+    "units": "meters",
+    "origin": "tag 38 center",
+    "x_axis": "in-floor direction from tag 38 center to tag 39 center",
+    "y_axis": "right-handed in-floor axis",
+    "z_axis": "up",
+    "handedness": "right_handed",
+    "source_frame_transform_old_world_to_this_world": [
+      [
+        -0.999188369978473,
+        0.04028152553916066,
+        0.0,
+        22.921291742262003
+      ],
+      [
+        -0.04028152553916066,
+        -0.999188369978473,
+        0.0,
+        0.3612981334253781
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "verified_tag_38_center_m": [
+      0.0,
+      5.551115123125783e-17,
+      0.0
+    ],
+    "verified_tag_39_center_m": [
+      0.7148048250485033,
+      1.1102230246251565e-16,
+      0.0
+    ]
+  },
+  "inputs": [
+    {
+      "path": "deployments/real-navigation/tag-map-53.json",
+      "sha256": "7f4f1f2bf3e2ba0285568a7a0a78bd25587fcba82b5b31a97b4c592b00ca2009"
+    },
+    {
+      "path": "deployments/real-navigation/entrance-wall-geometry.json",
+      "sha256": "57463822667c1eea6366936414f850d1cf5ee13fc056f7865f4af03440c04061"
+    },
+    {
+      "path": "deployments/real-navigation/entrance-obstacles.yaml",
+      "sha256": "14faa49b034f82542512629099a0b53b32c17ceae7429e4477a30d8f14a7751f"
+    },
+    {
+      "path": "deployments/real-navigation/tag-availability-20260909.json",
+      "sha256": "badf4792db94cd536f7927995953f57671fb5df58114a5dd7f1bf6ce04dfa747"
+    }
+  ],
+  "obstacleDocument": {
+    "schema_version": 2,
+    "units": "meters",
+    "frame": "unit11_atrium_38_to_39_v1",
+    "obstacles": [
+      {
+        "id": "tag-19-right-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            20.167938677834368,
+            -0.16439828628628267
+          ],
+          [
+            22.16790402780155,
+            -0.152625481580639
+          ],
+          [
+            22.168492668036833,
+            -0.2526237490789982
+          ],
+          [
+            20.16852731806965,
+            -0.2643965537846419
+          ],
+          [
+            20.167938677834368,
+            -0.16439828628628267
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      },
+      {
+        "id": "tag-19-left-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            22.159531209094897,
+            1.2697498753160226
+          ],
+          [
+            20.159565859127714,
+            1.257977070610379
+          ],
+          [
+            20.15897721889243,
+            1.3579753381087383
+          ],
+          [
+            22.158942568859615,
+            1.3697481428143818
+          ],
+          [
+            22.159531209094897,
+            1.2697498753160226
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      },
+      {
+        "id": "tag-33-right-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            6.935431897015382,
+            -0.0659034782429518
+          ],
+          [
+            8.935397246982566,
+            -0.05413067353730809
+          ],
+          [
+            8.935985887217848,
+            -0.15412894103566732
+          ],
+          [
+            6.9360205372506645,
+            -0.165901745741311
+          ],
+          [
+            6.935431897015382,
+            -0.0659034782429518
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      },
+      {
+        "id": "tag-33-left-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            8.926575884416629,
+            1.444443363193103
+          ],
+          [
+            6.926610534449444,
+            1.4326705584874595
+          ],
+          [
+            6.926021894214162,
+            1.5326688259858188
+          ],
+          [
+            8.925987244181346,
+            1.5444416306914623
+          ],
+          [
+            8.926575884416629,
+            1.444443363193103
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      },
+      {
+        "id": "tag-48-back-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            -0.8097005432188714,
+            -2.548142905567344
+          ],
+          [
+            1.1902905635262973,
+            -2.554107211078932
+          ],
+          [
+            1.189992348250718,
+            -2.65410676641619
+          ],
+          [
+            -0.8099987584944508,
+            -2.6481424609046025
+          ],
+          [
+            -0.8097005432188714,
+            -2.548142905567344
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      },
+      {
+        "id": "tag-48-left-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            -0.8097005432188714,
+            -2.548142905567344
+          ],
+          [
+            -0.8037362377072838,
+            -0.5481517988221756
+          ],
+          [
+            -0.9037357930445422,
+            -0.5478535835465962
+          ],
+          [
+            -0.9097000985561299,
+            -2.5478446902917646
+          ],
+          [
+            -0.8097005432188714,
+            -2.548142905567344
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      }
+    ],
+    "no_fly": []
+  },
+  "heightLimits": {
+    "decision": "retain_existing_limits",
+    "softCeilingM": 2.1336,
+    "hardCeilingM": 2.4384
+  },
+  "extentModel": {
+    "lengthM": 2.0,
+    "placement": "centered_entrances_and_joined_atrium_corner",
+    "lengthBasis": "owner_estimate",
+    "occupiedDepthM": 0.1,
+    "depthBasis": "outward_collision_strip_not_measured_wall_thickness",
+    "verticalBasis": "block_the_retained_flight_height_range"
+  },
+  "unavailableTags": [
+    {
+      "tagId": 35,
+      "reason": "Ripped and unusable; owner report."
+    },
+    {
+      "tagId": 49,
+      "reason": "Ripped and unusable; owner report."
+    }
+  ],
+  "localizationCandidateTagIds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    30,
+    31,
+    32,
+    33,
+    34,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    50,
+    51,
+    52,
+    53
+  ],
+  "calibrationStatus": "in_progress_in_separate_session",
+  "pendingInputs": [
+    "T_world_source",
+    "world_bundle_registration_and_datum_validation",
+    "measured_route_and_free_volume_clearances",
+    "camera_visibility_calibration",
+    "independent_tape_and_held_out_checkpoint_evidence",
+    "control_localization_and_aircraft_bindings",
+    "generated_navigation_geometry",
+    "fresh_session_navigation_signature"
+  ]
+}
