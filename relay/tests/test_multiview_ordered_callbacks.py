@@ -176,3 +176,85 @@ def test_late_resume_can_retain_its_next_command_without_reentering_the_owner_lo
         assert committed[0] is not None
         assert pending.snapshot.now_ms == clock()
         assert owner._awaiting[intent.intent_id] is pending
+
+
+def test_late_search_cleanup_releases_the_relay_lock_before_joining_its_worker(
+    relay_session, tmp_path, monkeypatch
+):
+    async def exercise():
+        runtime = RelayRuntime(
+            RelaySettings(relay_token=b"search-cleanup-test-key-123456789012", log_dir=tmp_path)
+        )
+        runtime.loop = asyncio.get_running_loop()
+        owner = AutonomySession.__new__(AutonomySession)
+        owner.session_id = relay_session.session_id
+        owner._lock = threading.Lock()
+        owner._awaiting = {}
+        owner._composition = SimpleNamespace(
+            runtime_if_bound=lambda: runtime,
+            report_multiview_execution=lambda *_: None,
+        )
+        intent = SimpleNamespace(intent_id="late-search-cleanup", name=IntentName.SEARCH)
+        result = ExecutionResult(
+            intent_id=intent.intent_id,
+            roster_version=relay_session.registry.roster_version,
+            status=LifecycleStatus.COMPLETED,
+        )
+        pending = _AwaitingExecution(_Job(intent, relay_session), relay_session, None, None, result)
+        owner._awaiting[intent.intent_id] = pending
+        token = _ResumeToken(intent.intent_id, pending, None)
+        completed_results = []
+        worker_released = threading.Event()
+        cleanup_finished = threading.Event()
+        returned = threading.Event()
+        release_commit = threading.Event()
+        errors = []
+
+        def finish_mission(intent_id):
+            assert intent_id == intent.intent_id
+
+            def finish_worker():
+                with relay_session._lock:
+                    worker_released.set()
+
+            worker = threading.Thread(target=finish_worker, daemon=True)
+            worker.start()
+            assert worker_released.wait(2), "cleanup joined a worker while holding the relay lock"
+            worker.join()
+            cleanup_finished.set()
+
+        owner.search_runtime = SimpleNamespace(
+            complete_execution=lambda intent_id, outcome: completed_results.append(
+                (intent_id, outcome)
+            )
+        )
+        owner.search_detection = SimpleNamespace(finish_mission=finish_mission)
+        monkeypatch.setattr("relay.autonomy.apply_result", lambda *_: [])
+
+        def commit():
+            try:
+                with relay_session._lock:
+                    assert owner.commit_resume(token, result) is not None
+                    returned.set()
+                    assert release_commit.wait(2)
+            except BaseException as error:
+                errors.append(error)
+
+        caller = threading.Thread(target=commit, daemon=True)
+        caller.start()
+        try:
+            assert await asyncio.to_thread(returned.wait, 1), (
+                "terminal commit waited for search cleanup while holding the relay lock"
+            )
+        finally:
+            release_commit.set()
+            await asyncio.to_thread(caller.join, 3)
+        assert not caller.is_alive()
+        assert errors == []
+        assert await asyncio.to_thread(cleanup_finished.wait, 2)
+        await runtime.stop()
+        assert completed_results == [(intent.intent_id, result)]
+        assert pending.job.finished
+        assert intent.intent_id not in owner._awaiting
+
+    asyncio.run(exercise())
