@@ -100,8 +100,8 @@
   .sh-atlas-fleet { white-space: nowrap; }
   .atlas-topbar { flex-wrap: wrap; }
   .atlas-title-group .atlas-eyebrow { display: none; }
-  .atlas-topbar-actions > .atlas-primary { white-space: nowrap; }
-  .atlas-topbar-actions { gap: 8px; }
+  .atlas-topbar .atlas-topbar-actions > .atlas-primary { white-space: nowrap; padding: 10px 8px; gap: 8px; }
+  .atlas-topbar .atlas-topbar-actions { gap: 8px; }
   .atlas-topbar .community-help { width: 44px; font-size: 10px; line-height: 1.3; padding: 0; }
   .community-points { padding: 8px; }
   .community-points > span { display: none; }

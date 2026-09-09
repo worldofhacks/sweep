@@ -118,6 +118,17 @@ it('opens and recenters editorial discovery at city scale, retaining close surve
   expect(mock.easeTo).toHaveBeenLastCalledWith(expect.objectContaining({ zoom: 17.5 }))
 })
 
+it('fits city examples into the shorter phone map without changing ordinary discovery zoom', () => {
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(390)
+  const view = render(<SpaceMap {...props()} overviewZoom={12} />)
+  expect(mock.options.zoom).toBe(11)
+  act(() => mock.handlers.load())
+  fireEvent.click(screen.getByRole('button', { name: 'Recenter map' }))
+  expect(mock.easeTo).toHaveBeenLastCalledWith(expect.objectContaining({ zoom: 11 }))
+  view.rerender(<SpaceMap {...props()} />)
+  expect(mock.easeTo).toHaveBeenLastCalledWith(expect.objectContaining({ zoom: 14.5 }))
+})
+
 it.each(['community', 'survey', 'hazard'] as const)('retains the same basemap for %s spaces', category => {
   render(<SpaceMap {...props()} spaces={[{ ...space, category }]} />)
   act(() => mock.handlers.load())

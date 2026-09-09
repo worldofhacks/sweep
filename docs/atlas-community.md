@@ -68,7 +68,7 @@ Important boundaries:
 ## Verification
 
 - `pnpm lint` passes.
-- `pnpm test`: **106 files, 1,329 tests pass**, including draft preservation,
+- `pnpm test`: **106 files, 1,330 tests pass**, including draft preservation,
   storage-failure feedback, contribution deduplication, workspace isolation,
   unconfigured/native sign-in states, Clerk UI adapter tests, and shared-shell
   continuity across all ten modules. Clerk adapter tests mock the SDK; they are

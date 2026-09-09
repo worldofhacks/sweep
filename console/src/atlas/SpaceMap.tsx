@@ -24,6 +24,8 @@ const collection = (features: Feature<Geometry>[]): FeatureCollection => ({
 })
 const streetTiles = ['https://tile.openstreetmap.org/{z}/{x}/{y}.png']
 const tileError = 'Some map tiles could not load. Space locations and captures remain available.'
+// The phone map is shorter; keep the same city examples inside its initial frame.
+const discoveryZoom = (zoom: number | undefined, compact: boolean) => zoom === undefined ? 14.5 : zoom - (compact ? 1 : 0)
 function ring(space: Space): number[][] {
   return Array.from({ length: 65 }, (_, i) => {
     const a = (i / 64) * Math.PI * 2
@@ -42,6 +44,7 @@ export default function SpaceMap(props: Props) {
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
   const [retrying, setRetrying] = useState(false)
+  const [compact, setCompact] = useState(false)
   useEffect(() => {
     callbacks.current = props
   })
@@ -52,7 +55,7 @@ export default function SpaceMap(props: Props) {
       instance = new maplibregl.Map({
         container: container.current,
         center: callbacks.current.center,
-        zoom: callbacks.current.overviewZoom ?? 14.5,
+        zoom: discoveryZoom(callbacks.current.overviewZoom, container.current.clientWidth > 0 && container.current.clientWidth <= 600),
         minZoom: 0,
         maxZoom: 22,
         attributionControl: { compact: true },
@@ -184,6 +187,8 @@ export default function SpaceMap(props: Props) {
       // zoom that far out without showing empty poles. Match the control's bound
       // to that real limit (round up to avoid floating-point enabled/no-op clicks).
       const height = container.current?.clientHeight ?? 0
+      const width = container.current?.clientWidth ?? 0
+      setCompact(width > 0 && width <= 600)
       instance.setMinZoom(Math.max(0, Math.ceil(Math.log2(Math.max(512, height) / 512) * 1e6) / 1e6))
     })
     resize.observe(container.current)
@@ -194,7 +199,8 @@ export default function SpaceMap(props: Props) {
     }
   }, [])
 
-  const { spaces, detail, center, coverageVisible, selectedCell, position, picking, overviewZoom = 14.5 } = props
+  const { spaces, detail, center, coverageVisible, selectedCell, position, picking } = props
+  const overviewZoom = discoveryZoom(props.overviewZoom, compact)
   const longitude = center[0]
   const latitude = center[1]
   const detailId = detail?.space.id
