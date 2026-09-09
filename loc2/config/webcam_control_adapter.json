@@ -10,9 +10,9 @@
       "qx": 0.0,
       "qy": 0.0,
       "qz": 0.0,
-      "x_m": "MEASURE_METERS_FORWARD_POSITIVE",
-      "y_m": "MEASURE_METERS_LEFT_POSITIVE",
-      "z_m": "MEASURE_METERS_UP_POSITIVE"
+      "x_m": 0.08,
+      "y_m": 0.0,
+      "z_m": -0.015
     },
     "gimbal_attitude_convention": "intrinsic_zyx_degrees",
     "gimbal_to_camera": {
@@ -22,9 +22,9 @@
       "qx": 0.5,
       "qy": -0.5,
       "qz": 0.5,
-      "x_m": "MEASURE_METERS_FORWARD_POSITIVE_FROM_GIMBAL_ROLL_AXIS_TO_LENS",
-      "y_m": "MEASURE_METERS_LEFT_POSITIVE_FROM_GIMBAL_ROLL_AXIS_TO_LENS",
-      "z_m": "MEASURE_METERS_UP_POSITIVE_FROM_GIMBAL_ROLL_AXIS_TO_LENS"
+      "x_m": 0.0,
+      "y_m": 0.0,
+      "z_m": 0.0
     },
     "v": 1
   },
@@ -32,7 +32,7 @@
   "drone_id": 1,
   "geometry_id": "PENDING_navigation_deployment_geometry_id",
   "gimbal_attitude_deg": {
-    "pitch_deg": -90.0,
+    "pitch_deg": 90.0,
     "roll_deg": 0.0,
     "yaw_deg": 0.0
   },

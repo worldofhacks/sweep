@@ -14,9 +14,9 @@ generation and offline testing.
 | Localizer map bundle | `localizer-bundle/` | Generated from real survey data, real coordinate change |
 | Bundle explanation | `WORLD_BUNDLE.md` | Written |
 | Latency artifact | `latency/latency_dji-mini3.json` | Real: 1537 decode-latency samples over 65.0 s of the live drone1 RTSP stream, p50 33.2 ms / p95 50.8 ms. Blocker 1 cleared. |
-| Capture-alignment doc | `capture-alignment/webcam_capture_alignment.json` | Template + fixed conventions filled; two translations are owner placeholders |
-| webcam_localization config | `config/webcam_localization.json` | Wired to the real latency artifact and an explicit decoder-path attestation. Blocker 2 cleared; still blocked on Blocker 3 (`T_body_camera`). |
-| webcam_control_adapter config | `config/webcam_control_adapter.json` | Generated, two fields intentionally left as unmet placeholders |
+| Capture-alignment doc | `capture-alignment/webcam_capture_alignment.json` | Filled from a real ruler measurement (see Blocker 3); an owner assumption with ~±1.5 cm uncertainty is documented, not fabricated |
+| webcam_localization config | `config/webcam_localization.json` | Wired to the real latency artifact, an explicit decoder-path attestation, and a computed `T_body_camera`. `WebcamLocalization` now constructs end to end offline. Blockers 1-3 cleared. |
+| webcam_control_adapter config | `config/webcam_control_adapter.json` | `gimbal_attitude_deg`/`capture_alignment` now match the localization config; `map_to_map_enu` and `geometry_id` remain unmet placeholders (Blocker 4) |
 | Runtime script | `run_webcam_localization.sh` | Runnable, reads secrets at runtime, prints nothing secret |
 | Offline detection test | `offline_test.py` / `offline-detection-results.txt` | Run, real numbers below |
 
@@ -30,11 +30,11 @@ generation and offline testing.
    now accepts an explicit `decoder_path_attested_geometrically_equivalent`
    config field (see Blocker 2 below for the mechanism and rationale).
    `config/webcam_localization.json` sets it to `"opencv-ffmpeg-rtsp"`.
-3. **Owner measures the capture alignment** (two caliper readings -- see
-   `capture-alignment/README.md`), fills in
-   `capture-alignment/webcam_capture_alignment.json`, then run
-   `compute_capture_alignment.py` and paste its output into
-   `config/webcam_localization.json`'s `localizer.T_body_camera`.
+3. ~~**Owner measures the capture alignment.**~~ Done, from a ruler rather than
+   calipers -- see Blocker 3 below for what was measured, the assumption behind
+   the vertical figure, and how it was split across `body_to_gimbal` and
+   `gimbal_to_camera`. `config/webcam_localization.json`'s `localizer.T_body_camera`
+   now holds the computed transform.
 4. **Owner measures `map_to_map_enu`** -- the rigid transform from
    `localizer-bundle`'s tag-0-anchored frame into whatever frame the deployment's
    other sensors (telemetry, height) call `map_enu`. Fill in
@@ -47,11 +47,19 @@ generation and offline testing.
 6. **Fill in `config/webcam_control_adapter.json`'s `geometry_id`** once the
    navigation deployment's agent has published the geometry identifier its bundle
    uses (that agent's job, per the task's own scoping note -- not fabricated here).
-7. Confirm construction end to end offline (no relay, no aircraft):
+7. ~~Confirm construction end to end offline (no relay, no aircraft).~~ Done:
    ```python
    from perception.webcam_localization import WebcamLocalization, load_config
    loop = WebcamLocalization(load_config("config/webcam_localization.json"))
    ```
+   This now succeeds -- `WebcamLocalization` has no more outstanding blockers.
+   The separate `WebcamControlAdapterConfig.from_document(...)` (the downstream
+   stage that turns its output into a `TagFix` for the relay) still refuses, and
+   at present only on `map_to_map_enu` -- it is not a valid 4x4 transform yet.
+   `geometry_id`'s placeholder string passes the schema's format check (it is
+   just non-empty text), so it will not raise here even though it is still an
+   unresolved placeholder; step 6 is not actually done until it holds the real
+   navigation-deployment geometry identifier.
 8. Once the aircraft is streaming, run (from the repo root, in the worktree):
    ```bash
    loc2/run_webcam_localization.sh config/webcam_localization.json out.jsonl 60
@@ -108,12 +116,49 @@ differ, the pixel grid does not. Tests:
 `::test_attested_geometric_equivalence_admits_a_different_decoder_path` (the
 attestation admits construction and the loop accepts a real pose fix).
 
-**Blocker 3 -- two owner measurements outstanding.** `body_to_gimbal` and
-`gimbal_to_camera` translations (four numbers total) in
-`capture-alignment/webcam_capture_alignment.json`. Exact instructions are in
-`capture-alignment/README.md`. Everything downstream of these (task 5's
-`T_body_camera`) is wired to fail loudly, not silently default to zero, until
-they're filled in.
+**Blocker 3 -- capture alignment. CLEARED 2026-09-09, with a caveat.** The owner
+measured the body-to-camera offset with a ruler at the locked flight attitude: 8 cm
+forward, on the centerline, 5 cm down from the fuselage top. `x_m`/`y_m` come
+straight from that reading (~±0.5 cm from nearest-centimeter rounding). `z_m` is
+derived by assuming the Mini 3's body center sits ~3.5 cm below its ~7 cm-tall
+fuselage top, giving `z_m = -0.015` -- **this is a stated assumption with about
+±1.5 cm of uncertainty, not a caliper-grade figure**, and is recorded as such in
+`capture-alignment/README.md`. Because the gimbal is mechanically locked, the
+whole measured translation was placed in `body_to_gimbal`, with `gimbal_to_camera`
+left at zero translation (its fixed convention rotation untouched) -- see
+`capture-alignment/README.md` for why that split, rather than the reverse, was
+chosen, and that it stops being valid if the gimbal is ever unlocked.
+
+Computing `T_body_camera` also required picking a sign for the locked gimbal
+pitch, and that turned out **not** to be the `-90` the owner reported: checked
+numerically against this codebase's own `_intrinsic_zyx_rotation` and the fixed
+`gimbal_to_camera` quaternion, `pitch_deg=-90` points the camera at body `+Z`
+(up), and `pitch_deg=+90` points it at body `-Z` (down, the true nadir this
+deployment needs). `+90` was used to compute `T_body_camera` and was also written
+into `config/webcam_control_adapter.json`'s `gimbal_attitude_deg` for internal
+consistency. This is a computed resolution of the ambiguity flagged before any
+measurement existed, not a confirmed one -- verify it against live MSDK telemetry
+before flight (command the locked attitude, confirm visually the camera looks
+straight down, and read what pitch value the MSDK reports at that moment).
+
+*Error budget.* A translation extrinsics error of magnitude `d` in the body frame
+produces a body-position bias of the same magnitude `d` in the reported map/world
+position (`T_map_body = T_map_camera @ inv(T_body_camera)`; a rotation preserves
+vector length, so the error passes through undiminished, not amplified). The
+dominant term here is the ±1.5 cm `z_m` assumption; combined in quadrature with
+the two ±0.5 cm ruler-rounding terms on `x_m`/`y_m`, the expected position bias
+from this measurement is **about 1.7 cm**, roughly **7% of the 0.25 m flight
+acceptance limit** -- comfortably inside budget by more than an order of
+magnitude. This bound covers only the linear extrinsics uncertainty just
+described; it says nothing about the pitch-sign question above, which if wrong
+would not show up as a small bias at all -- it would point the camera at the
+ceiling instead of the floor.
+
+Everything downstream of these values (`config/webcam_localization.json`'s
+`localizer.T_body_camera`) previously failed loudly rather than silently
+defaulting to zero; it now holds the computed transform and
+`WebcamLocalization` constructs successfully offline (verified; see runbook
+step 7).
 
 **Blocker 4 -- `map_to_map_enu` survey outstanding.** Needed in
 `config/webcam_control_adapter.json`; see runbook step 4.

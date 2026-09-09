@@ -2,7 +2,32 @@
   "latency_path": "../latency/latency_dji-mini3.json",
   "latency_sha256": "bf36bf154b3ce3d7137a436516c77d700e1925d5c286ac11440eea28ec43b87b",
   "localizer": {
-    "T_body_camera": "PENDING_CAPTURE_ALIGNMENT_MEASUREMENT: run loc2/compute_capture_alignment.py after filling in capture-alignment/webcam_capture_alignment.json, then paste the printed 4x4 matrix here",
+    "T_body_camera": [
+      [
+        0.0,
+        -1.0,
+        6.123233995736766e-17,
+        0.08
+      ],
+      [
+        -1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        -6.123233995736766e-17,
+        -1.0,
+        -0.015
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
     "accepted_versions": {
       "real-navigation-unit11-atrium-localizer-v1": "50733df7c96ab46c03f2920ae36148c864983b0a410b78dc308e2560026f4780"
     },
