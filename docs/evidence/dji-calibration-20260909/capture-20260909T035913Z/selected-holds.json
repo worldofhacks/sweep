@@ -1,0 +1,902 @@
+{
+  "target_id": 54,
+  "family": "tag36h11",
+  "tag_size_m": 0.199898,
+  "previous_capture": "capture-20260909T034131Z",
+  "holds": [
+    {
+      "hold_id": "hold-12",
+      "flat_series_index": 7,
+      "pose": "approximately frontoparallel, right image region",
+      "role": "fit_candidate",
+      "operator_confirmation": "Left.",
+      "frame": {
+        "frame_index": 1809,
+        "file": "frame-001809.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 7185420,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              1161.1915283203125,
+              386.2868347167969
+            ],
+            [
+              938.4392700195312,
+              384.06494140625
+            ],
+            [
+              942.2315673828125,
+              166.44862365722656
+            ],
+            [
+              1165.602783203125,
+              166.31089782714844
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          217.6493682861328
+        ],
+        "sharpness_laplacian_variance": 397.30958711630734,
+        "sha256": "053c5df651d3fdd2514f69550ae02cfa87e468b77e93671154aad66e5f5de316",
+        "saved_utc": "2026-09-09T04:00:33.881933+00:00"
+      },
+      "review": "User labels camera movement left; observed tag lies in right image region (center x about 1052/1280). All black-square corners clear, shortest edge 218 px, right margin 114 px. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-13",
+      "flat_series_index": 8,
+      "pose": "near-front-facing, left image region",
+      "role": "fit_candidate",
+      "operator_confirmation": "Right.",
+      "frame": {
+        "frame_index": 3015,
+        "file": "frame-003015.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 11975490,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              276.77667236328125,
+              424.3162841796875
+            ],
+            [
+              68.17693328857422,
+              425.36151123046875
+            ],
+            [
+              68.73381805419922,
+              229.3503875732422
+            ],
+            [
+              278.1507873535156,
+              236.55006408691406
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          187.771240234375
+        ],
+        "sharpness_laplacian_variance": 251.1122498066043,
+        "sha256": "a19a43d2ee8171de45ff71d939c0804a48eec321fd469ef891e507a056ee72f7",
+        "saved_utc": "2026-09-09T04:01:27.134262+00:00"
+      },
+      "review": "Observed tag center x about 173/1280, left margin 68 px. All four black-square corners clear; shortest edge 188 px. Tag 54 detected in five consecutive samples. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-14",
+      "flat_series_index": 9,
+      "pose": "near-front-facing, top-center image region",
+      "role": "fit_candidate",
+      "operator_confirmation": "In place.",
+      "frame": {
+        "frame_index": 4181,
+        "file": "frame-004181.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 16673400,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              738.6005859375,
+              230.8555145263672
+            ],
+            [
+              544.8653564453125,
+              225.26608276367188
+            ],
+            [
+              545.8214721679688,
+              23.475013732910156
+            ],
+            [
+              741.3734130859375,
+              35.288211822509766
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          193.8158416748047
+        ],
+        "sharpness_laplacian_variance": 505.7913783753842,
+        "sha256": "0cfca1c3d50f4a84c4c0d93cc5edd843a7defc338b4222fc811b347b1c1c977b",
+        "saved_utc": "2026-09-09T04:02:19.336357+00:00"
+      },
+      "review": "All four black-square corners visible; selected frame has 23 px top margin and shortest edge 194 px. Paper top outside image, black square intact. Tag 54 detected across five recent samples. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-15",
+      "flat_series_index": 10,
+      "pose": "near-front-facing, bottom-center image region",
+      "role": "fit_candidate",
+      "operator_confirmation": "In place.",
+      "frame": {
+        "frame_index": 5313,
+        "file": "frame-005313.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 20934990,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              791.1903686523438,
+              688.163330078125
+            ],
+            [
+              577.6572265625,
+              682.0914306640625
+            ],
+            [
+              580.2949829101562,
+              472.0533142089844
+            ],
+            [
+              792.6433715820312,
+              475.8881530761719
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          210.0546875
+        ],
+        "sharpness_laplacian_variance": 243.56802688530817,
+        "sha256": "6c866fd2d8b1f857ec9db942d5464d8dae6fa7ed6d5d277f586fd640f2e81e6f",
+        "saved_utc": "2026-09-09T04:03:06.667951+00:00"
+      },
+      "review": "All four black-square corners visible, 32 px bottom margin, shortest edge 210 px. Paper lower margin outside image. Some visible softness; retain as candidate and assess reprojection quality before acceptance. Tag 54 detected across five sampled frames."
+    },
+    {
+      "hold_id": "hold-16",
+      "flat_series_index": 11,
+      "pose": "near-front-facing, farther distance, slightly right of center; distance not measured",
+      "role": "fit_candidate",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 7557,
+        "file": "frame-007557.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 29892150,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              841.0248413085938,
+              380.3145751953125
+            ],
+            [
+              728.517333984375,
+              379.0989074707031
+            ],
+            [
+              729.8695678710938,
+              268.8804931640625
+            ],
+            [
+              842.4169311523438,
+              268.8298645019531
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          110.2267074584961
+        ],
+        "sharpness_laplacian_variance": 333.60977305491764,
+        "sha256": "713af32e8a5974642a32e433bd3d7f5ae6abd0ae503e65a78b5a070aa32e89f8",
+        "saved_utc": "2026-09-09T04:04:46.192811+00:00"
+      },
+      "review": "All four black-square corners clear; shortest edge 110 px versus about 210 px in preceding near-distance sample. Tag 54 detected consistently in five samples. Paper corners secured. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-17",
+      "flat_series_index": 12,
+      "pose": "farther distance, mild sideways oblique view, near image center; requested left viewpoint, angle not measured",
+      "role": "fit_candidate",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 9383,
+        "file": "frame-009383.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 36938520,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              633.6493530273438,
+              384.16009521484375
+            ],
+            [
+              526.2113037109375,
+              384.551025390625
+            ],
+            [
+              526.7944946289062,
+              269.69512939453125
+            ],
+            [
+              635.0023803710938,
+              274.49530029296875
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          107.43875885009766
+        ],
+        "sharpness_laplacian_variance": 310.2256367375691,
+        "sha256": "ee04545d507bae5b352ec1ec9d75da6961a0035a878b0d752aab4d11c5df9802",
+        "saved_utc": "2026-09-09T04:06:04.493068+00:00"
+      },
+      "review": "All black-square corners clear; shortest edge 107 px; tag 54 consistently detected across five sampled frames. Sideways perspective is mild; do not treat requested 30 degrees as measured. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-18",
+      "flat_series_index": 13,
+      "pose": "farther distance, mild opposite sideways perspective, near center; strong requested yaw not evident",
+      "role": "fit_candidate",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 10398,
+        "file": "frame-010398.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 40946130,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              638.8709106445312,
+              354.933837890625
+            ],
+            [
+              543.130859375,
+              353.2887268066406
+            ],
+            [
+              543.9335327148438,
+              254.15606689453125
+            ],
+            [
+              640.1861572265625,
+              253.2954559326172
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          95.75418090820312
+        ],
+        "sharpness_laplacian_variance": 357.3587793912993,
+        "sha256": "d139fcb9de8751fef8ec03896dff6c92672da77d32cf5ddfa83d23aeefbd9624",
+        "saved_utc": "2026-09-09T04:06:49.030730+00:00"
+      },
+      "review": "All four corners visible; shortest edge 96 px; tag 54 detected across five sampled frames. Tag remains nearly square-on; do not label requested 30-40 degrees as measured. Additional stronger sideways pose requested for conditioning."
+    },
+    {
+      "hold_id": "hold-19",
+      "pose": "stronger sideways oblique view, near image center, farther distance; angle not measured",
+      "role": "supplemental_retake_requested",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 12462,
+        "file": "frame-012462.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 48948570,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              599.3477783203125,
+              362.1969909667969
+            ],
+            [
+              531.3578491210938,
+              360.3431091308594
+            ],
+            [
+              531.6771850585938,
+              276.78436279296875
+            ],
+            [
+              600.2823486328125,
+              274.49737548828125
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          68.01519775390625
+        ],
+        "sharpness_laplacian_variance": 318.9575193999067,
+        "sha256": "77f253375613a695377317f5ef4b3b6afa1f7f04df0c43401b48446836df5284",
+        "saved_utc": "2026-09-09T04:08:17.926542+00:00"
+      },
+      "review": "Tag 54 detected, all corners visible, shortest edge 68 px below preferred acquisition target 80-200 px. Sideways perspective stronger; request same angle closer to target for improved corner precision. Retain original evidence; not an intrinsic-fit rejection."
+    },
+    {
+      "hold_id": "hold-20",
+      "flat_series_index": 14,
+      "pose": "stronger sideways oblique view, slightly right of center, closer retake of hold-19; angle and distance not measured",
+      "role": "fit_candidate",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 13412,
+        "file": "frame-013412.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 52604820,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              759.5164184570312,
+              357.5726318359375
+            ],
+            [
+              674.9688110351562,
+              355.4857177734375
+            ],
+            [
+              675.8480224609375,
+              249.319580078125
+            ],
+            [
+              761.3082275390625,
+              241.51791381835938
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          84.57335662841797
+        ],
+        "sharpness_laplacian_variance": 305.76756180418863,
+        "sha256": "ce9a140070280b26a83cb4b2ecd3ba60e3d5e30cea96063885e96e680a714bac",
+        "saved_utc": "2026-09-09T04:08:58.553180+00:00"
+      },
+      "review": "All four corners clear, paper corners secured; shortest edge 85 px versus 68 px before retake. Detected across five recent samples. Within lower end of preferred acquisition range. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-21",
+      "flat_series_index": 15,
+      "pose": "opposite sideways oblique view, farther distance, near image center; angle not measured",
+      "role": "fit_candidate",
+      "operator_confirmation": "In place.",
+      "frame": {
+        "frame_index": 16414,
+        "file": "frame-016414.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 64529910,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              614.860107421875,
+              377.6615295410156
+            ],
+            [
+              532.13623046875,
+              378.9162902832031
+            ],
+            [
+              533.5213623046875,
+              276.8439025878906
+            ],
+            [
+              615.7799682617188,
+              283.21282958984375
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          82.50479125976562
+        ],
+        "sharpness_laplacian_variance": 423.0702730058447,
+        "sha256": "aad6db3afb19f2677e0c4cdabb5ae0c53225255f127bc42875891ec0d6dbfc23",
+        "saved_utc": "2026-09-09T04:11:11.059782+00:00"
+      },
+      "review": "Tag 54 detected across five sampled frames; all four corners visible, shortest edge 83 px near lower preferred acquisition boundary. Perspective opposite hold-20. Paper corners secured. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-22",
+      "flat_series_index": 16,
+      "pose": "rolled view with mild combined perspective, near center; requested view from above, strong pitch not verified",
+      "role": "fit_candidate",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 18179,
+        "file": "frame-018179.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 71485020,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              643.519287109375,
+              348.5557861328125
+            ],
+            [
+              557.1548461914062,
+              338.1439514160156
+            ],
+            [
+              574.5025024414062,
+              246.5293426513672
+            ],
+            [
+              661.935546875,
+              260.5010681152344
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          86.98978424072266
+        ],
+        "sharpness_laplacian_variance": 142.04197127565809,
+        "sha256": "a57b0ea7a3fa30b621b6c09dc0b00b54a8b982dd018d60b3d73b4cc852c9a7a6",
+        "saved_utc": "2026-09-09T04:12:28.320147+00:00"
+      },
+      "review": "All four tag corners visible; shortest edge 87 px, paper corners secured. Sample sequence has handheld drift; retain one frame per hold. Image-plane roll is visible and must not be mistaken for independent pitch diversity. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-23",
+      "flat_series_index": 17,
+      "pose": "upward-looking oblique view with roll, lower central image region, intermediate distance; angle not measured",
+      "role": "fit_candidate",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 19738,
+        "file": "frame-019738.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 77667390,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              690.8071899414062,
+              543.375
+            ],
+            [
+              550.507568359375,
+              513.8566284179688
+            ],
+            [
+              561.2385864257812,
+              387.3644714355469
+            ],
+            [
+              687.3953247070312,
+              419.9854431152344
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          123.43671417236328
+        ],
+        "sharpness_laplacian_variance": 312.4796431545257,
+        "sha256": "0582c310698e5cc88fe28218a5e4c4bdd60181832684043155bd6059102260b4",
+        "saved_utc": "2026-09-09T04:13:37.037773+00:00"
+      },
+      "review": "All corners visible, shortest edge 123 px. Selected sharpest tag ROI among five sampled frames from this hold (Laplacian variance 1387.44, ranking only, not acceptance threshold); latest frame showed motion softness. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-24",
+      "pose": "upward-looking, upper-left image region",
+      "role": "rejected_occluded_retake_requested",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 24603,
+        "file": "frame-024603.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 96612390,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              252.7442626953125,
+              209.29661560058594
+            ],
+            [
+              85.87501525878906,
+              199.52769470214844
+            ],
+            [
+              123.0,
+              78.0
+            ],
+            [
+              267.0,
+              105.0
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          105.26637268066406
+        ],
+        "sharpness_laplacian_variance": 392.3365491318302,
+        "sha256": "aa9a18a5886dac7d3be3d56da9c7e72caaee200c505e66e811c04abf79547c40",
+        "saved_utc": "2026-09-09T04:17:07.526560+00:00"
+      },
+      "review": "Stand in foreground overlaps lower-right black-square corner/border in visually inspected frames 24258 and 24603. Detection alone is insufficient: corner estimates unreliable with occlusion. Retain raw evidence but exclude from fit and planned hold count; request unobstructed retake."
+    },
+    {
+      "hold_id": "hold-25",
+      "flat_series_index": 18,
+      "pose": "mild upward/combined perspective, upper-right image region; angles not measured",
+      "role": "fit_candidate",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 31051,
+        "file": "frame-031051.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 122135130,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              1134.4459228515625,
+              239.54684448242188
+            ],
+            [
+              1020.2122802734375,
+              229.18893432617188
+            ],
+            [
+              1013.1627807617188,
+              122.37547302246094
+            ],
+            [
+              1122.9781494140625,
+              133.5244598388672
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          106.64077758789062
+        ],
+        "sharpness_laplacian_variance": 386.3516895242573,
+        "sha256": "b749669d85006b0bbeb1ab050b7f190171d01f111f4f76ac705dee9fa319a5a4",
+        "saved_utc": "2026-09-09T04:21:51.099562+00:00"
+      },
+      "review": "All four black-square corners unobstructed; stand no longer overlaps target. Observed upper-right rather than requested upper-left region. Shortest edge 107 px. Selected sharpest tag ROI among six samples (variance 2150.35, ranking only). Paper corners secured; final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-26",
+      "flat_series_index": 19,
+      "pose": "upper-left image region, mild upward/combined perspective; lower-left requested but upper-left observed",
+      "role": "fit_candidate",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 35018,
+        "file": "frame-035018.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 137797020,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              319.6120910644531,
+              273.50665283203125
+            ],
+            [
+              193.36480712890625,
+              278.6467590332031
+            ],
+            [
+              188.99757385253906,
+              169.5637969970703
+            ],
+            [
+              312.361328125,
+              168.8488311767578
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          104.90869140625
+        ],
+        "sharpness_laplacian_variance": 417.35317853626674,
+        "sha256": "42656b22212923f9473ccead0b2649b231afc06db75e6b1c3475accb82afe3e3",
+        "saved_utc": "2026-09-09T04:24:45.138028+00:00"
+      },
+      "review": "All four black-square corners unobstructed, paper corners secured. Shortest edge 105 px. Selected sharpest tag ROI among six sampled frames (variance 2411.16, ranking only). Observed center (254,223), not lower image region. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-27",
+      "flat_series_index": 20,
+      "pose": "lower-right image region, mild combined perspective",
+      "role": "fit_candidate",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 37333,
+        "file": "frame-037333.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 146845440,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              1153.1761474609375,
+              639.88671875
+            ],
+            [
+              1031.733642578125,
+              646.3972778320312
+            ],
+            [
+              1035.185546875,
+              504.9268493652344
+            ],
+            [
+              1156.3837890625,
+              503.261474609375
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          121.20967864990234
+        ],
+        "sharpness_laplacian_variance": 318.2084185919868,
+        "sha256": "4743c5079ff142cddb51e1096575453baa7ef449289ebd9dfce578f459ffe746",
+        "saved_utc": "2026-09-09T04:26:25.672293+00:00"
+      },
+      "review": "All four black-square corners visible, 74 px bottom margin. Shortest edge 121 px. Selected sharpest tag ROI among six recent samples (variance 1723.11, ranking only). Final fit quality unassessed."
+    },
+    {
+      "hold_id": "validation-01",
+      "validation_index": 1,
+      "pose": "near-front-facing, near image center, separate post-fit hold",
+      "role": "held_out_validation",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 41642,
+        "file": "frame-041642.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 163900260,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              663.4500732421875,
+              396.869873046875
+            ],
+            [
+              494.1527404785156,
+              395.36737060546875
+            ],
+            [
+              495.9519958496094,
+              224.77149963378906
+            ],
+            [
+              665.5978393554688,
+              229.21658325195312
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          167.66705322265625
+        ],
+        "sharpness_laplacian_variance": 433.1002710808601,
+        "sha256": "c02471c4817b48620f0b9b773d16fdf5fdad00d07538b4902782240bc2d153fa",
+        "saved_utc": "2026-09-09T04:29:35.161491+00:00"
+      },
+      "frozen_fit_sha256": "178fb0895e4522ae983b2b74659c68f3809105edbde45dfc53d15b2c3e8d2ccc",
+      "review": "All four black-square corners visible, shortest edge 168 px. Selected sharpest tag ROI among six sampled frames (variance 2193.43, ranking only). Reserved from intrinsic fitting; validation error not yet computed."
+    },
+    {
+      "hold_id": "validation-02",
+      "validation_index": 2,
+      "pose": "sideways oblique view from operator-requested left side, left-of-center image; angle not measured",
+      "role": "held_out_validation",
+      "operator_confirmation": "In place.",
+      "frame": {
+        "frame_index": 42856,
+        "file": "frame-042856.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 168679710,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              561.3966064453125,
+              359.4826965332031
+            ],
+            [
+              424.99920654296875,
+              357.3187561035156
+            ],
+            [
+              427.2673034667969,
+              194.2310791015625
+            ],
+            [
+              562.7495727539062,
+              213.61697387695312
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          136.41456604003906
+        ],
+        "sharpness_laplacian_variance": 407.6897218234168,
+        "sha256": "ab0dac794d360f4c824390e5f07d9a510176872fec86c53046fc5d6c685263ff",
+        "saved_utc": "2026-09-09T04:30:28.255819+00:00"
+      },
+      "frozen_fit_sha256": "178fb0895e4522ae983b2b74659c68f3809105edbde45dfc53d15b2c3e8d2ccc",
+      "review": "All four black-square corners unobstructed, shortest edge 136 px. Selected sharpest tag ROI among six samples (variance 2378.38, ranking only). Reserved from fitting; validation error not yet computed."
+    },
+    {
+      "hold_id": "validation-03",
+      "validation_index": 3,
+      "pose": "opposite sideways oblique view, upper-central image; angle not measured",
+      "role": "held_out_validation",
+      "operator_confirmation": "In place.",
+      "frame": {
+        "frame_index": 44657,
+        "file": "frame-044657.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 175648500,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              686.6722412109375,
+              305.3235168457031
+            ],
+            [
+              566.5747680664062,
+              305.8086242675781
+            ],
+            [
+              567.5136108398438,
+              173.56849670410156
+            ],
+            [
+              689.3989868164062,
+              163.6298370361328
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          120.09845733642578
+        ],
+        "sharpness_laplacian_variance": 403.31410258901974,
+        "sha256": "beefaa48cd2a9b4e0e7387623010203202cc3d23e00b4436eff7571860812805",
+        "saved_utc": "2026-09-09T04:31:45.696193+00:00"
+      },
+      "frozen_fit_sha256": "178fb0895e4522ae983b2b74659c68f3809105edbde45dfc53d15b2c3e8d2ccc",
+      "review": "All four black-square corners unobstructed, shortest edge 120 px. Selected sharpest tag ROI among six samples (variance 2561.67, ranking only). Reserved from fitting; validation error not yet computed."
+    }
+  ]
+}

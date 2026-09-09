@@ -1,0 +1,11 @@
+{
+  "image_hashes_verified": 23,
+  "offline_scripts_replayed": 4,
+  "numeric_comparison_rtol": 1e-06,
+  "numeric_comparison_atol": 1e-06,
+  "calibration_and_hallway_metrics_reproduced": true,
+  "map_hash_verified": "7f4f1f2bf3e2ba0285568a7a0a78bd25587fcba82b5b31a97b4c592b00ca2009",
+  "private_connection_detail_scan": "passed",
+  "lint": "ruff check passed",
+  "scope": "Evidence publication and offline replay only; no hardware commands or runtime calibration admission changes."
+}

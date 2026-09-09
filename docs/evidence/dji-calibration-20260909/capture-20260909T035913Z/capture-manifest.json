@@ -1,0 +1,39 @@
+{
+  "kind": "dji_webrtc_received_capture",
+  "qualification": "diagnostic_capture_not_qualified_calibration",
+  "stream": "drone1",
+  "source": "DJI SDK encoded passthrough as received through MediaMTX WHEP",
+  "decoder": {
+    "aiortc": "1.15.0",
+    "pyav": "17.1.0",
+    "opencv": "5.0.0"
+  },
+  "raw_file": "received.h264",
+  "raw_sha256": "66abc8d24aca5a0f4d7467f014c8a6059a505b748ecbb57862763b20054f2d48",
+  "raw_description": "Depacketized H264 access units delivered by receiver jitter buffer before decoding; network losses may precede this point. Not aircraft SD recording.",
+  "timing": "RTP-relative timestamps and host receipt times do not establish sensor exposure time.",
+  "stats": {
+    "state": "closed",
+    "output": "capture-20260909T035913Z",
+    "decoded_frames": 46460,
+    "saved_frames": 2100,
+    "encoded_frames": 46513,
+    "started_utc": "2026-09-09T03:59:13.281480+00:00",
+    "latest": {
+      "frame_index": 46457,
+      "file": "frame-046457.png",
+      "shape_px": [
+        1280,
+        720
+      ],
+      "pts": 182782530,
+      "time_base": "1/90000",
+      "tag_ids": [],
+      "corners_px": [],
+      "shortest_edges_px": [],
+      "sharpness_laplacian_variance": 140.86935111036888,
+      "sha256": "462af8cee02004340064815489ed22ed3145bdf6779d23c1abdf11ed4aa4d9d2",
+      "saved_utc": "2026-09-09T04:33:05.028391+00:00"
+    }
+  }
+}

@@ -1,0 +1,231 @@
+{"frame_index": 1580, "single_tag_geometry": []}
+{"frame_index": 1607, "single_tag_geometry": []}
+{"frame_index": 1615, "single_tag_geometry": []}
+{"frame_index": 1642, "single_tag_geometry": []}
+{"frame_index": 1652, "single_tag_geometry": []}
+{"frame_index": 1680, "single_tag_geometry": []}
+{"frame_index": 1691, "single_tag_geometry": []}
+{"frame_index": 1718, "single_tag_geometry": []}
+{"frame_index": 1732, "single_tag_geometry": []}
+{"frame_index": 1759, "single_tag_geometry": []}
+{"frame_index": 1776, "single_tag_geometry": []}
+{"frame_index": 1803, "single_tag_geometry": []}
+{"frame_index": 1821, "single_tag_geometry": []}
+{"frame_index": 1849, "single_tag_geometry": []}
+{"frame_index": 1868, "single_tag_geometry": []}
+{"frame_index": 1895, "single_tag_geometry": []}
+{"frame_index": 1917, "single_tag_geometry": []}
+{"frame_index": 1944, "single_tag_geometry": [{"tag_id": 16, "reason": null, "rms_px": 0.4890878637089653, "camera_position_m": [23.70483419901536, 0.09106452353123064, 1.485455643615517]}]}
+{"frame_index": 1968, "single_tag_geometry": [{"tag_id": 16, "reason": null, "rms_px": 0.1197127924104484, "camera_position_m": [23.382474403117826, 0.02430156165033345, 1.5795918182299724]}, {"tag_id": 17, "reason": null, "rms_px": 0.7432972639106948, "camera_position_m": [23.534412707156015, -0.014793998580118104, 1.610767378080514]}], "joint_geometry": {"tag_ids": [16, 17], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 1995, "single_tag_geometry": []}
+{"frame_index": 2021, "single_tag_geometry": [{"tag_id": 16, "reason": null, "rms_px": 0.19365390506554112, "camera_position_m": [23.53101253141348, 0.16491829631762128, 1.574973077172635]}]}
+{"frame_index": 2049, "single_tag_geometry": [{"tag_id": 17, "reason": null, "rms_px": 0.4300565253386404, "camera_position_m": [23.574058080793616, 0.13029083525133806, 1.6576638578766625]}, {"tag_id": 16, "reason": null, "rms_px": 0.3776140525079463, "camera_position_m": [23.656540844316027, 0.11473906961632759, 1.5898307683402388]}], "joint_geometry": {"tag_ids": [17, 16], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 2077, "single_tag_geometry": [{"tag_id": 17, "reason": null, "rms_px": 0.18984582811686, "camera_position_m": [23.50803452600815, 0.13164466975333447, 1.6820156418914727]}, {"tag_id": 16, "reason": null, "rms_px": 0.08500068673471756, "camera_position_m": [23.491185774269393, 0.1278930935845542, 1.6614184762060218]}], "joint_geometry": {"tag_ids": [17, 16], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 2104, "single_tag_geometry": [{"tag_id": 16, "reason": "ambiguous", "rms_px": null, "camera_position_m": null}, {"tag_id": 17, "reason": null, "rms_px": 0.15700700447505922, "camera_position_m": [23.224804597745845, 0.14435178455109976, 1.7171626313509312]}], "joint_geometry": {"tag_ids": [16, 17], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 2132, "single_tag_geometry": [{"tag_id": 17, "reason": null, "rms_px": 0.337801815083757, "camera_position_m": [23.13976225383267, 0.18286782918218136, 1.642548207885927]}]}
+{"frame_index": 2159, "single_tag_geometry": [{"tag_id": 17, "reason": null, "rms_px": 0.09425490186943729, "camera_position_m": [22.962974022796644, 0.14065953850787363, 1.6327613140385113]}]}
+{"frame_index": 2187, "single_tag_geometry": [{"tag_id": 17, "reason": null, "rms_px": 0.20841334507779516, "camera_position_m": [22.65298988008186, 0.19561170720625654, 1.7360730007618785]}]}
+{"frame_index": 2195, "single_tag_geometry": [{"tag_id": 19, "reason": null, "rms_px": 0.10152693370873492, "camera_position_m": [22.31838830671074, 0.219411175724747, 1.7358745684472345]}]}
+{"frame_index": 2222, "single_tag_geometry": []}
+{"frame_index": 2227, "single_tag_geometry": []}
+{"frame_index": 2255, "single_tag_geometry": []}
+{"frame_index": 2261, "single_tag_geometry": []}
+{"frame_index": 2289, "single_tag_geometry": [{"tag_id": 20, "reason": null, "rms_px": 0.4787090950824215, "camera_position_m": [21.205332824832865, 0.1710173101497439, 1.606337269332615]}]}
+{"frame_index": 2297, "single_tag_geometry": []}
+{"frame_index": 2324, "single_tag_geometry": [{"tag_id": 21, "reason": null, "rms_px": 0.30899042692109274, "camera_position_m": [20.683192043241505, 0.25389537642308224, 1.6004148907970859]}]}
+{"frame_index": 2335, "single_tag_geometry": [{"tag_id": 21, "reason": null, "rms_px": 0.45504698552762063, "camera_position_m": [20.3211467502216, 0.26225290463669215, 1.6179361690519356]}]}
+{"frame_index": 2362, "single_tag_geometry": [{"tag_id": 21, "reason": null, "rms_px": 0.5076779984994088, "camera_position_m": [20.104305291086042, 0.288877950763298, 1.5295175618195884]}]}
+{"frame_index": 2377, "single_tag_geometry": []}
+{"frame_index": 2404, "single_tag_geometry": []}
+{"frame_index": 2419, "single_tag_geometry": [{"tag_id": 22, "reason": null, "rms_px": 0.11219508829739612, "camera_position_m": [19.065195950565094, 0.280376846416448, 1.5457878829657627]}]}
+{"frame_index": 2447, "single_tag_geometry": [{"tag_id": 23, "reason": null, "rms_px": 0.24579282844647113, "camera_position_m": [18.7156274599183, 0.17301218610743407, 1.547532261928486]}]}
+{"frame_index": 2463, "single_tag_geometry": [{"tag_id": 23, "reason": null, "rms_px": 0.17509603782811206, "camera_position_m": [18.315216612490826, 0.19865356833741232, 1.5876462130699482]}]}
+{"frame_index": 2490, "single_tag_geometry": [{"tag_id": 23, "reason": null, "rms_px": 0.3739575300794547, "camera_position_m": [17.980727648254174, 0.24245092176677702, 1.582289004347705]}]}
+{"frame_index": 2509, "single_tag_geometry": [{"tag_id": 24, "reason": null, "rms_px": 0.09177757756767108, "camera_position_m": [17.54567344798528, 0.14365580703070932, 1.5892556330226313]}]}
+{"frame_index": 2536, "single_tag_geometry": [{"tag_id": 24, "reason": null, "rms_px": 0.1192532189567713, "camera_position_m": [17.195217369397533, 0.11372215261002082, 1.5775834655385184]}]}
+{"frame_index": 2557, "single_tag_geometry": [{"tag_id": 24, "reason": null, "rms_px": 0.3304048226064556, "camera_position_m": [16.837978850707902, 0.20975737072546638, 1.5498587923465201]}, {"tag_id": 25, "reason": null, "rms_px": 0.08764517771797904, "camera_position_m": [16.931424533808975, 0.20098952576400847, 1.5160567834308656]}], "joint_geometry": {"tag_ids": [24, 25], "reason": null, "rms_px": 1.9369303404213762, "camera_position_m": [16.830116930561196, 0.16418499386096105, 1.5667696551337662]}}
+{"frame_index": 2585, "single_tag_geometry": [{"tag_id": 25, "reason": null, "rms_px": 0.2866514537436205, "camera_position_m": [16.5624085157282, 0.14739961199726173, 1.5368593540292346]}]}
+{"frame_index": 2607, "single_tag_geometry": [{"tag_id": 25, "reason": null, "rms_px": 0.219434584671954, "camera_position_m": [16.19904619422341, 0.23530035475406824, 1.5027670919674556]}]}
+{"frame_index": 2634, "single_tag_geometry": [{"tag_id": 25, "reason": null, "rms_px": 0.28060693202491915, "camera_position_m": [15.840349099441363, 0.21945180677127116, 1.5201624857527436]}, {"tag_id": 26, "reason": null, "rms_px": 0.24066818811193127, "camera_position_m": [15.848766543263835, 0.19505851178687617, 1.5331854627090655]}], "joint_geometry": {"tag_ids": [25, 26], "reason": null, "rms_px": 1.652077021369342, "camera_position_m": [15.832836044445664, 0.12809182048333076, 1.5134013307209144]}}
+{"frame_index": 2659, "single_tag_geometry": [{"tag_id": 26, "reason": null, "rms_px": 0.2406620461452755, "camera_position_m": [15.377677393413215, 0.2329421602198849, 1.5341389316875336]}]}
+{"frame_index": 2687, "single_tag_geometry": [{"tag_id": 26, "reason": null, "rms_px": 0.24572389610222536, "camera_position_m": [14.982485969081205, 0.16915512224097962, 1.5926819115880393]}]}
+{"frame_index": 2713, "single_tag_geometry": [{"tag_id": 27, "reason": null, "rms_px": 0.18922633574007783, "camera_position_m": [14.681041340528665, 0.16012795883216285, 1.5420651689222846]}]}
+{"frame_index": 2740, "single_tag_geometry": [{"tag_id": 27, "reason": null, "rms_px": 0.1624170750332751, "camera_position_m": [14.343755439259832, 0.13230143440665765, 1.5130164456995316]}]}
+{"frame_index": 2768, "single_tag_geometry": [{"tag_id": 27, "reason": null, "rms_px": 0.22991364517069676, "camera_position_m": [13.983527230332376, 0.21978060637924543, 1.5411179799498647]}, {"tag_id": 28, "reason": null, "rms_px": 0.024017944157675223, "camera_position_m": [14.046220137606566, 0.09242045332356888, 1.520867173172869]}], "joint_geometry": {"tag_ids": [27, 28], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 2793, "single_tag_geometry": [{"tag_id": 28, "reason": null, "rms_px": 0.24656878494385262, "camera_position_m": [13.657181522606388, 0.051127146353557335, 1.5033181839292904]}]}
+{"frame_index": 2820, "single_tag_geometry": [{"tag_id": 28, "reason": null, "rms_px": 0.06738700394741463, "camera_position_m": [13.29994909337944, 0.08884573038933646, 1.4864899105078864]}]}
+{"frame_index": 2848, "single_tag_geometry": []}
+{"frame_index": 2876, "single_tag_geometry": [{"tag_id": 53, "reason": null, "rms_px": 0.13450254060724134, "camera_position_m": [12.665751195303429, 0.12763845243255867, 1.488990267443653]}]}
+{"frame_index": 2888, "single_tag_geometry": [{"tag_id": 53, "reason": null, "rms_px": 0.3699987939870306, "camera_position_m": [12.200940439151816, 0.1593143557699138, 1.5100290368361895]}, {"tag_id": 30, "reason": null, "rms_px": 0.11191338882903726, "camera_position_m": [12.192995989764974, 0.08846314354749277, 1.5154481617180775]}], "joint_geometry": {"tag_ids": [53, 30], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 2915, "single_tag_geometry": [{"tag_id": 30, "reason": null, "rms_px": 0.21070196641597935, "camera_position_m": [11.810216575089623, -0.003315089620974971, 1.5558445543789055]}]}
+{"frame_index": 2921, "single_tag_geometry": [{"tag_id": 30, "reason": null, "rms_px": 0.24212128974913907, "camera_position_m": [11.442812556492838, 0.13681714363330394, 1.5242513203863421]}]}
+{"frame_index": 2948, "single_tag_geometry": [{"tag_id": 31, "reason": null, "rms_px": 0.037004380813709464, "camera_position_m": [11.12155169416202, 0.06677985720615118, 1.5178026153689397]}]}
+{"frame_index": 2956, "single_tag_geometry": [{"tag_id": 31, "reason": null, "rms_px": 1.079753544657981, "camera_position_m": [10.769098404569366, 0.24766144548872945, 1.4770696150116025]}]}
+{"frame_index": 2984, "single_tag_geometry": [{"tag_id": 31, "reason": null, "rms_px": 0.549677000324877, "camera_position_m": [10.389132734666576, 0.1858408677376742, 1.4445414172749698]}, {"tag_id": 32, "reason": null, "rms_px": 0.06587196938950796, "camera_position_m": [10.311454289058577, 0.1363755753924282, 1.4374140141112084]}], "joint_geometry": {"tag_ids": [31, 32], "reason": null, "rms_px": 1.9989219586164129, "camera_position_m": [10.247667106461458, 0.10216221755603096, 1.4882984160672472]}}
+{"frame_index": 2994, "single_tag_geometry": []}
+{"frame_index": 3021, "single_tag_geometry": [{"tag_id": 32, "reason": null, "rms_px": 0.03238137355937953, "camera_position_m": [9.4607791211413, 0.16454092895832756, 1.449439932638047]}]}
+{"frame_index": 3033, "single_tag_geometry": []}
+{"frame_index": 3060, "single_tag_geometry": [{"tag_id": 33, "reason": null, "rms_px": 1.1843435347329798, "camera_position_m": [8.617369089891056, 0.03619775190628977, 1.4516850569778519]}]}
+{"frame_index": 3075, "single_tag_geometry": [{"tag_id": 34, "reason": null, "rms_px": 0.17242618268608073, "camera_position_m": [8.058550223314487, 0.10432740061722108, 1.4982783222783058]}]}
+{"frame_index": 3102, "single_tag_geometry": [{"tag_id": 34, "reason": null, "rms_px": 0.3869826223160181, "camera_position_m": [7.7128022238867935, 0.15125798499499302, 1.4379748687953928]}]}
+{"frame_index": 3118, "single_tag_geometry": []}
+{"frame_index": 3145, "single_tag_geometry": []}
+{"frame_index": 3163, "single_tag_geometry": [{"tag_id": 36, "reason": null, "rms_px": 0.15636021267127886, "camera_position_m": [6.091282699592995, 0.07217999056444482, 1.5370695486777572]}]}
+{"frame_index": 3191, "single_tag_geometry": []}
+{"frame_index": 3210, "single_tag_geometry": []}
+{"frame_index": 3237, "single_tag_geometry": [{"tag_id": 52, "reason": null, "rms_px": 0.04746929504816234, "camera_position_m": [4.423574589265213, 0.02770473212573053, 1.6221219152970916]}]}
+{"frame_index": 3259, "single_tag_geometry": [{"tag_id": 52, "reason": null, "rms_px": 0.29520603579413346, "camera_position_m": [4.006106313888755, -0.08212451630183933, 1.549324661172615]}]}
+{"frame_index": 3286, "single_tag_geometry": [{"tag_id": 47, "reason": null, "rms_px": 0.5970904072200194, "camera_position_m": [3.893297497688125, -0.02607571906327217, 1.6081947743751006]}, {"tag_id": 52, "reason": null, "rms_px": 0.39742916271926443, "camera_position_m": [3.924397880583552, -0.060198144517085404, 1.5899100418289607]}], "joint_geometry": {"tag_ids": [47, 52], "reason": null, "rms_px": 1.356212615857597, "camera_position_m": [3.885093665016879, -0.024356710385764608, 1.6269642472270478]}}
+{"frame_index": 3310, "single_tag_geometry": [{"tag_id": 47, "reason": null, "rms_px": 0.08653795977190815, "camera_position_m": [3.682454865236081, -0.10560433363663067, 1.5561903409543973]}, {"tag_id": 52, "reason": null, "rms_px": 0.5504587374448284, "camera_position_m": [3.724027097145812, -0.1086187144131963, 1.5705577472689576]}, {"tag_id": 41, "reason": null, "rms_px": 0.12802515596270508, "camera_position_m": [3.6685422714827074, -0.01638081966511145, 1.5332594841859004]}, {"tag_id": 51, "reason": null, "rms_px": 0.40616157765378363, "camera_position_m": [3.660122999963868, -0.0356331675165778, 1.5421702534290425]}], "joint_geometry": {"tag_ids": [47, 52, 41, 51], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 3337, "single_tag_geometry": [{"tag_id": 41, "reason": null, "rms_px": 0.18723078048366018, "camera_position_m": [3.2519722389417067, -0.18366473438332787, 1.5762250453400146]}, {"tag_id": 46, "reason": null, "rms_px": 0.23491187887146747, "camera_position_m": [3.2583925869955626, -0.2482244190958786, 1.5017438921297113]}, {"tag_id": 51, "reason": null, "rms_px": 0.46249912087873896, "camera_position_m": [3.2953192920896517, -0.2813601668059934, 1.5181201550009251]}], "joint_geometry": {"tag_ids": [41, 46, 51], "reason": null, "rms_px": 1.1485430268882835, "camera_position_m": [3.2568285843970295, -0.22633307180735254, 1.5406342514068134]}}
+{"frame_index": 3363, "single_tag_geometry": []}
+{"frame_index": 3390, "single_tag_geometry": []}
+{"frame_index": 3418, "single_tag_geometry": [{"tag_id": 39, "reason": null, "rms_px": 0.6919155592448951, "camera_position_m": [1.940569652244453, -0.7990645952805712, 1.4354043952490323]}, {"tag_id": 44, "reason": null, "rms_px": 0.6943028484650738, "camera_position_m": [1.8869843897652394, -0.8695169463482384, 1.5679555862349581]}], "joint_geometry": {"tag_ids": [39, 44], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 3445, "single_tag_geometry": [{"tag_id": 48, "reason": null, "rms_px": 0.3331611233388229, "camera_position_m": [1.4366776513802177, -0.8913995347021739, 1.6272848108537483]}]}
+{"frame_index": 3473, "single_tag_geometry": [{"tag_id": 48, "reason": null, "rms_px": 1.1938619771819317, "camera_position_m": [1.0668650298965214, -1.4438068947546314, 1.6183805739810389]}, {"tag_id": 43, "reason": null, "rms_px": 0.27935675596303694, "camera_position_m": [1.1124802974751156, -1.3571147977695897, 1.462445413714655]}, {"tag_id": 38, "reason": null, "rms_px": 0.5986631829315803, "camera_position_m": [1.0749892342752512, -1.3416286752429682, 1.5445721607752538]}], "joint_geometry": {"tag_ids": [48, 43, 38], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 3500, "single_tag_geometry": [{"tag_id": 48, "reason": null, "rms_px": 0.10461040290647486, "camera_position_m": [0.8969670253401121, -1.5119666379208103, 1.5153537509233987]}, {"tag_id": 44, "reason": null, "rms_px": 0.12926450361129405, "camera_position_m": [0.9129551642610456, -1.4621013971648682, 1.5177247613084333]}, {"tag_id": 43, "reason": null, "rms_px": 0.4150682237491905, "camera_position_m": [0.899868761357184, -1.5044526012478803, 1.467593617448649]}, {"tag_id": 39, "reason": null, "rms_px": 0.733962498852985, "camera_position_m": [0.97095609253938, -1.4730294749465533, 1.5673037992896826]}, {"tag_id": 38, "reason": null, "rms_px": 0.583829636315204, "camera_position_m": [0.9421548420806849, -1.4595075867048166, 1.4184138997643936]}], "joint_geometry": {"tag_ids": [48, 44, 43, 39, 38], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 3527, "single_tag_geometry": [{"tag_id": 43, "reason": "ambiguous", "rms_px": null, "camera_position_m": null}, {"tag_id": 44, "reason": null, "rms_px": 0.03759865999410959, "camera_position_m": [0.8912769581590945, -1.6410691079563957, 1.525794143884938]}, {"tag_id": 46, "reason": null, "rms_px": 0.8066701384155237, "camera_position_m": [0.7305511911223552, -1.573633372038997, 1.5349881033670671]}, {"tag_id": 45, "reason": null, "rms_px": 0.5160167237759664, "camera_position_m": [0.8897586145075899, -1.6374030801116126, 1.5749045116988178]}, {"tag_id": 41, "reason": null, "rms_px": 0.39016280790078994, "camera_position_m": [0.9016354037122675, -1.6677639775432336, 1.517825812447854]}], "joint_geometry": {"tag_ids": [43, 44, 46, 45, 41], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 3534, "single_tag_geometry": [{"tag_id": 45, "reason": null, "rms_px": 0.07072752744190527, "camera_position_m": [0.8489216615128443, -1.791874284454422, 1.5035944420263903]}]}
+{"frame_index": 3562, "single_tag_geometry": [{"tag_id": 44, "reason": "ambiguous", "rms_px": null, "camera_position_m": null}, {"tag_id": 45, "reason": null, "rms_px": 0.1968548484481578, "camera_position_m": [1.3666610293014474, -1.7011414460373004, 1.6102920973810597]}, {"tag_id": 46, "reason": null, "rms_px": 0.5329064428546867, "camera_position_m": [1.3630505929442598, -1.7418812094711542, 1.5924629307202738]}, {"tag_id": 47, "reason": null, "rms_px": 0.4589793458886231, "camera_position_m": [1.4294562601804306, -1.8635804683859127, 1.580849193997925]}, {"tag_id": 39, "reason": null, "rms_px": 0.3823735555691712, "camera_position_m": [1.4361780432790627, -1.710049803264526, 1.5995324390635632]}], "joint_geometry": {"tag_ids": [44, 45, 46, 47, 39], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 3566, "single_tag_geometry": [{"tag_id": 45, "reason": null, "rms_px": 0.42898032968580185, "camera_position_m": [1.8090025177304032, -1.5701913614494907, 1.5943932621743206]}, {"tag_id": 46, "reason": null, "rms_px": 0.12185837561898889, "camera_position_m": [1.8116353304786565, -1.5868461936546232, 1.5562802993388711]}, {"tag_id": 47, "reason": null, "rms_px": 0.5589702038357285, "camera_position_m": [1.773013751879465, -1.5918989311933645, 1.5695352903275797]}, {"tag_id": 40, "reason": null, "rms_px": 0.19564854917731558, "camera_position_m": [1.8552271238249507, -1.5600078969327709, 1.612534814447451]}], "joint_geometry": {"tag_ids": [45, 46, 47, 40], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 3594, "single_tag_geometry": [{"tag_id": 46, "reason": null, "rms_px": 1.8487963894743507, "camera_position_m": [2.334796313525542, -1.4990284669674905, 1.4960971107755965]}, {"tag_id": 47, "reason": null, "rms_px": 1.0401238743730468, "camera_position_m": [2.3947776326276915, -1.4963815809431866, 1.569517066745014]}, {"tag_id": 40, "reason": null, "rms_px": 0.18628137841165424, "camera_position_m": [2.381351634007047, -1.4820918826476235, 1.5702615306487198]}, {"tag_id": 41, "reason": null, "rms_px": 0.20988627835127552, "camera_position_m": [2.3854600072560026, -1.449100987371854, 1.5438734584855278]}, {"tag_id": 42, "reason": null, "rms_px": 0.04628907160858194, "camera_position_m": [2.3408409181017933, -1.4787868112958014, 1.525498404867746]}], "joint_geometry": {"tag_ids": [46, 47, 40, 41, 42], "reason": "reprojection_or_cheirality", "rms_px": null, "camera_position_m": null}}
+{"frame_index": 3600, "single_tag_geometry": []}
+{"frame_index": 3627, "single_tag_geometry": []}
+{"frame_index": 3637, "single_tag_geometry": [{"tag_id": 36, "reason": null, "rms_px": 1.0206459828956056, "camera_position_m": [3.58740715428636, 0.09085042404722138, 1.6027833753818328]}]}
+{"frame_index": 3664, "single_tag_geometry": []}
+{"frame_index": 3676, "single_tag_geometry": []}
+{"frame_index": 3703, "single_tag_geometry": []}
+{"frame_index": 3716, "single_tag_geometry": []}
+{"frame_index": 3743, "single_tag_geometry": [{"tag_id": 32, "reason": null, "rms_px": 0.3771057386542593, "camera_position_m": [7.250164341589571, 0.47063525297974124, 1.5722145750891245]}]}
+{"frame_index": 3759, "single_tag_geometry": [{"tag_id": 32, "reason": null, "rms_px": 0.15498434175764803, "camera_position_m": [7.67372946607039, 0.42405188848012865, 1.5197873344841273]}]}
+{"frame_index": 3786, "single_tag_geometry": [{"tag_id": 32, "reason": null, "rms_px": 0.2887871918290391, "camera_position_m": [7.774105627379061, 0.4416163940809695, 1.5126301332096153]}]}
+{"frame_index": 3803, "single_tag_geometry": []}
+{"frame_index": 3831, "single_tag_geometry": [{"tag_id": 31, "reason": null, "rms_px": 0.1726908009886389, "camera_position_m": [8.520611179542977, 0.4302308646972555, 1.4587424141391914]}]}
+{"frame_index": 3849, "single_tag_geometry": []}
+{"frame_index": 3876, "single_tag_geometry": []}
+{"frame_index": 3897, "single_tag_geometry": []}
+{"frame_index": 3925, "single_tag_geometry": []}
+{"frame_index": 3947, "single_tag_geometry": []}
+{"frame_index": 3974, "single_tag_geometry": []}
+{"frame_index": 3999, "single_tag_geometry": []}
+{"frame_index": 4026, "single_tag_geometry": []}
+{"frame_index": 4053, "single_tag_geometry": []}
+{"frame_index": 4080, "single_tag_geometry": []}
+{"frame_index": 4108, "single_tag_geometry": []}
+{"frame_index": 4134, "single_tag_geometry": []}
+{"frame_index": 4162, "single_tag_geometry": []}
+{"frame_index": 4189, "single_tag_geometry": []}
+{"frame_index": 4217, "single_tag_geometry": []}
+{"frame_index": 4228, "single_tag_geometry": []}
+{"frame_index": 4256, "single_tag_geometry": []}
+{"frame_index": 4262, "single_tag_geometry": []}
+{"frame_index": 4289, "single_tag_geometry": []}
+{"frame_index": 4297, "single_tag_geometry": []}
+{"frame_index": 4325, "single_tag_geometry": []}
+{"frame_index": 4334, "single_tag_geometry": []}
+{"frame_index": 4361, "single_tag_geometry": []}
+{"frame_index": 4373, "single_tag_geometry": []}
+{"frame_index": 4400, "single_tag_geometry": []}
+{"frame_index": 4414, "single_tag_geometry": []}
+{"frame_index": 4441, "single_tag_geometry": []}
+{"frame_index": 4457, "single_tag_geometry": []}
+{"frame_index": 4485, "single_tag_geometry": []}
+{"frame_index": 4502, "single_tag_geometry": []}
+{"frame_index": 4530, "single_tag_geometry": []}
+{"frame_index": 4549, "single_tag_geometry": []}
+{"frame_index": 4576, "single_tag_geometry": []}
+{"frame_index": 4599, "single_tag_geometry": []}
+{"frame_index": 4627, "single_tag_geometry": []}
+{"frame_index": 4647, "single_tag_geometry": []}
+{"frame_index": 4675, "single_tag_geometry": []}
+{"frame_index": 4697, "single_tag_geometry": []}
+{"frame_index": 4725, "single_tag_geometry": []}
+{"frame_index": 4750, "single_tag_geometry": []}
+{"frame_index": 4777, "single_tag_geometry": []}
+{"frame_index": 4804, "single_tag_geometry": []}
+{"frame_index": 4832, "single_tag_geometry": []}
+{"frame_index": 4855, "single_tag_geometry": []}
+{"frame_index": 4882, "single_tag_geometry": []}
+{"frame_index": 4887, "single_tag_geometry": []}
+{"frame_index": 4915, "single_tag_geometry": []}
+{"frame_index": 4921, "single_tag_geometry": []}
+{"frame_index": 4948, "single_tag_geometry": []}
+{"frame_index": 4957, "single_tag_geometry": []}
+{"frame_index": 4984, "single_tag_geometry": []}
+{"frame_index": 4998, "single_tag_geometry": []}
+{"frame_index": 5025, "single_tag_geometry": []}
+{"frame_index": 5038, "single_tag_geometry": []}
+{"frame_index": 5066, "single_tag_geometry": []}
+{"frame_index": 5080, "single_tag_geometry": []}
+{"frame_index": 5107, "single_tag_geometry": []}
+{"frame_index": 5124, "single_tag_geometry": [{"tag_id": 24, "reason": null, "rms_px": 0.18286705454805066, "camera_position_m": [17.769695707817736, 0.2113151466441477, 1.1474950830377206]}]}
+{"frame_index": 5140, "single_tag_geometry": [{"tag_id": 24, "reason": null, "rms_px": 0.16524686910570285, "camera_position_m": [17.747166490968834, 0.20498571496745444, 1.1770795272244745]}]}
+{"frame_index": 5159, "single_tag_geometry": [{"tag_id": 24, "reason": null, "rms_px": 0.11876339478152761, "camera_position_m": [17.746526637617617, 0.20080263993164194, 1.1786495570013586]}]}
+{"frame_index": 5187, "single_tag_geometry": [{"tag_id": 24, "reason": null, "rms_px": 0.16264433126503977, "camera_position_m": [17.757670810704106, 0.19475436829369436, 1.184619831622977]}]}
+{"frame_index": 5195, "single_tag_geometry": [{"tag_id": 24, "reason": null, "rms_px": 0.21568186449670695, "camera_position_m": [17.754368140055398, 0.20476049728122867, 1.1920344788800137]}]}
+{"frame_index": 5222, "single_tag_geometry": [{"tag_id": 24, "reason": null, "rms_px": 0.09366367850667083, "camera_position_m": [17.763258951315123, 0.1966619136726305, 1.202031226218045]}]}
+{"frame_index": 5234, "single_tag_geometry": [{"tag_id": 24, "reason": null, "rms_px": 0.20442425365042302, "camera_position_m": [17.77495075408652, 0.20072873715244408, 1.1932941740763274]}]}
+{"frame_index": 5262, "single_tag_geometry": [{"tag_id": 24, "reason": null, "rms_px": 0.24042459855498807, "camera_position_m": [17.779658163012417, 0.1916661616548519, 1.1830352555556822]}]}
+{"frame_index": 5275, "single_tag_geometry": []}
+{"frame_index": 5303, "single_tag_geometry": []}
+{"frame_index": 5318, "single_tag_geometry": []}
+{"frame_index": 5346, "single_tag_geometry": []}
+{"frame_index": 5364, "single_tag_geometry": []}
+{"frame_index": 5391, "single_tag_geometry": []}
+{"frame_index": 5412, "single_tag_geometry": []}
+{"frame_index": 5440, "single_tag_geometry": []}
+{"frame_index": 5461, "single_tag_geometry": []}
+{"frame_index": 5488, "single_tag_geometry": []}
+{"frame_index": 5512, "single_tag_geometry": []}
+{"frame_index": 5539, "single_tag_geometry": []}
+{"frame_index": 5565, "single_tag_geometry": []}
+{"frame_index": 5584, "single_tag_geometry": []}
+{"frame_index": 5612, "single_tag_geometry": []}
+{"frame_index": 5628, "single_tag_geometry": []}
+{"frame_index": 5655, "single_tag_geometry": []}
+{"frame_index": 5676, "single_tag_geometry": []}
+{"frame_index": 5709, "single_tag_geometry": []}
+{"frame_index": 5714, "single_tag_geometry": []}
+{"frame_index": 5735, "single_tag_geometry": []}
+{"frame_index": 5760, "single_tag_geometry": []}
+{"frame_index": 5788, "single_tag_geometry": []}
+{"frame_index": 5816, "single_tag_geometry": []}
+{"frame_index": 5843, "single_tag_geometry": []}
+{"frame_index": 5849, "single_tag_geometry": []}
+{"frame_index": 5877, "single_tag_geometry": []}
+{"frame_index": 5894, "single_tag_geometry": []}
+{"frame_index": 5921, "single_tag_geometry": []}
+{"frame_index": 5941, "single_tag_geometry": []}
+{"frame_index": 5970, "single_tag_geometry": []}
+{"frame_index": 5997, "single_tag_geometry": []}
+{"frame_index": 6007, "single_tag_geometry": []}
+{"frame_index": 6035, "single_tag_geometry": []}
+{"frame_index": 6044, "single_tag_geometry": []}
+{"frame_index": 6061, "single_tag_geometry": []}
+{"frame_index": 6062, "single_tag_geometry": []}
+{"frame_index": 6081, "single_tag_geometry": []}
+{"frame_index": 6084, "single_tag_geometry": []}
+{"frame_index": 6112, "single_tag_geometry": []}
+{"frame_index": 6127, "single_tag_geometry": []}
+{"frame_index": 6154, "single_tag_geometry": []}
+{"frame_index": 6156, "single_tag_geometry": []}
+{"frame_index": 6161, "single_tag_geometry": []}
+{"frame_index": 6191, "single_tag_geometry": []}
+{"frame_index": 6218, "single_tag_geometry": []}
+{"frame_index": 6228, "single_tag_geometry": []}
+{"frame_index": 6255, "single_tag_geometry": []}
+{"frame_index": 6267, "single_tag_geometry": []}
+{"frame_index": 6294, "single_tag_geometry": []}
+{"frame_index": 6305, "single_tag_geometry": []}
+{"frame_index": 6333, "single_tag_geometry": []}
+{"frame_index": 6346, "single_tag_geometry": []}
+{"frame_index": 6374, "single_tag_geometry": []}
+{"frame_index": 6389, "single_tag_geometry": []}
+{"frame_index": 6416, "single_tag_geometry": []}
+{"frame_index": 6435, "single_tag_geometry": []}
+{"frame_index": 6462, "single_tag_geometry": []}
+{"frame_index": 6484, "single_tag_geometry": []}
+{"frame_index": 6511, "single_tag_geometry": []}
+{"frame_index": 6535, "single_tag_geometry": []}
+{"frame_index": 6561, "single_tag_geometry": []}
+{"frame_index": 6584, "single_tag_geometry": []}

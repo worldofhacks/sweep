@@ -1,0 +1,8 @@
+{
+  "tag_edge_m": 0.199898,
+  "tag_edge_inches": 7.87,
+  "edge_definition": "outer black square excluding white border",
+  "measurement_source": "operator confirmed 2026-09-08",
+  "target": "separate spare tag, not a surveyed wall tag",
+  "capture_constraint": "grounded aircraft, motors inactive"
+}

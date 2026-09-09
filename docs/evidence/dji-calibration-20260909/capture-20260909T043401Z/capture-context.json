@@ -1,0 +1,12 @@
+{
+  "purpose": "real hallway tag diagnostic while operator carries drone, motors off",
+  "operator_authorization": "Handheld, motors off",
+  "intrinsics_candidate": "initial-pinhole-candidate.json",
+  "not_flight_authorization": true,
+  "requested_steady_hold_seconds": 20,
+  "physical_ground_truth": "unavailable; handheld motion and vision noise cannot be separated",
+  "ready_prompt_utc": "2026-09-09T04:34:40.470595+00:00",
+  "route_instructions": "walk slowly; pause 3 seconds at tags; return to same starting camera position",
+  "accuracy_scope": "surveyed-map consistency, multi-tag agreement where simultaneously visible, loop-return repeatability if matched endpoints; absolute metric accuracy requires independently measured camera checkpoint",
+  "route_authorized_utc": "2026-09-09T04:35:11.343203+00:00"
+}

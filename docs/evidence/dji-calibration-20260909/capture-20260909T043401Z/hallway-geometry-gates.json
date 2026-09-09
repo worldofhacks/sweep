@@ -1,0 +1,502 @@
+{
+  "kind": "offline_existing_geometry_gate_diagnostic",
+  "flight_approved": false,
+  "qualified_localizer_created": false,
+  "method": "Existing TagLocalizer._camera_pose and _pose_candidates only, fixed unqualified intrinsics and pinned map; no full localizer, consensus, timing, extrinsics or control admission. Same >=60 pixel edge filter as raw diagnostic. Reprojection <=2px and existing ambiguity checks.",
+  "single_tag_observation_counts": {
+    "geometry_pass": 104,
+    "ambiguous": 3
+  },
+  "joint_frame_counts": {
+    "reprojection_or_cheirality": 14,
+    "geometry_pass": 5
+  },
+  "pairwise_geometry_pass_disagreement_m": {
+    "count": 60,
+    "median": 0.07948893620759127,
+    "p95": 0.17611464555000145,
+    "maximum": 0.19602276122863949
+  },
+  "pairwise_records": [
+    {
+      "frame_index": 1968,
+      "tag_ids": [
+        16,
+        17
+      ],
+      "disagreement_m": 0.1599550768051109
+    },
+    {
+      "frame_index": 2049,
+      "tag_ids": [
+        17,
+        16
+      ],
+      "disagreement_m": 0.10791937605785454
+    },
+    {
+      "frame_index": 2077,
+      "tag_ids": [
+        17,
+        16
+      ],
+      "disagreement_m": 0.0268737417040931
+    },
+    {
+      "frame_index": 2557,
+      "tag_ids": [
+        24,
+        25
+      ],
+      "disagreement_m": 0.09975743883153979
+    },
+    {
+      "frame_index": 2634,
+      "tag_ids": [
+        25,
+        26
+      ],
+      "disagreement_m": 0.028904742335905197
+    },
+    {
+      "frame_index": 2768,
+      "tag_ids": [
+        27,
+        28
+      ],
+      "disagreement_m": 0.14339143762433929
+    },
+    {
+      "frame_index": 2888,
+      "tag_ids": [
+        53,
+        30
+      ],
+      "disagreement_m": 0.07150087736477184
+    },
+    {
+      "frame_index": 2984,
+      "tag_ids": [
+        31,
+        32
+      ],
+      "disagreement_m": 0.09236642211720837
+    },
+    {
+      "frame_index": 3286,
+      "tag_ids": [
+        47,
+        52
+      ],
+      "disagreement_m": 0.049657881342009505
+    },
+    {
+      "frame_index": 3310,
+      "tag_ids": [
+        47,
+        52
+      ],
+      "disagreement_m": 0.04408808593747571
+    },
+    {
+      "frame_index": 3310,
+      "tag_ids": [
+        47,
+        41
+      ],
+      "disagreement_m": 0.09316769774181186
+    },
+    {
+      "frame_index": 3310,
+      "tag_ids": [
+        47,
+        51
+      ],
+      "disagreement_m": 0.07477458892534893
+    },
+    {
+      "frame_index": 3310,
+      "tag_ids": [
+        52,
+        41
+      ],
+      "disagreement_m": 0.11391907450219571
+    },
+    {
+      "frame_index": 3310,
+      "tag_ids": [
+        52,
+        51
+      ],
+      "disagreement_m": 0.10107657245350693
+    },
+    {
+      "frame_index": 3310,
+      "tag_ids": [
+        41,
+        51
+      ],
+      "disagreement_m": 0.022824084630195515
+    },
+    {
+      "frame_index": 3337,
+      "tag_ids": [
+        41,
+        46
+      ],
+      "disagreement_m": 0.09877558373835758
+    },
+    {
+      "frame_index": 3337,
+      "tag_ids": [
+        41,
+        51
+      ],
+      "disagreement_m": 0.12165337156930749
+    },
+    {
+      "frame_index": 3337,
+      "tag_ids": [
+        46,
+        51
+      ],
+      "disagreement_m": 0.05224692633104175
+    },
+    {
+      "frame_index": 3418,
+      "tag_ids": [
+        39,
+        44
+      ],
+      "disagreement_m": 0.15938862054022376
+    },
+    {
+      "frame_index": 3473,
+      "tag_ids": [
+        48,
+        43
+      ],
+      "disagreement_m": 0.184152237356035
+    },
+    {
+      "frame_index": 3473,
+      "tag_ids": [
+        48,
+        38
+      ],
+      "disagreement_m": 0.12630943392841604
+    },
+    {
+      "frame_index": 3473,
+      "tag_ids": [
+        43,
+        38
+      ],
+      "disagreement_m": 0.09159804797877158
+    },
+    {
+      "frame_index": 3500,
+      "tag_ids": [
+        48,
+        44
+      ],
+      "disagreement_m": 0.052419314303499644
+    },
+    {
+      "frame_index": 3500,
+      "tag_ids": [
+        48,
+        43
+      ],
+      "disagreement_m": 0.048434607137467514
+    },
+    {
+      "frame_index": 3500,
+      "tag_ids": [
+        48,
+        39
+      ],
+      "disagreement_m": 0.09843420264705177
+    },
+    {
+      "frame_index": 3500,
+      "tag_ids": [
+        48,
+        38
+      ],
+      "disagreement_m": 0.1191269305362642
+    },
+    {
+      "frame_index": 3500,
+      "tag_ids": [
+        44,
+        43
+      ],
+      "disagreement_m": 0.06691793491235007
+    },
+    {
+      "frame_index": 3500,
+      "tag_ids": [
+        44,
+        39
+      ],
+      "disagreement_m": 0.07708184982404877
+    },
+    {
+      "frame_index": 3500,
+      "tag_ids": [
+        44,
+        38
+      ],
+      "disagreement_m": 0.10354707266790707
+    },
+    {
+      "frame_index": 3500,
+      "tag_ids": [
+        43,
+        39
+      ],
+      "disagreement_m": 0.1264236603011016
+    },
+    {
+      "frame_index": 3500,
+      "tag_ids": [
+        43,
+        38
+      ],
+      "disagreement_m": 0.0789101488196145
+    },
+    {
+      "frame_index": 3500,
+      "tag_ids": [
+        39,
+        38
+      ],
+      "disagreement_m": 0.15225161959814137
+    },
+    {
+      "frame_index": 3527,
+      "tag_ids": [
+        44,
+        46
+      ],
+      "disagreement_m": 0.1745419134741806
+    },
+    {
+      "frame_index": 3527,
+      "tag_ids": [
+        44,
+        45
+      ],
+      "disagreement_m": 0.04927041053631834
+    },
+    {
+      "frame_index": 3527,
+      "tag_ids": [
+        44,
+        41
+      ],
+      "disagreement_m": 0.029722176273408236
+    },
+    {
+      "frame_index": 3527,
+      "tag_ids": [
+        46,
+        45
+      ],
+      "disagreement_m": 0.17608775932113802
+    },
+    {
+      "frame_index": 3527,
+      "tag_ids": [
+        46,
+        41
+      ],
+      "disagreement_m": 0.19602276122863949
+    },
+    {
+      "frame_index": 3527,
+      "tag_ids": [
+        45,
+        41
+      ],
+      "disagreement_m": 0.06573294549042911
+    },
+    {
+      "frame_index": 3562,
+      "tag_ids": [
+        45,
+        46
+      ],
+      "disagreement_m": 0.04461661976386996
+    },
+    {
+      "frame_index": 3562,
+      "tag_ids": [
+        45,
+        47
+      ],
+      "disagreement_m": 0.17662548389840685
+    },
+    {
+      "frame_index": 3562,
+      "tag_ids": [
+        45,
+        39
+      ],
+      "disagreement_m": 0.07090658860755535
+    },
+    {
+      "frame_index": 3562,
+      "tag_ids": [
+        46,
+        47
+      ],
+      "disagreement_m": 0.13912333068949476
+    },
+    {
+      "frame_index": 3562,
+      "tag_ids": [
+        46,
+        39
+      ],
+      "disagreement_m": 0.08006772359556805
+    },
+    {
+      "frame_index": 3562,
+      "tag_ids": [
+        47,
+        39
+      ],
+      "disagreement_m": 0.15480927345228118
+    },
+    {
+      "frame_index": 3566,
+      "tag_ids": [
+        45,
+        46
+      ],
+      "disagreement_m": 0.041676289120372044
+    },
+    {
+      "frame_index": 3566,
+      "tag_ids": [
+        45,
+        47
+      ],
+      "disagreement_m": 0.04882958750585717
+    },
+    {
+      "frame_index": 3566,
+      "tag_ids": [
+        45,
+        40
+      ],
+      "disagreement_m": 0.050690562011464095
+    },
+    {
+      "frame_index": 3566,
+      "tag_ids": [
+        46,
+        47
+      ],
+      "disagreement_m": 0.04114427391800314
+    },
+    {
+      "frame_index": 3566,
+      "tag_ids": [
+        46,
+        40
+      ],
+      "disagreement_m": 0.07605990460273823
+    },
+    {
+      "frame_index": 3566,
+      "tag_ids": [
+        47,
+        40
+      ],
+      "disagreement_m": 0.0981072661294387
+    },
+    {
+      "frame_index": 3594,
+      "tag_ids": [
+        46,
+        47
+      ],
+      "disagreement_m": 0.09484331595537329
+    },
+    {
+      "frame_index": 3594,
+      "tag_ids": [
+        46,
+        40
+      ],
+      "disagreement_m": 0.08918860313221935
+    },
+    {
+      "frame_index": 3594,
+      "tag_ids": [
+        46,
+        41
+      ],
+      "disagreement_m": 0.08568630276588479
+    },
+    {
+      "frame_index": 3594,
+      "tag_ids": [
+        46,
+        42
+      ],
+      "disagreement_m": 0.036203562851016904
+    },
+    {
+      "frame_index": 3594,
+      "tag_ids": [
+        47,
+        40
+      ],
+      "disagreement_m": 0.01962159888601571
+    },
+    {
+      "frame_index": 3594,
+      "tag_ids": [
+        47,
+        41
+      ],
+      "disagreement_m": 0.054588160947138156
+    },
+    {
+      "frame_index": 3594,
+      "tag_ids": [
+        47,
+        42
+      ],
+      "disagreement_m": 0.07180799179936753
+    },
+    {
+      "frame_index": 3594,
+      "tag_ids": [
+        40,
+        41
+      ],
+      "disagreement_m": 0.04244535609862807
+    },
+    {
+      "frame_index": 3594,
+      "tag_ids": [
+        40,
+        42
+      ],
+      "disagreement_m": 0.06046303853992186
+    },
+    {
+      "frame_index": 3594,
+      "tag_ids": [
+        41,
+        42
+      ],
+      "disagreement_m": 0.056654689606873976
+    }
+  ]
+}

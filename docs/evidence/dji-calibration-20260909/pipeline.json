@@ -1,0 +1,25 @@
+{
+  "resolution_px": [
+    1280,
+    720
+  ],
+  "codec": "h264",
+  "fps": 30,
+  "fps_note": "nominal source; received stream has documented frame losses",
+  "encoder": "DJI SDK encoded frames passthrough, no phone re-encode; H264 High 3.1 reported by publisher",
+  "decoder_path": "MediaMTX WHEP -> aiortc 1.15.0 -> PyAV 17.1.0 FFmpeg H264 -> BGR24 PNG, no resize",
+  "camera_mode": "DJI FPV feed; zoom/crop mode and camera serial not independently verified",
+  "android_device_id": "redacted-device-id",
+  "phone": "Seeker Android 16",
+  "network_id": "wireless LAN identity not recorded; phone address redacted-phone-address",
+  "network_topology": [
+    "DJI aircraft",
+    "DJI controller USB",
+    "Seeker phone Wi-Fi",
+    "configured-media-host MediaMTX WHIP/WHEP",
+    "Mac Wi-Fi receiver"
+  ],
+  "fov_bounds_status": "independent horizontal/vertical bounds unavailable; omit rather than invent",
+  "gimbal_attitude_note": "Varied by operator during camera-target holds; per-frame extrinsics not established",
+  "evidence_status": "diagnostic; DJI recorded-live export provenance unsupported"
+}

@@ -1,0 +1,76 @@
+{
+  "kind": "held_out_corner_reprojection_check",
+  "intrinsics_fixed": true,
+  "intrinsics_sha256": "1fc01e0d0793be2e1f291eefa723a4b9d4b32a2540de970c21c16495c1495da4",
+  "hold_count": 3,
+  "planned_hold_count": 5,
+  "coverage_complete": false,
+  "method": "Fix intrinsics/distortion from 20 frozen fitting holds; solve each separate tag pose with IPPE_SQUARE then refine extrinsics only; report Euclidean per-corner residual. No independent physical pose ground truth.",
+  "views": [
+    {
+      "hold_id": "validation-01",
+      "capture": "capture-20260909T035913Z",
+      "frame": "frame-041642.png",
+      "sha256": "c02471c4817b48620f0b9b773d16fdf5fdad00d07538b4902782240bc2d153fa",
+      "rms_px": 0.18744696861765314,
+      "corner_errors_px": [
+        0.17334965904326316,
+        0.11623186201331427,
+        0.19989189135746102,
+        0.23880692181724772
+      ],
+      "tag_translation_camera_m": [
+        -0.07070419965033024,
+        -0.05387310399410248,
+        1.072638494337597
+      ],
+      "status": "pose_estimated"
+    },
+    {
+      "hold_id": "validation-02",
+      "capture": "capture-20260909T035913Z",
+      "frame": "frame-042856.png",
+      "sha256": "ab0dac794d360f4c824390e5f07d9a510176872fec86c53046fc5d6c685263ff",
+      "rms_px": 0.24954424193897243,
+      "corner_errors_px": [
+        0.22146244072915797,
+        0.2445230954062498,
+        0.26999667833404145,
+        0.25952639863297156
+      ],
+      "tag_translation_camera_m": [
+        -0.18466948009997164,
+        -0.09829271383748789,
+        1.1793780046841542
+      ],
+      "status": "pose_estimated"
+    },
+    {
+      "hold_id": "validation-03",
+      "capture": "capture-20260909T035913Z",
+      "frame": "frame-044657.png",
+      "sha256": "beefaa48cd2a9b4e0e7387623010203202cc3d23e00b4436eff7571860812805",
+      "rms_px": 0.16879553660886865,
+      "corner_errors_px": [
+        0.16271556535268145,
+        0.14143332765699174,
+        0.17786285494963555,
+        0.1893483460854513
+      ],
+      "tag_translation_camera_m": [
+        -0.021860738791244446,
+        -0.17620324004008303,
+        1.3330612511160156
+      ],
+      "status": "pose_estimated"
+    }
+  ],
+  "limitations": [
+    "Only 3 of 5 planned independent validation holds acquired.",
+    "Three central/front/side views do not cover all pitch directions or image edges.",
+    "Four corners supply limited residual degrees of freedom; low reprojection error alone does not demonstrate metric accuracy.",
+    "Independent horizontal/vertical FOV bounds and qualified DJI provenance remain missing."
+  ],
+  "rms_px": 0.20485818501906775,
+  "max_view_rms_px": 0.24954424193897243
+}

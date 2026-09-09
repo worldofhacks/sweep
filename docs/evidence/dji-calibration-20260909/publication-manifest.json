@@ -1,0 +1,42 @@
+{
+  "kind": "calibration_publication_manifest",
+  "source_root": "local builds/dji-calibration-20260909",
+  "changes": [
+    "Absolute capture paths made package-relative.",
+    "Phone device identifier, private phone address and configured host redacted.",
+    "Candidate and frozen-hold metadata hash references updated after normalization; original hashes retained here.",
+    "Offline scripts made repository-relative; fit reads the preserved pipeline document.",
+    "No numeric calibration, corner, image-byte or pose data changed."
+  ],
+  "original_metadata_sha256": {
+    "fitting-holds-frozen.json": "178fb0895e4522ae983b2b74659c68f3809105edbde45dfc53d15b2c3e8d2ccc",
+    "evidence-index.json": "565d1c8ca88303ef452b64b3d6571e13e98090d32a8a874afd34143fc287e0ef",
+    "fit-stability.json": "59519a23ddb40c2cc8f4998eed59c3057ff695abc1e85c85ee3952dd7c3586ed",
+    "initial-pinhole-candidate.json": "3d1a453dcafd5dba0070671de1179344c4338d764d9b1061ff8ce853928ad947",
+    "operator-declarations.json": "cf2d2bffc0aad29e9f27a3de30305663037bd9977ad54b06dcf6b223cfd54f2d",
+    "held-out-results.json": "98d29cd327599f4600b5614b42a221303ccf501287db86e34afd6a46b453e98a",
+    "pipeline.json": "6563fe8a4f721d7d1b86020b27c4dd6803f6c60730246b154eeb0bc8683ba3ab",
+    "fitting-evidence.json": "ff03bb44f286faef4de4f8c1dbe2ccbe8df8706c1637b1bdfc5a55bb057cb083",
+    "capture-20260909T043401Z/capture-manifest.json": "1d53e69ea028468b03427b37ef3dd7336324c2ac0a56c0d9dd6d2d7ad0417766",
+    "capture-20260909T043401Z/capture-context.json": "2098c2ae42b5e620283d6abf51f73d3b9ec213812d8770fece84fda67b813d9f",
+    "capture-20260909T043401Z/frames.jsonl": "8935277bf0f68c04a25b9078227b56fc8c1b8614663787767d8c45c8aac48e28",
+    "capture-20260909T043401Z/hallway-diagnostic.json": "ef73fa2db659ce12aee69e182ef11901177857a7722013c522d992c08586016d",
+    "capture-20260909T043401Z/hallway-poses.jsonl": "66e415d29874cdab0a6e4de9d7cd5668a473495dc618492205f5dbaf2f8f0301",
+    "capture-20260909T043401Z/hallway-geometry-gates.json": "27a10d9e9370c11bb242a3d0b9a1ac14e9436096e66a1bd5adf8889aa17ff1e6",
+    "capture-20260909T043401Z/hallway-geometry-frames.jsonl": "56f228363dab51ecbf6f26076a6cff081b93b4b75d101f5b6de977aabbaf3317",
+    "capture-20260909T034131Z/capture-manifest.json": "188d3f81d61e847e92644c37ca6401e4b5adcd47f8729f8096f5ac48c4fed4cb",
+    "capture-20260909T034131Z/selected-holds.json": "6ceae7596b2b2063894b1426bd9471e70ab42894d32737f070ed3fa3663b6374",
+    "capture-20260909T035913Z/capture-manifest.json": "43d411c41b5e30ee66d2455bcf5bbe7d3db088fd7f90b4fc38f82d36883c4ba6",
+    "capture-20260909T035913Z/selected-holds.json": "7b53a8d2f89bd90742ae960a9c034ae395243117b2670237db7673b2cf6b74ce",
+    "capture-20260909T035913Z/capture-context.json": "8253abe05556a0a8b631a7b84bf6bf87a81b632457b3c2c65187c33989173eda"
+  },
+  "published_images": 23,
+  "omitted_from_git": [
+    "received.h264",
+    "encoded-frames.jsonl",
+    "unselected PNGs",
+    "local credentials/configuration",
+    "record_whep.py (local live recorder)",
+    "calibration-metadata.zip (duplicate local bundle)"
+  ]
+}

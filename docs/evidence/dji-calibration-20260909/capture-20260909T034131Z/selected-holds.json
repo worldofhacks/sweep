@@ -1,0 +1,532 @@
+{
+  "target_id": 54,
+  "family": "tag36h11",
+  "tag_size_m": 0.199898,
+  "holds": [
+    {
+      "hold_id": "hold-01",
+      "pose": "approximately front-facing, central image",
+      "role": "diagnostic_only_pending_flat_target",
+      "operator_confirmation": "In place",
+      "frame": {
+        "frame_index": 4852,
+        "file": "frame-004852.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 18970110,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              663.2802734375,
+              402.2137145996094
+            ],
+            [
+              514.43359375,
+              409.307373046875
+            ],
+            [
+              507.5246887207031,
+              259.4212951660156
+            ],
+            [
+              656.7758178710938,
+              255.31004333496094
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          147.047607421875
+        ],
+        "sharpness_laplacian_variance": 143.18459851559768,
+        "sha256": "162a99e711ed17da7ebaab058d00353450096412ef7243365ab2f46612a7ce87",
+        "saved_utc": "2026-09-09T03:45:02.778910+00:00"
+      },
+      "review": "All four corners visible; tag detected consistently in eight consecutive sampled frames; shortest edge 147-150 px. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-02",
+      "pose": "sideways oblique view, first direction, central image; angle not measured",
+      "role": "diagnostic_only_pending_flat_target",
+      "operator_confirmation": "In place",
+      "frame": {
+        "frame_index": 6354,
+        "file": "frame-006354.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 24891570,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              665.4808959960938,
+              412.50018310546875
+            ],
+            [
+              580.6915893554688,
+              427.28179931640625
+            ],
+            [
+              574.77294921875,
+              284.7784118652344
+            ],
+            [
+              658.6193237304688,
+              286.2962951660156
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          83.86011505126953
+        ],
+        "sharpness_laplacian_variance": 79.89067791382472,
+        "sha256": "d4891cd8359fd14ef816a5216f6ddd1a28d7dfe48e13b1c6eb80983c3dfbf59e",
+        "saved_utc": "2026-09-09T03:46:08.564273+00:00"
+      },
+      "review": "All four corners visible; tag 54 detected in six consecutive sampled frames; shortest edge 83-87 px near lower target limit. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-03",
+      "pose": "opposite sideways oblique view, central image; angle not measured",
+      "role": "diagnostic_only_pending_flat_target",
+      "operator_confirmation": "In place",
+      "frame": {
+        "frame_index": 7713,
+        "file": "frame-007713.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 30285540,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              768.4154052734375,
+              442.6155090332031
+            ],
+            [
+              616.3922119140625,
+              438.5440368652344
+            ],
+            [
+              612.7227172851562,
+              264.41070556640625
+            ],
+            [
+              763.2786865234375,
+              243.69554138183594
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          151.97439575195312
+        ],
+        "sharpness_laplacian_variance": 175.549308791774,
+        "sha256": "773c3588db83e71dcc2a80738d1c76059b67b373e47267ab32c5aca4a16f0d3f",
+        "saved_utc": "2026-09-09T03:47:08.496293+00:00"
+      },
+      "review": "All four corners visible; tag 54 consistently detected; shortest edge 152-155 px. Sheet appears to bow away from wall; target planarity needs confirmation before fitting."
+    },
+    {
+      "hold_id": "hold-04",
+      "pose": "operator-requested view from above; vertical perspective, upper image region; angle not measured",
+      "role": "diagnostic_only_pending_flat_target",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 9072,
+        "file": "frame-009072.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 35679780,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              734.8310546875,
+              255.9305419921875
+            ],
+            [
+              560.4064331054688,
+              264.18914794921875
+            ],
+            [
+              541.36669921875,
+              98.14246368408203
+            ],
+            [
+              743.2446899414062,
+              90.22962951660156
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          165.9143829345703
+        ],
+        "sharpness_laplacian_variance": 158.01758135746027,
+        "sha256": "4749632cddf7d038c0f649c9d3b7ee62ecb639ce74657e97d0c22db6391941b6",
+        "saved_utc": "2026-09-09T03:48:08.425023+00:00"
+      },
+      "review": "All four black-square corners visible; selected frame has about 90 px top margin and 166 px shortest edge. Recent frames vary vertically by about 50 px, so only one image represents this hold. Target flatness remains unverified."
+    },
+    {
+      "hold_id": "hold-05",
+      "pose": "upward-looking oblique view, central image; angle not measured",
+      "role": "diagnostic_only_pending_flat_target",
+      "operator_confirmation": "In place",
+      "frame": {
+        "frame_index": 10038,
+        "file": "frame-010038.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 39423780,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              752.4755859375,
+              380.2109069824219
+            ],
+            [
+              530.3613891601562,
+              375.35772705078125
+            ],
+            [
+              542.4410400390625,
+              231.54830932617188
+            ],
+            [
+              733.3284912109375,
+              235.0576934814453
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          144.31585693359375
+        ],
+        "sharpness_laplacian_variance": 587.9396918303127,
+        "sha256": "f11f85120f96a0bb6feba5f5fffacf1a40bc0c79cb603fa0865bae494f3f4fdb",
+        "saved_utc": "2026-09-09T03:48:50.083893+00:00"
+      },
+      "review": "Tag 54 detected, shortest edge 144 px. Sheet remains attached only at top; bottom stands away from wall and top black border visibly curves. Target planarity is not satisfied for a qualified planar fit."
+    },
+    {
+      "hold_id": "hold-06",
+      "flat_series_index": 1,
+      "pose": "approximately front-facing, central image, nearer distance",
+      "role": "fit_candidate",
+      "operator_confirmation": "flat",
+      "frame": {
+        "frame_index": 15347,
+        "file": "frame-015347.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 60399900,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              716.4344482421875,
+              453.593017578125
+            ],
+            [
+              495.8259582519531,
+              453.606689453125
+            ],
+            [
+              497.3498840332031,
+              231.1325225830078
+            ],
+            [
+              718.8402709960938,
+              235.08653259277344
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          218.5197296142578
+        ],
+        "sharpness_laplacian_variance": 596.5828970027394,
+        "sha256": "be7a2df8ad71a990607a7413ac589ffe09eafbd01ed95268caf3e790fee8bdbf",
+        "saved_utc": "2026-09-09T03:52:43.124970+00:00"
+      },
+      "review": "Four paper corners visibly taped to wall, no obvious bow across black square; tag 54 clear, shortest edge 219 px, slightly above preferred acquisition size but fully visible. Planarity not independently measured."
+    },
+    {
+      "hold_id": "hold-07",
+      "flat_series_index": 2,
+      "pose": "operator-requested left viewpoint; mild sideways perspective, right-of-center image; angle not measured",
+      "role": "fit_candidate",
+      "operator_confirmation": "In place",
+      "frame": {
+        "frame_index": 16476,
+        "file": "frame-016476.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 64834290,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              848.8031616210938,
+              426.58935546875
+            ],
+            [
+              645.5415649414062,
+              429.6780700683594
+            ],
+            [
+              647.4895629882812,
+              203.19825744628906
+            ],
+            [
+              852.5140991210938,
+              213.6370086669922
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          203.28506469726562
+        ],
+        "sharpness_laplacian_variance": 596.6922932598915,
+        "sha256": "85fd51d253c6e935a140e67c814f4dca5f5d351e5ddeae7c10b389c634c79c54",
+        "saved_utc": "2026-09-09T03:53:32.383698+00:00"
+      },
+      "review": "All four tag corners clear and paper corners taped; tag 54 detected across five sampled frames, shortest edge 200-203 px. Final pose diversity and fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-08",
+      "flat_series_index": 3,
+      "pose": "operator-requested right viewpoint; opposite sideways perspective, right image region, farther than preceding hold; angle not measured",
+      "role": "fit_candidate",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 18754,
+        "file": "frame-018754.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 73718460,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              881.5255126953125,
+              435.0519104003906
+            ],
+            [
+              741.797119140625,
+              424.2884521484375
+            ],
+            [
+              742.553466796875,
+              276.4586181640625
+            ],
+            [
+              883.4342041015625,
+              268.8692321777344
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          140.142333984375
+        ],
+        "sharpness_laplacian_variance": 489.5577220155881,
+        "sha256": "853171e0ad477e3aac270b4ea78452566dbe60b7bf8d29c8a266df740e18476d",
+        "saved_utc": "2026-09-09T03:55:11.084299+00:00"
+      },
+      "review": "All four corners clear, paper secured at corners; tag 54 consistently detected across five sampled frames, shortest edge 137-140 px. Final pose diversity and fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-09",
+      "flat_series_index": 4,
+      "pose": "approximately frontoparallel, lower image region; requested downward tilt not evident",
+      "role": "fit_candidate",
+      "operator_confirmation": "In place",
+      "frame": {
+        "frame_index": 20334,
+        "file": "frame-020334.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 79780500,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              800.9581298828125,
+              673.7548217773438
+            ],
+            [
+              609.2103271484375,
+              669.5106811523438
+            ],
+            [
+              612.8237915039062,
+              477.7997131347656
+            ],
+            [
+              804.2018432617188,
+              481.6972351074219
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          191.41773986816406
+        ],
+        "sharpness_laplacian_variance": 346.27110971049433,
+        "sha256": "e458dd89c8b81918cc89a7c93d7fb1c0b6e90b433987f414da3096571011caa5",
+        "saved_utc": "2026-09-09T03:56:18.450371+00:00"
+      },
+      "review": "All four black-square corners visible, 46 px bottom margin, shortest edge 191 px. Top and bottom edge lengths nearly equal; preserve as image-region coverage rather than confirmed pitch diversity. Paper lower margin outside frame."
+    },
+    {
+      "hold_id": "hold-10",
+      "flat_series_index": 5,
+      "pose": "downward-looking oblique view with some sideways angle, left-of-center image; angles not measured",
+      "role": "fit_candidate",
+      "operator_confirmation": "in place",
+      "frame": {
+        "frame_index": 22318,
+        "file": "frame-022318.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 87535530,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              619.2682495117188,
+              453.5055236816406
+            ],
+            [
+              394.02972412109375,
+              450.01458740234375
+            ],
+            [
+              397.16094970703125,
+              237.44940185546875
+            ],
+            [
+              650.990478515625,
+              254.85708618164062
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          201.1653594970703
+        ],
+        "sharpness_laplacian_variance": 116.46501594656367,
+        "sha256": "fb19cb72ba8eac39f6110089889b4f3a4ba79de7abe4da0144d9436628481f1a",
+        "saved_utc": "2026-09-09T03:57:44.634384+00:00"
+      },
+      "review": "All four tag corners clear, paper corners secured; shortest edge 201 px. Top black edge visibly longer than bottom, providing vertical perspective absent from prior hold. Later sampled frames show handheld drift; count as one hold only. Final fit quality unassessed."
+    },
+    {
+      "hold_id": "hold-11",
+      "flat_series_index": 6,
+      "pose": "upward-looking oblique view, left-of-center image; angle not measured",
+      "role": "fit_candidate",
+      "operator_confirmation": "In place",
+      "frame": {
+        "frame_index": 23598,
+        "file": "frame-023598.png",
+        "shape_px": [
+          1280,
+          720
+        ],
+        "pts": 92587590,
+        "time_base": "1/90000",
+        "tag_ids": [
+          54
+        ],
+        "corners_px": [
+          [
+            [
+              628.6453247070312,
+              470.76422119140625
+            ],
+            [
+              446.28790283203125,
+              457.5947265625
+            ],
+            [
+              461.81365966796875,
+              318.7869873046875
+            ],
+            [
+              623.280517578125,
+              336.122802734375
+            ]
+          ]
+        ],
+        "shortest_edges_px": [
+          134.74826049804688
+        ],
+        "sharpness_laplacian_variance": 843.7577994791243,
+        "sha256": "d424006a9592be4fc4699473b33010367b1a73b3ff0e1ec1a6caba65e0f39f68",
+        "saved_utc": "2026-09-09T03:58:40.750135+00:00"
+      },
+      "review": "All four tag corners visible, paper corners secured; shortest edge 135 px, bottom black edge longer than top consistent with upward view. Object at right does not cover black square. Final fit quality unassessed."
+    }
+  ],
+  "target_planarity_note": "Hold-05 image confirms the sheet remains bowed after flattening request. Hold further calibration pose guidance until operator flattens or mounts spare target to rigid planar backing. Retain first five holds as diagnostic/provisional evidence; recollect for final calibration.",
+  "flat_target_operator_confirmation": {
+    "statement": "flat",
+    "received_utc": "2026-09-09T03:50:47.448088+00:00",
+    "first_checked_frame_index": 12473,
+    "visual_verification": "pending; frame shows wall without tag",
+    "subsequent_holds_only": true
+  },
+  "flat_target_visual_check": {
+    "frame_index": 15347,
+    "result": "four paper corners secured, black square visibly flatter",
+    "first_flat_series_hold": "hold-06"
+  }
+}

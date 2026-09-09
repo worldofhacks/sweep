@@ -1,0 +1,10 @@
+{
+  "kind": "owner_poc_qualification",
+  "status": "qualified_for_poc",
+  "authorization_source": "Owner in this task on host",
+  "owner_statement": "its qualifed for the POC",
+  "recorded_utc": "2026-09-09T04:54:06.347848+00:00",
+  "scope": "Owner approves this calibration for the POC.",
+  "technical_results": "Measured results, candidate rejection reasons and unresolved formal calibration checks are retained.",
+  "aircraft_commands_authorized_by_this_record": false
+}

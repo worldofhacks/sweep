@@ -1,0 +1,20 @@
+{
+  "previous_capture": "capture-20260909T034131Z",
+  "target_id": 54,
+  "tag_size_m": 0.199898,
+  "target_flattened": true,
+  "previous_flat_holds": 6,
+  "next_flat_series_index": 7,
+  "purpose": "continued same DJI passthrough pipeline, new WHEP receive session; timestamps restart independently",
+  "next_requested_sequence": {
+    "kind": "four image-region holds",
+    "image_positions": [
+      "left",
+      "right",
+      "top",
+      "bottom"
+    ],
+    "seconds_each": 5,
+    "request_prepared_utc": "2026-09-09T03:59:20.028221+00:00"
+  }
+}

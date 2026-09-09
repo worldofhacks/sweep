@@ -1,0 +1,26 @@
+{
+  "captures": [
+    {
+      "capture": "capture-20260909T034131Z",
+      "raw_bytes": 341144456,
+      "raw_sha256": "e0a8dbe286b781fdd24e44aa261f1f2b57f4e3e9c6ff6a7a8375fcb4ad475219",
+      "verified": true,
+      "manifest": "capture-manifest.json"
+    },
+    {
+      "capture": "capture-20260909T035913Z",
+      "raw_bytes": 637935287,
+      "raw_sha256": "66abc8d24aca5a0f4d7467f014c8a6059a505b748ecbb57862763b20054f2d48",
+      "verified": true,
+      "manifest": "capture-manifest.json"
+    },
+    {
+      "capture": "capture-20260909T043401Z",
+      "raw_bytes": 91166732,
+      "raw_sha256": "e86ae67ec5e29259705751b78075184190160ba2bd56536b7b1fbaaac18ce425",
+      "verified": true,
+      "manifest": "capture-manifest.json"
+    }
+  ],
+  "credentials_included": false
+}
