@@ -13,9 +13,18 @@ from adapters.sim.flight import SimFlightAdapter
 from arbiter.safety import SafetyArbiter
 from planner.models import CommandOperation
 from relay.app import RelayRuntime
+from relay.auth import Principal
 from relay.bridge import RelayNodeLink, build_adapters, build_dispatcher
 from relay.settings import AdapterBackend, RelaySettings
-from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION, EventIds, MutableClock
+from relay.tests.conftest import (
+    ADAPTER_KEY,
+    CONSOLE_KEY,
+    SESSION,
+    EventIds,
+    MutableClock,
+    membership_payload,
+)
+from relay.tests.test_navigation_wire import _publisher
 from tests.autonomy_fixtures import camera_config, make_snapshot, safety_config
 
 
@@ -67,6 +76,35 @@ def test_node_link_refuses_the_relay_loop_thread_for_send_and_await(
         link.send(_hover_request())
     with pytest.raises(AdapterError, match="not started"):
         link.await_acknowledgement("command-1", timeout_ms=10)
+
+
+def test_hover_reaches_the_node_while_navigation_evidence_is_being_published(
+    tmp_path: Path, clock: MutableClock, event_ids: EventIds
+) -> None:
+    publisher, _, _, _, _ = _publisher()
+
+    async def exercise() -> None:
+        runtime = RelayRuntime(_settings(tmp_path), clock=clock, event_ids=event_ids)
+        await runtime.start()
+        try:
+            session = runtime.session(SESSION)
+            principal = Principal(source="adapter", drone_id=1, signing_key=ADAPTER_KEY)
+            phone = await runtime.subscribe(SESSION, principal)
+            session.process_membership(
+                membership_payload(action="join", event_id="publication-lock-hover"), principal
+            )
+            link = RelayNodeLink(
+                runtime, SESSION, delivery_timeout_ms=100, navigation_publisher=publisher
+            )
+            with publisher.publication_scope():
+                sending = asyncio.create_task(asyncio.to_thread(link.send, _hover_request()))
+                delivered = await asyncio.wait_for(phone.queue.get(), timeout=0.5)
+            await sending
+            assert delivered.event["operation"] == "hover"
+        finally:
+            await runtime.stop()
+
+    asyncio.run(exercise())
 
 
 def test_build_adapters_selects_the_configured_backend(

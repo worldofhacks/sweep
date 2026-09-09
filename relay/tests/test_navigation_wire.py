@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, replace
 from pathlib import Path
+from threading import Event, Thread
 
 import pytest
 
 from adapters.dji_mini3.remote import CommandRequest
-from planner.models import Plan, Position, Refusal
+from planner.models import CommandOperation, Plan, Position, Refusal
 from planner.navigation import preview_evidence
 from planner.navigation_authorization import NavigationApproval, content_digest
 from planner.navigation_runtime import (
@@ -361,6 +362,41 @@ def test_arrival_retention_requires_confirmed_current_arrival() -> None:
 
     assert not publisher.retain_arrival(request.command_id)
     assert publisher.update(_control_pose()) == []
+
+
+def test_phone_wire_allows_safety_commands_outside_a_frozen_goto_plan() -> None:
+    publisher, plan, snapshot, _, _ = _publisher()
+    request = replace(
+        _request(plan),
+        command_id="safety-hover",
+        operation=CommandOperation.HOVER,
+        args={},
+    )
+
+    with publisher.command_scope(plan, lambda: snapshot[0]):
+        assert publisher.prepare_request(request) == []
+
+
+def test_publication_scope_blocks_a_tracking_update_until_command_evidence_is_committed() -> None:
+    publisher, plan, snapshot, poses, _ = _publisher()
+    request = _request(plan)
+    with publisher.command_scope(plan, lambda: snapshot[0]):
+        publisher.prepare_request(request)
+    publisher.activate(request.command_id)
+
+    completed = Event()
+
+    def update() -> None:
+        with publisher.publication_scope():
+            publisher.update(poses[0])
+        completed.set()
+
+    with publisher.publication_scope():
+        worker = Thread(target=update)
+        worker.start()
+        assert not completed.wait(0.05)
+    worker.join()
+    assert completed.is_set()
 
 
 def test_phone_wire_requires_exact_bound_goto_and_flight_approval() -> None:

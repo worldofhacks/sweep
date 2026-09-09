@@ -176,6 +176,13 @@ class NavigationWirePublisher:
         self._pending: dict[str, _ActiveCommand] = {}
         self._sequences: dict[tuple[int, int], int] = {}
         self._lock = RLock()
+        self._publication_lock = RLock()
+
+    @contextmanager
+    def publication_scope(self) -> Iterator[None]:
+        """Serialize host navigation evidence creation with its relay audit commit."""
+        with self._publication_lock:
+            yield
 
     @contextmanager
     def command_scope(self, plan: Plan, snapshot: SnapshotProvider) -> Iterator[None]:
@@ -197,6 +204,8 @@ class NavigationWirePublisher:
             if "navigation_route_id" in request.args:
                 raise ValueError("navigation command was sent outside its approved command scope")
             return []
+        if request.operation is not CommandOperation.GOTO:
+            return []
         command = next(
             (item for item in scope.plan.commands if item.command_id == request.command_id), None
         )
@@ -204,8 +213,6 @@ class NavigationWirePublisher:
             raise ValueError("command request is outside the approved navigation plan")
         if command.operation is not request.operation or command.drone_id != request.drone_id:
             raise ValueError("command request differs from the approved command")
-        if command.operation is not CommandOperation.GOTO:
-            return []
         self._validate_request(request, command)
         return self.prepare(scope.plan, command, scope.snapshot())
 

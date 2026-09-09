@@ -2348,9 +2348,10 @@ class AutonomyComposition:
                     pose = session.control_pose(drone_id)
                     if pose is not None:
                         try:
-                            frames = publisher.update(pose)
-                            for frame in frames:
-                                session.record_navigation_evidence(frame)
+                            with publisher.publication_scope():
+                                frames = publisher.update(pose)
+                                for frame in frames:
+                                    session.record_navigation_evidence(frame)
                             output.extend(frames)
                         except NavigationTrackingError as error:
                             _LOGGER.warning("navigation tracking refused for aircraft %s", drone_id)

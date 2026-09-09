@@ -77,15 +77,17 @@ class RelayNodeLink:
             if request.operation in {CommandOperation.LAND, CommandOperation.ESTOP}:
                 self._navigation_publisher.retire_epoch(request.drone_id, request.connection_epoch)
             try:
-                navigation_frames = self._navigation_publisher.prepare_request(request)
-            except ValueError as error:
+                if request.operation is CommandOperation.GOTO:
+                    with self._navigation_publisher.publication_scope():
+                        navigation_frames = self._navigation_publisher.prepare_request(request)
+                        for navigation_frame in navigation_frames:
+                            self._session.record_navigation_evidence(navigation_frame)
+                else:
+                    navigation_frames = self._navigation_publisher.prepare_request(request)
+            except (ValueError, RuntimeError) as error:
+                self._navigation_publisher.retire(request.command_id)
                 raise AdapterError(str(error)) from error
             for navigation_frame in navigation_frames:
-                try:
-                    self._session.record_navigation_evidence(navigation_frame)
-                except (ValueError, RuntimeError) as error:
-                    self._navigation_publisher.retire(request.command_id)
-                    raise AdapterError(str(error)) from error
                 if not self._deliver(loop, request.drone_id, navigation_frame):
                     self._navigation_publisher.retire(request.command_id)
                     raise AdapterError(
