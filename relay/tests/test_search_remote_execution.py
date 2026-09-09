@@ -305,7 +305,7 @@ def test_remote_search_preview_and_confirmed_intent_use_the_signed_control_pose(
                     aircraft={
                         1: replace(
                             snapshot.aircraft[1],
-                            pose=Position(arrival.x_m, arrival.y_m, arrival.z_m),
+                            pose=Position(*deployment.config.frame(1).enu(arrival)),
                         )
                     },
                 )

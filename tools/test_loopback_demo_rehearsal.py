@@ -384,20 +384,43 @@ def test_loopback_rehearsal_completes_an_empty_aircraft_survey(tmp_path) -> None
         )
         search = rehearsal._composition.session(rehearsal.session_id).search_runtime
         assert search is not None
-        status = _wait_for(
-            lambda: (
-                payload
-                if (payload := search.status_payload(intent_id))["state"]
-                in {"covered", "incomplete", "cancelled", "hold"}
-                else None
-            ),
-            timeout_s=120,
-        )
-        if status["state"] != "covered":
-            diagnostics = {"search": status, **_navigation_diagnostics(rehearsal)}
+        session = rehearsal._composition.runtime.sessions[rehearsal.session_id]
+
+        def terminal_execution():
+            with session._lock:
+                status = session._intents[intent_id].status.value
+            return status if status in {"completed", "failed", "refused", "invalidated"} else None
+
+        try:
+            lifecycle = _wait_for(terminal_execution, timeout_s=120)
+        except AssertionError:
+            lifecycle = "timeout"
+        status = search.status_payload(intent_id)
+        events = [
+            event for event in _audit_events(rehearsal) if event.get("intent_id") == intent_id
+        ]
+        if lifecycle != "completed" or status["state"] != "covered":
+            diagnostics = {
+                "lifecycle": lifecycle,
+                "search": status,
+                "execution_events": events,
+                **_navigation_diagnostics(rehearsal),
+            }
             (tmp_path / "search-diagnostics.json").write_text(json.dumps(diagnostics))
             print(json.dumps(diagnostics, sort_keys=True))
             raise AssertionError(diagnostics)
+        commands = [event for event in events if event.get("type") == "command"]
+        assert [event["operation"] for event in commands] == ["goto"] * 6 + ["hover"]
+        assert any(
+            event.get("command_id") == commands[-1]["command_id"]
+            and event.get("status") == "completed"
+            and event.get("source") == "adapter"
+            for event in events
+        )
+        assert any(
+            event.get("status") == "completed" and event.get("source") == "autonomy"
+            for event in events
+        )
         assert status["mode"] == "survey"
         assert status["candidates"] == []
         assert len(status["tasks"]) == 1
