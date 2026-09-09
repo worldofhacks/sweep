@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from threading import RLock
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,8 +20,10 @@ from planner.models import ExecutionResult, LifecycleStatus, Plan, Position, Ref
 from planner.navigation import ArtifactPin, NavigationPermission, Pose
 from planner.search import SearchArea
 from planner.test_navigation_runtime import setup_runtime
+from relay.autonomy import AutonomySession, _AwaitingExecution, _Job, _ResumeToken
 from relay.intent_v1 import IntentName
 from relay.search_runtime import SearchMissionPreview, SearchRuntime, SearchRuntimeConfig
+from relay.session import _IntentLedgerEntry
 from tests.autonomy_fixtures import make_intent
 
 
@@ -125,6 +130,59 @@ def _accepted_sighting(
         1,
         "a" * 64,
     )
+
+
+@pytest.mark.parametrize(
+    ("terminal_status", "expected_state"),
+    [(LifecycleStatus.COMPLETED, "incomplete"), (LifecycleStatus.FAILED, "hold")],
+)
+def test_late_search_terminal_result_finishes_the_real_runtime(
+    relay_session, clock, terminal_status, expected_state
+) -> None:
+    runtime = _search_runtime()
+    intent = replace(
+        _intent("late-search-terminal"), session=relay_session.session_id, t=clock()
+    )
+    preview = runtime.prepare(intent, _snapshot())
+    assert isinstance(preview, SearchMissionPreview)
+    relay_session._intents[intent.intent_id] = _IntentLedgerEntry(
+        LifecycleStatus.EXECUTING, intent.selection, {}
+    )
+    owner = AutonomySession.__new__(AutonomySession)
+    owner.session_id = relay_session.session_id
+    owner._lock = RLock()
+    owner._awaiting = {}
+    owner._composition = SimpleNamespace(
+        runtime_if_bound=lambda: None, report_multiview_execution=lambda *_: None
+    )
+    owner.search_runtime = runtime
+    owner.search_detection = None
+    pending = ExecutionResult(
+        intent_id=intent.intent_id,
+        roster_version=preview.plan.roster_version,
+        status=LifecycleStatus.EXECUTING,
+        plan=preview.plan,
+    )
+    awaiting = _AwaitingExecution(
+        _Job(intent, relay_session), relay_session, None, _snapshot(), pending
+    )
+    owner._awaiting[intent.intent_id] = awaiting
+    result = ExecutionResult(
+        intent_id=intent.intent_id,
+        roster_version=preview.plan.roster_version,
+        status=terminal_status,
+        plan=preview.plan,
+    )
+
+    committed = owner.commit_resume(_ResumeToken(intent.intent_id, awaiting, None), result)
+
+    assert committed is not None
+    assert committed.execution.status is terminal_status
+    assert intent.intent_id not in owner._awaiting
+    deadline = time.monotonic() + 1
+    while runtime.status(intent.intent_id).state == "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert runtime.status(intent.intent_id).state == expected_state
 
 
 def test_survey_requires_fresh_camera_frames_and_never_records_object_findings() -> None:
