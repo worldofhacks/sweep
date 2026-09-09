@@ -507,7 +507,6 @@ def _tool_schema() -> dict[str, object]:
     return {
         "name": "submit_compiler_outcome",
         "description": "Submit a grounded plan or typed non-plan outcome.",
-        "strict": True,
         "input_schema": {
             "type": "object",
             "additionalProperties": False,

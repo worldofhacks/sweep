@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import multiprocessing
+import os
 import time
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from language.transport import (
     RecordingTransport,
     ReplayTransport,
     TransportError,
+    _provider_tool_schema,
     request_key,
 )
 from relay.intent_v1 import IntentName
@@ -150,7 +152,7 @@ def test_anthropic_transport_without_key_makes_no_request(monkeypatch) -> None:
         AnthropicTransport().complete(ModelRequest(transcript="hold", facts={}))
 
 
-def test_compiler_uses_active_pinned_model_and_strict_tool_schema(monkeypatch) -> None:
+def test_compiler_uses_active_pinned_model_and_tool_schema(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class Response:
@@ -191,7 +193,7 @@ def test_compiler_uses_active_pinned_model_and_strict_tool_schema(monkeypatch) -
     assert "thinking" not in captured
     tools = captured["tools"]
     assert isinstance(tools, list)
-    assert tools[0]["strict"] is True
+    assert "strict" not in tools[0]
     intent_schema = tools[0]["input_schema"]["properties"]["intents"]["items"]
     assert intent_schema["properties"]["name"]["enum"] == [
         name.value
@@ -299,3 +301,38 @@ def test_replay_binds_payload_and_digest_to_one_immutable_read(tmp_path, monkeyp
         "kind": "refuse",
         "reason": "unknown_reference",
     }
+
+
+def test_provider_tool_schema_does_not_reintroduce_strict_mode() -> None:
+    # The live API rejects this schema's nesting with "Schema is too complex."
+    # only when strict mode asks it to compile a constrained-decoding grammar
+    # from it; the same nesting is accepted as a plain hint schema. Bisection
+    # against the real API showed depth isn't what predicts the rejection -
+    # shrinking one nested empty object elsewhere in this same schema also
+    # fixed it - so guard the flag directly rather than a depth/size proxy.
+    assert "strict" not in _provider_tool_schema()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("ANTHROPIC_API_KEY"), reason="requires a live Anthropic API key"
+)
+def test_provider_tool_schema_is_accepted_by_the_live_anthropic_api() -> None:
+    import httpx
+
+    response = httpx.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+        },
+        json={
+            "model": PINNED_COMPILER_MODEL,
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "Hold."}],
+            "tools": [_provider_tool_schema()],
+            "tool_choice": {"type": "tool", "name": "submit_compiler_outcome"},
+        },
+        timeout=90,
+    )
+    assert response.status_code == 200, response.text
