@@ -202,7 +202,7 @@ class RelayTranscriptCompiler:
                 return cached[1]
             compiler = TranscriptCompiler(
                 self._transport,
-                audit=SessionCompilerAudit(session.audit_log, session.event_ids),
+                audit=SessionCompilerAudit(session.audit_log, session.event_ids, session.clock),
                 tracer=self._tracer,
                 plan_ttl_ms=self._plan_ttl_ms,
                 state_max_age_ms=self._state_max_age_ms,

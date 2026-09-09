@@ -9,6 +9,7 @@ import type { RecorderFactory } from '../../voice/use-push-to-talk'
 import type { VoiceDependencies } from '../types'
 import type { NavigationCatalog, NavigationClient } from '../../navigation'
 import type { MultiviewClient, MultiviewPreview, MultiviewPreviewRequest } from '../../relay/multiview'
+import { voiceObservationView } from './observation-command'
 
 vi.mock('../../atlas/SpaceMap', () => ({ default: () => <div aria-label="Geographic map test boundary" /> }))
 
@@ -220,7 +221,7 @@ async function compileTyped(u: ReturnType<typeof userEvent.setup>, text: string)
   const field = screen.getByRole('textbox', { name: 'Utterance' })
   await u.clear(field)
   await u.type(field, text)
-  await u.click(screen.getByRole('button', { name: 'Compile to intents' }))
+  await u.click(screen.getByRole('button', { name: 'Review transcript' }))
 }
 
 test('typed text uses the relay semantic compiler and never local matching', async () => {
@@ -235,6 +236,22 @@ test('typed text uses the relay semantic compiler and never local matching', asy
   expect(relay.typedRequests[0]?.text).toBe('Go to the atrium.')
   expect(relay.requests).toEqual([])
   expect(screen.queryByRole('button', { name: 'Draft for confirmation' })).not.toBeInTheDocument()
+})
+
+test.each(['Show live video', 'Show object detections', 'Show raw lidar'])('spoken %s opens a sensor view without staging any model motion proposal', async (transcript) => {
+  const relay = new QueuedTranscriptClient()
+  relay.answer(outcome({ status: 'transcribed', source: 'whisper', transcript, plan: relayPlan({ transcript }) }))
+  const { clients } = mount({ transcript: relay })
+  await record()
+  await waitFor(() => expect(screen.getByLabelText('Voice sensor view')).toBeInTheDocument())
+  expect(screen.queryByLabelText('Compiled plan')).not.toBeInTheDocument()
+  expect(clients.language.sent).toEqual([])
+  expect(clients.console.sent).toEqual([])
+})
+
+test('sensor view phrases cannot swallow a request that also asks for motion', () => {
+  expect(voiceObservationView('Show lidar and drive forward')).toBeNull()
+  expect(voiceObservationView('Navigate to the live camera')).toBeNull()
 })
 
 test('a semantic review with a stale catalog cannot mint a preview', async () => {

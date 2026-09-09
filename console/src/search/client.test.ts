@@ -18,14 +18,14 @@ describe('search HTTP client', () => {
 
   test('uses authenticated endpoints and parses preview, status, and acknowledgement', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ session: intent.session, target_classes: ['backpack'], zones: ['lobby'] }))).mockResolvedValueOnce(new Response(JSON.stringify(previewResponse()))).mockResolvedValueOnce(new Response(JSON.stringify(searchStatus()))).mockResolvedValueOnce(new Response(JSON.stringify(searchStatus(true))))
-    const client = new HttpSearchClient({ baseUrl: 'wss://relay.example/ws', token: 'test-token' }, fetcher)
+    const client = new HttpSearchClient({ baseUrl: 'wss://relay.example/field-v2/', token: 'test-token' }, fetcher)
     await expect(client.catalog(intent.session)).resolves.toEqual({ target_classes: ['backpack'], zones: ['lobby'] })
     await expect(client.preview(intent)).resolves.toEqual(searchPreview())
     await expect(client.status(intent.session, intent.intent_id)).resolves.toMatchObject({ state: 'running' })
     await expect(client.acknowledge(intent.session, intent.intent_id, 'sighting/1')).resolves.toMatchObject({ candidates: [{ acknowledged: true }] })
-    expect(fetcher.mock.calls[1][0]).toBe('https://relay.example/session/session-1/search/preview')
+    expect(fetcher.mock.calls[1][0]).toBe('https://relay.example/field-v2/session/session-1/search/preview')
     expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toMatchObject({ intent: { confirm: true, name: 'search' } })
-    expect(fetcher.mock.calls[3][0]).toBe('https://relay.example/session/session-1/search/search-1/findings/sighting%2F1/ack')
+    expect(fetcher.mock.calls[3][0]).toBe('https://relay.example/field-v2/session/session-1/search/search-1/findings/sighting%2F1/ack')
   })
 })
 

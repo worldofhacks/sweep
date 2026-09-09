@@ -325,6 +325,21 @@ class RelayRuntime:
             return ()
         return self.authoritative_rooms_factory(session)
 
+    def authoritative_review_catalog(self, session: RelaySession):
+        from relay.language_catalog import review_catalog
+        from relay.navigation_service import NavigationError
+
+        platform = self.platform_services
+        if platform is None or platform.failed:
+            return None
+        try:
+            platform.require_current()
+            catalog = platform.navigation.catalog(session.session_id)["catalog"]
+            return review_catalog(catalog, session.current_state(), platform.execution_config)
+        except (NavigationError, ValueError):
+            # Missing/unapproved maps never become invented language destinations.
+            return None
+
     @contextlib.contextmanager
     def _session_gate(self, session_id: str, *, deadline: float | None = None) -> Iterator[None]:
         with self._session_gates_lock:
@@ -1017,7 +1032,14 @@ def create_app(
 
         atlas = AtlasStore(active_settings.log_dir / "atlas")
         application.state.atlas_store = atlas
+        from relay.live_detection import LiveDetectionService, load_live_detection_sources
+
+        detection = None
         try:
+            detection = LiveDetectionService(
+                load_live_detection_sources(active_settings.live_detection_config_path)
+            )
+            application.state.live_detection = detection
             platform = (platform_services_factory or PlatformServices)(runtime)
             runtime.platform_services = platform
             application.state.platform_services = platform
@@ -1029,6 +1051,8 @@ def create_app(
             await runtime.start()
             yield
         finally:
+            if detection is not None:
+                await asyncio.to_thread(detection.close)
             try:
                 await runtime.stop()
             finally:
@@ -1187,6 +1211,9 @@ def create_app(
         return runtime
 
     install_platform_routes(application, authorized_runtime)
+    from relay.live_detection import install_live_detection_routes
+
+    install_live_detection_routes(application, authorized_runtime)
     from relay.atlas_routes import install_atlas_routes
 
     install_atlas_routes(application, authorized_runtime)
@@ -1288,6 +1315,7 @@ def create_app(
             body=body,
             relay_state=session.current_state(),
             rooms=runtime.authoritative_rooms(session),
+            refresh_review_catalog=lambda: runtime.authoritative_review_catalog(session),
             now_ms=runtime.clock(),
             # Transcription takes seconds; the compiler grounds on a state event read
             # after it so its maximum state age is measured against the plan, not the
@@ -1362,6 +1390,7 @@ def create_app(
             text=raw["text"],
             relay_state=session.current_state(),
             rooms=runtime.authoritative_rooms(session),
+            refresh_review_catalog=lambda: runtime.authoritative_review_catalog(session),
             now_ms=runtime.clock(),
             refresh_state=lambda: (session.current_state(), runtime.clock()),
         )

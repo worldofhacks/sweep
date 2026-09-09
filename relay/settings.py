@@ -87,6 +87,7 @@ class RelaySettings:
     state_membership_history: int = 8
     ground_return_id: str | None = None
     observation_configuration: ObservationConfiguration | None = None
+    live_detection_config_path: Path | None = None
 
     def __post_init__(self) -> None:
         if type(self.relay_token) is not bytes or not 32 <= len(self.relay_token) <= 4_096:
@@ -292,6 +293,11 @@ class RelaySettings:
         )
         return cls(
             relay_token=token.encode(),
+            live_detection_config_path=(
+                Path(values["SWEEP_LIVE_DETECTION_CONFIG"])
+                if values.get("SWEEP_LIVE_DETECTION_CONFIG")
+                else None
+            ),
             observation_configuration=(
                 ObservationConfiguration.load(Path(values["SWEEP_OBSERVATIONS_FILE"]))
                 if values.get("SWEEP_OBSERVATIONS_FILE")

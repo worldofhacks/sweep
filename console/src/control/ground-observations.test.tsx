@@ -5,6 +5,7 @@ import { C1_BASIC_CONTROL_INTENTS, isConsoleIntentV1, isSupportedIntent, parseRe
 import { parseObservation, type Observation } from '../relay/observation'
 import { relayMediaConfigurationSource } from '../media/runtime-config'
 import { deriveStream } from '../modules/live/derive-live'
+import { RawLidarPlot } from '../modules/devices/RawLidarPlot'
 import { mapDevices } from '../modules/map/derive-map'
 import { FixtureRelayClient, fixtureAircraft } from '../testing/fixture-relay-client'
 import { controlReducer, createInitialControlState, formatDeviceId, isIntentEnabled, type ControlState } from './state'
@@ -57,6 +58,19 @@ function accept(state: ControlState, event: Observation, now = t) {
 afterEach(() => vi.useRealTimers())
 
 describe('read-only field ground compatibility', () => {
+  test('plots canonical range scans in their sensor frame and removes stale returns', () => {
+    const state = accept(readyState(), observation('range_scan'))
+    const { rerender } = render(<RawLidarPlot device={observedControlState(state, t).aircraft[11]} now={t} />)
+    const plot = screen.getByRole('img', { name: 'G-01 raw LiDAR returns by sensor bin' })
+    expect(plot.querySelectorAll('circle[fill="currentColor"]')).toHaveLength(2)
+    expect(screen.getByText(/Receiving scans/)).toHaveTextContent('2/3 returns')
+    rerender(<RawLidarPlot device={observedControlState(state, t + 1001).aircraft[11]} now={t + 1001} />)
+    expect(plot.querySelectorAll('circle[fill="currentColor"]')).toHaveLength(0)
+    expect(screen.getByText(/Scan stale or disconnected/)).toBeInTheDocument()
+    const disconnected = { ...state, connection: { ...state.connection, status: 'disconnected' as const } }
+    rerender(<RawLidarPlot device={observedControlState(disconnected, t).aircraft[11]} now={t} />)
+    expect(plot.querySelectorAll('circle[fill="currentColor"]')).toHaveLength(0)
+  })
   test('uses the configured display identity and recognizes advertisements without implementing commands', () => {
     const state = readyState()
     expect(formatDeviceId(state.aircraft[11])).toBe('G-01')

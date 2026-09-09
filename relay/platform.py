@@ -108,6 +108,7 @@ class PlatformServices:
         flight_execution: object | None = None,
     ) -> None:
         self.runtime = runtime
+        self.execution_config = getattr(flight_execution, "config", None)
         self.failed = False
         directory = runtime.settings.log_dir / "platform"
         self.maps = MapAuthoringStore(directory / "maps.sqlite3", clock_ms=runtime.clock)
