@@ -88,7 +88,8 @@ fleet controls, original export, and credential-isolated offline space metadata.
 build; fake passes 63 and probe passes 83 local Android tests. The console now passes 1,175 tests and full lint.
 The built Android UI was visually checked at phone size using a simulated native bridge and real
 preview HTTP. That milestone did not verify an Android runtime; the final handoff adds a
-narrow actual AOSP emulator photo/upload check. See [`atlas-android.md`](atlas-android.md)
+actual AOSP emulator photo/upload and subsequent video/scan/offline-recovery checks.
+See [`atlas-android.md`](atlas-android.md)
 for architecture, reproduction, evidence limits, and remaining Android lint warnings. Both Android lint variants now
 pass with zero errors; lint is included in CI. The full goal remains active.
 

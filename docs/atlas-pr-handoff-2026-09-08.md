@@ -40,10 +40,11 @@ Final checks are recorded here and in the PR description. Detailed evidence:
 - [Request discovery](evidence/atlas-request-discovery-2026-09-08.md)
 - [Real textured reconstruction](evidence/atlas-dense-2026-09-08.json)
 - [Android runtime smoke and limitations](atlas-android.md#actual-android-emulator-smoke--final-handoff)
+- [Native video, scan and offline recovery](evidence/atlas-android-runtime-2026-09-08.md)
 
 The final console run passes 93 files / 1,258 tests, ESLint and production build.
-Both Android variants assemble and pass lint: fake has 86 unit tests and probe has
-106, all passing. The four JVM bridge suites pass 297 tests. The complete Python
+Both Android variants assemble and pass lint: fake has 89 unit tests and probe has
+109, all passing. The four JVM bridge suites pass 297 tests. The complete Python
 suite passes 3,343 tests with four deprecation warnings. Python lint and formatting
 pass. The isolated M14 browser mission passes, including geofence and node-watchdog
 evidence. GitHub Actions results are separate from these local results.
@@ -53,8 +54,12 @@ WebView, CameraX, Keystore-backed access, private outbox and relay HTTP, without
 simulated native bridge. One generated-camera JPEG was saved locally and remotely
 with matching SHA-256. Location stayed denied and coverage stayed zero. An app
 force-stop/update retained the workspace connection. The check found and fixed
-unwanted camera/location permission coupling. This is not a handset/video/scan,
-location-sharing lifecycle, network-loss or background scheduling acceptance.
+unwanted camera/location permission coupling. A subsequent actual-emulator run
+verified silent video including its automatic duration limit, eight scan views,
+offline force-stop/relaunch after finalization, and automatic queued-upload
+recovery with matching original checksums. It fixed scan guidance incorrectly
+advancing after photos/videos. These are not handset, location-sharing lifecycle,
+in-flight upload interruption or complete background scheduling acceptance.
 
 Warnings remain visible: large lazy map/3D bundles, existing Android lint warnings,
 and toolchain/deprecation notices. No passing result is claimed for an unrun check.

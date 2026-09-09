@@ -215,16 +215,24 @@ coverage. No host webcam, microphone, physical phone or aircraft was used.
 The SDK installed the AOSP default image without a new license prompt; the existing
 license file was unchanged. The separately considered ARM ATD image was not used.
 
-This is a narrow emulator result, not physical-device or complete background-work
+A subsequent [native runtime checkpoint](evidence/atlas-android-runtime-2026-09-08.md)
+verified silent video (manual stop and automatic 60-second limit), eight guided
+scan views, finalized-file retention through an offline force-stop/relaunch, and
+automatic upload recovery after connectivity returned. Local and server originals
+matched byte-for-byte. That check also fixed scan numbering after other media.
+These are emulator results, not physical-device or complete background-work
 qualification. See the [PR handoff](atlas-pr-handoff-2026-09-08.md).
 
 ## Still required
 
-- Actual Android permission, CameraX photo/video/scan, Android Keystore, location-sharing lifecycle,
-  document export, background WorkManager scheduling, force-stop/relaunch, and network-loss tests.
-  No Android handset was connected. The charging iPhone is excluded. The emulator photo
-  smoke above does not cover video, scan sequences, interrupted uploads, process death during
-  capture, or physical sensors. JVM/browser tests do not satisfy these device requirements.
+- Physical Android permission, CameraX photo/video/scan, Android Keystore, location-sharing lifecycle,
+  document export and background scheduling qualification. No Android handset was connected;
+  the charging iPhone is excluded. The emulator checkpoints cover finalized captures queued
+  across an offline restart and automatic reconnect, not interrupted in-flight uploads,
+  Doze/OEM restrictions, process death during capture, or physical sensors.
+  JVM/browser tests do not satisfy these device requirements.
+- Refresh the cached-data connection notice while remaining on Uploads after network recovery;
+  saved upload badges already update, but the notice currently clears when Spaces refreshes.
 - Physical picker/provider import verification, durable new-space drafts, large-text/tablet/rotation refinements,
   credential-retention cleanup, and full multi-device invitation/revocation tests.
 - Remaining lint warnings include locked orientation, target/dependency updates, existing

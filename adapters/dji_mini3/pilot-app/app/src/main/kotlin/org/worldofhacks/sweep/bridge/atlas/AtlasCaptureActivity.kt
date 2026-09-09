@@ -39,7 +39,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -56,6 +55,12 @@ import org.worldofhacks.sweep.bridge.ui.SweepPalette
 import org.worldofhacks.sweep.bridge.ui.SweepTheme
 import java.util.concurrent.Executors
 
+/** Only finalized scan views advance scan guidance; photos/videos still count toward the total. */
+internal data class AtlasCaptureProgress(val total: Int = 0, val scanViews: Int = 0) {
+    val nextScanView: Int get() = scanViews % 8 + 1
+    fun saved(kind: String) = copy(total = total + 1, scanViews = scanViews + if (kind == "panorama") 1 else 0)
+}
+
 class AtlasCaptureActivity : ComponentActivity() {
     private lateinit var camera: LifecycleCameraController
     private lateinit var sensors: AtlasSensors
@@ -67,7 +72,7 @@ class AtlasCaptureActivity : ComponentActivity() {
     private var mode by mutableStateOf("photo")
     private var saving by mutableStateOf(false)
     private var recording by mutableStateOf(false)
-    private var count by mutableIntStateOf(0)
+    private var progress by mutableStateOf(AtlasCaptureProgress())
     private var elapsed by mutableLongStateOf(0L)
     private var locationLabel by mutableStateOf("Location optional · no map coverage without GPS")
     private var message by mutableStateOf("Your originals are saved on this phone before uploading.")
@@ -135,7 +140,7 @@ class AtlasCaptureActivity : ComponentActivity() {
                             }
                         }
                         Text(when (mode) {
-                            "panorama" -> "View ${count % 8 + 1} of 8 · Walk safely around your subject. Keep half of the previous view in frame; rotating in one spot cannot recover depth."
+                            "panorama" -> "View ${progress.nextScanView} of 8 · Walk safely around your subject. Keep half of the previous view in frame; rotating in one spot cannot recover depth."
                             "video" -> "Walk slowly with overlapping views. Silent video, up to 60 seconds. Keep people and traffic at a safe distance."
                             else -> "Capture from different viewpoints, with plenty of overlap. Never enter a restricted or unsafe area."
                         }, fontSize = 14.sp, color = Ink)
@@ -149,7 +154,7 @@ class AtlasCaptureActivity : ComponentActivity() {
                         Button(onClick = { if (recording) activeRecording?.stop() else capture() },
                             enabled = cameraAllowed && !saving, colors = ButtonDefaults.buttonColors(containerColor = Pine),
                             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp), shape = RoundedCornerShape(12.dp)) {
-                            Text(if (saving) "Saving on device…" else if (recording) "Stop & save video" else if (mode == "video") "Start video" else "Take ${if (mode == "panorama") "view ${count % 8 + 1}" else "photo"}", fontSize = 16.sp)
+                            Text(if (saving) "Saving on device…" else if (recording) "Stop & save video" else if (mode == "video") "Start video" else "Take ${if (mode == "panorama") "view ${progress.nextScanView}" else "photo"}", fontSize = 16.sp)
                         }
                         Text(message, fontSize = 12.sp, color = Ink, modifier = Modifier.fillMaxWidth()
                             .border(1.dp, SweepPalette.Line, RoundedCornerShape(8.dp)).padding(8.dp))
@@ -214,7 +219,11 @@ class AtlasCaptureActivity : ComponentActivity() {
             try {
                 outbox.finish(item.id)
                 AtlasUploadWorker.enqueue(context, item.id)
-                runOnUiThread { saving = false; count++; message = "$count captured · Saved on device. Uploads continue when connected." }
+                runOnUiThread {
+                    saving = false
+                    progress = progress.saved(JSONObject(item.metadata).getString("kind"))
+                    message = "${progress.total} captured · Saved on device. Uploads continue when connected."
+                }
             } catch (error: Exception) { runOnUiThread { failed(item, error.message ?: "Capture could not be finalized.") } }
         }
     }
