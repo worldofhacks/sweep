@@ -13,6 +13,7 @@ import { CameraChoice } from './CameraChoice'
 import { useState } from 'react'
 import type { LiveDetectionClient } from '../../media/detections'
 import { DetectionFeed } from './DetectionFeed'
+import { ProximityLidarPanel } from './ProximityLidarPanel'
 
 export interface FocusFeedProps {
   focused: RelayAircraftState | null
@@ -41,27 +42,30 @@ export function FocusFeed({ focused, requests, now, media, detections, initialDe
         {focused && <CameraChoice device={focused} cameras={cameras} camera={camera} now={now} onChoose={choose} />}
         {detections && <label className="lv-det-copy"><input type="checkbox" checked={detectionView} onChange={(event) => setDetectionView(event.target.checked)} /> Object detection overlay</label>}
         {detectionView && !detections && <p role="status">Object detection service is unavailable on this console.</p>}
-        {focused && camera && detectionView && detections && focused.client_observation?.connectionCurrent !== false ? (
-          <DetectionFeed key={`${focused.drone_id}:${focused.connection_epoch}:${camera.camera_id}`} client={detections}
-            source={{ drone_id: focused.drone_id, connection_epoch: focused.connection_epoch, camera_id: camera.camera_id, stream: camera.stream }} />
-        ) : focused ? (
-          <Feed drone={focused} now={now} media={media} camera={camera} />
-        ) : (
-          <div className="lv-feed is-unreported">
-            <div className="lv-feed-reticle" aria-hidden="true" />
-            <div className="lv-feed-bar">
-              <span>none</span>
-              <span className="lv-bar-status">
-                <span aria-hidden="true" className="lv-dot" />
-                unreported
-              </span>
-              <span>no frame reported</span>
+        <div className="lv-video-lidar">
+          {detectionView && detections && focused && camera && focused.client_observation?.connectionCurrent !== false ? (
+            <DetectionFeed key={`${focused.drone_id}:${focused.connection_epoch}:${camera.camera_id}`} client={detections}
+              source={{ drone_id: focused.drone_id, connection_epoch: focused.connection_epoch, camera_id: camera.camera_id, stream: camera.stream }} />
+          ) : focused ? (
+            <Feed drone={focused} now={now} media={media} camera={camera} />
+          ) : (
+            <div className="lv-feed is-unreported">
+              <div className="lv-feed-reticle" aria-hidden="true" />
+              <div className="lv-feed-bar">
+                <span>none</span>
+                <span className="lv-bar-status">
+                  <span aria-hidden="true" className="lv-dot" />
+                  unreported
+                </span>
+                <span>no frame reported</span>
+              </div>
+              <div className="lv-feed-overlay is-muted">
+                No device is focused. Return to All devices and focus a tile, or select exactly one device.
+              </div>
             </div>
-            <div className="lv-feed-overlay is-muted">
-              No device is focused. Return to All devices and focus a tile, or select exactly one device.
-            </div>
-          </div>
-        )}
+          )}
+          {focused && <ProximityLidarPanel device={focused} now={now} />}
+        </div>
         <p className="lv-stream-note">
           Each camera uses its configured stream and reports its own freshness.
           Switching cameras changes this view only; it does not select or command another device.

@@ -194,3 +194,35 @@
 .lv-detection-feed { position: relative; min-height: 240px; background: #101615; color: #d4e2dc; }
 .lv-detection-feed svg { display: block; width: 100%; max-height: 520px; }
 .lv-detection-status { padding: 10px 14px; font-size: 12px; }
+
+/* LiDAR beside the live video */
+.lv-video-lidar { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+.lv-video-lidar > .lv-feed,
+.lv-video-lidar > .lv-detection-feed { flex: 1 1 320px; min-width: 0; margin: 0; }
+.lv-lidar {
+  flex: 1 1 260px;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: var(--radius-tab-group);
+  color: var(--color-ink-2);
+}
+.lv-lidar svg { flex: 0 0 128px; color: var(--color-ink); }
+.lv-lidar-empty { font-size: var(--text-13); color: var(--color-ink-2); }
+.lv-lidar-side { min-width: 0; }
+.lv-lidar-status { margin: 0; font-size: var(--text-12); font-weight: var(--weight-600); color: var(--color-ink); }
+.lv-lidar-legend { margin: 6px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: var(--text-11); }
+.lv-lidar-legend li { display: flex; align-items: center; gap: 6px; }
+.lv-lidar-swatch { width: 8px; height: 8px; border-radius: var(--radius-dot); background: currentColor; }
+.lv-lidar-legend .is-near { color: var(--color-danger); }
+.lv-lidar-legend .is-caution { color: var(--color-warn); }
+.lv-lidar-legend .is-clear { color: var(--color-ok); }
+.lv-lidar-note { margin: 8px 0 0; font-size: var(--text-11); line-height: var(--leading-1-5); color: var(--color-ink-2); }
+.lv-lidar-note.is-warn { color: var(--color-warn); }
+.lv-lidar-pt.is-near { fill: var(--color-danger); }
+.lv-lidar-pt.is-caution { fill: var(--color-warn); }
+.lv-lidar-pt.is-clear { fill: var(--color-ok); }
