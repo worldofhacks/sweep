@@ -511,7 +511,7 @@ class RelayRuntime:
         *,
         wait_for_connection_id: str | None = None,
     ) -> list[dict[str, object]]:
-        """Keep acknowledgement commits ordered while adapter I/O yields to safety work."""
+        """Commit an acknowledgement, then resume dependent commands in the background."""
         task = asyncio.create_task(
             self._process_acknowledgement_and_publish(
                 session_id,
@@ -563,15 +563,10 @@ class RelayRuntime:
                 deferred_deliveries=deliveries,
             )
             work = await asyncio.to_thread(session.prepare_resume) if terminal else None
-        events.extend(
-            await self._resume_and_publish(
-                session_id,
-                session,
-                work,
-                wait_for_connection_id=wait_for_connection_id,
-                deliveries=deliveries,
+        if work is not None:
+            self._track_background_operation(
+                asyncio.create_task(self._resume_and_publish(session_id, session, work))
             )
-        )
         delivered = (
             all(await asyncio.gather(*deliveries)) if deliveries else wait_for_connection_id is None
         )

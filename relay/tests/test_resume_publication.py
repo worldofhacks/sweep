@@ -105,6 +105,7 @@ def test_resumed_batch_cannot_roll_back_existing_or_newly_activated_subscriber(
         finally:
             release.set()
         old_events = await old
+        await runtime.stop()
         for subscription in (joined if activate_after_stop else existing,):
             events = [
                 subscription.queue.get_nowait().event for _ in range(subscription.queue.qsize())
