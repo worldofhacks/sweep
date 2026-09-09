@@ -165,3 +165,35 @@ also occurred on Android Home; this app-inset correction is not qualification of
 every emulator system-UI state or physical handset. Keyboard and rotation cases
 here are unit checks, not a physical-device acceptance claim. Fresh combined-head
 CI and an independent approving review remain required.
+
+## Reconstruction storage follow-up
+
+The supervisor now owns the current build's scratch directory and cleans it after
+stopping its process group, including forced child termination. An observed
+4 GiB or 50,000-entry working-file breach fails the job. Existing terminal failure
+details are retained; allocation/spawn/inspection failures cannot leave an active
+lease. No originals, published artifacts, camera solutions, older diagnostics,
+other jobs, UI components or dependencies are removed or changed by this cleanup.
+The [product ledger](atlas-product.md#repeat-locally) records the sampled-limit
+and whole-supervisor-crash limitations; this is not a hard filesystem quota.
+
+All 67 affected spatial and Atlas API tests pass, including 13 worker cases with
+disposable real child processes. Cases cover success, engine refusal, SIGKILL,
+timeout, working-file limit, missing publication, inspection/spawn/allocation
+failure, nested-file counting, source links and disappearing intermediates.
+Full Python lint and formatting checks pass. Earlier-head CI remains separate
+from the new follow-up's required checks.
+
+An isolated fresh build using the existing experimental COLMAP/OpenMVS engines
+processed the 11 original Fountain photographs, without touching the running
+preview or supplying reference geometry/camera poses. Job
+`7ee0e1d6-2dd2-4f9f-b63e-52cdde64edfc` registered 11 views and produced 540,120 dense
+points and 98,929 triangles. Its 9,839,216-byte photo-textured GLB checksum is
+`c2c50ccce0df525607e42e739c896aabd8c2f46b7dac9ad26377c3b8f714439d`, matching both
+job and manifest. No owned scratch directories remained; all 11 copied originals
+and all 11 preview originals retained their checksums. Imports had no asserted
+capture time or GPS. This remains relative-scale experimental reconstruction,
+not physical phone, geographic accuracy or production-engine qualification.
+
+The owner explicitly requested that #338 remain unmerged. No merge or automatic
+merge is authorized until the owner explicitly lifts that hold.

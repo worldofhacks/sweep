@@ -9,12 +9,49 @@ import argparse
 import importlib.util
 import os
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 from relay.atlas import AtlasStore
+
+MAX_WORK_BYTES = 4 * 1024 * 1024 * 1024
+MAX_WORK_ENTRIES = 50_000
+POLL_SECONDS = 2
+
+
+def workspace_limit(directory: Path) -> str | None:
+    """Check this job's generated files without following links to source files.
+
+    This is a sampled watchdog, not a filesystem quota: a child can write more
+    between checks. File-count admission also bounds the cost of each walk.
+    """
+    pending = [directory]
+    size = entries = 0
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as children:
+                for child in children:
+                    entries += 1
+                    if entries > MAX_WORK_ENTRIES:
+                        return "The build exceeded its generated-file limit. Try fewer captures."
+                    try:
+                        info = child.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue  # The engine may remove intermediates during a check.
+                    if stat.S_ISREG(info.st_mode):
+                        size += info.st_size
+                    if size > MAX_WORK_BYTES:
+                        return "The build exceeded 4 GiB of working files. Try fewer captures."
+                    if stat.S_ISDIR(info.st_mode):
+                        pending.append(Path(child.path))
+        except FileNotFoundError:
+            continue
+    return None
 
 
 def stop_process_tree(process: subprocess.Popen) -> None:
@@ -48,7 +85,25 @@ def run_one(store: AtlasStore, openmvs_bin: Path | None = None) -> bool:
     if job is None:
         return False
     output = store.root / "reconstructions" / job["id"]
-    output.mkdir(parents=True, exist_ok=True)
+    try:
+        output.mkdir(parents=True, exist_ok=True)
+        # The supervisor owns this exact temporary directory. Engine SIGKILL cannot
+        # bypass its cleanup, and we never sweep other jobs or previously saved files.
+        with tempfile.TemporaryDirectory(prefix="processing-", dir=output) as scratch:
+            supervise_job(store, job, output, Path(scratch), openmvs_bin)
+    except BaseException:
+        store.progress_reconstruction(
+            job["id"],
+            status="failed",
+            detail="The worker could not complete this build. Originals are intact; try again.",
+        )
+        raise
+    return True
+
+
+def supervise_job(
+    store: AtlasStore, job: dict, output: Path, scratch: Path, openmvs_bin: Path | None
+) -> None:
     process = None
     try:
         with (output / "worker.log").open("wb") as log:
@@ -61,6 +116,8 @@ def run_one(store: AtlasStore, openmvs_bin: Path | None = None) -> bool:
                     str(store.root),
                     "--process-job",
                     job["id"],
+                    "--scratch-dir",
+                    str(scratch),
                     *(["--openmvs-bin", str(openmvs_bin.resolve())] if openmvs_bin else []),
                 ],
                 stdout=log,
@@ -76,42 +133,37 @@ def run_one(store: AtlasStore, openmvs_bin: Path | None = None) -> bool:
             deadline = time.monotonic() + 1200
             while process.poll() is None:
                 if time.monotonic() > deadline:
-                    stop_process_tree(process)
                     store.progress_reconstruction(
                         job["id"],
                         status="failed",
                         detail="The build exceeded 20 minutes. Try fewer overlapping captures.",
                     )
                     break
+                refusal = workspace_limit(output)
+                if refusal:
+                    store.progress_reconstruction(job["id"], status="failed", detail=refusal)
+                    break
                 # A failed lease cannot be revived by an old worker.
                 current = store.reconstruction_job(job["id"])
                 if current["status"] == "failed":
-                    stop_process_tree(process)
                     break
                 store.progress_reconstruction(job["id"])
-                time.sleep(2)
-            stop_process_tree(process)
-            if process.returncode != 0:
-                store.progress_reconstruction(
-                    job["id"],
-                    status="failed",
-                    detail="The worker stopped early. Originals are intact; try a new build.",
-                )
-            elif store.reconstruction_job(job["id"])["status"] != "ready":
-                store.progress_reconstruction(
-                    job["id"],
-                    status="failed",
-                    detail="The worker did not publish a verified artifact. Try a new build.",
-                )
+                time.sleep(POLL_SECONDS)
     finally:
-        if process is not None and process.poll() is None:
+        if process is not None:
             stop_process_tree(process)
-            store.progress_reconstruction(
-                job["id"],
-                status="failed",
-                detail="The worker was stopped. Start a new build when it is available.",
-            )
-    return True
+        # Terminal states are immutable, so an earlier actionable failure or a
+        # published model is preserved. Spawn/inspection/interruption errors fail
+        # an otherwise active job instead of waiting for its lease to expire.
+        store.progress_reconstruction(
+            job["id"],
+            status="failed",
+            detail=(
+                "The worker did not publish a verified artifact. Try a new build."
+                if process is not None and process.returncode == 0
+                else "The worker stopped early. Originals are intact; try a new build."
+            ),
+        )
 
 
 def main():
@@ -125,6 +177,7 @@ def main():
         "Operator-provided binaries; review licensing before production.",
     )
     parser.add_argument("--process-job", help=argparse.SUPPRESS)
+    parser.add_argument("--scratch-dir", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.openmvs_bin:
         from spatial.atlas_dense import engine_files
@@ -154,7 +207,15 @@ def main():
             if job["status"] != "preparing":
                 parser.error("This job is not assigned to a worker.")
             try:
-                reconstruct(store, job, args.openmvs_bin)
+                if args.scratch_dir is not None:
+                    output = store.root / "reconstructions" / job["id"]
+                    if (
+                        args.scratch_dir.is_symlink()
+                        or not args.scratch_dir.is_dir()
+                        or args.scratch_dir.resolve().parent != output.resolve()
+                    ):
+                        raise ValueError("The worker scratch directory must belong to this job.")
+                reconstruct(store, job, args.openmvs_bin, args.scratch_dir)
             except Exception as error:
                 detail = (
                     str(error)

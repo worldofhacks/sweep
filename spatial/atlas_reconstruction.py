@@ -137,7 +137,12 @@ def prepare_images(store: AtlasStore, job: dict, directory: Path) -> list[dict]:
     return images
 
 
-def reconstruct(store: AtlasStore, job: dict, openmvs_bin: Path | None = None) -> None:
+def reconstruct(
+    store: AtlasStore,
+    job: dict,
+    openmvs_bin: Path | None = None,
+    scratch_dir: Path | None = None,
+) -> None:
     import pycolmap
 
     store.progress_reconstruction(
@@ -147,7 +152,7 @@ def reconstruct(store: AtlasStore, job: dict, openmvs_bin: Path | None = None) -
     )
     output = store.root / "reconstructions" / job["id"]
     output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="processing-", dir=output) as temporary:
+    with tempfile.TemporaryDirectory(prefix="processing-", dir=scratch_dir or output) as temporary:
         root = Path(temporary)
         images = root / "images"
         images.mkdir()

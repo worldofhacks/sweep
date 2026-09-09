@@ -337,6 +337,20 @@ camera/track solution, and publish only checked image-derived points. A vanished
 fails a job; it does not silently restart beside a potentially live process. Rebuilds create
 a new job. A contribution invitation can view results but cannot enqueue expensive builds.
 
+The supervisor now owns each newly allocated scratch directory, so child-process
+failure, timeout or forced termination cannot skip its cleanup. It removes only
+that directory after stopping the owned process group; originals, saved camera
+solutions, published assets and older diagnostics are not swept. A two-second
+watchdog checks each job's generated files against 4 GiB and 50,000 entries,
+without following discovered source symlinks. An observed breach fails the job
+with an actionable message before stopping its processes.
+
+This is a sampled safeguard, not a hard disk quota: writes can overshoot between
+checks. Retained outputs and logs still need deployment retention limits. Killing
+the supervisor itself or losing power can leave scratch files; automated orphan
+cleanup is intentionally not performed without proof that no engine owns them.
+Production-wide storage and crash-recovery qualification remain outstanding.
+
 For a repeatable real-photo check, download the image archive linked by the official example
 and extract only `Fountain/images/*.png` into a temporary directory. Do not import the provided
 ground-truth geometry. Then run `tools.atlas_reconstruction_smoke --images PATH` via
@@ -364,7 +378,7 @@ lifecycle qualification.
    recovery on the actual Android runtime; native permission, lifecycle, storage and real device tests.
    No Android handset was detected by ADB on this host; the charging iPhone is excluded.
 2. Qualify the experimental detailed reconstruction for production: license-reviewed engine,
-   diverse real phone photo/video sets, surface accuracy, resource quotas/failed-job cleanup,
+   diverse real phone photo/video sets, surface accuracy, filesystem quotas/orphaned-job cleanup,
    and actual Android performance. The Fountain build is now a real photo-textured mesh, but
    its scale is relative and it is not georeferenced. Geographic alignment requires sufficient
    measured evidence; a space's map pin is not proof of a 3D transform.
