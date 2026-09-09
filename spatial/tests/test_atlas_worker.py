@@ -184,6 +184,7 @@ def test_supervisor_cleans_only_its_scratch_after_real_child_exit(queued_job, mo
         else:
             assert atlas_worker.run_one(store)
         current = store.reconstruction_job(job["id"])
+        assert current["worker_released"] is True
         assert current["status"] == ("ready" if outcome == "ready" else "failed")
         if outcome == "failed":
             assert current["detail"] == "Not enough overlapping views."
@@ -212,6 +213,7 @@ def test_supervisor_fails_spawn_error_and_cleans_owned_scratch(queued_job, monke
     with pytest.raises(OSError, match="Cannot start worker"):
         atlas_worker.run_one(store)
     assert store.reconstruction_job(job["id"])["status"] == "failed"
+    assert store.reconstruction_job(job["id"])["worker_released"] is True
     assert sorted(path.name for path in output.iterdir()) == ["processing-older", "worker.log"]
 
 

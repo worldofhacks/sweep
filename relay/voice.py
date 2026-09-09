@@ -108,15 +108,24 @@ class UnavailableTranscriptCompiler:
 
 
 class OpenAIWhisperTransport:
-    def __init__(self, *, api_key: str | None = None, timeout_s: float = 20.0) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        timeout_s: float = 20.0,
+        max_attempts: int = MAX_TRANSCRIPTION_ATTEMPTS,
+    ) -> None:
+        if type(max_attempts) is not int or not 1 <= max_attempts <= MAX_TRANSCRIPTION_ATTEMPTS:
+            raise ValueError("Choose a supported transcription attempt limit.")
         self._api_key = api_key
         self._timeout_s = timeout_s
+        self._max_attempts = max_attempts
 
     def transcribe(self, upload: AudioUpload) -> str:
         api_key = self._api_key or os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise TranscriptionError("OPENAI_API_KEY is not configured")
-        for attempt in range(MAX_TRANSCRIPTION_ATTEMPTS):
+        for attempt in range(self._max_attempts):
             try:
                 response = httpx.post(
                     "https://api.openai.com/v1/audio/transcriptions",
@@ -135,11 +144,11 @@ class OpenAIWhisperTransport:
             except httpx.HTTPStatusError as error:
                 status = error.response.status_code
                 retryable = status in {408, 409, 429} or status >= 500
-                if not retryable or attempt + 1 == MAX_TRANSCRIPTION_ATTEMPTS:
+                if not retryable or attempt + 1 == self._max_attempts:
                     raise TranscriptionError("transcription provider request failed") from error
                 continue
             except httpx.TransportError as error:
-                if attempt + 1 == MAX_TRANSCRIPTION_ATTEMPTS:
+                if attempt + 1 == self._max_attempts:
                     raise TranscriptionError("transcription provider request failed") from error
                 continue
             except httpx.HTTPError as error:

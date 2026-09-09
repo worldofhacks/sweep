@@ -13,6 +13,7 @@ from types import MappingProxyType
 from urllib.parse import urlsplit
 
 from media.streams import CameraStream, parse_camera_mapping, validate_camera_mapping
+from relay.atlas_identity import AtlasIdentitySettings
 from relay.auth import StaticCredentialResolver
 from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, CapabilityProfile
 from relay.contracts import NodeType
@@ -88,6 +89,7 @@ class RelaySettings:
     ground_return_id: str | None = None
     observation_configuration: ObservationConfiguration | None = None
     live_detection_config_path: Path | None = None
+    atlas_identity: AtlasIdentitySettings | None = None
 
     def __post_init__(self) -> None:
         if type(self.relay_token) is not bytes or not 32 <= len(self.relay_token) <= 4_096:
@@ -292,6 +294,7 @@ class RelaySettings:
             "SWEEP_ADAPTER_KEYS_JSON",
         )
         return cls(
+            atlas_identity=AtlasIdentitySettings.from_env(values),
             relay_token=token.encode(),
             live_detection_config_path=(
                 Path(values["SWEEP_LIVE_DETECTION_CONFIG"])

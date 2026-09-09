@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AtlasClient } from '../atlas/client'
 import type { Capture } from '../atlas/types'
-import { EMPTY_NOTES, type MemoryContext, type MemoryNotes } from './types'
+import { analysisActive, EMPTY_NOTES, type MemoryContext, type MemoryNotes } from './types'
 
 export const explain = (error: unknown) =>
   error instanceof Error ? error.message : 'This step could not finish. Your original is safe.'
@@ -17,9 +17,11 @@ export function useMemory(client: AtlasClient, spaceId: string, capture: Capture
   const [inspectionStatus, setInspectionStatus] = useState('')
   const [reload, setReload] = useState(0)
   const mounted = useRef(false)
+  const generation = useRef(0)
   const locked = useRef(false)
   const upload = useRef<AbortController | null>(null)
   useEffect(() => {
+    generation.current += 1
     mounted.current = true
     const controller = new AbortController()
     void client
@@ -39,7 +41,7 @@ export function useMemory(client: AtlasClient, spaceId: string, capture: Capture
         if (
           !value.can_edit ||
           value.inspection ||
-          value.analysis?.status === 'running' ||
+          analysisActive(value.analysis) ||
           !value.capabilities.metadata
         )
           return
@@ -59,6 +61,7 @@ export function useMemory(client: AtlasClient, spaceId: string, capture: Capture
         if (!controller.signal.aborted) setError(explain(error))
       })
     return () => {
+      generation.current += 1
       mounted.current = false
       controller.abort()
       // Event handlers create uploads after mount; cancel the current one.
@@ -66,7 +69,7 @@ export function useMemory(client: AtlasClient, spaceId: string, capture: Capture
       upload.current?.abort()
     }
   }, [client, spaceId, capture.id, reload])
-  const running = data?.analysis?.status === 'running'
+  const running = analysisActive(data?.analysis)
   useEffect(() => {
     if (!running) return
     const controller = new AbortController()
@@ -83,7 +86,7 @@ export function useMemory(client: AtlasClient, spaceId: string, capture: Capture
             : ['', ''],
         )
         setError('')
-        if (value.analysis?.status !== 'running') return
+        if (!analysisActive(value.analysis)) return
       } catch (error) {
         if (!controller.signal.aborted) setError(explain(error))
       }
@@ -162,8 +165,20 @@ export function useMemory(client: AtlasClient, spaceId: string, capture: Capture
     running,
     inspectionStatus,
     setData,
+    adopt: (value: MemoryContext) => {
+      setData(value)
+      setNotes(value.notes)
+      setCoordinates(value.notes.location
+        ? [String(value.notes.location.latitude), String(value.notes.location.longitude)]
+        : ['', ''])
+      setDirty(false)
+    },
     setError,
     mounted,
+    currentScope: () => {
+      const started = generation.current
+      return () => mounted.current && started === generation.current
+    },
     upload,
     edit,
     coordinate,

@@ -108,4 +108,42 @@ class AtlasMetadataCacheTest {
         AtlasMetadataCache(queue).accessRefused(access, "second", 403)
         assertEquals(0, queue.cached(access.id).length())
     }
+
+    @Test fun `missing source or derivative retires its snapshot and rejects older reads`() {
+        val access = session()
+        val other = session("another-cache-key")
+        val resourcePaths = listOf("", "/captures/photo/media", "/captures/photo/memory",
+            "/reconstruction/build/cloud.glb")
+        resourcePaths.forEach { suffix ->
+            observe(access); observe(access, "second"); observe(other)
+            val previousRead = queue.cacheGeneration(access.id)
+            AtlasMetadataCache(queue).response(access, "/atlas/spaces/place$suffix", "GET", 404, "", previousRead)
+            assertEquals("second", queue.cached(access.id).getJSONObject(0).getJSONObject("space").getString("id"))
+            assertEquals(1, queue.cached(access.id).length())
+            assertEquals(1, queue.cached(other.id).length())
+            assertThrows(IllegalStateException::class.java) { observe(access, generation = previousRead) }
+        }
+    }
+
+    @Test fun `a missing optional write does not erase the readable snapshot`() {
+        val access = session()
+        observe(access)
+        AtlasMetadataCache(queue).response(access, "/atlas/spaces/place/reconstruction", "POST", 404, "", 0)
+        assertEquals(1, queue.cached(access.id).length())
+        assertEquals(0, queue.cacheGeneration(access.id))
+    }
+
+    @Test fun `missing media invalidation survives restart and preserves local upload originals`() {
+        val access = session(space = "place")
+        observe(access)
+        val item = queue.begin(access, "place", JSONObject().put("kind", "photo"))
+        val original = "owned-local-original".toByteArray()
+        queue.file(item).writeBytes(original)
+        queue.finish(item.id)
+        AtlasMetadataCache(queue).accessRefused(access, "place", 404)
+        resetAtlasTestProcess()
+        assertEquals(0, queue.cached(access.id).length())
+        assertEquals("queued", queue.get(item.id)!!.state)
+        assertArrayEquals(original, queue.file(item).readBytes())
+    }
 }

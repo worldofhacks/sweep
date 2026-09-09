@@ -200,14 +200,33 @@ export function AssistEditor({
     !!notes.occurred_at &&
     Number.isFinite(Date.parse(notes.occurred_at)) &&
     coordinates.every((value) => value.trim() && Number.isFinite(Number(value)))
+  const allowance = data.analysis_allowance
+  const providerReady = !allowance || (allowance.remaining > 0 && !allowance.error)
   return (
     <>
       <p>A little help with the details. Choose what to use, then review what comes back.</p>
+      {allowance && (
+        <div className="memory-callout" role="status" aria-label="External assistance allowance">
+          <strong>{providerReady
+            ? `${allowance.remaining} provider requests available today`
+            : 'External assistance is paused'}</strong>
+          <p>{allowance.error
+            ? 'The workspace’s request allowance needs attention from its operator.'
+            : !allowance.limits.space || !allowance.limits.relay
+              ? 'Ask the workspace operator to set daily request allowances before using external assistance.'
+              : `Shared across this Space and its workspace server. Resets ${new Date(allowance.resets_at).toLocaleString()}.`}</p>
+          <small>
+            AI uses up to two requests; weather uses one. This is not a price or billing balance.
+            Failed or interrupted requests count. If the allowance runs out, later stages won’t run.
+            Local context and originals stay available.
+          </small>
+        </div>
+      )}
       <label className="memory-check memory-provider">
         <input
           type="checkbox"
-          checked={ai}
-          disabled={!data.capabilities.ai}
+          checked={ai && providerReady}
+          disabled={!data.capabilities.ai || !providerReady}
           onChange={(event) => setAI(event.target.checked)}
         />
         <span>
@@ -219,7 +238,7 @@ export function AssistEditor({
           {!data.capabilities.ai && <small>AI isn’t connected yet. Server setup is needed.</small>}
         </span>
       </label>
-      {ai && (
+      {ai && providerReady && (
         <div className="memory-choice" role="group" aria-label="Audio for analysis">
           <button aria-pressed={!audioId} onClick={() => setAudioId('')}>
             Original video audio, if present
@@ -240,8 +259,8 @@ export function AssistEditor({
       <label className="memory-check memory-provider">
         <input
           type="checkbox"
-          checked={weather}
-          disabled={!data.capabilities.weather || !hasContext}
+          checked={weather && providerReady}
+          disabled={!data.capabilities.weather || !hasContext || !providerReady}
           onChange={(event) => setWeather(event.target.checked)}
         />
         <span>
@@ -268,6 +287,7 @@ export function AssistEditor({
           Metadata is read on your workspace server automatically. Local audio analysis measures
           file level, not real-world loudness or sound events. AI needs a server-side OpenAI key;
           weather needs an enabled Open-Meteo plan.
+          {!allowance && ' This server does not report a daily request allowance; provider charges may apply.'}
         </p>
         <button
           className="atlas-secondary"
@@ -278,13 +298,15 @@ export function AssistEditor({
         </button>
       </details>
       <footer className="memory-footer">
-        <div>Only the providers you select will be used.</div>
+        <div>{data.analysis
+          ? 'This is a new request. Selected providers may charge again.'
+          : 'Only the providers you select will be used.'}</div>
         <button
           className="atlas-primary"
-          disabled={disabled || (!ai && !weather)}
+          disabled={disabled || !providerReady || (!ai && !weather)}
           onClick={() => onAnalyze({ weather, ai, audio_asset_id: audioId || null })}
         >
-          Find the details
+          {data.analysis ? 'Run another analysis' : 'Find the details'}
         </button>
       </footer>
     </>

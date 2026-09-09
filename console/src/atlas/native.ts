@@ -1,4 +1,5 @@
 import { AtlasClient } from './client'
+import { AnalysisRecoveryStore } from '../memory/analysisRecovery'
 import type { PlatformConnection, PlatformFetch } from '../platform/http'
 import { relayHttpUrl } from '../relay/origin'
 import type { CaptureResponseTarget, SpaceDetail } from './types'
@@ -72,14 +73,18 @@ export function nativeFetch(session: NativeSession): PlatformFetch {
 
 /** Cached metadata is explicitly stale; live people are stripped natively before persistence. */
 export class NativeAtlasClient extends AtlasClient {
+  override get memoryRemovalSupported(): boolean { return false }
   override get memoryUploadsSupported(): boolean { return false }
   readonly session: NativeSession
   private readonly network: (offline: boolean) => void
   private readonly nativeDrafts: SpaceDraftStore
+  private readonly nativeAnalysisRecovery: AnalysisRecoveryStore
+  override get analysisRecovery(): AnalysisRecoveryStore { return this.nativeAnalysisRecovery }
   override get drafts(): SpaceDraftStore { return this.nativeDrafts }
   constructor(session: NativeSession, network: (offline: boolean) => void = () => {}) {
     super({ ...session, token: '' }, nativeFetch(session))
     this.session = session; this.network = network
+    this.nativeAnalysisRecovery = new AnalysisRecoveryStore(['native', session.baseUrl, session.sessionId, session.id])
     this.nativeDrafts = {
       read: async () => { const value = await nativeCall<unknown>('readDraft', { session: session.id }); return value === null ? null : parseDraft(value) },
       write: (draft, previous) => nativeCall('writeDraft', { session: session.id, draft, previous }),

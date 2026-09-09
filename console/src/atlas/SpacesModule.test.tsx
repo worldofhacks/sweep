@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { AtlasClient } from './client'
-import { SpacesModule } from './SpacesModule'
+import { SpacesModule, WorkspaceSpaces } from './SpacesModule'
 import type { SpaceDetail, SurfaceFocus, SurfaceRegion } from './types'
+import { EMPTY_NOTES } from '../memory/types'
 
 vi.mock('./SpaceMap', () => ({ default: ({ center }: { center: [number, number] }) => <div aria-label="Geographic map test boundary">{center.join(',')}</div> }))
 vi.mock('./WorldViewer', () => ({ default: ({ focus }: { focus?: SurfaceFocus | null }) =>
@@ -22,6 +23,73 @@ function fixture() {
   }
   return { client, detail }
 }
+
+it('keeps confirmation independent of capture polling and opens receipts after withdrawal', async () => {
+  const { client, detail } = fixture()
+  const showModal = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function(this: HTMLDialogElement) { this.setAttribute('open', '') } })
+  const capture = { id: 'source', name: 'Removal test contributor', contributor_id: 'acct_source', kind: 'photo' as const, source: 'import' as const, captured_at: null, uploaded_at: 1788950000000, position: null, note: '', mime: 'image/png', bytes: 10_000_000, sha256: 'checksum' }
+  detail.captures = [capture]
+  const read = vi.spyOn(client, 'detail').mockResolvedValue(detail)
+  vi.spyOn(client, 'media').mockRejectedValue(new Error('No media fetch needed for this test'))
+  vi.spyOn(client, 'memory').mockResolvedValue({ revision: 0, capture, notes: { ...EMPTY_NOTES }, assets: [], inspection: null, analysis: null, can_edit: true, can_remove: true, can_analyze: false, capabilities: { metadata: true, ai: false, weather: false, media_tools: false } })
+  vi.spyOn(client, 'removal').mockResolvedValue({ capture_id: 'source', state: 'preview', confirmation: 'a'.repeat(64), recordings: 0, builds: 0, analysis_pending: false })
+  let finish!: () => void
+  const receipt = { capture_id: 'source', state: 'cleanup_pending' as const, recordings: 0, builds: 0, requested_by: 'workspace-operator', requested_at: 1788950000000, completed_at: null, analysis_pending: false }
+  const remove = vi.spyOn(client, 'removeCapture').mockImplementation(() => new Promise(resolve => { finish = () => resolve(receipt) }))
+  vi.spyOn(client, 'removals').mockResolvedValue({ receipts: [receipt], pending: 1, completed: 0, scope: 'space', next_before: null })
+  const view = render(<WorkspaceSpaces services={{ atlas: client }} initialSpace="place" />)
+  try {
+    fireEvent.click(await screen.findByRole('button', { name: 'Captures' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Memory & sounds' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Details & sources' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Review removal from this Space' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: /I understand this withdraws/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from this Space' }))
+    expect(remove).toHaveBeenCalledOnce()
+    expect(screen.getByRole('button', { name: 'Back to memory' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Close dialog' }))
+    expect(screen.getByRole('heading', { name: 'Remove a memory' })).toBeInTheDocument()
+    // A normal Space refresh can remove the gallery card while its request is pending.
+    read.mockResolvedValue({ ...detail, captures: [] })
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2), { timeout: 6500 })
+    expect(screen.getByRole('heading', { name: 'Remove a memory' })).toBeInTheDocument()
+    await act(async () => finish())
+    expect(await screen.findByRole('heading', { name: 'Removal status' })).toBeInTheDocument()
+    expect(await screen.findByText('Access withdrawn · cleanup pending')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Memory & sounds' })).not.toBeInTheDocument())
+  } finally {
+    view.unmount()
+    if (showModal) Object.defineProperty(HTMLDialogElement.prototype, 'showModal', showModal)
+    else Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
+  }
+}, 10_000)
+
+it('keeps account viewers on the existing readable surface without contribution controls', async () => {
+  const { client, detail } = fixture()
+  detail.requests = [{ cell_id: '5:5', note: 'A view would help.', latitude: 30.27, longitude: -97.74, created_at: 1, status: 'open' }]
+  vi.spyOn(client, 'detail').mockResolvedValue(detail)
+  render(<WorkspaceSpaces services={{ atlas: client }} initialSpace="place" accountRole="viewer" accountKey="user-viewer" />)
+  expect(await screen.findByRole('button', { name: /Add a capture/ })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Share my location in this space' })).toBeDisabled()
+  expect(screen.queryByRole('button', { name: 'Share space' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Requests' }))
+  expect(screen.queryByRole('button', { name: 'Contribute this view' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Coverage' }))
+  expect(screen.getByRole('button', { name: 'Select a missing area' })).toBeDisabled()
+})
+
+it('lets account owners share and manage their Space without an operator connection', async () => {
+  const { client, detail } = fixture()
+  vi.spyOn(client, 'detail').mockResolvedValue(detail)
+  const status = vi.spyOn(client, 'status').mockResolvedValue({})
+  render(<WorkspaceSpaces services={{ atlas: client }} initialSpace="place" accountRole="owner" accountKey="user-owner" />)
+  expect(await screen.findByRole('button', { name: /Add a capture/ })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Share space' })).toBeEnabled()
+  expect(screen.getByText(/This is your Space/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Mark this space resolved' }))
+  expect(status).toHaveBeenCalledWith('place', 'resolved')
+})
 
 it('opens native capture for a requested cell without inventing GPS and filters linked originals before paging', async () => {
   const { client, detail } = fixture()

@@ -462,6 +462,21 @@
 .memory-progress svg {
   flex-shrink: 0;
 }
+.memory-recovery {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.memory-recovery p {
+  margin: 0;
+}
+.memory-recovery button {
+  justify-self: start;
+}
+.memory-recovery:focus-visible {
+  outline: 2px solid var(--color-accent-hover);
+  outline-offset: 2px;
+}
 .memory-footer {
   position: sticky;
   bottom: -24px;
@@ -642,6 +657,21 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
   gap: 16px;
+}
+.memory-evidence pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  padding: 16px;
+  background: var(--color-surface);
+  border-radius: 8px;
+}
+.memory-history > strong {
+  display: block;
+  margin-bottom: 8px;
+}
+.memory-history details + details {
+  margin-top: 8px;
 }
 .memory-capture {
   text-align: left;

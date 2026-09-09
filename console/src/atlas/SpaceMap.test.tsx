@@ -59,6 +59,16 @@ it('keeps real street tiles across the complete map zoom range, including close 
   expect(screen.getByRole('button', { name: 'Recenter map' })).toBeEnabled()
 })
 
+it('starts place selection at city scale and its controls never submit an enclosing form', () => {
+  const submit = vi.fn(event => event.preventDefault())
+  render(<form onSubmit={submit}><SpaceMap {...props()} spaces={[]} picking pickingZoom={11} overviewZoom={11} /></form>)
+  act(() => mock.handlers.load())
+  expect(mock.easeTo).toHaveBeenLastCalledWith(expect.objectContaining({ zoom: 11 }))
+  fireEvent.click(screen.getByRole('button', { name: 'Recenter map' }))
+  expect(submit).not.toHaveBeenCalled()
+  expect(mock.easeTo).toHaveBeenLastCalledWith(expect.objectContaining({ zoom: 11 }))
+})
+
 it('reports an unavailable basemap without leaving the loading state indefinitely', () => {
   render(<SpaceMap {...props()} />)
   act(() => mock.handlers.error())

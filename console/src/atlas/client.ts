@@ -3,20 +3,27 @@ import { responseMatches } from './captureRequests'
 import { BrowserSpaceDraftStore, type SpaceDraftStore } from './drafts'
 import { PlatformHttp, type PlatformConnection, type PlatformFetch } from '../platform/http'
 import type { Capture, CaptureMetadata, GeoPosition, NewSpace, Space, SpaceDetail, SurfaceFocus, SurfaceRegion } from './types'
-import type { MemoryAsset, MemoryContext, MemoryNotes } from '../memory/types'
+import type { MemoryAnalysisRequest, MemoryAsset, MemoryContext, MemoryEdit, MemoryNotes } from '../memory/types'
+import type { DateAssertion, DateRevision, Timeline } from './timeline'
+import { readRemoval, type RemovalDirectory, type RemovalReceipt } from '../memory/removal'
+import { AnalysisRecoveryStore } from '../memory/analysisRecovery'
 
 export class AtlasClient {
   get memoryUploadsSupported(): boolean { return true }
+  get memoryRemovalSupported(): boolean { return true }
   readonly http: PlatformHttp
   readonly connection: PlatformConnection
   private readonly fetcher: PlatformFetch
   private readonly browserDrafts: SpaceDraftStore
+  private readonly browserAnalysisRecovery: AnalysisRecoveryStore
+  get analysisRecovery(): AnalysisRecoveryStore { return this.browserAnalysisRecovery }
   get drafts(): SpaceDraftStore { return this.browserDrafts }
   constructor(connection: PlatformConnection, fetcher: PlatformFetch = (input, init) => globalThis.fetch(input, init)) {
     this.fetcher = fetcher
     this.http = new PlatformHttp(connection, fetcher)
     this.connection = this.http.connection
     this.browserDrafts = new BrowserSpaceDraftStore(this.connection)
+    this.browserAnalysisRecovery = new AnalysisRecoveryStore(['browser', connection.baseUrl, connection.sessionId, connection.token])
   }
   async list(signal?: AbortSignal): Promise<Space[]> {
     const result = (await this.http.request('/atlas/spaces', undefined, signal)) as {
@@ -50,6 +57,20 @@ export class AtlasClient {
       status,
     })
   }
+  async timeline(id: string, signal?: AbortSignal): Promise<Timeline> {
+    const result = await this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/timeline`, undefined, signal) as Timeline
+    if (!Array.isArray(result.entries) || result.entries.length > 500 || result.entries.some(entry => !entry.capture?.id || !entry.time || !Array.isArray(entry.evidence) || !Array.isArray(entry.warnings)))
+      throw new Error('The timeline could not be read. Your original captures are unchanged.')
+    return result
+  }
+  async dateHistory(space: string, capture: string, signal?: AbortSignal): Promise<DateRevision[]> {
+    const result = await this.http.request(`/atlas/spaces/${encodeURIComponent(space)}/captures/${encodeURIComponent(capture)}/date`, undefined, signal) as { history: DateRevision[] }
+    if (!Array.isArray(result.history)) throw new Error('Date history is unavailable.')
+    return result.history
+  }
+  async correctDate(space: string, capture: string, revision: number, assertion: DateAssertion): Promise<DateRevision> {
+    return await this.http.request(`/atlas/spaces/${encodeURIComponent(space)}/captures/${encodeURIComponent(capture)}/date`, { revision, assertion }) as DateRevision
+  }
   async invitation(id: string): Promise<string> {
     const result = (await this.http.request(
       `/atlas/spaces/${encodeURIComponent(id)}/invitation`,
@@ -57,11 +78,59 @@ export class AtlasClient {
     )) as { contributor_token: string }
     return result.contributor_token
   }
+  async accountInvitations(id: string, signal?: AbortSignal): Promise<{ enabled: boolean; invitations: AccountInvitation[] }> {
+    return await this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/account-invitations`, undefined, signal) as { enabled: boolean; invitations: AccountInvitation[] }
+  }
+  async inviteAccount(id: string, role: 'viewer' | 'contributor', lifetime_hours: number): Promise<AccountInvitation & { token: string }> {
+    return await this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/account-invitations`, { role, lifetime_hours }) as AccountInvitation & { token: string }
+  }
+  async revokeAccountInvitation(id: string, invitation: string) {
+    return this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/account-invitations/${encodeURIComponent(invitation)}`, undefined, undefined, 10_000, 'DELETE')
+  }
+  async members(id: string, signal?: AbortSignal): Promise<{ members: SpaceMember[] }> {
+    return await this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/members`, undefined, signal) as { members: SpaceMember[] }
+  }
+  async removeMember(id: string, account: string) {
+    return this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/members/${encodeURIComponent(account)}`, undefined, undefined, 10_000, 'DELETE')
+  }
   async reconstruct(id: string) {
     return this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/reconstruction`, {})
   }
   async memory(space: string, capture: string, signal?: AbortSignal): Promise<MemoryContext> {
     return await this.http.request(this.memoryPath(space, capture), undefined, signal) as MemoryContext
+  }
+  async removal(space: string, capture: string, signal?: AbortSignal) {
+    const result = readRemoval(await this.http.request(this.memoryPath(space, capture).replace(/\/memory$/, '/removal'), undefined, signal), capture)
+    if (result.state !== 'preview') await this.retireRemovedRecovery(space, capture)
+    return result
+  }
+  async removeCapture(space: string, capture: string, confirmation: string): Promise<RemovalReceipt> {
+    if (!this.memoryRemovalSupported) throw new Error('Use the web console to remove a memory.')
+    const result = readRemoval(await this.http.request(this.memoryPath(space, capture).replace(/\/memory$/, '/removal'), { confirmation }), capture)
+    if (result.state === 'preview') throw new Error('Removal was not confirmed. Check its status before trying again.')
+    await this.retireRemovedRecovery(space, capture)
+    return result
+  }
+  async removals(space: string, signal?: AbortSignal, before?: number): Promise<RemovalDirectory> {
+    if (before !== undefined && (!Number.isSafeInteger(before) || before < 1 || before > 1001)) throw new Error('Choose an existing receipt page.')
+    const result = await this.http.request(`/atlas/spaces/${encodeURIComponent(space)}/removals${before === undefined ? '' : `/${before}`}`, undefined, signal) as RemovalDirectory
+    if (!result || !Array.isArray(result.receipts) || result.receipts.length > 20 || !['space', 'own'].includes(result.scope) || !Number.isSafeInteger(result.pending) || result.pending < 0 || !Number.isSafeInteger(result.completed) || result.completed < 0 || result.pending + result.completed > 1000 || !(result.next_before === null || Number.isSafeInteger(result.next_before) && result.next_before > 0 && result.next_before <= 1000 && (before === undefined || result.next_before < before)))
+      throw new Error('Removal receipts could not be verified.')
+    result.receipts.forEach(item => { if (readRemoval(item).state === 'preview') throw new Error('Removal receipts could not be verified.') })
+    await Promise.all(result.receipts.map(item => this.retireRemovedRecovery(space, item.capture_id)))
+    return result
+  }
+  private async retireRemovedRecovery(space: string, capture: string) {
+    // A receipt proves source withdrawal, so this reference can no longer admit work.
+    // Browser storage failure must not turn a confirmed relay removal into an unknown write.
+    // Relay receipts do not claim erasure of unavailable browser/device storage.
+    await this.analysisRecovery.forgetRemoved(space, capture).catch(() => {})
+  }
+  async memoryHistory(space: string, capture: string, signal?: AbortSignal, before?: number): Promise<MemoryEdit[]> {
+    if (before !== undefined && (!Number.isInteger(before) || before < 1 || before > 201)) throw new Error('Choose an existing history page.')
+    const value = await this.http.request(this.memoryPath(space, capture) + '/history' + (before === undefined ? '' : `/${before}`), undefined, signal) as { history: MemoryEdit[] }
+    if (!Array.isArray(value.history)) throw new Error('Memory history is unavailable.')
+    return value.history
   }
   async saveMemory(space: string, capture: string, revision: number, notes: MemoryNotes): Promise<MemoryContext> {
     return await this.http.request(this.memoryPath(space, capture), { revision, notes }) as MemoryContext
@@ -72,8 +141,11 @@ export class AtlasClient {
   async reviewMemory(space: string, capture: string, revision: number, analysis_id: string | null): Promise<MemoryContext> {
     return await this.http.request(this.memoryPath(space, capture) + '/review', { revision, analysis_id }) as MemoryContext
   }
-  async analyzeMemory(space: string, capture: string, options: { revision: number; weather: boolean; ai: boolean; audio_asset_id: string | null }): Promise<MemoryContext> {
+  async analyzeMemory(space: string, capture: string, options: MemoryAnalysisRequest): Promise<MemoryContext> {
     return await this.http.request(this.memoryPath(space, capture) + '/analyze', options) as MemoryContext
+  }
+  async cancelMemory(space: string, capture: string, analysis_id: string): Promise<MemoryContext> {
+    return await this.http.request(this.memoryPath(space, capture) + '/cancel', { analysis_id }) as MemoryContext
   }
   private memoryPath(space: string, capture: string) {
     return `/atlas/spaces/${encodeURIComponent(space)}/captures/${encodeURIComponent(capture)}/memory`
@@ -226,6 +298,9 @@ export class AtlasClient {
     return response.blob()
   }
 }
+
+export interface AccountInvitation { id: string; role: 'viewer' | 'contributor'; expires_at: number }
+export interface SpaceMember { account_id: string; role: 'viewer' | 'contributor' | 'owner'; joined_at: number }
 
 export function phonePosition(position: GeolocationPosition): GeoPosition {
   return {

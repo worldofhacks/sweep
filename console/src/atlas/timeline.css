@@ -1,0 +1,22 @@
+.space-timeline { display: grid; gap: 16px; }
+.space-timeline p, .space-timeline h4, .space-timeline h5 { margin: 0; }
+.space-timeline summary { cursor: pointer; padding: 8px 0; font-weight: 600; }
+.timeline-chapter-picker [role="group"] { display: flex; flex-wrap: wrap; gap: 8px; max-height: 240px; overflow: auto; padding: 8px 0; }
+.space-timeline [aria-pressed="true"] { background: var(--atlas-accent); color: var(--atlas-on-accent, #fff); }
+.timeline-chapter { display: grid; gap: 24px; }
+.timeline-chapter > h4 { font-size: 20px; letter-spacing: -.02em; padding-top: 16px; }
+.timeline-memory { display: grid; gap: 8px; padding: 16px; border-radius: 16px; background: var(--atlas-soft); box-shadow: 0 2px 8px rgb(25 60 70 / 4%); }
+.timeline-date { font-weight: 650; }
+.timeline-memory .atlas-media-card { margin: 8px 0; }
+.timeline-memory > .atlas-text-button { justify-self: start; }
+.timeline-empty, .timeline-date-details { display: grid; gap: 16px; padding: 16px; border-radius: 16px; background: var(--atlas-paper); }
+.timeline-date-details h5 { font-size: 18px; }
+.timeline-date-details form, .timeline-date-details .atlas-fieldset { display: grid; gap: 16px; }
+.timeline-date-details .atlas-fieldset, .timeline-date-details .atlas-field { margin: 0; }
+.timeline-date-details .atlas-fieldset legend { margin-bottom: 8px; }
+.timeline-date-details ul, .timeline-date-details ol { margin: 0; padding-left: 24px; overflow-wrap: anywhere; }
+.timeline-date-details li + li { margin-top: 16px; }
+.timeline-precision, .timeline-date-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.timeline-date-actions { justify-content: flex-end; gap: 16px; }
+.timeline-provenance { font-size: 13px; color: var(--atlas-muted); }
+@media (max-width: 600px) { .timeline-memory { padding: 8px; } .timeline-date { font-size: 14px; } }

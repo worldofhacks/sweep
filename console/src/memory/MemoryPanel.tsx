@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { AtlasClient } from '../atlas/client'
 import { Icon, type IconName } from '../atlas/Icon'
 import type { Capture } from '../atlas/types'
-import type { MemoryAsset } from './types'
+import type { MemoryAnalysisRequest, MemoryAsset } from './types'
 import { useMemory } from './useMemory'
+import { useAnalysisRecovery } from './useAnalysisRecovery'
 import { MemoryPreview, MemoryTrack, VoiceNote } from './MemoryMedia'
 import { AssistEditor, MusicEditor, PlaceEditor } from './MemoryEditors'
 import { MemoryEvidence } from './MemoryEvidence'
@@ -25,12 +26,14 @@ export function MemoryPanel({
   capture,
   onDirtyChange,
   onDone,
+  onRemove,
 }: {
   client: AtlasClient
   spaceId: string
   capture: Capture
   onDirtyChange?: (dirty: boolean) => void
   onDone?: () => void
+  onRemove?: () => void
 }) {
   const memory = useMemory(client, spaceId, capture)
   const {
@@ -55,11 +58,21 @@ export function MemoryPanel({
   const [rights, setRights] = useState(false)
   const [recording, setRecording] = useState(false)
   const [notice, setNotice] = useState('')
+  const recovery = useAnalysisRecovery(client, spaceId, capture.id,
+    !!data?.analysis_idempotency && !!(data.can_analyze ?? data.can_edit))
+  const pendingAnalysis = recovery.pending
   const focusTarget = useRef<HTMLHeadingElement>(null)
   const panel = useRef<HTMLElement>(null)
+  const recoveryNotice = useRef<HTMLDivElement>(null)
+  const pendingId = pendingAnalysis?.request_id
   const returnView = useRef<View>('memory')
   const lastView = useRef<View>('memory')
   const unsaved = dirty || !!file || recording || !!busy
+  useEffect(() => {
+    if (!pendingId || busy) return
+    recoveryNotice.current?.focus({ preventScroll: true })
+    panel.current?.closest('.memory-dialog')?.scrollTo?.({ top: 0 })
+  }, [pendingId, busy])
   useEffect(() => {
     onDirtyChange?.(unsaved)
   }, [onDirtyChange, unsaved])
@@ -86,7 +99,8 @@ export function MemoryPanel({
   }, [view])
   const kept =
     !!data?.review && data.review.revision === data.revision && !dirty && !file && !running
-  const disabled = !!(busy || running || !data?.can_edit)
+  const disabled = !!(busy || running || pendingAnalysis || !data?.can_edit)
+  const canAnalyze = data?.can_analyze ?? data?.can_edit
   const open = (next: View, button?: HTMLButtonElement) => {
     if (button) returnView.current = next
     setView(next)
@@ -140,19 +154,81 @@ export function MemoryPanel({
         setView('memory')
       }
     })
+  const submitAnalysis = async (request: MemoryAnalysisRequest) => {
+    const current = memory.currentScope()
+    let result
+    try {
+      result = await client.analyzeMemory(spaceId, capture.id, request)
+    } catch (error) {
+      if (!current()) return
+      throw error
+    }
+    const receipt = result.analysis_request
+    if (request.request_id && (
+      result.capture?.id !== capture.id || result.analysis_idempotency !== true ||
+      receipt?.id !== request.request_id ||
+      !((typeof receipt.analysis_id === 'string' && !!receipt.analysis_id && receipt.rejection === null) ||
+        (receipt.analysis_id === null && typeof receipt.rejection === 'string' && !!receipt.rejection && !receipt.current)) ||
+      typeof receipt.replayed !== 'boolean' || typeof receipt.current !== 'boolean' ||
+      (receipt.current && result.analysis?.id !== receipt.analysis_id)
+    )) {
+      if (!current()) return
+      throw new Error('The relay did not confirm this request. Recover the same request before starting another.')
+    }
+    let remaining = null
+    if (request.request_id) {
+      try {
+        remaining = await client.analysisRecovery.acknowledge(spaceId, capture.id, request.request_id)
+      } catch {
+        if (!current()) return
+        throw new Error('The relay replied, but its recovery reference could not be cleared on this browser. Recover the same request again; do not start another.')
+      }
+    }
+    if (current()) {
+      recovery.setPending(remaining)
+      memory.adopt(result)
+      setNotice(receipt?.rejection
+        ? `Analysis was not started. ${receipt.rejection} Your latest saved memory is shown; review it before making a new request.`
+        : receipt?.replayed
+        ? receipt.current
+          ? 'Your earlier request was recovered. No new analysis was started.'
+          : 'Your earlier request was recovered. Showing the latest saved context; no new analysis was started.'
+        : '')
+      setView('memory')
+    }
+  }
   const analyze = (options: { weather: boolean; ai: boolean; audio_asset_id: string | null }) =>
     void act('Finding the details…', async () => {
+      if (pendingAnalysis || !recovery.ready) return
+      const current = memory.currentScope()
       const saved = await save()
-      const result = await client.analyzeMemory(spaceId, capture.id, {
+      if (!current()) return
+      const request: MemoryAnalysisRequest = {
         ...options,
         revision: saved.revision,
-      })
-      if (mounted.current) {
-        setData(result)
-        setNotice('')
-        setView('memory')
+        ...(saved.analysis_idempotency ? { request_id: crypto.randomUUID() } : {}),
       }
+      if (request.request_id) {
+        const reserved = await client.analysisRecovery.reserve(spaceId, capture.id, request)
+        if (!current()) return
+        recovery.setPending(reserved.request)
+        setView('memory')
+        if (reserved.existing) return // Another panel already froze an intent. Ask before replaying it.
+      }
+      await submitAnalysis(request)
     })
+  const recoverAnalysis = () => {
+    if (dirty && !window.confirm('Recover the saved analysis and replace your unsaved text and place/time edits with the latest saved version?')) return
+    void act('Recovering your request…', async () => {
+    if (!pendingAnalysis || !recovery.ready) return
+    const current = memory.currentScope()
+    const reserved = await client.analysisRecovery.reserve(spaceId, capture.id, pendingAnalysis)
+    if (!current()) return
+    recovery.setPending(reserved.request)
+    if (reserved.request.request_id !== pendingAnalysis.request_id) return
+    await submitAnalysis(reserved.request)
+    })
+  }
   const analysis = data?.analysis
   const currentAnalysis = analysis && ['complete', 'partial'].includes(analysis.status) && !dirty
   return (
@@ -160,7 +236,7 @@ export function MemoryPanel({
       {error && (
         <div className="memory-error" role="alert">
           {error}
-          <button
+          {!pendingAnalysis && <button
             disabled={recording || !!busy}
             onClick={() => {
               if (!unsaved || window.confirm('Reload and discard unsaved memory changes?')) {
@@ -170,9 +246,28 @@ export function MemoryPanel({
             }}
           >
             Reload saved context
-          </button>
+          </button>}
         </div>
       )}
+      {pendingAnalysis && !busy && (
+        <div ref={recoveryNotice} tabIndex={-1} className="memory-callout memory-recovery" role="status">
+          <p>This request hasn’t been confirmed. Recover it with the same settings. We’ll reuse an
+            existing job—or submit it once if it never arrived. Selected providers may charge.</p>
+          <button
+            className="atlas-secondary"
+            disabled={recording}
+            onClick={recoverAnalysis}
+          >Recover this request</button>
+          <p className="atlas-fine">Saved settings: AI {pendingAnalysis.ai ? 'on' : 'off'} · weather {pendingAnalysis.weather ? 'on' : 'off'} · {pendingAnalysis.audio_asset_id ? 'selected recording' : 'original media'}.</p>
+          <p className="atlas-fine">This recovery reference is saved on this browser for the same workspace connection.
+            You can close and return. Nothing resumes automatically. Clearing browser data or changing
+            credentials can make it unavailable.</p>
+        </div>
+      )}
+      {recovery.error && <div className="memory-error" role="alert">
+        <p>{recovery.error}</p>
+        <button className="atlas-secondary" onClick={recovery.retry}>Check recovery storage</button>
+      </div>}
       {!data ? (
         <p role="status">
           {error ? 'Memory context is unavailable on this server.' : 'Opening your memory…'}
@@ -181,7 +276,14 @@ export function MemoryPanel({
         <>
           {!data.can_edit && (
             <p className="memory-callout">
-              Your invitation can view this memory. A workspace owner adds context and recordings.
+              You can revisit this memory. Its contributor or the Space owner can add context and
+              recordings.
+            </p>
+          )}
+          {data.can_edit && (
+            <p className="atlas-fine">
+              Your story and recordings are shared with everyone who has access to this Space.
+              Earlier versions stay in its edit history. Nothing is posted publicly.
             </p>
           )}
           <div hidden={view !== 'memory'}>
@@ -273,10 +375,35 @@ export function MemoryPanel({
               </button>
             )}
             {running ? (
-              <p className="memory-progress" role="status">
-                <Icon name="spark" size={18} />
-                Finding the details… Your original is saved. You can come back later.
-              </p>
+              <div>
+                <p className="memory-progress" role="status">
+                  <Icon name="spark" size={18} />
+                  {analysis?.status === 'cancelling'
+                    ? 'Stop requested. Waiting for the current work to finish; no new generated context will be kept.'
+                    : analysis?.status === 'interrupted'
+                      ? 'Analysis is taking longer than expected. We are still checking; its worker has not confirmed completion.'
+                      : 'Finding the details… Your original is saved. You can come back later.'}
+                </p>
+                {data.can_cancel && analysis && analysis.status !== 'cancelling' && (
+                  <button
+                    className="atlas-secondary"
+                    disabled={!!busy}
+                    onClick={() => void act('Requesting a stop…', async () => {
+                      const result = await client.cancelMemory(spaceId, capture.id, analysis.id)
+                      if (mounted.current) setData(result)
+                    })}
+                  >
+                    Stop analysis
+                  </button>
+                )}
+                {(data.can_cancel || analysis?.status === 'cancelling') && (
+                  <p className="atlas-fine">
+                    Already-sent provider work may finish and incur charges. A stop request is not
+                    a refund or a recall of sent data. If this stays pending, the workspace operator
+                    must verify the worker stopped.
+                  </p>
+                )}
+              </div>
             ) : currentAnalysis ? (
               <div className="memory-draft">
                 <span className="atlas-eyebrow">
@@ -323,7 +450,7 @@ export function MemoryPanel({
                   >
                     Details & sources
                   </button>
-                  {data.can_edit && (
+                  {canAnalyze && (
                     <button
                       data-memory-view="assist"
                       disabled={disabled || !!file}
@@ -335,7 +462,7 @@ export function MemoryPanel({
                 </div>
               </div>
             ) : (
-              data.can_edit && (
+              canAnalyze && (
                 <button
                   className="memory-assist"
                   data-memory-view="assist"
@@ -368,6 +495,13 @@ export function MemoryPanel({
                 Details & sources
               </button>
             )}
+            {analysis?.status === 'cancelled' && <p role="status" className="atlas-fine">Analysis stopped. No new generated context was kept. Your original and story are unchanged.</p>}
+            {data.can_edit && !canAnalyze && (
+              <p className="atlas-fine">
+                You can keep your story and sounds now. AI and weather assistance is currently
+                available only through the connected workspace.
+              </p>
+            )}
           </div>
           {view !== 'memory' && (
             <div className="memory-focused">
@@ -385,19 +519,31 @@ export function MemoryPanel({
                 </h3>
               </div>
               {view === 'evidence' ? (
+                <>
                 <MemoryEvidence
                   data={data}
+                  client={client}
+                  spaceId={spaceId}
                   inspectionStatus={memory.inspectionStatus}
                   onInspect={() =>
                     void act('Reading metadata…', async () => {
                       const result = await client.inspectMemory(spaceId, capture.id)
                       if (mounted.current)
                         setData(
-                          (current) => current && { ...current, inspection: result.inspection },
+                          (current) =>
+                            current && {
+                              ...current,
+                              inspection: result.inspection,
+                            },
                         )
                     })
                   }
                 />
+                {data.can_remove && onRemove && client.memoryRemovalSupported && <div className="memory-removal-entry">
+                  <button className="atlas-text-button" disabled={unsaved || !!pendingAnalysis} onClick={onRemove}>Review removal from this Space</button>
+                  {unsaved && <p className="atlas-fine">Save or finish your pending edits and recordings before reviewing removal.</p>}
+                </div>}
+                </>
               ) : (
                 <fieldset disabled={view === 'sound' ? !!busy : disabled}>
                   {view === 'place' && (
@@ -417,7 +563,7 @@ export function MemoryPanel({
                       data={data}
                       notes={notes}
                       coordinates={coordinates}
-                      disabled={disabled || !!file}
+                      disabled={disabled || !!file || !canAnalyze || !recovery.ready}
                       onPlace={() => setView('place')}
                       onAnalyze={analyze}
                     />
@@ -569,10 +715,10 @@ export function MemoryPanel({
                       ? 'Your changes are ready to keep.'
                       : notice || 'Shared with your space. No public post.')}
               </div>
-              {data.can_edit && !running && !kept ? (
+              {data.can_edit && !running && !kept && !pendingAnalysis ? (
                 <button
                   className="atlas-primary"
-                  disabled={!!busy || !!file || recording}
+                  disabled={!!busy || !!file || recording || !!pendingAnalysis}
                   onClick={keep}
                 >
                   <Icon name="check" size={18} />
@@ -581,7 +727,7 @@ export function MemoryPanel({
               ) : (
                 onDone && (
                   <button className="atlas-primary" disabled={unsaved} onClick={onDone}>
-                    {running ? 'Done for now' : 'Done'}
+                    {running || pendingAnalysis ? 'Done for now' : 'Done'}
                   </button>
                 )
               )}

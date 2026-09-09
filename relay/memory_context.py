@@ -182,6 +182,14 @@ def suggest_scene(frame, evidence):
 
 def analyze(memory, value, request):
     original = value["capture"]
+
+    def still_available():
+        memory.require_analysis(original["id"], value["analysis"]["id"])
+
+    def reserve_provider(stage):
+        memory.allowance.claim(original["id"], value["analysis"]["id"], stage)
+
+    still_available()
     source = memory.atlas.media / original["id"]
     warnings = []
     inspection = value.get("inspection")
@@ -199,7 +207,10 @@ def analyze(memory, value, request):
         "status": "complete",
     }
     if request.weather:
+        still_available()
         try:
+            if capabilities()["weather"]:
+                reserve_provider("weather")
             output["weather"] = historical_weather(value["notes"])
         except AtlasError as error:
             warnings.append(error.detail)
@@ -218,6 +229,7 @@ def analyze(memory, value, request):
         audio_path, audio_source = source, {"id": original["id"], "role": "original_video"}
     sample = None
     if audio_path:
+        still_available()
         try:
             sample = audio_sample(audio_path)
             with wave.open(io.BytesIO(sample)) as audio:
@@ -243,23 +255,28 @@ def analyze(memory, value, request):
             )
         else:
             if sample:
+                still_available()
                 try:
                     # Reuse only the file-transcription transport, never the voice command compiler.
                     from relay.voice import AudioUpload, OpenAIWhisperTransport
 
+                    reserve_provider("transcript")
                     output["transcript"] = {
-                        "text": OpenAIWhisperTransport(timeout_s=15).transcribe(
+                        "text": OpenAIWhisperTransport(timeout_s=15, max_attempts=1).transcribe(
                             AudioUpload(content_type="audio/wav", body=sample)
                         ),
                         "model": "whisper-1",
                         "source": audio_source,
                         "kind": "ai_transcript_review_required",
                     }
+                except AtlasError as error:
+                    warnings.append(error.detail)
                 except Exception:
                     warnings.append(
                         "Speech transcription was unavailable. "
                         "Ambient noise is not guaranteed to contain speech."
                     )
+            still_available()
             try:
                 frame = preview_frame(source)
             except Exception:
@@ -268,7 +285,9 @@ def analyze(memory, value, request):
                     "No visual preview could be prepared for AI; "
                     "suggestions use text evidence only."
                 )
+            still_available()
             try:
+                reserve_provider("suggestion")
                 output["suggestion"] = suggest_scene(
                     frame,
                     {
@@ -281,6 +300,8 @@ def analyze(memory, value, request):
                         "visual_sample": "first frame only" if frame else "unavailable",
                     },
                 )
+            except AtlasError as error:
+                warnings.append(error.detail)
             except Exception:
                 warnings.append(
                     "AI suggestions could not be completed. "

@@ -346,8 +346,8 @@ class AtlasActivity : ComponentActivity() {
                     override fun close() { super.close(); response.close() }
                 }
                 // Upstream cannot return executable HTML into our privileged app origin.
-                val mime = response.body!!.contentType()?.toString()?.substringBefore(';').orEmpty()
-                if (mime !in setOf("image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "model/gltf-binary", "application/octet-stream")) {
+                val mime = atlasPlaybackMime(path, response.body!!.contentType()?.toString().orEmpty())
+                if (mime == null) {
                     stream.close(); blocked()
                 } else WebResourceResponse(mime, null, 200, "OK", mapOf("Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"), stream)
             }

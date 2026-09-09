@@ -3,7 +3,8 @@ import { Icon } from './Icon'
 import { captureRequestContext, isActionableRequest, isCurrentSurfaceRequest, spaceCaptureRequests } from './captureRequests'
 import type { CaptureRequestContext, SpaceDetail, SpaceRequest, SurfaceRequest } from './types'
 
-export function CaptureRequestsPanel({ detail, onInspect, onContribute, onViewCaptures }: {
+export function CaptureRequestsPanel({ detail, onInspect, onContribute, onViewCaptures, canContribute = true }: {
+  canContribute?: boolean
   detail: SpaceDetail
   onInspect: (request: SpaceRequest | SurfaceRequest) => void
   onContribute: (request: CaptureRequestContext) => void
@@ -36,7 +37,7 @@ export function CaptureRequestsPanel({ detail, onInspect, onContribute, onViewCa
         {!current && <p className="atlas-fine">This target belongs to an earlier model. It cannot be highlighted on the current build.</p>}
         <div className="atlas-request-actions">
           {current && <button className="atlas-secondary" onClick={() => onInspect(item)}>{location ? 'Show requested area' : 'Inspect in 3D'}</button>}
-          {actionable && <button className="atlas-primary" onClick={() => onContribute(context)}>Contribute this view</button>}
+          {actionable && canContribute && <button className="atlas-primary" onClick={() => onContribute(context)}>Contribute this view</button>}
           {!!item.capture_ids?.length && <button className="atlas-text-button" onClick={() => onViewCaptures(context)}>
             View {item.capture_ids.length} linked {item.capture_ids.length === 1 ? 'capture' : 'captures'}
           </button>}

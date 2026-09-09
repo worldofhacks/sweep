@@ -84,6 +84,40 @@ class AtlasUploadTest {
             assertTrue(AtlasOutbox.get(context).file(item).isFile)
         }
     }
+    @Test fun `removed source replay stops retrying and clears metadata without deleting the original`() {
+        MockWebServer().use { server ->
+            val access = session(server); val item = capture(access)
+            val queue = AtlasOutbox.get(context)
+            queue.cache(access.id, "place", JSONObject().put("space", "place").toString())
+            val original = queue.file(item).readBytes()
+            server.enqueue(MockResponse().setResponseCode(409)
+                .setBody("{\"code\":\"capture_removed\",\"detail\":\"This original was removed from this Space. Automatic re-upload is blocked.\"}"))
+            assertEquals(ListenableWorker.Result.failure(), worker().deliver(item, access))
+            assertEquals("failed", queue.get(item.id)!!.state)
+            assertTrue(queue.get(item.id)!!.error.contains("Automatic re-upload is blocked"))
+            assertEquals(0, queue.cached(access.id).length())
+            assertArrayEquals(original, queue.file(item).readBytes())
+            assertEquals(item.checksum, AtlasOutbox.checksum(queue.file(item)))
+            assertEquals(1, server.requestCount)
+            resetAtlasTestProcess()
+            assertEquals(0, AtlasOutbox.get(context).cached(access.id).length())
+            assertEquals("failed", AtlasOutbox.get(context).get(item.id)!!.state)
+        }
+    }
+    @Test fun `generic upload conflicts keep readable cache but missing Space withdraws it`() {
+        MockWebServer().use { server ->
+            val access = session(server); val item = capture(access)
+            val queue = AtlasOutbox.get(context)
+            queue.cache(access.id, "place", JSONObject().put("space", "place").toString())
+            server.enqueue(MockResponse().setResponseCode(409).setBody("{\"detail\":\"Request changed\"}"))
+            assertEquals(ListenableWorker.Result.failure(), worker().deliver(item, access))
+            assertEquals(1, queue.cached(access.id).length())
+            server.enqueue(MockResponse().setResponseCode(404).setBody("{\"detail\":\"Space unavailable\"}"))
+            assertEquals(ListenableWorker.Result.failure(), worker().deliver(item, access))
+            assertEquals(0, queue.cached(access.id).length())
+            assertTrue(queue.file(item).isFile)
+        }
+    }
     @Test fun `redirects do not forward the capture or credential`() {
         MockWebServer().use { server ->
             val access = session(server); val item = capture(access)

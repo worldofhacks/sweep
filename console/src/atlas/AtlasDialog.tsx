@@ -15,7 +15,11 @@ export function AtlasDialog({
   const dialog = useRef<HTMLDialogElement>(null)
   const titleId = useId()
   useEffect(() => {
+    const trigger = document.activeElement
     dialog.current?.showModal()
+    return () => {
+      if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus({ preventScroll: true })
+    }
   }, [])
   return (
     <dialog

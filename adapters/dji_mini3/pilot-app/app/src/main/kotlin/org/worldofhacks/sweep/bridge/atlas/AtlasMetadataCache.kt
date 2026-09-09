@@ -7,7 +7,10 @@ import org.json.JSONObject
 internal class AtlasMetadataCache(private val queue: AtlasOutbox) {
     fun accessRefused(session: AtlasSession, spaceId: String?, status: Int) {
         if (status == 401) queue.invalidateCache(session.id)
-        else if (status == 403) queue.invalidateCache(session.id, spaceId)
+        // A withdrawn capture/world is deliberately indistinguishable from a missing
+        // resource. Retire the containing snapshot so offline fallback cannot revive
+        // its old capture notes or derived-world links after that observation.
+        else if (status == 403 || status == 404) queue.invalidateCache(session.id, spaceId)
     }
 
     fun response(session: AtlasSession, path: String, method: String, status: Int, body: String,

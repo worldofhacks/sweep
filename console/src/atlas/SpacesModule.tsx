@@ -23,6 +23,8 @@ import { contributingNeighbors, journeyScore } from '../community/journey'
 import { useJourney } from '../community/useJourney'
 import { COMMUNITY_EXAMPLES, type CommunityExample } from '../community/examples'
 import '../community/community.css'
+import { useAccountSession } from '../community/accountSession'
+import { pendingInvitation } from '../community/accountClient'
 export { AtlasDialog } from './AtlasDialog'
 import {
   CATEGORY_LABEL,
@@ -42,12 +44,16 @@ import './atlas.css'
 const SpaceMap = lazy(() => import('./SpaceMap'))
 const WorldViewer = lazy(() => import('./WorldViewer'))
 const MemoryDialog = lazy(() => import('../memory/MemoryDialog'))
+const AccountSpaces = lazy(() => import('../community/AccountSpaces'))
+const SpaceSharing = lazy(() => import('../community/SpaceSharing'))
+const SpaceTimeline = lazy(() => import('./SpaceTimeline'))
+const SpaceRemovals = lazy(() => import('../memory/SpaceRemovals'))
 const DEFAULT_CENTER: [number, number] = [-97.7431, 30.2672]
 const EXAMPLE_MAP_SPACES: Space[] = COMMUNITY_EXAMPLES.map(example => ({ ...example.space, id: example.id,
   title: `Example · ${example.space.title}`, created_at: 0, updated_at: 0, status: 'active', verification: 'unverified',
   capture_count: 0, coverage_percent: 0, contributors: 0 }))
 type Filter = 'all' | 'incident' | 'needs-captures' | 'resolved' | 'saved' | 'examples'
-type DetailTab = 'overview' | 'captures' | 'coverage' | 'requests' | 'world'
+type DetailTab = 'overview' | 'captures' | 'timeline' | 'coverage' | 'requests' | 'world'
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.'
 }
@@ -76,8 +82,23 @@ interface SpacesProps extends Pick<ModuleProps, 'services'> {
   initialSpace?: string | null
   captureNative?: (value: NativeCaptureRequest) => Promise<void>
   connectNative?: () => void
+  accountRole?: 'viewer' | 'contributor' | 'owner'
+  accountKey?: string
+  onExitAccount?: () => void
+  onOpenAccountSpaces?: () => void
 }
-export function SpacesModule({ services, initialSpace, captureNative, connectNative }: SpacesProps) {
+export function SpacesModule(props: SpacesProps) {
+  const session = useAccountSession()
+  const [pending, setPending] = useState(() => props.captureNative || props.connectNative ? '' : pendingInvitation())
+  const [accountOpen, setAccountOpen] = useState(Boolean(pending))
+  if (accountOpen) return <Suspense fallback={<p role="status">Opening your shared spaces…</p>}>
+    <AccountSpaces session={session} pending={pending} onHandled={() => setPending('')} onClose={() => { setPending(''); setAccountOpen(false) }} />
+  </Suspense>
+  return <WorkspaceSpaces {...props} onOpenAccountSpaces={props.captureNative || props.connectNative ? undefined : () => { setPending(pendingInvitation()); setAccountOpen(true) }} />
+}
+
+export function WorkspaceSpaces({ services, initialSpace, captureNative, connectNative, accountRole, accountKey, onExitAccount, onOpenAccountSpaces }: SpacesProps) {
+  const canContribute = accountRole !== 'viewer'
   const [manualClient, setManualClient] = useState<AtlasClient | null>(null)
   const [invitedSpace, setInvitedSpace] = useState<string | null>(initialSpace ?? null)
   const client = manualClient ?? services.atlas ?? null
@@ -89,6 +110,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState<DetailTab>('overview')
+  const [timelineIds, setTimelineIds] = useState<string[]>([])
   const [creating, setCreating] = useState(false)
   const localDraft = useSpaceDraft(invitedSpace ? null : client?.drafts ?? null)
   const draft = localDraft.draft?.space ?? EMPTY_SPACE
@@ -112,16 +134,24 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
   const [captureRequest, setCaptureRequest] = useState<CaptureRequestContext | undefined>()
   const [captureFilter, setCaptureFilter] = useState<CaptureRequestContext | null>(null)
   const [captureLimit, setCaptureLimit] = useState(24)
-  const [invitation, setInvitation] = useState('')
   const [inviteTokens, setInviteTokens] = useState<Record<string, string>>({})
   const [contributor] = useState(identity)
   const { journey, error: journeyError, toggleSaved, remember } = useJourney(
-    client ? `${client.connection.baseUrl}/${client.connection.sessionId}` : 'disconnected', contributor)
+    client ? `${client.connection.baseUrl}/${client.connection.sessionId}${accountKey ? `/account/${accountKey}` : ''}` : 'disconnected', contributor)
   const score = journeyScore(journey)
   const [name, setName] = useState('Contributor')
   const [sharing, setSharing] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [removalsOpen, setRemovalsOpen] = useState(false)
+  const [selectedMemory, setSelectedMemory] = useState<Capture | null>(null)
   const refresh = useCallback(() => setRefreshKey((key) => key + 1), [])
+  const memoryRemoved = useCallback(() => {
+    // Drop all local projections, including the map and derived world, immediately.
+    setDetail(null); setTimelineIds([]); setSurfaceFocus(null); setSurfaceRequest(null)
+    setSelectedMemory(null)
+    setSelectedCell(null); setCaptureFilter(null); setTab('captures'); setRemovalsOpen(true)
+    refresh()
+  }, [refresh])
   useEffect(() => {
     const stop = () => setSharing(false)
     window.addEventListener('atlas-background', stop)
@@ -152,6 +182,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
     } catch (error) { setNotice(errorText(error)) }
   }
   const openCapture = (request?: CaptureRequestContext) => {
+    if (!canContribute) { setNotice('Your account has view-only access to this space.'); return }
     setNotice('')
     // Freeze the selected request before handing control to a camera or file picker.
     const snapshot = request ? structuredClone(request) : undefined
@@ -164,6 +195,8 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
     setNotice(''); setCaptureFilter(request); setCaptureLimit(24); setTab('captures')
   }
   const openSpace = useCallback((id: string, view: DetailTab = 'overview') => {
+    setRemovalsOpen(false)
+    setSelectedMemory(null)
     setSelected(id)
     setDetailError('')
     setTab(view)
@@ -218,6 +251,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
           // Do not leave stale live locations or a refused space looking current.
           // Android's explicitly labeled offline cache is handled by its client instead.
           setDetail(null)
+          setSelectedMemory(null)
           setDetailError(errorText(error))
         }
       }
@@ -340,10 +374,9 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
       setNotice('Your space is ready. Add the first perspective.')
     })
 
-  const share = () =>
-    void run(async () => {
-      if (!client || !selected) return
-      const token = inviteTokens[selected] ?? (await client.invitation(selected))
+  const legacyInvitation = async (replace = false) => {
+      if (!client || !selected) throw new Error('Choose a space first.')
+      const token = !replace && inviteTokens[selected] || (await client.invitation(selected))
       setInviteTokens((tokens) => ({ ...tokens, [selected]: token }))
       const invite = JSON.stringify({
         relay: client.connection.baseUrl,
@@ -351,9 +384,8 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
         space: selected,
         token,
       })
-      setInvitation(invite)
-      setModal('share')
-    })
+      return invite
+  }
 
   const useExample = () => {
     if (!client) { openConnect(); return }
@@ -399,6 +431,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
             <Icon name="plus" size={18} />
             <span>{localDraft.draft ? 'Continue draft' : 'Create a space'}</span>
           </button>
+          {onOpenAccountSpaces && <button className="atlas-secondary" disabled={busy} onClick={() => void run(async () => { await localDraft.session.flush(); onOpenAccountSpaces() })}><Icon name="people" size={17} />My spaces</button>}
         </div>
       </div>
       {journeyError && <p className="community-storage-notice" role="status">{journeyError}</p>}
@@ -421,13 +454,16 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
           ) : (
             <SpaceMap
               spaces={exampleView ? EXAMPLE_MAP_SPACES.filter(space => `${space.title} ${space.description} ${space.place}`.toLowerCase().includes(query.toLowerCase())) : visible}
-              detail={activeDetail}
+              detail={tab === 'timeline' && activeDetail ? { ...activeDetail,
+                captures: activeDetail.captures.filter(capture => timelineIds.includes(capture.id)),
+                people: [], requests: [], surface_requests: [], coverage: { ...activeDetail.coverage, cells: [] },
+              } : activeDetail}
               center={exampleView ? [-97.728, 30.28] : focusedCell ? [focusedCell.longitude, focusedCell.latitude] : mapCenter}
               overviewZoom={exampleView ? 12 : undefined}
               picking={creating && !submitted && !busy}
               coverageVisible={tab === 'coverage'}
               selectedCell={selectedCell}
-              position={position}
+              position={tab === 'timeline' ? null : position}
               onSelect={id => { const starter = exampleView && COMMUNITY_EXAMPLES.find(value => value.id === id); if (starter) openExample(starter); else openSpace(id) }}
               onCell={setSelectedCell}
               onPick={(longitude, latitude) => {
@@ -695,6 +731,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                 className="atlas-back"
                 onClick={() => {
                   if (invitedSpace) {
+                    if (onExitAccount) { onExitAccount(); return }
                     openConnect()
                     return
                   }
@@ -704,10 +741,10 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                 }}
               >
                 <Icon name="back" size={17} />
-                {invitedSpace ? 'Open another space' : 'All spaces'}
+                {onExitAccount ? 'My spaces' : invitedSpace ? 'Open another space' : 'All spaces'}
               </button>
-              {!invitedSpace && (
-                <button className="atlas-icon-button" aria-label="Share space" onClick={share}>
+              {(!invitedSpace || accountRole === 'owner') && (
+                <button className="atlas-icon-button" aria-label="Share space" onClick={() => setModal('share')}>
                   <Icon name="share" size={18} />
                 </button>
               )}
@@ -726,6 +763,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                   {CATEGORY_LABEL[activeDetail.space.category]}
                 </span>
                 <h2>{activeDetail.space.title}</h2>
+                {accountRole && <p className="atlas-fine">{accountRole === 'owner' ? 'This is your Space. Invite people, add captures, and manage who can participate.' : accountRole === 'viewer' ? 'You’re here to explore. This account has view-only access.' : 'You’re a contributor. Your captures are attributed to your signed-in account.'}</p>}
                 <p className="atlas-place">
                   <Icon name="pin" size={15} />
                   {activeDetail.space.place ||
@@ -745,6 +783,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                     [
                       ['overview', 'Overview'],
                       ['captures', 'Captures'],
+                      ['timeline', 'Timeline'],
                       ['coverage', 'Coverage'],
                       ['requests', 'Requests'],
                       ['world', '3D atlas'],
@@ -840,7 +879,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                     </label>
                     <button
                       className={`atlas-secondary atlas-full ${sharing ? 'is-active' : ''}`}
-                      disabled={!name.trim()}
+                      disabled={!canContribute || !name.trim()}
                       onClick={() => setSharing((value) => !value)}
                     >
                       <Icon name="target" size={17} />
@@ -858,6 +897,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                       <h3>Every perspective, together.</h3>
                       <p>Original media stays connected to its source and capture time.</p>
                     </div>
+                    {canContribute && client?.memoryRemovalSupported && <button className="atlas-text-button" onClick={() => setRemovalsOpen(true)}>Removal status</button>}
                     {captureFilter && <div className="atlas-request-context" role="status">
                       <strong>{captureFilter.label} · {visibleCaptures.length} linked views</strong>
                       <p>These originals were submitted for this request. Review them before assessing coverage.</p>
@@ -877,6 +917,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                             capture={capture}
                             client={client!}
                             spaceId={selected}
+                            onOpenMemory={setSelectedMemory}
                           />
                         ))}
                       </div>
@@ -888,8 +929,9 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                     )}
                   </>
                 )}
-                {tab === 'requests' && <CaptureRequestsPanel key={selected} detail={activeDetail}
+                {tab === 'requests' && <CaptureRequestsPanel key={selected} detail={activeDetail} canContribute={canContribute}
                   onInspect={inspectRequest} onContribute={openCapture} onViewCaptures={viewLinkedCaptures} />}
+                {tab === 'timeline' && <Suspense fallback={<p role="status">Opening the timeline…</p>}><SpaceTimeline key={selected} client={client!} spaceId={selected} onVisible={setTimelineIds} onOpenMemory={setSelectedMemory} /></Suspense>}
                 {tab === 'coverage' && (
                   <>
                     <div className="atlas-section-heading">
@@ -925,7 +967,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                     <button
                       className="atlas-primary atlas-full"
                       disabled={
-                        !selectedCell ||
+                        !canContribute || !selectedCell ||
                         activeDetail.space.status !== 'active' ||
                         busy ||
                         Boolean(
@@ -967,21 +1009,21 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                       active={activeDetail.space.status === 'active'}
                       onFocus={setSurfaceFocus} onChange={refresh}
                       initialRegionId={surfaceRequest && isCurrentSurfaceRequest(surfaceRequest, activeDetail.reconstruction) ? surfaceRequest.region_id : undefined}
-                      onContribute={openCapture} onViewCaptures={viewLinkedCaptures}
+                      onContribute={canContribute ? openCapture : undefined} onViewCaptures={viewLinkedCaptures}
                     />
                   </>
                 )}
                 <div className="atlas-detail-footer">
                   <button
                     className="atlas-primary atlas-full"
-                    disabled={activeDetail.space.status !== 'active'}
+                    disabled={!canContribute || activeDetail.space.status !== 'active'}
                     onClick={() => openCapture()}
                   >
                     <Icon name="camera" />
                     Add a capture
                     <Icon name="plus" size={17} />
                   </button>
-                  {!invitedSpace && (
+                  {(!invitedSpace || accountRole === 'owner') && (
                     <button
                       className="atlas-text-button atlas-resolve"
                       disabled={busy}
@@ -1036,6 +1078,8 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
           </div>
         )}
       </div>
+      {removalsOpen && client && selected && <Suspense fallback={<p role="status">Opening removal receipts…</p>}><SpaceRemovals key={selected} client={client} spaceId={selected} onClose={() => setRemovalsOpen(false)} /></Suspense>}
+      {selectedMemory && client && selected && <Suspense fallback={<p role="status">Opening memory tools…</p>}><MemoryDialog key={`${selected}/${selectedMemory.id}`} client={client} spaceId={selected} capture={selectedMemory} onClose={() => setSelectedMemory(null)} onRemoved={memoryRemoved} /></Suspense>}
       {modal && (
         <AtlasDialog
           title={
@@ -1088,31 +1132,9 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
             />
           )}
           {modal === 'share' && (
-            <>
-              <p className="atlas-muted">
-                This invitation grants access to this space’s captures and contributions. It does
-                not grant fleet controls.
-              </p>
-              <textarea
-                className="atlas-invite"
-                aria-label="Space invitation"
-                readOnly
-                value={invitation}
-                rows={6}
-              />
-              <button
-                className="atlas-primary atlas-full"
-                onClick={() =>
-                  void navigator.clipboard
-                    .writeText(invitation)
-                    .then(() => setNotice('Invitation copied.'))
-                    .catch(() => setNotice('Select and copy the invitation text.'))
-                }
-              >
-                <Icon name="share" />
-                Copy invitation
-              </button>
-            </>
+            <Suspense fallback={<p role="status">Opening sharing settings…</p>}>
+              <SpaceSharing client={client!} spaceId={selected!} allowAccounts={!captureNative && !connectNative} allowLegacy={!accountRole} legacyInvitation={() => legacyInvitation()} replaceLegacy={() => legacyInvitation(true)} />
+            </Suspense>
           )}
         </AtlasDialog>
       )}
@@ -1207,14 +1229,18 @@ function CoverageMini({
   )
 }
 
-function MediaCard({
+export function MediaCard({
   capture,
   client,
   spaceId,
+  timeCaption,
+  onOpenMemory,
 }: {
   capture: Capture
   client: AtlasClient
   spaceId: string
+  timeCaption?: string
+  onOpenMemory?: (capture: Capture) => void
 }) {
   const [url, setUrl] = useState('')
   const [memoryOpen, setMemoryOpen] = useState(false)
@@ -1265,16 +1291,16 @@ function MediaCard({
       </div>
       <strong>{capture.name}</strong>
       <span>
-        {capture.source === 'camera' && capture.captured_at !== null
+        {timeCaption ?? (capture.source === 'camera' && capture.captured_at !== null
           ? `${age(capture.captured_at)} · Phone capture`
-          : `Imported ${age(capture.uploaded_at)} · Capture time ${capture.captured_at === null ? 'unknown' : 'unverified'}`}
+          : `Imported ${age(capture.uploaded_at)} · Capture time ${capture.captured_at === null ? 'unknown' : 'unverified'}`)}
       </span>
       <span>
         {capture.position
           ? `GPS ±${Math.round(capture.position.accuracy)} m`
           : 'No capture location'}
       </span>
-      <button className="atlas-text-button" onClick={() => setMemoryOpen(true)}><Icon name="spark" size={15} />Memory & sounds</button>
+      <button className="atlas-text-button" onClick={() => onOpenMemory ? onOpenMemory(capture) : setMemoryOpen(true)}><Icon name="spark" size={15} />Memory & sounds</button>
       {memoryOpen && <Suspense fallback={<p role="status">Opening memory tools…</p>}><MemoryDialog client={client} spaceId={spaceId} capture={capture} onClose={() => setMemoryOpen(false)} /></Suspense>}
     </article>
   )

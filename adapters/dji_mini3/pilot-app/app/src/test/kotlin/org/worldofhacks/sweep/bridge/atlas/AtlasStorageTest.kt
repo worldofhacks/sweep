@@ -30,6 +30,15 @@ class AtlasStorageTest {
         assertThrows(IllegalArgumentException::class.java) { scoped.api("/atlas/spaces/place/../../control") }
         assertThrows(IllegalArgumentException::class.java) { scoped.endpoint("other", "captures") }
     }
+
+    @Test fun `memory history remains bound to the invited Space`() {
+        val scoped = session("place")
+        val path = "/atlas/spaces/place/captures/capture/memory/history"
+        assertTrue(scoped.api(path).toString().endsWith(path))
+        assertTrue(scoped.api("$path/20").toString().endsWith("$path/20"))
+        assertThrows(IllegalArgumentException::class.java) { scoped.api(path.replace("/place/", "/other/")) }
+        assertThrows(IllegalArgumentException::class.java) { scoped.api("$path/extra") }
+    }
     @Test fun `credential identity includes original destination and invitation`() {
         assertNotEquals(session().id, session(token = "test-key-two").id)
         assertNotEquals(session().id, session("place").id)
@@ -40,14 +49,25 @@ class AtlasStorageTest {
     @Test fun `memory JSON and playback stay capture and space scoped`() {
         val scoped = session("place")
         val asset = "544db565-bec9-4bf9-aae9-5ef89a696d0d"
-        listOf("", "/inspect", "/analyze", "/review", "/assets/$asset/media").forEach { suffix ->
+        listOf("", "/inspect", "/analyze", "/cancel", "/review", "/assets/$asset/media").forEach { suffix ->
             val path = "/atlas/spaces/place/captures/photo/memory$suffix"
             assertTrue(scoped.api(path).toString().endsWith(path))
             assertThrows(IllegalArgumentException::class.java) { scoped.api(path.replace("/place/", "/other/")) }
         }
-        listOf("/assets", "/assets/$asset", "/admin", "/assets/$asset/../media").forEach { suffix ->
+        listOf("/assets", "/assets/$asset", "/admin", "/cancel/force", "/assets/$asset/../media").forEach { suffix ->
             assertThrows(IllegalArgumentException::class.java) { scoped.api("/atlas/spaces/place/captures/photo/memory$suffix") }
         }
+    }
+    @Test fun `timeline dates stay inside the invited space and do not expose adjacent APIs`() {
+        val scoped = session("place")
+        listOf("timeline", "captures/photo/date").forEach { suffix ->
+            assertTrue(scoped.api("/atlas/spaces/place/$suffix").toString().endsWith(suffix))
+            assertThrows(IllegalArgumentException::class.java) { scoped.api("/atlas/spaces/other/$suffix") }
+        }
+        listOf("timeline/admin", "captures/photo/date/delete", "captures/photo/../date").forEach { suffix ->
+            assertThrows(IllegalArgumentException::class.java) { scoped.api("/atlas/spaces/place/$suffix") }
+        }
+        assertThrows(IllegalArgumentException::class.java) { scoped.api("/control") }
     }
     @Test fun `surface review routes stay inside the original space and expose no worker internals`() {
         val scoped = session("place")

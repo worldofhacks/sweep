@@ -1,4 +1,6 @@
-import type { MemoryContext } from './types'
+import { useEffect, useState } from 'react'
+import type { AtlasClient } from '../atlas/client'
+import { memoryActor, type MemoryContext, type MemoryEdit } from './types'
 
 const WEATHER_LABELS: Record<string, string> = {
   temperature_2m: 'Temperature',
@@ -13,16 +15,45 @@ export function MemoryEvidence({
   data,
   inspectionStatus,
   onInspect,
+  client,
+  spaceId,
 }: {
   data: MemoryContext
   inspectionStatus: string
   onInspect: () => void
+  client: AtlasClient
+  spaceId: string
 }) {
   const inspection = data.inspection ?? data.analysis?.inspection
   const analysis = data.analysis
+  const [showHistory, setShowHistory] = useState(false)
+  const [history, setHistory] = useState<MemoryEdit[] | null>(null)
+  const [historyError, setHistoryError] = useState('')
+  const [before, setBefore] = useState<number>()
+  useEffect(() => {
+    if (!showHistory) return
+    const controller = new AbortController()
+    void client
+      .memoryHistory(spaceId, data.capture.id, controller.signal, before)
+      .then((value) => {
+        if (!controller.signal.aborted) {
+          setHistory(value)
+          setHistoryError('')
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setHistory(null)
+          setHistoryError('History is unavailable. Your saved memory is unchanged.')
+        }
+      })
+    return () => controller.abort()
+  }, [client, spaceId, data.capture.id, data.last_edit?.sequence, showHistory, before])
   const exportContext = () => {
     const url = URL.createObjectURL(
-      new Blob([JSON.stringify({ version: 1, ...data }, null, 2)], { type: 'application/json' }),
+      new Blob([JSON.stringify({ version: 1, ...data }, null, 2)], {
+        type: 'application/json',
+      }),
     )
     const link = document.createElement('a')
     link.href = url
@@ -161,16 +192,119 @@ export function MemoryEvidence({
       )}
       {data.review && (
         <p className="atlas-fine">
-          Reviewed by the owner · {new Date(data.review.reviewed_at).toLocaleString()}. Generated
-          details remain suggestions, not verified facts.
+          Reviewed · {memoryActor(data.review.actor)} ·{' '}
+          {new Date(data.review.reviewed_at).toLocaleString()}. Generated details remain
+          suggestions, not verified facts.
         </p>
       )}
+      <section className="memory-evidence memory-history">
+        <strong>Made together</strong>
+        {data.last_edit && (
+          <p>
+            Last changed by {memoryActor(data.last_edit.actor)} ·{' '}
+            {new Date(data.last_edit.changed_at).toLocaleString()}
+          </p>
+        )}
+        <button
+          className="atlas-text-button"
+          aria-expanded={showHistory}
+          onClick={() => {
+            setShowHistory(!showHistory)
+            setHistory(null)
+            setHistoryError('')
+            setBefore(undefined)
+          }}
+        >
+          {showHistory ? 'Hide edit history' : 'Show edit history'}
+        </button>
+        {showHistory && (
+          <div aria-label="Memory edit history">
+            <p className="atlas-fine">
+              Saved edits are attributed to accounts, not verified personal names. History begins
+              when this feature was enabled; earlier edits may not be recorded.
+            </p>
+            {historyError ? (
+              <p role="alert">{historyError}</p>
+            ) : history === null ? (
+              <p role="status">Opening history…</p>
+            ) : history.length === 0 ? (
+              <p>No recorded edits yet.</p>
+            ) : (
+              history.map((entry) => (
+                <details key={entry.sequence}>
+                  <summary>
+                    {entry.kind === 'notes'
+                      ? 'Story updated'
+                      : entry.kind === 'recording'
+                        ? 'Recording added'
+                        : 'Memory kept'}{' '}
+                    · {memoryActor(entry.actor)} · {new Date(entry.changed_at).toLocaleString()}
+                  </summary>
+                  <p className="atlas-fine">
+                    Edit {entry.sequence} · memory revision {entry.revision}
+                  </p>
+                  {entry.notes && (
+                    <>
+                      <strong>Saved story</strong>
+                      <p>{entry.notes.description || 'No description'}</p>
+                      <p>{entry.notes.feeling || 'No feeling added'}</p>
+                      <details>
+                        <summary>All saved fields and previous values</summary>
+                        <pre>
+                          {JSON.stringify(
+                            { previous: entry.previous, saved: entry.notes },
+                            null,
+                            2,
+                          )}
+                        </pre>
+                      </details>
+                    </>
+                  )}
+                  {entry.asset && (
+                    <p>
+                      {entry.asset.title} · {entry.asset.role}. Original recording kept separately.
+                    </p>
+                  )}
+                  {entry.review && (
+                    <p>
+                      {entry.review.analysis_id
+                        ? 'Generated context reviewed; it remains a suggestion.'
+                        : 'Story kept without adopting generated context.'}
+                    </p>
+                  )}
+                </details>
+              ))
+            )}
+            {history && history.length === 20 && history[history.length - 1].sequence > 1 && (
+              <button
+                onClick={() => {
+                  setBefore(history[history.length - 1].sequence)
+                  setHistory(null)
+                }}
+              >
+                Earlier edits
+              </button>
+            )}
+            {before !== undefined && (
+              <button
+                onClick={() => {
+                  setBefore(undefined)
+                  setHistory(null)
+                  setHistoryError('')
+                }}
+              >
+                Latest edits
+              </button>
+            )}
+          </div>
+        )}
+      </section>
       <button className="atlas-secondary" onClick={exportContext}>
         Export saved memory context
       </button>
       <p className="atlas-fine">
-        Shared with this space’s invited viewers. Exports include saved coordinates and transcripts.
-        No public post is created.
+        Shared with everyone who has access to this Space. This export includes current saved
+        coordinates and transcripts, not the edit history or original media. No public post is created.
       </p>
     </div>
   )

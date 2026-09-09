@@ -8,6 +8,8 @@ const M14_BROWSER_PORT = 14173
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), fixedConsolePort(), runtimeConfiguration(), relayBootstrap()],
+  // A lightweight public introduction; the operator and native entries stay unchanged.
+  build: { rollupOptions: { input: { console: 'index.html', welcome: 'welcome.html' } } },
   // A second process must not silently become a competing operator console.
   server: { host: '127.0.0.1', port: CANONICAL_CONSOLE_PORT, strictPort: true },
   preview: { host: '127.0.0.1', port: CANONICAL_CONSOLE_PORT, strictPort: true },

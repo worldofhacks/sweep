@@ -563,12 +563,11 @@
   padding: 3px 7px;
 }
 .atlas-detail-tabs {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   border-bottom: 1px solid var(--color-hairline);
   margin-top: 24px;
-  flex-wrap: wrap;
 }
 .atlas-detail-tabs button {
   font-size: 12px;

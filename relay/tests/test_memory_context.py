@@ -243,6 +243,12 @@ def test_context_persists_and_late_jobs_cannot_overwrite_newer_work(memory_api):
         memory.save(space, capture, SaveMemory(revision=1, notes=MemoryNotes()))
     memory.atlas.clock = lambda: value["analysis"]["started_at"] + 181_000
     assert memory.get(space, capture)["analysis"]["status"] == "interrupted"
+    # A display timeout is not evidence the first worker stopped reading the source.
+    with pytest.raises(AtlasError, match="completion confirmation"):
+        memory.begin(space, capture, AnalyzeMemory(revision=1))
+    with pytest.raises(AtlasError, match="completion confirmation"):
+        memory.save(space, capture, SaveMemory(revision=1, notes=MemoryNotes()))
+    memory.finish(space, capture, value["analysis"], {"status": "failed"})
     newer = memory.begin(space, capture, AnalyzeMemory(revision=1))
     memory.finish(space, capture, value["analysis"], {"status": "complete"})
     assert memory.get(space, capture)["analysis"]["id"] == newer["analysis"]["id"]

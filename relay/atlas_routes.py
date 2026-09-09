@@ -21,6 +21,7 @@ from relay.atlas import (
     NewSpace,
     SurfaceRequest,
 )
+from relay.atlas_account_routes import account_for, install_atlas_account_routes, manage_space
 
 
 class SpaceStatus(AtlasModel):
@@ -74,22 +75,39 @@ def install_atlas_routes(app: FastAPI, authorize):
     def store() -> AtlasStore:
         return app.state.atlas_store
 
-    def access(session: str, identifier: str, authorization: str | None):
+    def resolve(session: str, identifier: str, authorization: str | None, *, write=False):
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(401, "Open a space invitation or connect your workspace.")
         try:
             authorize(authorization)
         except HTTPException:
-            return store().check(identifier, token=authorization[7:])
-        return store().check(identifier, session=session)
+            if authorization[7:].count(".") == 2:
+                account = account_for(app, authorization)
+                role = store().accounts.role(identifier, account["id"])
+                if write and role not in ("contributor", "owner"):
+                    raise HTTPException(
+                        403, "This account can view, but cannot contribute here."
+                    ) from None
+                return store().check(identifier, session=session), account["id"]
+            return store().check(identifier, token=authorization[7:]), None
+        return store().check(identifier, session=session), None
+
+    def access(session: str, identifier: str, authorization: str | None):
+        return resolve(session, identifier, authorization)[0]
+
+    install_atlas_account_routes(app, authorize, store)
+    from relay.atlas_timeline import install_timeline_routes
+    install_timeline_routes(app, authorize, resolve, store)
+    from relay.atlas_removal import install_removal_routes
+    install_removal_routes(app, authorize, resolve, store)
 
     from relay.memory_routes import install_memory_routes
-    install_memory_routes(app, authorize, access, store)
+    install_memory_routes(app, authorize, access, store, resolve)
 
     @app.exception_handler(AtlasError)
     async def atlas_error(_request: Request, error: AtlasError):
         return JSONResponse(
-            {"detail": error.detail},
+            {"detail": error.detail, **({"code": error.code} if error.code else {})},
             status_code=error.status,
             headers={"Cache-Control": "no-store"},
         )
@@ -181,10 +199,9 @@ def install_atlas_routes(app: FastAPI, authorize):
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        authorize(authorization)
-        store().check(identifier, session=session)
+        account_id = manage_space(app, authorize, store(), session, identifier, authorization)
         value = await read_json(request, SpaceStatus)
-        return store().update_status(identifier, value.status)
+        return store().update_status(identifier, value.status, account_id=account_id)
 
     @app.post(base + "/{identifier}/invitation")
     def invitation(session: str, identifier: str, authorization: str | None = Header(default=None)):
@@ -199,7 +216,7 @@ def install_atlas_routes(app: FastAPI, authorize):
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        space = access(session, identifier, authorization)
+        space, account_id = resolve(session, identifier, authorization, write=True)
         if space["status"] != "active":
             raise AtlasError("This space is resolved. Reopen it before contributing.", 409)
         raw = request.headers.get("x-sweep-capture", "")
@@ -209,11 +226,14 @@ def install_atlas_routes(app: FastAPI, authorize):
             metadata = CaptureMetadata.model_validate_json(raw)
         except ValidationError:
             raise HTTPException(422, "The capture metadata is incomplete or invalid.") from None
+        if account_id is not None:
+            metadata = metadata.model_copy(update={"contributor_id": account_id})
+        operation = store().removal.begin_operation(identifier, None, "original_upload")
         path = None
         try:
             async with asyncio.timeout(90), upload_slots:
                 with tempfile.NamedTemporaryFile(
-                    dir=store().root, prefix="upload-", delete=False
+                    dir=store().root, prefix=f"upload-{operation}-", delete=False
                 ) as handle:
                     path = Path(handle.name)
                     size = 0
@@ -223,12 +243,21 @@ def install_atlas_routes(app: FastAPI, authorize):
                             raise HTTPException(413, "Each capture must be 64 MB or smaller.")
                         handle.write(chunk)
                 mime = media_type(path, request.headers.get("content-type", ""))
-                return store().add_capture(identifier, metadata, path, mime)
+                # Browser identity was verified at admission. A short-lived session token
+                # may expire during this bounded transfer; membership is checked again
+                # inside add_capture's transaction. Legacy invitation rotation still
+                # invalidates an in-flight upload before it is committed.
+                if account_id is None:
+                    resolve(session, identifier, authorization, write=True)
+                return store().add_capture(
+                    identifier, metadata, path, mime, account_id=account_id
+                )
         except TimeoutError:
             raise HTTPException(408, "The upload timed out. Please try again.") from None
         finally:
             if path is not None:
                 path.unlink(missing_ok=True)
+            store().removal.finish_operation(operation)
 
     @app.get(base + "/{identifier}/captures/{capture_id}/media")
     def media(
@@ -247,7 +276,7 @@ def install_atlas_routes(app: FastAPI, authorize):
             store().media / item["id"],
             media_type=item["mime"],
             headers={
-                "Cache-Control": "private, max-age=3600",
+                "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
                 "Content-Security-Policy": "default-src 'none'; sandbox",
             },
@@ -260,9 +289,12 @@ def install_atlas_routes(app: FastAPI, authorize):
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        access(session, identifier, authorization)
+        resolve(session, identifier, authorization, write=True)
         value = await read_json(request, Contributor)
-        return store().publish_presence(identifier, value)
+        _, account_id = resolve(session, identifier, authorization, write=True)
+        if account_id is not None:
+            value = value.model_copy(update={"contributor_id": account_id})
+        return store().publish_presence(identifier, value, account_id=account_id)
 
     @app.post(base + "/{identifier}/leave")
     async def leave(
@@ -271,9 +303,12 @@ def install_atlas_routes(app: FastAPI, authorize):
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        access(session, identifier, authorization)
+        resolve(session, identifier, authorization, write=True)
         value = await read_json(request, LeaveSpace)
-        return store().leave(identifier, value.contributor_id)
+        _, account_id = resolve(session, identifier, authorization, write=True)
+        if account_id is not None:
+            value = value.model_copy(update={"contributor_id": account_id})
+        return store().leave(identifier, value.contributor_id, account_id=account_id)
 
     @app.post(base + "/{identifier}/requests", status_code=201)
     async def capture_request(
@@ -282,9 +317,10 @@ def install_atlas_routes(app: FastAPI, authorize):
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        access(session, identifier, authorization)
+        resolve(session, identifier, authorization, write=True)
         value = await read_json(request, CaptureRequest)
-        return store().request_capture(identifier, value)
+        _, account_id = resolve(session, identifier, authorization, write=True)
+        return store().request_capture(identifier, value, account_id=account_id)
 
     @app.post(base + "/{identifier}/surface-requests", status_code=201)
     async def surface_request(

@@ -98,8 +98,8 @@ class SurfaceRequest(AtlasModel):
 
 
 class AtlasError(Exception):
-    def __init__(self, detail: str, status: int = 400):
-        self.detail, self.status = detail, status
+    def __init__(self, detail: str, status: int = 400, *, code: str | None = None):
+        self.detail, self.status, self.code = detail, status, code
 
 
 def epoch_ms() -> int:
@@ -171,6 +171,7 @@ class AtlasStore:
         self.media.mkdir(exist_ok=True)
         self.db = sqlite3.connect(root / "atlas.sqlite3", check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA secure_delete=ON")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS spaces (
               id TEXT PRIMARY KEY, session TEXT NOT NULL,
@@ -201,6 +202,12 @@ class AtlasStore:
         """)
         from relay.memory_store import MemoryStore
         self.memories = MemoryStore(self)
+        from relay.atlas_accounts import AtlasAccounts
+        self.accounts = AtlasAccounts(self)
+        from relay.atlas_timeline import AtlasTimeline
+        self.timeline = AtlasTimeline(self)
+        from relay.atlas_removal import AtlasRemoval
+        self.removal = AtlasRemoval(self)
 
     def close(self):
         self.db.close()
@@ -215,10 +222,20 @@ class AtlasStore:
             )
         return {"contributor_token": token}
 
-    def create(self, session: str, value: NewSpace, draft_id: str | None = None) -> dict:
+    def create(
+        self, session: str, value: NewSpace, draft_id: str | None = None,
+        *, account_id: str | None = None,
+    ) -> dict:
         with self.lock, self.db:
             # Serialize lookup + admission across store connections, not only this process's lock.
             self.db.execute("BEGIN IMMEDIATE")
+            if account_id is not None:
+                if not self.db.execute(
+                    "SELECT 1 FROM atlas_accounts WHERE id=?", (account_id,)
+                ).fetchone():
+                    raise AtlasError("Sign in before creating a space.", 403)
+                # Account containers are not fleet sessions or client-selected workspaces.
+                session = "account-" + account_id
             fingerprint = hashlib.sha256(
                 json.dumps(value.model_dump(), sort_keys=True).encode()
             ).hexdigest()
@@ -228,6 +245,8 @@ class AtlasStore:
                     (session, draft_id),
                 ).fetchone()
                 if previous:
+                    if account_id is not None:
+                        self.accounts.require_owner(previous[0], account_id)
                     if previous[1] != fingerprint:
                         raise AtlasError(
                             "This draft was already published with different content.", 409
@@ -238,13 +257,14 @@ class AtlasStore:
                         "contributor_token": None,
                         "draft_id": draft_id,
                     }
+            limit = 20 if account_id is not None else 500
             if (
                 self.db.execute(
                     "SELECT count(*) FROM spaces WHERE session=?", (session,)
                 ).fetchone()[0]
-                >= 500
+                >= limit
             ):
-                raise AtlasError("This workspace has reached its 500-space limit.", 409)
+                raise AtlasError(f"This workspace has reached its {limit}-space limit.", 409)
             identifier, token = str(uuid.uuid4()), secrets.token_urlsafe(32)
             data = {
                 **value.model_dump(),
@@ -258,6 +278,11 @@ class AtlasStore:
                 "INSERT INTO spaces VALUES (?,?,?,?)",
                 (identifier, session, hashlib.sha256(token.encode()).hexdigest(), json.dumps(data)),
             )
+            if account_id is not None:
+                self.db.execute(
+                    "INSERT INTO atlas_members VALUES (?,?,?,?)",
+                    (identifier, account_id, "owner", self.clock()),
+                )
             if draft_id is not None:
                 self.db.execute(
                     "INSERT INTO published_drafts VALUES (?,?,?,?)",
@@ -265,7 +290,7 @@ class AtlasStore:
                 )
             return {
                 "space": data,
-                "contributor_token": token,
+                "contributor_token": token if account_id is None else None,
                 **({"draft_id": draft_id} if draft_id is not None else {}),
             }
 
@@ -398,15 +423,22 @@ class AtlasStore:
                 ],
             }
 
-    def update_status(self, identifier: str, status: Literal["active", "resolved"]) -> dict:
+    def update_status(
+        self, identifier: str, status: Literal["active", "resolved"],
+        *, account_id: str | None = None,
+    ) -> dict:
         with self.lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            if account_id is not None:
+                self.accounts.require_owner(identifier, account_id)
             data = self.detail(identifier)["space"]
             data.update(status=status, updated_at=self.clock())
             self.db.execute("UPDATE spaces SET data=? WHERE id=?", (json.dumps(data), identifier))
         return self.detail(identifier)
 
     def add_capture(
-        self, identifier: str, metadata: CaptureMetadata, staged: Path, mime: str
+        self, identifier: str, metadata: CaptureMetadata, staged: Path, mime: str,
+        *, account_id: str | None = None,
     ) -> dict:
         size = staged.stat().st_size
         if not 0 < size <= MAX_MEDIA_BYTES:
@@ -425,11 +457,15 @@ class AtlasStore:
             with self.lock, self.db:
                 self.db.execute("BEGIN IMMEDIATE")
                 space = self._space(identifier)
+                if account_id is not None:
+                    self.accounts.require_contributor(identifier, account_id)
+                    metadata = metadata.model_copy(update={"contributor_id": account_id})
                 if space["status"] != "active":
                     raise AtlasError("This space is resolved. Reopen it before contributing.", 409)
                 existing = self.captures(identifier)
                 with staged.open("rb") as handle:
                     digest = hashlib.file_digest(handle, "sha256").hexdigest()
+                self.removal.reject_reimport(identifier, digest)
                 duplicate = next((c for c in existing if c["sha256"] == digest), None)
                 capture_id = duplicate["id"] if duplicate else str(uuid.uuid4())
                 key = self._admit_response(identifier, capture_id, metadata.response_to)
@@ -449,6 +485,8 @@ class AtlasStore:
                         "bytes": size,
                         "sha256": digest,
                     }
+                    if account_id is not None:
+                        data["account_id"] = account_id
                     target = self.media / capture_id
                     staged.rename(target)
                     self.db.execute(
@@ -504,11 +542,17 @@ class AtlasStore:
             )
         return key
 
-    def publish_presence(self, identifier: str, value: Contributor) -> dict:
+    def publish_presence(
+        self, identifier: str, value: Contributor, *, account_id: str | None = None
+    ) -> dict:
         now = self.clock()
         if not 0 <= now - value.position.timestamp <= 30_000:
             raise AtlasError("Refresh your location before sharing it.")
         with self.lock, self.db:
+            if account_id is not None:
+                self.db.execute("BEGIN IMMEDIATE")
+                self.accounts.require_contributor(identifier, account_id)
+                value = value.model_copy(update={"contributor_id": account_id})
             self.db.execute(
                 "DELETE FROM presence WHERE space=? AND json_extract(data, '$.updated_at') < ?",
                 (identifier, now - PRESENCE_AGE_MS),
@@ -595,6 +639,8 @@ class AtlasStore:
                     json.dumps(job),
                 ),
             )
+            self.db.executemany("INSERT INTO atlas_build_sources VALUES (?,?,?)",
+                [(job["id"], identifier, c["id"]) for c in captures])
             return self.reconstruction(identifier, len(captures))
 
     def claim_reconstruction(self) -> dict | None:
@@ -655,16 +701,37 @@ class AtlasStore:
             )
             return True
 
-    def leave(self, identifier: str, contributor: str):
+    def release_reconstruction(self, job_id: str):
+        """Called only after the owning supervisor has stopped its process group."""
         with self.lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            job = self.reconstruction_job(job_id)
+            if job["status"] not in ("failed", "ready"):
+                raise AtlasError("An active build cannot acknowledge stopped workers.", 409)
+            job["worker_released"] = True
+            self.db.execute(
+                "UPDATE reconstructions SET data=? WHERE id=?", (json.dumps(job), job_id)
+            )
+        self.removal.cleanup()
+
+    def leave(self, identifier: str, contributor: str, *, account_id: str | None = None):
+        with self.lock, self.db:
+            if account_id is not None:
+                self.db.execute("BEGIN IMMEDIATE")
+                self.accounts.require_contributor(identifier, account_id)
+                contributor = account_id
             self.db.execute(
                 "DELETE FROM presence WHERE space=? AND contributor=?", (identifier, contributor)
             )
         return {"sharing": False}
 
-    def request_capture(self, identifier: str, value: CaptureRequest) -> dict:
+    def request_capture(
+        self, identifier: str, value: CaptureRequest, *, account_id: str | None = None
+    ) -> dict:
         with self.lock, self.db:
             self.db.execute("BEGIN IMMEDIATE")
+            if account_id is not None:
+                self.accounts.require_contributor(identifier, account_id)
             if self._space(identifier)["status"] != "active":
                 raise AtlasError("Reopen this space before requesting more views.", 409)
             cells = self.detail(identifier)["coverage"]["cells"]

@@ -13,6 +13,7 @@ dependencies = [
   "opencv-python-headless>=4.13,<5",
   "pillow>=12,<13",
   "pydantic>=2.13,<3",
+  "pyjwt[crypto]>=2.13,<3",
   "uvicorn>=0.35,<1",
   "websockets>=15,<17",
 ]

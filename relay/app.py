@@ -1029,9 +1029,26 @@ def create_app(
         application.state.relay_runtime = runtime
         platform = None
         from relay.atlas import AtlasStore
+        from relay.atlas_identity import AtlasIdentityVerifier
 
+        application.state.atlas_identity = (
+            AtlasIdentityVerifier(active_settings.atlas_identity)
+            if active_settings.atlas_identity is not None else None
+        )
         atlas = AtlasStore(active_settings.log_dir / "atlas")
         application.state.atlas_store = atlas
+        cleanup_stop = asyncio.Event()
+        async def cleanup_removed_sources():
+            while not cleanup_stop.is_set():
+                try:
+                    await asyncio.to_thread(atlas.removal.cleanup)
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "Atlas cleanup will retry; source access remains revoked."
+                    )
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(cleanup_stop.wait(), timeout=10)
+        cleanup_task = asyncio.create_task(cleanup_removed_sources())
         from relay.live_detection import LiveDetectionService, load_live_detection_sources
 
         detection = None
@@ -1051,6 +1068,8 @@ def create_app(
             await runtime.start()
             yield
         finally:
+            cleanup_stop.set()
+            await cleanup_task
             if detection is not None:
                 await asyncio.to_thread(detection.close)
             try:

@@ -1,0 +1,10 @@
+.memory-removal { display: grid; gap: 16px; padding: 24px; }
+.memory-removal h3, .memory-removal p { margin: 0; }
+.memory-removal p { line-height: 1.6; }
+.removal-impact, .removal-receipts li { display: grid; gap: 8px; padding: 16px; border-radius: 16px; background: var(--atlas-surface-soft, #f6f5ef); }
+.removal-receipts { display: grid; gap: 16px; padding: 0; margin: 0; list-style: none; }
+.removal-receipts span { overflow-wrap: anywhere; font-size: 0.875rem; line-height: 1.5; }
+.removal-confirm { display: flex; align-items: flex-start; gap: 8px; line-height: 1.5; }
+.removal-confirm input { flex: 0 0 auto; width: 20px; height: 20px; margin-top: 2px; }
+.memory-removal .memory-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 480px) { .memory-removal { padding: 16px; } .memory-removal .memory-actions button { width: 100%; } }

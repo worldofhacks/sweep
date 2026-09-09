@@ -11,7 +11,7 @@ export class PlatformHttp {
     this.fetcher = fetcher
   }
 
-  async request(path: string, body?: unknown, signal?: AbortSignal, timeoutMs = 10_000): Promise<unknown> {
+  async request(path: string, body?: unknown, signal?: AbortSignal, timeoutMs = 10_000, method?: 'DELETE'): Promise<unknown> {
     const url = relayHttpUrl(this.connection.baseUrl, `/api/sessions/${encodeURIComponent(this.connection.sessionId)}${path}`)
     if (!url) throw new Error('The relay URL is invalid.')
     const controller = new AbortController()
@@ -21,39 +21,44 @@ export class PlatformHttp {
     const timeout = setTimeout(abort, timeoutMs)
     try {
       const response = await this.fetcher(url, {
-        method: body === undefined ? 'GET' : 'POST',
+        method: method ?? (body === undefined ? 'GET' : 'POST'),
         headers: { Authorization: `Bearer ${this.connection.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal, credentials: 'omit', cache: 'no-store', redirect: 'error',
       })
-      const maximum = 16 * 1024 * 1024
-      const length = Number(response.headers.get('Content-Length'))
-      if (Number.isFinite(length) && length > maximum) throw new Error('The relay response exceeds its size limit.')
-      const reader = response.body?.getReader()
-      let value: unknown
-      if (reader) {
-        const decoder = new TextDecoder('utf-8', { fatal: true })
-        let size = 0, raw = ''
-        try {
-          while (true) {
-            const part = await reader.read()
-            if (part.done) break
-            size += part.value.byteLength
-            if (size > maximum) throw new Error('The relay response exceeds its size limit.')
-            raw += decoder.decode(part.value, { stream: true })
-          }
-          value = JSON.parse(raw + decoder.decode())
-        } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
-      } else {
-        throw new Error('The relay returned an empty response.')
-      }
-      if (!response.ok) {
-        const detail = isRecord(value) && typeof value.detail === 'string' && value.detail.length <= 2048 ? value.detail : `Relay service unavailable (${response.status}).`
-        throw new Error(detail)
-      }
-      return value
+      return await readPlatformResponse(response)
     } finally { clearTimeout(timeout); signal?.removeEventListener('abort', abort) }
   }
+}
+
+/** Shared bounded decoder for operator and account API responses. */
+export async function readPlatformResponse(response: Response): Promise<unknown> {
+  const maximum = 16 * 1024 * 1024
+  const length = Number(response.headers.get('Content-Length'))
+  if (Number.isFinite(length) && length > maximum) throw new Error('The relay response exceeds its size limit.')
+  const reader = response.body?.getReader()
+  let value: unknown
+  if (reader) {
+    const decoder = new TextDecoder('utf-8', { fatal: true })
+    let size = 0, raw = ''
+    try {
+      while (true) {
+        const part = await reader.read()
+        if (part.done) break
+        size += part.value.byteLength
+        if (size > maximum) throw new Error('The relay response exceeds its size limit.')
+        raw += decoder.decode(part.value, { stream: true })
+      }
+      value = JSON.parse(raw + decoder.decode())
+    } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
+  } else {
+    throw new Error('The relay returned an empty response.')
+  }
+  if (!response.ok) {
+    const detail = isRecord(value) && typeof value.detail === 'string' && value.detail.length <= 2048 ? value.detail : `Relay service unavailable (${response.status}).`
+    throw new Error(detail)
+  }
+  return value
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

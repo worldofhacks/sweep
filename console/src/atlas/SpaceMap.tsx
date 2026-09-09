@@ -10,6 +10,8 @@ interface Props {
   center: [number, number]
   /** City-wide editorial discovery, without changing detailed survey zooms. */
   overviewZoom?: number
+  /** Creation flows can start at city scale until a place is chosen. */
+  pickingZoom?: number
   picking: boolean
   coverageVisible: boolean
   selectedCell: string | null
@@ -201,6 +203,7 @@ export default function SpaceMap(props: Props) {
 
   const { spaces, detail, center, coverageVisible, selectedCell, position, picking } = props
   const overviewZoom = discoveryZoom(props.overviewZoom, compact)
+  const pickingZoom = props.pickingZoom ?? 17.5
   const longitude = center[0]
   const latitude = center[1]
   const detailId = detail?.space.id
@@ -210,10 +213,10 @@ export default function SpaceMap(props: Props) {
     if (!instance || !ready) return
     instance.easeTo({
       center: [longitude, latitude],
-      zoom: detailId || picking ? 17.5 : overviewZoom,
+      zoom: detailId ? 17.5 : picking ? pickingZoom : overviewZoom,
       duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 650,
     })
-  }, [longitude, latitude, detailId, ready, picking, hasPlace, overviewZoom])
+  }, [longitude, latitude, detailId, ready, picking, hasPlace, overviewZoom, pickingZoom])
 
   useEffect(() => {
     const instance = map.current
@@ -323,8 +326,8 @@ export default function SpaceMap(props: Props) {
   return (
     <div className={`atlas-map ${picking ? 'is-picking' : ''}`}>
       <div ref={container} className="atlas-map-canvas" aria-label="Geographic map of spaces" aria-busy={(!ready || retrying) && !error} />
-      <button className="atlas-map-recenter atlas-secondary" disabled={!ready}
-        onClick={() => map.current?.easeTo({ center: props.center, zoom: detailId || picking ? 17.5 : overviewZoom,
+      <button type="button" className="atlas-map-recenter atlas-secondary" disabled={!ready}
+        onClick={() => map.current?.easeTo({ center: props.center, zoom: detailId ? 17.5 : picking ? pickingZoom : overviewZoom,
           duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 650 })}>
         {detailId ? 'Recenter area' : 'Recenter map'}
       </button>
@@ -337,7 +340,7 @@ export default function SpaceMap(props: Props) {
       {error && (
         <p className="atlas-map-error" role="status">
           {error}
-          {error === tileError && <button className="atlas-secondary atlas-map-retry" onClick={retryMap}>Retry map</button>}
+          {error === tileError && <button type="button" className="atlas-secondary atlas-map-retry" onClick={retryMap}>Retry map</button>}
         </p>
       )}
     </div>

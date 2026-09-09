@@ -164,6 +164,9 @@ def supervise_job(
                 else "The worker stopped early. Originals are intact; try a new build."
             ),
         )
+        # Reached only after stop_process_tree succeeds; an exception cannot be
+        # mistaken for proof that the child and its engine descendants stopped.
+        store.release_reconstruction(job["id"])
 
 
 def main():

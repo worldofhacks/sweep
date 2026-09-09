@@ -74,6 +74,11 @@ class AtlasUploadWorker(context: Context, parameters: WorkerParameters) : Worker
                 if (!response.isSuccessful) AtlasMetadataCache(queue).accessRefused(session, item.spaceId, response.code)
                 val raw = response.peekBody(64 * 1024).string()
                 val result = runCatching { JSONObject(raw) }.getOrNull()
+                // A replay refusal is evidence that this snapshot contains a withdrawn
+                // source, not a generic revision conflict. Keep the owned phone file.
+                if (response.code == 409 && result?.optString("code") == "capture_removed") {
+                    queue.invalidateCache(session.id, item.spaceId)
+                }
                 if (isStopped) return Result.failure()
                 if (!response.isSuccessful) {
                     val message = result?.optString("detail")?.takeIf { it.isNotBlank() }

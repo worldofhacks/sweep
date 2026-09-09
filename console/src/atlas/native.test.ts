@@ -36,12 +36,41 @@ it('never sends non-Atlas requests or another workspace through the bridge', asy
   await expect(fetcher('http://192.168.1.20:8000/root/api/sessions/other/atlas/spaces')).rejects.toThrow('outside Atlas')
   expect(api.postMessage).not.toHaveBeenCalled()
 })
+it('preserves an analysis request identity through native JSON transport without adding a bearer', async () => {
+  const api = port(() => ({ status: 200, body: '{}' }))
+  const client = new NativeAtlasClient(session)
+  const request = { revision: 0, ai: true, weather: false, audio_asset_id: null, request_id: '544db565-bec9-4bf9-aae9-5ef89a696d0d' }
+  await client.analyzeMemory('place', 'capture', request)
+  await client.analyzeMemory('place', 'capture', request)
+  const sent = api.postMessage.mock.calls.map(([raw]) => JSON.parse(raw).payload)
+  expect(sent[0]).toMatchObject({ session: 'credential-one', path: '/atlas/spaces/place/captures/capture/memory/analyze', method: 'POST' })
+  expect(sent[0].body).toEqual(JSON.stringify(request))
+  expect(sent[1]).toEqual(sent[0])
+  expect(sent[0]).not.toHaveProperty('token')
+})
+it('reads the online timeline through the scoped bridge without caching or exposing credentials', async () => {
+  const api = port(() => ({ status: 200, body: '{"entries":[],"total":0,"ordering":"calendar"}' }))
+  const client = new NativeAtlasClient(session)
+  expect((await client.timeline('place')).entries).toEqual([])
+  expect(JSON.parse(api.postMessage.mock.calls[0][0])).toMatchObject({ op: 'request', payload: { path: '/atlas/spaces/place/timeline', method: 'GET' } })
+  expect(api.postMessage.mock.calls[0][0]).not.toContain('token')
+})
 it('streams binary media through the same-origin native interceptor, with no key in URLs', async () => {
   const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('media'))
   const api = port(() => null)
   await nativeFetch(session)('http://192.168.1.20:8000/root/api/sessions/room/atlas/spaces/place/captures/photo/media')
   expect(fetch).toHaveBeenCalledWith('https://appassets.androidplatform.net/atlas-data/credential-one/atlas/spaces/place/captures/photo/media',
     expect.objectContaining({ credentials: 'omit', redirect: 'error' }))
+  expect(api.postMessage).not.toHaveBeenCalled()
+})
+it('streams saved memory audio through the same bounded native interceptor without exposing a bearer', async () => {
+  const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('synthetic-wave', { headers: { 'Content-Type': 'audio/wav' } }))
+  const api = port(() => null)
+  const asset = '544db565-bec9-4bf9-aae9-5ef89a696d0d'
+  const result = await new NativeAtlasClient(session).memoryAssetMedia('place', 'photo', asset, new AbortController().signal)
+  expect(result.type).toBe('audio/wav')
+  expect(await result.text()).toBe('synthetic-wave')
+  expect(fetch).toHaveBeenCalledWith(`https://appassets.androidplatform.net/atlas-data/credential-one/atlas/spaces/place/captures/photo/memory/assets/${asset}/media`, expect.objectContaining({ credentials: 'omit', redirect: 'error', cache: 'no-store' }))
   expect(api.postMessage).not.toHaveBeenCalled()
 })
 it('uses cached space metadata only for a network failure, and never shows stale live people', async () => {
@@ -65,6 +94,11 @@ it('leaves successful detail caching to the native response handler, with no del
 it('does not use the offline cache after invitation revocation', async () => {
   const api = port(() => ({ status: 403, body: '{"detail":"Invitation revoked"}' }))
   await expect(new NativeAtlasClient(session).detail('place')).rejects.toThrow('Invitation revoked')
+  expect(api.postMessage.mock.calls.map(call => JSON.parse(call[0]).op)).toEqual(['request'])
+})
+it('does not turn a missing or withdrawn Space into an offline cache hit', async () => {
+  const api = port(() => ({ status: 404, body: '{"detail":"Space unavailable"}' }))
+  await expect(new NativeAtlasClient(session).detail('place')).rejects.toThrow('Space unavailable')
   expect(api.postMessage.mock.calls.map(call => JSON.parse(call[0]).op)).toEqual(['request'])
 })
 it('does not update a closed screen when a native request completes after cancellation', async () => {
