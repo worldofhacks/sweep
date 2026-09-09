@@ -41,8 +41,14 @@ Final checks are recorded here and in the PR description. Detailed evidence:
 - [Real textured reconstruction](evidence/atlas-dense-2026-09-08.json)
 - [Android runtime smoke and limitations](atlas-android.md#actual-android-emulator-smoke--final-handoff)
 - [Native video, scan and offline recovery](evidence/atlas-android-runtime-2026-09-08.md)
+- [Desktop owner / actual Android contributor](evidence/atlas-contributor-runtime-2026-09-08.md)
 
-The final console run passes 93 files / 1,258 tests, ESLint and production build.
+The console checkpoint passed 93 files / 1,258 tests, ESLint and production build.
+The subsequent cached-space notice follow-up passes 93 files / 1,260 tests with
+`pnpm test --maxWorkers=2`; default-parallel local runs hit five-second timeouts
+in existing shell/flight workflow tests. The isolated shell suite also passes.
+No assertions or timeouts were relaxed, and no test configuration was changed.
+ESLint, the production web build and both Android builds pass on the follow-up.
 Both Android variants assemble and pass lint: fake has 89 unit tests and probe has
 109, all passing. The four JVM bridge suites pass 297 tests. The complete Python
 suite passes 3,343 tests with four deprecation warnings. Python lint and formatting

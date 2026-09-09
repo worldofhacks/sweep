@@ -223,6 +223,12 @@ matched byte-for-byte. That check also fixed scan numbering after other media.
 These are emulator results, not physical-device or complete background-work
 qualification. See the [PR handoff](atlas-pr-handoff-2026-09-08.md).
 
+The [two-client runtime checkpoint](evidence/atlas-contributor-runtime-2026-09-08.md)
+also exercised a desktop owner's map request, an invited Android contributor's
+offline photo and automatic upload, the exact linked original on both clients,
+and online invitation revocation. The cached-space notice now stays on Spaces;
+Upload states continue to come from the native outbox.
+
 ## Still required
 
 - Physical Android permission, CameraX photo/video/scan, Android Keystore, location-sharing lifecycle,
@@ -231,8 +237,6 @@ qualification. See the [PR handoff](atlas-pr-handoff-2026-09-08.md).
   across an offline restart and automatic reconnect, not interrupted in-flight uploads,
   Doze/OEM restrictions, process death during capture, or physical sensors.
   JVM/browser tests do not satisfy these device requirements.
-- Refresh the cached-data connection notice while remaining on Uploads after network recovery;
-  saved upload badges already update, but the notice currently clears when Spaces refreshes.
 - Physical picker/provider import verification, durable new-space drafts, large-text/tablet/rotation refinements,
   credential-retention cleanup, and full multi-device invitation/revocation tests.
 - Remaining lint warnings include locked orientation, target/dependency updates, existing

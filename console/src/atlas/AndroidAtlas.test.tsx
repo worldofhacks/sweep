@@ -3,13 +3,14 @@ import userEvent from '@testing-library/user-event'
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { AndroidAtlas } from './AndroidAtlas'
 import type { NativeCaptureRequest } from './SpacesModule'
-import type { NativeSession, NativeUpload } from './native'
+import type { NativeAtlasClient, NativeSession, NativeUpload } from './native'
 
 vi.mock('./SpacesModule', async importOriginal => {
   const original = await importOriginal<typeof import('./SpacesModule')>()
-  return { ...original, SpacesModule: ({ captureNative }: { captureNative: (request: NativeCaptureRequest) => Promise<void> }) =>
+  return { ...original, SpacesModule: ({ captureNative, services }: { captureNative: (request: NativeCaptureRequest) => Promise<void>; services: { atlas?: NativeAtlasClient } }) =>
     <><button onClick={() => void captureNative({ spaceId: 'austin-space', title: 'Shoal Creek · Austin', contributor: 'person-one', name: 'Sam' })}>Add a capture</button>
-      <button onClick={() => void captureNative({ spaceId: 'austin-space', title: 'Shoal Creek · Austin', contributor: 'person-one', name: 'Sam', request: requestedView })}>Contribute requested view</button></> }
+      <button onClick={() => void captureNative({ spaceId: 'austin-space', title: 'Shoal Creek · Austin', contributor: 'person-one', name: 'Sam', request: requestedView })}>Contribute requested view</button>
+      <button onClick={() => void services.atlas?.detail('austin-space')}>Read space</button></> }
 })
 const requestedView = { target: { kind: 'location' as const, cell_id: '5:5' }, label: 'Creek viewpoint', note: 'Photograph from the public path.' }
 const session: NativeSession = { id: 'credential-one', baseUrl: 'https://relay.example', sessionId: 'workspace-one', space: 'austin-space' }
@@ -30,7 +31,7 @@ function bridge(uploads: NativeUpload[] = [], action: (op: string) => unknown = 
       try {
         const result = request.op === 'getSession' ? session : request.op === 'getUploads' ? uploads : action(request.op)
         api.onmessage?.({ data: JSON.stringify({ id: request.id, result }) })
-      } catch (error) { api.onmessage?.({ data: JSON.stringify({ id: request.id, error: (error as Error).message }) }) }
+      } catch (error) { api.onmessage?.({ data: JSON.stringify({ id: request.id, error: (error as Error).message, code: (error as { code?: string }).code }) }) }
     })
   }) }
   window.SweepAtlasNative = api
@@ -101,4 +102,30 @@ it('distinguishes an incomplete import from queued originals and verified upload
   expect(screen.getAllByRole('button', { name: 'Export original' })).toHaveLength(2)
   expect(screen.getByRole('button', { name: 'Export local file' })).toBeInTheDocument()
   expect(screen.getAllByText(/Capture time and location unknown/)).toHaveLength(4)
+})
+
+it.each(['queued', 'saved'] as const)('keeps cached-space status separate from %s upload status', async state => {
+  let connected = false
+  const detail = { space: { id: 'austin-space' }, people: [] }
+  const upload: NativeUpload = { id: 'capture-one', spaceId: 'austin-space', kind: 'photo', source: 'camera',
+    finalized: true, state, bytes: 2048, sent: 0, error: '', createdAt: 1788900000000 }
+  bridge([upload], op => {
+    if (op === 'cachedSpaces') return [detail]
+    if (op === 'request') {
+      if (!connected) throw Object.assign(new Error('No connection'), { code: 'network' })
+      return { status: 200, body: JSON.stringify(detail) }
+    }
+    return true
+  })
+  render(<AndroidAtlas />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Read space' }))
+  expect(await screen.findByRole('status')).toHaveTextContent('Saved spaces, no live locations')
+  fireEvent.click(screen.getByRole('button', { name: /Uploads/ }))
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: /^Photo/ })).toHaveTextContent(state === 'saved' ? 'Saved ✓' : 'Waiting to upload')
+  fireEvent.click(screen.getByRole('button', { name: 'Spaces' }))
+  expect(screen.getByRole('status')).toHaveTextContent('Saved spaces, no live locations')
+  connected = true
+  fireEvent.click(screen.getByRole('button', { name: 'Read space' }))
+  await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
 })

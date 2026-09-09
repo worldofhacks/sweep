@@ -8,7 +8,7 @@ export function AndroidAtlas() {
   const [client, setClient] = useState<NativeAtlasClient | null>(null)
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState('')
-  const [offline, setOffline] = useState(false)
+  const [showingCachedSpaces, setShowingCachedSpaces] = useState(false)
   const [page, setPage] = useState<'spaces' | 'uploads'>('spaces')
   const [connect, setConnect] = useState(false)
   const [captureTarget, setCaptureTarget] = useState<(NativeCaptureRequest & { session: string }) | null>(null)
@@ -24,7 +24,7 @@ export function AndroidAtlas() {
     let mounted = true
     void Promise.all([nativeCall<NativeSession | null>('getSession'), nativeCall<NativeUpload[]>('getUploads')]).then(([session, initialUploads]) => {
       if (mounted) {
-        if (session) setClient(new NativeAtlasClient(session, setOffline))
+        if (session) setClient(new NativeAtlasClient(session, setShowingCachedSpaces))
         setUploads(initialUploads)
       }
     }).catch(error => { if (mounted) setNotice(error.message) }).finally(() => { if (mounted) setLoading(false) })
@@ -69,7 +69,7 @@ export function AndroidAtlas() {
   return <div className="atlas-native">
     <header className="atlas-native-header"><div><Icon name="spaces" size={24} /><strong>SWEEP<span>ATLAS</span></strong></div>
       <button onClick={showConnect} aria-label="Workspace connection"><Icon name="people" size={18} />{client ? 'Workspace' : 'Connect'}</button></header>
-    {offline && <p className="atlas-native-offline" role="status">Offline · Saved spaces, no live locations. Drafts and captures stay on this device.</p>}
+    {page === 'spaces' && showingCachedSpaces && <p className="atlas-native-offline" role="status">Offline · Saved spaces, no live locations. Drafts and captures stay on this device.</p>}
     {notice && <div className="atlas-native-notice" role="alert"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss message"><Icon name="close" /></button></div>}
     {loading ? <div className="atlas-native-loading">Opening your Atlas…</div> : page === 'spaces'
       ? <SpacesModule key={client?.session.id ?? 'disconnected'} services={client ? { atlas: client } : {}}
@@ -112,7 +112,7 @@ export function AndroidAtlas() {
       {captureError && <p role="alert" className="atlas-inline-notice">{captureError}</p>}
     </AtlasDialog>}
     {connect && <AtlasDialog title="Connect your workspace" onClose={() => setConnect(false)}><ConnectForm
-      createClient={async (connection, space) => new NativeAtlasClient(await nativeCall<NativeSession>('saveSession', { ...connection, space: space ?? null }), setOffline)}
-      onConnect={value => { setClient(value as NativeAtlasClient); setOffline(false); setConnect(false); setPage('spaces') }} /></AtlasDialog>}
+      createClient={async (connection, space) => new NativeAtlasClient(await nativeCall<NativeSession>('saveSession', { ...connection, space: space ?? null }), setShowingCachedSpaces)}
+      onConnect={value => { setClient(value as NativeAtlasClient); setShowingCachedSpaces(false); setConnect(false); setPage('spaces') }} /></AtlasDialog>}
   </div>
 }

@@ -87,7 +87,7 @@ capture-time sensors, a private SQLite/WorkManager outbox, encrypted Atlas acces
 fleet controls, original export, and credential-isolated offline space metadata. Both APK variants
 build; fake passes 63 and probe passes 83 local Android tests. The console now passes 1,175 tests and full lint.
 The built Android UI was visually checked at phone size using a simulated native bridge and real
-preview HTTP. That milestone did not verify an Android runtime; the final handoff adds a
+preview HTTP. That milestone did not verify an Android runtime; the final handoff adds
 actual AOSP emulator photo/upload and subsequent video/scan/offline-recovery checks.
 See [`atlas-android.md`](atlas-android.md)
 for architecture, reproduction, evidence limits, and remaining Android lint warnings. Both Android lint variants now
@@ -344,6 +344,14 @@ ground-truth geometry. Then run `tools.atlas_reconstruction_smoke --images PATH`
 with `--verify-space SPACE_ID`. The tool targets only the local preview.
 
 ## Remaining requirements — goal is not complete
+
+The [two-client runtime checkpoint](evidence/atlas-contributor-runtime-2026-09-08.md)
+now verifies a desktop owner requesting a map view and an actual Android emulator
+contributor capturing offline, recovering automatically, and opening the exact
+linked original on both clients. Online invitation replacement also removes the
+contributor's remote view while preserving private originals. These are software
+runtime results, not physical multi-handset, GPS, HTTPS or complete revocation-
+lifecycle qualification.
 
 1. Verify the implemented Android-native camera/location/sensor integration and durable upload
    recovery on the actual Android runtime; native permission, lifecycle, storage and real device tests.

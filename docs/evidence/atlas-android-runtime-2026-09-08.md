@@ -44,8 +44,9 @@ or adequate geometric coverage has been obtained.
 The older photo was retained on the emulator but belongs to the earlier
 disposable workspace; it is not counted among this relay's ten captures.
 The cached-data offline notice remained on Uploads until Spaces refreshed,
-even though the upload badges had already changed to Saved. Automatic status
-refresh while staying on Uploads remains a UI follow-up, not an upload failure.
+even though the upload badges had already changed to Saved. The subsequent
+[two-client checkpoint](atlas-contributor-runtime-2026-09-08.md) corrected this by
+scoping cached-space status to Spaces; native upload status remains independent.
 
 Video original SHA-256 values:
 
