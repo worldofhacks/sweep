@@ -25,6 +25,8 @@ replacement tags, remain part of the upcoming map test.
 | Camera measurements | Delivered image dimensions, intrinsics, body/gimbal transform and frame-time uncertainty | Tag localization, photo provenance and search positions |
 | Control telemetry | Observed heading and velocity update intervals against the configured freshness limits | Mapped-flight admission and continued motion |
 | Position stream timing | Observed position disagreement during movement and the timing of adapter and localization updates | Arrival tolerance within the reserved tracking allowance |
+| Route timing | Longest segment, commanded speed, stopping and arrival-hold time | Consistent signed authorization, tracking and segment-completion limits |
+| Operator activity window | Maximum allowed time since a confirmed operator intent | Mission admission and continued execution |
 
 The map uses tag 38 as origin, positive X toward tag 39 and positive Z upward.
 Local takeoff-relative altitude and elevation in this map are different values.
@@ -65,6 +67,12 @@ choosing the deployment's position tolerance, and keep that tolerance within the
 reserved tracking allowance. Publication times alone cannot establish sample
 alignment.
 
+Size each signed route authorization and segment timeout for the approved speed,
+segment length and arrival hold. `operator_timeout_ms` is an explicit safety-policy
+input. The relay refreshes operator activity on console intents; an open browser
+connection and status polls do not renew it. Choose that window for the supervised
+workflow before the test and verify its expiry behavior.
+
 The field environment needs these existing configuration inputs:
 
 | Setting | Value |
@@ -102,6 +110,12 @@ device ID, private provenance-key file and output directory. Install the matchin
 admission bundle with the phone build before testing that aircraft. See the
 [control-localization protocol](CONTROL_LOCALIZATION_PROTOCOL.md) for frame and
 clock semantics.
+
+Saved map artifacts remain available through authenticated map HTTP endpoints
+after a relay restart, including load, save, validation, approval and comparison.
+The previous control session remains closed: navigation and localization recording
+require a live session. The console's platform discovery still requires that live
+session, so archived HTTP access does not provide console session recovery.
 
 ## Exercise the workflows
 

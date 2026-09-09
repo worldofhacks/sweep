@@ -1,6 +1,6 @@
 # Real-vehicle navigation: hardware-boundary review
 
-8 September 2026. Audience: the engineers preparing the two Mini 3 aircraft and
+8–9 September 2026. Audience: the engineers preparing the two Mini 3 aircraft and
 two Ohmni robots for checkpoint, photo-inspection and search/survey tests.
 
 The existing lateral-flight control should be reused. The remaining work is to
@@ -82,6 +82,13 @@ callbacks now run after critical command publication. Another regression covers
 resume snapshot acquisition outside the non-reentrant owner lock, with ownership
 checked again before retaining the next command.
 
+The adapter socket also awaited resumed route execution before reading its next
+frame. When a completed segment triggered another GOTO, that GOTO waited for an
+acknowledgement on the blocked socket and timed out. The relay now commits and
+publishes the acknowledgement, claims the continuation, and resumes it as tracked
+background work. A real-socket regression proves that the next command reaches
+execution and retains its owner.
+
 ## Coherent navigation observations
 
 The relay previously copied fleet state and then read the changing localization
@@ -96,9 +103,51 @@ exercise both races, an empty captured map, and immutability of the copied mappi
 This consistency fix leaves physical sample-time alignment as a separate field
 measurement requirement.
 
+Route preparation and tracking publication now serialize evidence creation and
+audit admission. Previously, a tracking update could enter the audit before an
+older route authorization and cause the authorization to be rejected. HOLD does
+not wait on this publication lock. Network delivery can still reorder old-route
+poses; an Android socket regression verifies that admission rejects those poses
+without clearing the replacement route's position or preventing its GOTO.
+
 The loopback device also needed consistent telemetry and localization publication.
 Its navigation fixture now advances through positions and derives localization from
-relay-admitted telemetry. Production continues rejecting conflicting positions.
+relay-admitted telemetry. Profiling found that its attempted 50 Hz localization
+stream consumed nearly the entire serialized relay processing budget before node
+telemetry and status updates. The bounded rehearsal uses 10 Hz localization and
+0.04 m/s motion, with matching signed timing limits and the same 5 mm position
+checks. Field configuration must account for aggregate device update rates and
+measured end-to-end evidence age. Production continues rejecting stale or
+conflicting positions.
+
+## Search dispatch authority
+
+The empty-survey run exposed a missing command scope in the SEARCH execution path.
+Its GOTO reached the remote adapter without the frozen navigation plan required to
+sign the route. The adapter rejected it and the controller issued a safety HOLD.
+The previous integration test accepted any command with the mission ID, so that
+HOLD satisfied its assertion.
+
+SEARCH now dispatches within the frozen plan's navigation scope, using the current
+coherent snapshot provider. The regression requires signed route authorization and
+pose evidence before GOTO. It acknowledges the command, waits for retained execution
+ownership, then fails the camera worker and requires a separate safety HOLD. Late terminal
+SEARCH results also finish the coverage runtime and retire detection workers. That
+cleanup runs outside the relay mutation lock so joining a camera worker cannot
+block a worker that needs the same lock.
+
+Coverage activation also compared raw adapter ENU coordinates with world-frame
+task positions. A non-identity deployment could finish its route without activating
+any camera tasks. Activation now converts the aircraft position through its
+configured navigation frame before comparing it with the planned task location.
+
+## Camera readiness after navigation
+
+The relay accepts camera readiness for five seconds. The Android bridge previously
+sent readiness only on join, a state change or an explicit camera operation. A
+camera whose state stayed ready therefore became unusable after a longer route.
+Periodic readiness refreshes preserve the existing freshness check while allowing
+photos at later stops. The test node follows the same refresh contract.
 
 ## Camera geometry, time and search results
 
