@@ -1077,6 +1077,7 @@ def create_app(
             "X-Sweep-Correlation-Id",
             "X-Sweep-Audio-Duration-Ms",
             "X-Sweep-Capture",
+            "X-Sweep-Memory-Asset",
         ],
     )
 

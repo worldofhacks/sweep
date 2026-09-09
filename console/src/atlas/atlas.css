@@ -1307,6 +1307,8 @@
   gap: 4px;
   margin-bottom: 16px;
 }
+.atlas-microphone-option { display: flex; align-items: flex-start; gap: 12px; margin: 16px 0; font-size: 13px; line-height: 1.6; }
+.atlas-microphone-option input { flex-shrink: 0; width: 18px; height: 18px; margin-top: 3px; accent-color: var(--color-accent); }
 .atlas-capture-modes > button {
   flex: 1;
   display: flex;

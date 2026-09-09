@@ -72,6 +72,7 @@ export function nativeFetch(session: NativeSession): PlatformFetch {
 
 /** Cached metadata is explicitly stale; live people are stripped natively before persistence. */
 export class NativeAtlasClient extends AtlasClient {
+  override get memoryUploadsSupported(): boolean { return false }
   readonly session: NativeSession
   private readonly network: (offline: boolean) => void
   private readonly nativeDrafts: SpaceDraftStore

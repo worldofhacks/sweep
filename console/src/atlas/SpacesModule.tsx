@@ -41,6 +41,7 @@ import './atlas.css'
 
 const SpaceMap = lazy(() => import('./SpaceMap'))
 const WorldViewer = lazy(() => import('./WorldViewer'))
+const MemoryDialog = lazy(() => import('../memory/MemoryDialog'))
 const DEFAULT_CENTER: [number, number] = [-97.7431, 30.2672]
 const EXAMPLE_MAP_SPACES: Space[] = COMMUNITY_EXAMPLES.map(example => ({ ...example.space, id: example.id,
   title: `Example · ${example.space.title}`, created_at: 0, updated_at: 0, status: 'active', verification: 'unverified',
@@ -1216,6 +1217,7 @@ function MediaCard({
   spaceId: string
 }) {
   const [url, setUrl] = useState('')
+  const [memoryOpen, setMemoryOpen] = useState(false)
   const [requested, setRequested] = useState(
     capture.kind !== 'video' && capture.bytes <= 8 * 1024 * 1024,
   )
@@ -1272,6 +1274,8 @@ function MediaCard({
           ? `GPS ±${Math.round(capture.position.accuracy)} m`
           : 'No capture location'}
       </span>
+      <button className="atlas-text-button" onClick={() => setMemoryOpen(true)}><Icon name="spark" size={15} />Memory & sounds</button>
+      {memoryOpen && <Suspense fallback={<p role="status">Opening memory tools…</p>}><MemoryDialog client={client} spaceId={spaceId} capture={capture} onClose={() => setMemoryOpen(false)} /></Suspense>}
     </article>
   )
 }

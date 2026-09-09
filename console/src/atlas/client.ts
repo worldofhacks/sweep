@@ -3,8 +3,10 @@ import { responseMatches } from './captureRequests'
 import { BrowserSpaceDraftStore, type SpaceDraftStore } from './drafts'
 import { PlatformHttp, type PlatformConnection, type PlatformFetch } from '../platform/http'
 import type { Capture, CaptureMetadata, GeoPosition, NewSpace, Space, SpaceDetail, SurfaceFocus, SurfaceRegion } from './types'
+import type { MemoryAsset, MemoryContext, MemoryNotes } from '../memory/types'
 
 export class AtlasClient {
+  get memoryUploadsSupported(): boolean { return true }
   readonly http: PlatformHttp
   readonly connection: PlatformConnection
   private readonly fetcher: PlatformFetch
@@ -57,6 +59,37 @@ export class AtlasClient {
   }
   async reconstruct(id: string) {
     return this.http.request(`/atlas/spaces/${encodeURIComponent(id)}/reconstruction`, {})
+  }
+  async memory(space: string, capture: string, signal?: AbortSignal): Promise<MemoryContext> {
+    return await this.http.request(this.memoryPath(space, capture), undefined, signal) as MemoryContext
+  }
+  async saveMemory(space: string, capture: string, revision: number, notes: MemoryNotes): Promise<MemoryContext> {
+    return await this.http.request(this.memoryPath(space, capture), { revision, notes }) as MemoryContext
+  }
+  async inspectMemory(space: string, capture: string): Promise<MemoryContext> {
+    return await this.http.request(this.memoryPath(space, capture) + '/inspect', {}, undefined, 25_000) as MemoryContext
+  }
+  async analyzeMemory(space: string, capture: string, options: { revision: number; weather: boolean; ai: boolean; audio_asset_id: string | null }): Promise<MemoryContext> {
+    return await this.http.request(this.memoryPath(space, capture) + '/analyze', options) as MemoryContext
+  }
+  private memoryPath(space: string, capture: string) {
+    return `/atlas/spaces/${encodeURIComponent(space)}/captures/${encodeURIComponent(capture)}/memory`
+  }
+  async uploadMemoryAsset(space: string, capture: string, file: File, metadata: Pick<MemoryAsset, 'title' | 'role' | 'rights_confirmed'>, signal: AbortSignal): Promise<MemoryAsset> {
+    if (!this.memoryUploadsSupported) throw new Error('Use the web console to attach a memory recording.')
+    if (!file.size || file.size > 64 * 1024 * 1024) throw new Error('Choose a recording smaller than 64 MB.')
+    const response = await this.fetcher(this.mediaUrl(space, `/captures/${encodeURIComponent(capture)}/memory/assets`), {
+      method: 'POST', body: file, credentials: 'omit', redirect: 'error',
+      signal: AbortSignal.any([signal, AbortSignal.timeout(90_000)]),
+      headers: { Authorization: `Bearer ${this.connection.token}`, 'Content-Type': file.type,
+        'X-Sweep-Memory-Asset': JSON.stringify(metadata).replace(/[\u0080-\uffff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`) },
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Recording upload failed.')
+    return result as MemoryAsset
+  }
+  async memoryAssetMedia(space: string, capture: string, asset: string, signal: AbortSignal): Promise<Blob> {
+    return this.readMedia(space, `/captures/${encodeURIComponent(capture)}/memory/assets/${encodeURIComponent(asset)}/media`, signal)
   }
   async world(id: string, jobId: string, signal: AbortSignal): Promise<ArrayBuffer> {
     const response = await this.fetcher(
@@ -174,8 +207,11 @@ export class AtlasClient {
     return result as Capture
   }
   async media(id: string, captureId: string, signal: AbortSignal): Promise<Blob> {
+    return this.readMedia(id, `/captures/${encodeURIComponent(captureId)}/media`, signal)
+  }
+  private async readMedia(id: string, path: string, signal: AbortSignal): Promise<Blob> {
     const response = await this.fetcher(
-      this.mediaUrl(id, `/captures/${encodeURIComponent(captureId)}/media`),
+      this.mediaUrl(id, path),
       {
         headers: { Authorization: `Bearer ${this.connection.token}` },
         signal,

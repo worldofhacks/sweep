@@ -83,6 +83,9 @@ def install_atlas_routes(app: FastAPI, authorize):
             return store().check(identifier, token=authorization[7:])
         return store().check(identifier, session=session)
 
+    from relay.memory_routes import install_memory_routes
+    install_memory_routes(app, authorize, access, store)
+
     @app.exception_handler(AtlasError)
     async def atlas_error(_request: Request, error: AtlasError):
         return JSONResponse(

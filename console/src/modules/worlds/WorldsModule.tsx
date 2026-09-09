@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from 'react'
+import { lazy, Suspense, useState, type ChangeEvent } from 'react'
 import {
   JOB_SENTENCE,
   MANUAL_PHOTOS_REQUIRED,
@@ -29,11 +29,13 @@ import { CatalogNote, LinkNotice } from '../catalog-shared'
 import { EmptyModule } from '../shared'
 import type { ModuleProps } from '../types'
 
-type WorldsPane = 'rooms' | 'jobs'
+const MemoryLibrary = lazy(() => import('../../memory/MemoryLibrary'))
+type WorldsPane = 'rooms' | 'jobs' | 'memories'
 
 const PANES: PaneTab[] = [
   { id: 'rooms', label: 'Rooms' },
   { id: 'jobs', label: 'Jobs' },
+  { id: 'memories', label: 'Memories' },
 ]
 
 /**
@@ -41,7 +43,7 @@ const PANES: PaneTab[] = [
  * generation jobs with their provenance. Submissions and retries go through
  * the catalog client; every one carries public false.
  */
-export function WorldsModule({ controller, catalog }: ModuleProps) {
+export function WorldsModule({ controller, catalog, services }: ModuleProps) {
   const [pane, setPane] = useState<WorldsPane>('rooms')
   const [note, setNote] = useState<CatalogNoteState | null>(null)
   const [chosen, setChosen] = useState<Record<string, BundleRef>>({})
@@ -105,15 +107,15 @@ export function WorldsModule({ controller, catalog }: ModuleProps) {
   return (
     <Pane
       title="World Builder"
-      note="Rooms, bundles, and generation jobs. A generated world is never a safety record."
+      note={pane === 'memories' ? 'Bring captured views, sounds, and personal stories together. Originals stay unchanged.' : 'Rooms, bundles, and generation jobs. A generated world is never a safety record.'}
       tabs={PANES}
       activeTab={pane}
       onTabChange={(id) => setPane(id as WorldsPane)}
       tabsLabel="World Builder panes"
     >
-      <LinkNotice link={link} label="World Builder connection" />
-      <CatalogNote label="World Builder notice" note={note} />
+      {pane !== 'memories' && <><LinkNotice link={link} label="World Builder connection" /><CatalogNote label="World Builder notice" note={note} /></>}
       <div className="wld-content">
+        {pane === 'memories' && <Suspense fallback={<p role="status">Opening memories…</p>}><MemoryLibrary client={services.atlas} /></Suspense>}
         {pane === 'rooms' &&
           (snapshot.building === null ? (
             <EmptyModule what="rooms, bundles, or generation jobs" />

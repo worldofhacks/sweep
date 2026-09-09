@@ -37,6 +37,18 @@ class AtlasStorageTest {
         assertFalse(session().publicJson().has("token"))
         assertFalse(session().toString().contains("test-key-one"))
     }
+    @Test fun `memory JSON and playback stay capture and space scoped`() {
+        val scoped = session("place")
+        val asset = "544db565-bec9-4bf9-aae9-5ef89a696d0d"
+        listOf("", "/inspect", "/analyze", "/assets/$asset/media").forEach { suffix ->
+            val path = "/atlas/spaces/place/captures/photo/memory$suffix"
+            assertTrue(scoped.api(path).toString().endsWith(path))
+            assertThrows(IllegalArgumentException::class.java) { scoped.api(path.replace("/place/", "/other/")) }
+        }
+        listOf("/assets", "/assets/$asset", "/admin", "/assets/$asset/../media").forEach { suffix ->
+            assertThrows(IllegalArgumentException::class.java) { scoped.api("/atlas/spaces/place/captures/photo/memory$suffix") }
+        }
+    }
     @Test fun `surface review routes stay inside the original space and expose no worker internals`() {
         val scoped = session("place")
         val job = "544db565-bec9-4bf9-aae9-5ef89a696d0d"

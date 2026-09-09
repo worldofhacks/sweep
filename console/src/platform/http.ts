@@ -11,14 +11,14 @@ export class PlatformHttp {
     this.fetcher = fetcher
   }
 
-  async request(path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
+  async request(path: string, body?: unknown, signal?: AbortSignal, timeoutMs = 10_000): Promise<unknown> {
     const url = relayHttpUrl(this.connection.baseUrl, `/api/sessions/${encodeURIComponent(this.connection.sessionId)}${path}`)
     if (!url) throw new Error('The relay URL is invalid.')
     const controller = new AbortController()
     const abort = () => controller.abort()
     signal?.addEventListener('abort', abort, { once: true })
     if (signal?.aborted) controller.abort()
-    const timeout = setTimeout(abort, 10_000)
+    const timeout = setTimeout(abort, timeoutMs)
     try {
       const response = await this.fetcher(url, {
         method: body === undefined ? 'GET' : 'POST',

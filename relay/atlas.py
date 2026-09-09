@@ -199,6 +199,8 @@ class AtlasStore:
               space TEXT NOT NULL, request TEXT NOT NULL, capture TEXT NOT NULL,
               created_at INTEGER NOT NULL, PRIMARY KEY(space, request, capture));
         """)
+        from relay.memory_store import MemoryStore
+        self.memories = MemoryStore(self)
 
     def close(self):
         self.db.close()

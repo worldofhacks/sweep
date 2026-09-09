@@ -190,8 +190,8 @@
 .sh-pane :is(.cap-item, .wld-room, .wld-job, .con-metric, .nv-section, .cfg-group) {
   padding: 24px; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); background: var(--color-surface);
 }
-.sh-pane .wld-content > section { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); }
-.sh-pane .wld-content > section > :is(.cat-eyebrow, .wld-intro, .cat-empty) { grid-column: 1 / -1; margin: 0; }
+.sh-pane .wld-content > section.cat-swap { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); }
+.sh-pane .wld-content > section.cat-swap > :is(.cat-eyebrow, .wld-intro, .cat-empty) { grid-column: 1 / -1; margin: 0; }
 .sh-pane .wld-content :is(.wld-room, .wld-job) { margin: 0; min-width: 0; }
 .sh-pane .nv-title { font-size: 22px; font-weight: 550; letter-spacing: -.02em; }
 .sh-pane .nv-review { min-height: 44px; border-radius: 8px; }
