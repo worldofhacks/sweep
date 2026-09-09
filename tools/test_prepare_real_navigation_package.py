@@ -145,3 +145,78 @@ def test_duplicate_tag_cannot_silently_replace_approved_geometry(tmp_path):
 
     with pytest.raises(ValueError, match="duplicate tag"):
         build_package(source)
+
+
+def _tag_availability(source, unavailable_tags) -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "unavailableTags": unavailable_tags,
+    }
+
+
+def test_stages_unavailable_tags_as_localization_exclusions_only(tmp_path) -> None:
+    source = tmp_path / "map.json"
+    source.write_text(json.dumps(_source()))
+    availability = tmp_path / "tag-availability.json"
+    availability.write_text(
+        json.dumps(
+            _tag_availability(
+                source,
+                [
+                    {"tagId": 49, "reason": "ripped and unusable"},
+                    {"tagId": 35, "reason": "ripped and unusable"},
+                ],
+            )
+        )
+    )
+
+    package = build_package(source, tag_availability=availability)
+
+    assert package["tagAvailability"] == {
+        "sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "unavailableTags": [
+            {"tagId": 49, "reason": "ripped and unusable"},
+            {"tagId": 35, "reason": "ripped and unusable"},
+        ],
+        "localizationCandidateTagIds": [
+            tag_id for tag_id in [*range(29), *range(30, 54)] if tag_id not in {35, 49}
+        ],
+    }
+    assert package["activation"] == "blocked"
+    assert all(
+        not area["flightAuthorization"]["enabled"] for area in package["formationAreaDrafts"]
+    )
+
+
+@pytest.mark.parametrize(
+    "unavailable_tags,error",
+    [
+        ([{"tagId": 35, "reason": "ripped"}, {"tagId": 35, "reason": "unusable"}], "duplicate"),
+        ([{"tagId": 29, "reason": "missing"}], "retained tag ID"),
+        ([{"tagId": "35", "reason": "ripped"}], "retained tag ID"),
+        ([{"tagId": 35, "reason": "  "}], "include a reason"),
+    ],
+)
+def test_rejects_duplicate_or_unretained_tag_availability_entries(
+    tmp_path, unavailable_tags, error
+) -> None:
+    source = tmp_path / "map.json"
+    source.write_text(json.dumps(_source()))
+    availability = tmp_path / "tag-availability.json"
+    availability.write_text(json.dumps(_tag_availability(source, unavailable_tags)))
+
+    with pytest.raises(ValueError, match=error):
+        build_package(source, tag_availability=availability)
+
+
+def test_rejects_tag_availability_for_a_different_source(tmp_path) -> None:
+    source = tmp_path / "map.json"
+    source.write_text(json.dumps(_source()))
+    availability = tmp_path / "tag-availability.json"
+    record = _tag_availability(source, [{"tagId": 35, "reason": "ripped"}])
+    record["sourceSha256"] = "0" * 64
+    availability.write_text(json.dumps(record))
+
+    with pytest.raises(ValueError, match="exact source"):
+        build_package(source, tag_availability=availability)

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "sourceSha256": "7f4f1f2bf3e2ba0285568a7a0a78bd25587fcba82b5b31a97b4c592b00ca2009",
+  "recordedAt": "2026-09-09",
+  "basis": "Owner reported tags 49 and 35 ripped and unusable.",
+  "unavailableTags": [
+    {
+      "tagId": 35,
+      "reason": "Ripped and unusable; owner report."
+    },
+    {
+      "tagId": 49,
+      "reason": "Ripped and unusable; owner report."
+    }
+  ]
+}

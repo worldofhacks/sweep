@@ -136,11 +136,46 @@ def _map_approval(path: Path | None, source_digest: str) -> dict[str, object]:
     return {**approval, "status": "accepted"}
 
 
+def _tag_availability(path: Path | None, source_digest: str) -> dict[str, object]:
+    unavailable_tags: list[dict[str, int | str]] = []
+    if path is not None:
+        availability = _load(path)
+        if (
+            type(availability.get("schemaVersion")) is not int
+            or availability.get("schemaVersion") != 1
+            or availability.get("sourceSha256") != source_digest
+        ):
+            raise ValueError("tag availability must bind the exact source")
+        records = availability.get("unavailableTags")
+        if not isinstance(records, list):
+            raise ValueError("tag availability unavailableTags must be a list")
+        seen_tag_ids: set[int] = set()
+        for record in records:
+            if not isinstance(record, Mapping):
+                raise ValueError("tag availability entry must be an object")
+            tag_id, reason = record.get("tagId"), record.get("reason")
+            if type(tag_id) is not int or tag_id not in _EXPECTED_TAG_IDS:
+                raise ValueError("tag availability entry must name a retained tag ID")
+            if tag_id in seen_tag_ids:
+                raise ValueError("tag availability contains a duplicate tag ID")
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError("tag availability entry must include a reason")
+            seen_tag_ids.add(tag_id)
+            unavailable_tags.append({"tagId": tag_id, "reason": reason})
+    unavailable_tag_ids = {record["tagId"] for record in unavailable_tags}
+    return {
+        "sourceSha256": source_digest,
+        "unavailableTags": unavailable_tags,
+        "localizationCandidateTagIds": sorted(_EXPECTED_TAG_IDS - unavailable_tag_ids),
+    }
+
+
 def build_package(
     source: Path,
     *,
     map_approval: Path | None = None,
     wall_measurements: Path | None = None,
+    tag_availability: Path | None = None,
 ) -> dict[str, object]:
     payload = source.read_bytes()
     raw = json.loads(payload)
@@ -153,6 +188,7 @@ def build_package(
     tag_points = _tag_points(raw)
     digest = hashlib.sha256(payload).hexdigest()
     approval = _map_approval(map_approval, digest)
+    availability = _tag_availability(tag_availability, digest)
     accepted = approval["status"] == "accepted"
     areas = [_area(*specification, tag_points) for specification in _AREAS]
     package = {
@@ -167,6 +203,7 @@ def build_package(
             "intentionallyAbsentTagIds": [29],
         },
         "mapApproval": approval,
+        "tagAvailability": availability,
         "semanticCatalogSeed": {
             "destinations": [
                 {"destinationId": area["zoneId"], "name": area["name"], "aliases": area["aliases"]}
@@ -244,11 +281,13 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--map-approval", type=Path)
     parser.add_argument("--wall-measurements", type=Path)
+    parser.add_argument("--tag-availability", type=Path)
     arguments = parser.parse_args()
     package = build_package(
         arguments.source,
         map_approval=arguments.map_approval,
         wall_measurements=arguments.wall_measurements,
+        tag_availability=arguments.tag_availability,
     )
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")

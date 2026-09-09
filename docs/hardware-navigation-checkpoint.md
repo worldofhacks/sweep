@@ -16,6 +16,12 @@ the existing height limits. The offsets are incorporated into entrance wall geom
 and the staging package. Replacement tags and complete route clearance still need
 verification during the map test.
 
+On 9 September the owner reported tags 35 and 49 ripped and unusable. The
+[availability record](../deployments/real-navigation/tag-availability-20260909.json)
+excludes them from the staging package's 51 localization candidates. The console
+preview marks both with red crosses. Their surveyed coordinates remain in the
+53-tag baseline; candidates still require hardware verification before flight.
+
 ## Software verification
 
 The combined loopback suite passed all five tests on 9 September 2026. It exercises
@@ -101,6 +107,7 @@ uv run python -m tools.prepare_real_navigation_package \
   --source deployments/real-navigation/tag-map-53.json \
   --map-approval deployments/real-navigation/map-approval.json \
   --wall-measurements deployments/real-navigation/wall-measurements-20260909.json \
+  --tag-availability deployments/real-navigation/tag-availability-20260909.json \
   --output deployments/real-navigation/real-navigation-staging.json
 ```
 
