@@ -41,7 +41,10 @@ def test_authentication_precedes_body_parsing_and_unknown_sessions(platform_clie
         ).status_code
         == 401
     )
-    assert client.get("/api/sessions/absent/maps/revisions", headers=HEADERS).status_code == 409
+    archived = client.get("/api/sessions/absent/maps/revisions", headers=HEADERS)
+    assert archived.status_code == 200
+    assert archived.json() == []
+    assert client.get("/api/sessions/absent/navigation/catalog", headers=HEADERS).status_code == 409
     assert "absent" not in service.runtime.sessions
     assert service.maps.list(SESSION) == []
 

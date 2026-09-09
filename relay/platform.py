@@ -232,15 +232,18 @@ async def _body(request: Request) -> dict:
 
 
 def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
-    def services(session: str, authorization: str | None) -> PlatformServices:
+    def services(
+        session: str, authorization: str | None, *, require_live_session: bool = True
+    ) -> PlatformServices:
         runtime = authorize(authorization)
         result: PlatformServices = application.state.platform_services
         if result.runtime is not runtime:
             raise HTTPException(503, "Platform runtime is unavailable.")
-        try:
-            result.session(session)
-        except MapAuthoringError as error:
-            raise HTTPException(error.status_code, error.detail) from None
+        if require_live_session:
+            try:
+                result.session(session)
+            except MapAuthoringError as error:
+                raise HTTPException(error.status_code, error.detail) from None
         return result
 
     async def call(operation: Callable, *args) -> JSONResponse:
@@ -276,7 +279,8 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
 
     @application.get("/api/sessions/{session_id}/maps/revisions")
     async def revisions(session_id: str, authorization: str | None = Header(default=None)):
-        return await call(services(session_id, authorization).maps.list, session_id)
+        service = services(session_id, authorization, require_live_session=False)
+        return await call(service.maps.list, session_id)
 
     @application.post("/api/sessions/{session_id}/maps/{operation}")
     async def maps(
@@ -285,7 +289,12 @@ def install_platform_routes(application: FastAPI, authorize: Callable) -> None:
         request: Request,
         authorization: str | None = Header(default=None),
     ):
-        service = services(session_id, authorization)
+        service = services(
+            session_id,
+            authorization,
+            require_live_session=operation
+            not in {"load", "save", "validate", "approve", "compare"},
+        )
         value = await _body(request)
         actor = "console"  # Authenticated principal, never a claimed request-body name.
 

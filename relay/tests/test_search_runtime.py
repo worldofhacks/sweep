@@ -140,9 +140,7 @@ def test_late_search_terminal_result_finishes_the_real_runtime(
     relay_session, clock, terminal_status, expected_state
 ) -> None:
     runtime = _search_runtime()
-    intent = replace(
-        _intent("late-search-terminal"), session=relay_session.session_id, t=clock()
-    )
+    intent = replace(_intent("late-search-terminal"), session=relay_session.session_id, t=clock())
     preview = runtime.prepare(intent, _snapshot())
     assert isinstance(preview, SearchMissionPreview)
     relay_session._intents[intent.intent_id] = _IntentLedgerEntry(

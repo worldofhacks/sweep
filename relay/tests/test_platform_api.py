@@ -1,5 +1,6 @@
 """Production HTTP map workflow using isolated image evidence and no device commands."""
 
+import json
 from copy import deepcopy
 
 from fastapi.testclient import TestClient
@@ -33,7 +34,8 @@ def connect(client):
     socket.__enter__()
     try:
         socket.send_json({"v": 1, "type": "auth", "source": "console", "token": TOKEN.decode()})
-        assert socket.receive_json()["type"] == "auth.accepted"
+        authenticated = socket.receive_json()
+        assert authenticated["type"] == "auth.accepted", json.dumps(authenticated)
         assert socket.receive_json()["type"] == "state"
     except BaseException:
         socket.__exit__(None, None, None)
@@ -48,7 +50,7 @@ def post(client, operation, payload):
     return result.json()
 
 
-def test_real_http_authoring_approval_reload_compare_and_restart(tmp_path):
+def test_http_map_authoring_survives_restart_without_reactivating_navigation(tmp_path):
     app = make_app(tmp_path)
     with TestClient(app) as client:
         socket = connect(client)
@@ -108,23 +110,22 @@ def test_real_http_authoring_approval_reload_compare_and_restart(tmp_path):
         finally:
             socket.__exit__(None, None, None)
 
-    with TestClient(make_app(tmp_path)) as client:
-        socket = connect(client)
-        try:
-            assert post(client, "load", {"reference": next_ref})["draft"] == changed
-            receipt = post(client, "validate", {"reference": next_ref})
-            approval = post(
-                client,
-                "approve",
-                {
-                    "reference": next_ref,
-                    "validationId": receipt["validationId"],
-                },
-            )
-            assert approval["reference"] == next_ref
-            assert client.get(f"{BASE}/navigation/catalog", headers=HEADERS).status_code == 200
-        finally:
-            socket.__exit__(None, None, None)
+    restarted = make_app(tmp_path)
+    with TestClient(restarted) as client:
+        assert post(client, "load", {"reference": next_ref})["draft"] == changed
+        receipt = post(client, "validate", {"reference": next_ref})
+        approval = post(
+            client,
+            "approve",
+            {
+                "reference": next_ref,
+                "validationId": receipt["validationId"],
+            },
+        )
+        assert approval["reference"] == next_ref
+        assert client.get(f"{BASE}/navigation/catalog", headers=HEADERS).status_code == 409
+        assert client.post(f"{BASE}/maps/load", json={"reference": next_ref}).status_code == 401
+        assert restarted.state.relay_runtime.sessions == {}
 
 
 def test_invalid_draft_is_saved_but_never_approved(tmp_path):
