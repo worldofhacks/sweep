@@ -782,10 +782,10 @@ class NavigationRuntime:
                         seen = self._pose_time(snapshot, command.drone_id)
                         if (
                             issued_at_ms is None
-                            or seen <= issued_at_ms
                             or not 0
                             <= snapshot.now_ms - issued_at_ms
                             <= self.config.segment_timeout_ms
+                            or (command.operation is CommandOperation.GOTO and seen <= issued_at_ms)
                         ):
                             raise ValueError(
                                 "arrival needs timely position evidence captured after dispatch"

@@ -79,6 +79,32 @@ def test_arrival_cannot_borrow_a_newer_time_from_a_different_position(monkeypatc
     assert refused.detail == "arrival needs timely position evidence captured after dispatch"
 
 
+def test_arrival_hover_uses_the_preceding_goto_position_evidence() -> None:
+    publisher, plan, snapshots, poses, _ = _publisher()
+    runtime = publisher.runtime
+    goto, hover = plan.commands
+    target = plan.navigation.route.routes[0].swept_segments[0].end.xyz
+    snapshot = replace_aircraft(
+        replace(snapshots[0], now_ms=100_100),
+        1,
+        pose=Position(*target),
+        position_last_seen_ms=100_050,
+    )
+    pose = replace(
+        poses[0],
+        t=100_060,
+        pose_time_ms=100_050,
+        fix_time_ms=100_050,
+        x_mm=round(target[0] * 1_000),
+        y_mm=round(target[1] * 1_000),
+        z_mm=round(target[2] * 1_000),
+    )
+    snapshot = replace(snapshot, control_poses={1: pose})
+
+    assert runtime.check(plan, goto, snapshot, completed=True, issued_at_ms=100_000) is None
+    assert runtime.check(plan, hover, snapshot, completed=True, issued_at_ms=100_075) is None
+
+
 def test_captured_control_poses_cannot_be_replaced_through_the_source_mapping():
     _, _, snapshots, poses, _ = _publisher()
     original = poses[0]
