@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AtlasDialog, ConnectForm, SpacesModule, type NativeCaptureRequest } from './SpacesModule'
 import { Icon } from './Icon'
+import { AccountSetup } from '../community/AccountSetup'
 import { CaptureRequestNotice } from './CaptureRequestNotice'
 import { NativeAtlasClient, nativeCall, type NativeSession, type NativeUpload } from './native'
 
@@ -68,7 +69,7 @@ export function AndroidAtlas() {
   const queued = uploads.filter(item => item.state !== 'saved').length
   return <div className="atlas-native">
     <header className="atlas-native-header"><div><Icon name="spaces" size={24} /><strong>SWEEP<span>ATLAS</span></strong></div>
-      <button onClick={showConnect} aria-label="Workspace connection"><Icon name="people" size={18} />{client ? 'Workspace' : 'Connect'}</button></header>
+      <div><button onClick={showConnect} aria-label="Workspace connection"><Icon name="people" size={18} />{client ? 'Workspace' : 'Connect'}</button><AccountSetup native /></div></header>
     {page === 'spaces' && showingCachedSpaces && <p className="atlas-native-offline" role="status">Offline · Saved spaces, no live locations. Drafts and captures stay on this device.</p>}
     {notice && <div className="atlas-native-notice" role="alert"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss message"><Icon name="close" /></button></div>}
     {loading ? <div className="atlas-native-loading">Opening your Atlas…</div> : page === 'spaces'

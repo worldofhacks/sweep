@@ -71,7 +71,8 @@ describe('persistent shell', () => {
     const header = screen.getByRole('banner', { name: 'Workspace header' })
     const rail = screen.getByRole('navigation', { name: 'Modules' })
     expect(header).toHaveTextContent('sweepATLAS')
-    expect(header).toHaveTextContent('See more. Understand together.')
+    expect(header).toHaveTextContent('A world worth seeing. Together.')
+    expect(screen.getAllByText('sweep')).toHaveLength(1)
     for (const name of ['Control', 'Live', 'Gesture', 'Speech', 'Search', 'Captures', 'Worlds', 'Devices', 'Map', 'Spaces']) {
       await openModule(user, name)
       expect(screen.getAllByRole('banner')).toEqual([header])

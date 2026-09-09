@@ -108,6 +108,16 @@ it('does not reset a manually chosen zoom during space polling, but provides exp
   expect(mock.remove).toHaveBeenCalledTimes(1)
 })
 
+it('opens and recenters editorial discovery at city scale, retaining close survey inspection', () => {
+  const view = render(<SpaceMap {...props()} overviewZoom={12} />)
+  expect(mock.options.zoom).toBe(12)
+  act(() => mock.handlers.load())
+  fireEvent.click(screen.getByRole('button', { name: 'Recenter map' }))
+  expect(mock.easeTo).toHaveBeenLastCalledWith(expect.objectContaining({ zoom: 12 }))
+  view.rerender(<SpaceMap {...props()} picking overviewZoom={12} />)
+  expect(mock.easeTo).toHaveBeenLastCalledWith(expect.objectContaining({ zoom: 17.5 }))
+})
+
 it.each(['community', 'survey', 'hazard'] as const)('retains the same basemap for %s spaces', category => {
   render(<SpaceMap {...props()} spaces={[{ ...space, category }]} />)
   act(() => mock.handlers.load())

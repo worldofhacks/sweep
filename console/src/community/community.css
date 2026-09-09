@@ -1,0 +1,112 @@
+/* A single community layer shared by desktop and the native Atlas web surface. */
+.sh-header-actions { display: flex; align-items: center; gap: 16px; min-width: 0; }
+.sh-rail-welcome { padding: 32px 8px 24px; }
+.sh-rail-welcome-icon { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 16px; color: var(--color-accent); background: var(--color-accent-soft); margin-bottom: 16px; }
+.sh-rail-welcome strong { display: block; font-size: 18px; font-weight: 650; letter-spacing: -.03em; }
+.sh-rail-welcome p { font-size: 12px; color: var(--color-ink-2); margin: 8px 0 0; }
+.community-account { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; border: 1px solid var(--color-accent); background: var(--color-accent); color: #fff; padding: 8px 16px; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.community-account:hover { background: var(--color-accent-hover); }
+.community-signed-in { display: flex; align-items: center; gap: 8px; }
+.community-signed-in > span, .community-account-error { font-size: 12px; max-width: 180px; }
+.community-hero { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px 32px; background: var(--color-surface); border-bottom: 1px solid var(--color-hairline); flex-shrink: 0; }
+.community-hero .atlas-eyebrow { display: flex; align-items: center; gap: 8px; font-size: 9px; color: var(--color-accent); }
+.community-hero h2 { margin: 8px 0; font-size: clamp(24px, 2.4vw, 36px); font-weight: 600; letter-spacing: -.045em; line-height: 1.15; }
+.community-hero p { margin: 0; color: var(--color-ink-2); font-size: 14px; max-width: 540px; line-height: 1.6; }
+.community-hero-action { display: flex; align-items: center; gap: 16px; background: var(--color-accent-soft); border: 1px solid transparent; border-radius: 16px; padding: 16px 24px; color: var(--color-accent-hover); text-align: left; flex-shrink: 0; }
+.community-hero-action:hover { border-color: var(--color-accent); }
+.community-hero-action strong { font-size: 14px; display: block; margin-bottom: 4px; }
+.community-hero-action small { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.community-orbit { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 50%; background: var(--color-surface); }
+.community-help { min-height: 44px; padding: 8px 0; color: var(--color-ink-2); background: none; border: 0; font-size: 12px; }
+.community-help:hover { color: var(--color-accent); text-decoration: underline; }
+.community-points { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 44px; padding: 8px 12px; background: var(--color-accent-soft); color: var(--color-accent-hover); border: 0; border-radius: 24px; font-size: 13px; font-weight: 600; }
+.community-points > svg { margin-right: 4px; }
+.community-storage-notice { margin: 0; padding: 12px 24px; font-size: 12px; background: var(--color-panel); color: var(--color-ink-2); }
+.community-examples { padding: 8px 20px 24px; }
+.community-example { display: block; padding: 0; width: 100%; text-align: left; border: 1px solid var(--color-hairline); background: var(--color-surface); border-radius: 16px; overflow: hidden; margin-top: 16px; box-shadow: var(--shadow-rest); }
+.community-example:hover { box-shadow: var(--shadow-hover); border-color: var(--color-border-input); }
+.community-example-art { display: block; width: 100%; height: auto; }
+.community-example-body { display: grid; padding: 16px; gap: 8px; }
+.community-example-body > small { font-size: 9px; letter-spacing: .1em; color: var(--color-accent); font-weight: 650; }
+.community-example-body > strong { font-size: 18px; line-height: 1.3; letter-spacing: -.025em; }
+.community-example-body > span { color: var(--color-ink-2); font-size: 12px; line-height: 1.6; }
+.community-example-place { display: flex; align-items: center; gap: 6px; font-size: 10px !important; }
+.community-example-place svg { flex-shrink: 0; }
+.community-example-place svg:last-child { margin-left: auto; }
+.community-space-row { position: relative; margin: 0 16px 12px; border: 1px solid var(--color-hairline); border-radius: 16px; overflow: hidden; box-shadow: var(--shadow-rest); background: var(--color-surface); }
+.community-space-row .atlas-space-card { padding: 16px; border: 0; }
+.community-space-row .atlas-space-card h3 { padding-right: 32px; }
+.community-space-row .atlas-time { padding-right: 32px; }
+.community-save { position: absolute; right: 4px; top: 4px; width: 44px; height: 44px; display: grid; place-items: center; padding: 0; background: none; border: 0; color: var(--color-ink-2); }
+.community-save:hover, .community-save[aria-pressed=true], .atlas-icon-button[aria-pressed=true] { background: var(--color-accent-soft); color: var(--color-accent); }
+.community-save[aria-pressed=true] svg { fill: var(--color-accent-soft); }
+.community-welcome-mark { display: grid; place-items: center; width: 72px; height: 72px; border-radius: 24px; background: var(--color-accent-soft); color: var(--color-accent); margin: 0 auto 24px; }
+.community-lead { font-size: 20px; font-weight: 500; line-height: 1.5; letter-spacing: -.02em; }
+.community-providers { display: flex; gap: 8px; margin: 24px 0; }
+.community-providers > span { flex: 1; padding: 16px 8px; text-align: center; border: 1px solid var(--color-hairline); border-radius: 12px; font-weight: 600; font-size: 14px; }
+.community-guide ol { padding: 0; list-style: none; margin: 24px 0; display: grid; gap: 24px; }
+.community-guide li { display: flex; gap: 16px; align-items: flex-start; }
+.community-guide li > span { flex-shrink: 0; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: var(--color-accent-soft); color: var(--color-accent); font-weight: 650; }
+.community-guide h3 { margin: 0 0 8px; font-size: 17px; }
+.community-guide li p, .community-care p { margin: 0; color: var(--color-ink-2); font-size: 13px; line-height: 1.7; }
+.community-care { display: flex; align-items: flex-start; gap: 16px; padding: 16px; background: var(--color-panel); border-radius: 12px; }
+.community-care > svg { flex-shrink: 0; color: var(--color-accent); }
+.community-journey { text-align: center; }
+.community-journey h3 { margin: 8px 0; font-size: 28px; font-weight: 600; letter-spacing: -.03em; }
+.community-journey > p { color: var(--color-ink-2); }
+.community-score { display: grid; gap: 4px; margin: 24px 0; }
+.community-score strong { font-size: 56px; line-height: 1; letter-spacing: -.06em; color: var(--color-accent); }
+.community-score span { font-size: 12px; color: var(--color-ink-2); }
+.community-journey progress { width: 100%; height: 8px; accent-color: var(--color-accent); }
+.community-badges { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 24px 0; }
+.community-badges > div { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px 8px; border: 1px solid var(--color-hairline); border-radius: 12px; color: var(--color-ink-2); }
+.community-badges > div[data-earned=true] { background: var(--color-accent-soft); color: var(--color-accent-hover); }
+.community-badges strong { font-size: 12px; }
+.community-badges small { font-size: 11px; }
+.community-example-detail > svg { border-radius: 16px; margin-bottom: 24px; }
+.community-example-detail > h3 { font-size: 28px; line-height: 1.2; letter-spacing: -.03em; margin: 8px 0 16px; }
+.community-example-detail p, .community-example-detail li { font-size: 14px; line-height: 1.7; color: var(--color-ink-2); }
+.community-example-detail ol { padding-left: 24px; }
+.community-example-detail h4 { font-size: 15px; margin: 24px 0 8px; }
+.community-together { display: flex; align-items: flex-start; gap: 16px; padding: 16px; background: var(--color-accent-soft); border-radius: 16px; margin: 24px 0; }
+.community-together > svg { flex-shrink: 0; color: var(--color-accent); }
+.community-together strong { font-size: 14px; }
+.community-together p { font-size: 12px; color: var(--color-ink-2); margin: 8px 0 0; line-height: 1.6; }
+.community-neighbors { margin: 24px 0; }
+.community-neighbors > h3 { font-size: 14px; font-weight: 550; }
+.community-neighbors > div { display: flex; flex-wrap: wrap; gap: 12px; }
+.community-neighbors > div > span { display: grid; grid-template-columns: 32px auto; gap: 2px 8px; align-items: center; }
+.community-neighbors i { grid-row: span 2; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; font-style: normal; background: var(--color-accent-soft); color: var(--color-accent); }
+.community-neighbors strong { font-size: 12px; font-weight: 550; }
+.community-neighbors small { font-size: 10px; color: var(--color-ink-2); }
+.community-neighbors > p { font-size: 10px; color: var(--color-ink-2); margin-top: 16px; }
+@media (max-width: 1199px) {
+  .community-hero-action { padding: 16px; }
+  .community-orbit { display: none; }
+  .sh-atlas-header > span:nth-child(2) { display: none; }
+}
+@media (max-width: 700px) {
+  .community-hero { padding: 16px 20px; }
+  .community-hero h2 { font-size: 23px; }
+  .community-hero p { font-size: 12px; }
+  .community-hero .atlas-eyebrow, .community-hero-action { display: none; }
+  .community-help { font-size: 11px; }
+  .sh-header-actions { gap: 8px; }
+  .sh-atlas-header:has(.sh-session) .community-account { padding-inline: 8px; font-size: 11px; }
+}
+@media (max-width: 600px) {
+  .sh-atlas-header { gap: 8px; }
+  .sh-brand > span { display: none; }
+  .sh-atlas-fleet { white-space: nowrap; }
+  .atlas-topbar { flex-wrap: wrap; }
+  .atlas-title-group .atlas-eyebrow { display: none; }
+  .atlas-topbar-actions > .atlas-primary { white-space: nowrap; }
+  .atlas-topbar-actions { gap: 8px; }
+  .atlas-topbar .community-help { width: 44px; font-size: 10px; line-height: 1.3; padding: 0; }
+  .community-points { padding: 8px; }
+  .community-points > span { display: none; }
+  .community-hero { display: none; }
+  .community-space-row { margin-inline: 20px; }
+  .atlas-native-header .community-account { background: var(--color-accent); color: #fff; padding: 8px 12px; font-size: 12px; }
+  .sh-atlas-header:has(.sh-session) .community-account svg { display: none; }
+}

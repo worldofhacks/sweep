@@ -13,6 +13,7 @@
     "test:m14-browser": "node scripts/m14-browser-smoke.mjs"
   },
   "dependencies": {
+    "@clerk/react": "^6.15.1",
     "@mediapipe/tasks-vision": "1.0.1",
     "maplibre-gl": "5.20.0",
     "react": "^19.2.8",

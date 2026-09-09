@@ -8,6 +8,8 @@ interface Props {
   spaces: Space[]
   detail: SpaceDetail | null
   center: [number, number]
+  /** City-wide editorial discovery, without changing detailed survey zooms. */
+  overviewZoom?: number
   picking: boolean
   coverageVisible: boolean
   selectedCell: string | null
@@ -50,7 +52,7 @@ export default function SpaceMap(props: Props) {
       instance = new maplibregl.Map({
         container: container.current,
         center: callbacks.current.center,
-        zoom: 14.5,
+        zoom: callbacks.current.overviewZoom ?? 14.5,
         minZoom: 0,
         maxZoom: 22,
         attributionControl: { compact: true },
@@ -73,9 +75,9 @@ export default function SpaceMap(props: Props) {
               type: 'raster',
               source: 'streets',
               paint: {
-                'raster-saturation': -0.85,
-                'raster-contrast': -0.1,
-                'raster-opacity': 0.8,
+                'raster-saturation': -0.2,
+                'raster-contrast': -0.05,
+                'raster-opacity': 0.95,
               },
             },
           ],
@@ -97,14 +99,14 @@ export default function SpaceMap(props: Props) {
         id: 'area-fill',
         type: 'fill',
         source: 'areas',
-        paint: { 'fill-color': '#236953', 'fill-opacity': 0.07 },
+        paint: { 'fill-color': '#087eaa', 'fill-opacity': 0.07 },
       })
       instance.addLayer({
         id: 'area-line',
         type: 'line',
         source: 'areas',
         paint: {
-          'line-color': '#236953',
+          'line-color': '#087eaa',
           'line-opacity': 0.65,
           'line-width': 1.5,
           'line-dasharray': [4, 3],
@@ -192,7 +194,7 @@ export default function SpaceMap(props: Props) {
     }
   }, [])
 
-  const { spaces, detail, center, coverageVisible, selectedCell, position, picking } = props
+  const { spaces, detail, center, coverageVisible, selectedCell, position, picking, overviewZoom = 14.5 } = props
   const longitude = center[0]
   const latitude = center[1]
   const detailId = detail?.space.id
@@ -202,10 +204,10 @@ export default function SpaceMap(props: Props) {
     if (!instance || !ready) return
     instance.easeTo({
       center: [longitude, latitude],
-      zoom: detailId || picking ? 17.5 : 14.5,
+      zoom: detailId || picking ? 17.5 : overviewZoom,
       duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 650,
     })
-  }, [longitude, latitude, detailId, ready, picking, hasPlace])
+  }, [longitude, latitude, detailId, ready, picking, hasPlace, overviewZoom])
 
   useEffect(() => {
     const instance = map.current
@@ -316,7 +318,7 @@ export default function SpaceMap(props: Props) {
     <div className={`atlas-map ${picking ? 'is-picking' : ''}`}>
       <div ref={container} className="atlas-map-canvas" aria-label="Geographic map of spaces" aria-busy={(!ready || retrying) && !error} />
       <button className="atlas-map-recenter atlas-secondary" disabled={!ready}
-        onClick={() => map.current?.easeTo({ center: props.center, zoom: detailId || picking ? 17.5 : 14.5,
+        onClick={() => map.current?.easeTo({ center: props.center, zoom: detailId || picking ? 17.5 : overviewZoom,
           duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 650 })}>
         {detailId ? 'Recenter area' : 'Recenter map'}
       </button>

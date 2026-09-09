@@ -32,14 +32,14 @@ vi.mock('./media/runtime-config.ts', () => ({
   loadMediaRuntimeConfiguration: vi.fn(),
 }))
 
-test('platform refreshes retain Atlas and all hardware workflow services in the voice-first shell', async () => {
+test('platform refreshes retain Atlas and all hardware workflow services in the community-first shell', async () => {
   await import('./main')
   await vi.waitFor(() => expect(harness.render).toHaveBeenCalledOnce())
   const app = () => (harness.render.mock.lastCall![0] as ReactElement<{
     children: ReactElement<{ services: ModuleServices; initialModule: string }>
   }>).props.children.props
   const expected = { liveDetection: harness.liveDetection, atlas: harness.atlas, transcript: harness.transcript, search: harness.search, multiview: harness.multiview }
-  expect(app().initialModule).toBe('speech')
+  expect(app().initialModule).toBe('spaces')
   expect(app().services).toEqual({ ...harness.initial, ...expected })
   const replacement = { navigation: { label: 'refreshed platform provider' } }
   harness.subscribe.mock.calls[0][0](replacement)

@@ -1,43 +1,43 @@
 /*
- * Shared desktop and Android design tokens. Mineral surfaces, pine actions,
- * border-led depth. Safety colors retain their distinct semantic meaning.
+ * Shared desktop and Android design tokens. Warm paper, ocean actions,
+ * soft lift. Safety colors retain their distinct semantic meaning.
  */
 :root {
   /* 1.1 Colour — grounds and surfaces */
-  --color-ground: #f2f5ef;
-  --color-surface: #fcfdf9;
-  --color-panel: #f8faf5;
-  --color-disabled-bg: #f4f6f0;
+  --color-ground: #f7f6f2;
+  --color-surface: #fffefa;
+  --color-panel: #f2f6f7;
+  --color-disabled-bg: #f0f2f2;
   --color-disabled-alt: var(--color-disabled-bg);
   --color-recovering-bg: #FBF7EF;
-  --color-pill-bg: #edf2e7;
+  --color-pill-bg: #e9f2f6;
   --color-map-grid: var(--color-panel);
   --color-nav-reference-active: var(--color-accent-soft);
 
   /* 1.1 Colour — ink */
-  --color-ink: #182d29;
-  --color-ink-hover: #284238;
-  --color-ink-hover-alt: #284238;
-  --color-ink-2: #5c6c63;
+  --color-ink: #203944;
+  --color-ink-hover: #123d51;
+  --color-ink-hover-alt: #123d51;
+  --color-ink-2: #536a75;
   --color-ink-2-reference: var(--color-ink-2);
-  --color-ink-3: #647265;
-  --color-accent: #24634e;
-  --color-accent-hover: #174f3e;
-  --color-accent-soft: #edf3ed;
+  --color-ink-3: #64747d;
+  --color-accent: #087eaa;
+  --color-accent-hover: #066589;
+  --color-accent-soft: #e6f4fa;
   --color-eyebrow: var(--color-ink-2);
   --color-ink-v2-2: var(--color-ink-2);
   --color-ink-v2-3: var(--color-ink-3);
   --color-stamp: var(--color-ink-3);
 
   /* 1.1 Colour — rules and borders */
-  --color-hairline: #e0e7dc;
-  --color-rule-inner: #e7ece2;
-  --color-rule: #dce4d7;
+  --color-hairline: #dce5e7;
+  --color-rule-inner: #e7edef;
+  --color-rule: #d4dfe3;
   --color-rule-v2: var(--color-rule);
   --color-rule-reference: var(--color-rule);
-  --color-scrollbar-thumb: #cdd8c9;
-  --color-border-secondary: #d7e2d9;
-  --color-border-input: #b8c8bd;
+  --color-scrollbar-thumb: #bccdd4;
+  --color-border-secondary: #d4e1e7;
+  --color-border-input: #adbec7;
   --color-border-chip: var(--color-border-input);
 
   /* 1.1 Colour — semantic */
@@ -184,7 +184,7 @@
 
   /* 1.3 Radii */
   --radius-pill: 999px;
-  --radius-card: 12px;
+  --radius-card: 16px;
   --radius-tab-group: 12px;
   --radius-control: 8px;
   --radius-chip-unsupported: 9px;
@@ -193,11 +193,11 @@
   --radius-track: 2px;
 
   /* 1.3 Elevation */
-  --shadow-rest: none;
-  --shadow-hover: none;
+  --shadow-rest: 0 4px 18px rgba(31, 69, 87, .045);
+  --shadow-hover: 0 6px 24px rgba(31, 69, 87, .09);
   --shadow-hover-capture: none;
   --shadow-confirm: none;
-  --shadow-focus-input: 0 0 0 3px rgba(36, 99, 78, .1);
+  --shadow-focus-input: 0 0 0 3px rgba(8, 126, 170, .12);
   --shadow-inset-ring: inset 0 0 0 1px var(--color-rule);
   --shadow-accent-ok: inset 3px 0 0 #1B6A3F;
   --shadow-accent-warn: inset 3px 0 0 #8A5A00;

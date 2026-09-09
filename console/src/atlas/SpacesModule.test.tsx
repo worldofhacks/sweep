@@ -60,7 +60,7 @@ it('Needs views discovers actual requests even at 100% GPS coverage and opens th
   await screen.findByRole('heading', { name: 'No request yet' })
   fireEvent.click(screen.getByRole('button', { name: 'Needs views' }))
   expect(screen.queryByRole('heading', { name: 'No request yet' })).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: /Creek restoration/ }))
+  fireEvent.click(screen.getByRole('button', { name: 'Open Creek restoration' }))
   const panel = await screen.findByRole('region', { name: 'Capture requests' })
   expect(within(panel).getByRole('heading', { name: '1 view requested.' })).toBeInTheDocument()
   fireEvent.click(within(panel).getByRole('button', { name: 'Show requested area' }))

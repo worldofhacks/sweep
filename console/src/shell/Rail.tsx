@@ -7,14 +7,13 @@ export interface ModuleNavProps {
   onSelect: (id: ModuleId) => void
 }
 
-const RAIL_NOTE =
-  'Control availability follows the relay capability profile and selected device classes. Requests show the relay outcome.'
+const RAIL_NOTE = 'A little perspective can make a big difference. Start with a place you care about.'
 
 export function Rail({ modules, active, onSelect }: ModuleNavProps) {
   return (
     <nav className="sh-rail" data-rail="1" aria-label="Modules">
-      <div className="sh-rail-brand"><Icon name="spaces" size={24} /><span>sweep<span>FIELD WORKSPACE</span></span></div>
-      <p className="sh-rail-section">WORKSPACE</p>
+      <div className="sh-rail-welcome"><span className="sh-rail-welcome-icon"><Icon name="people" size={24} /></span><strong>Better, together.</strong><p>Your places. Our shared picture.</p></div>
+      <p className="sh-rail-section">EXPLORE & CONTRIBUTE</p>
       {modules.map((module) => {
         const current = module.id === active
         const classes = ['sh-rail-item']
@@ -33,7 +32,7 @@ export function Rail({ modules, active, onSelect }: ModuleNavProps) {
         )
       })}
       <p className="sh-rail-note">{RAIL_NOTE}</p>
-      <div className="sh-rail-footer"><span className="sh-rail-avatar">S</span><div><strong>Your workspace</strong><span>A shared perspective</span></div></div>
+      <div className="sh-rail-footer"><Icon name="pin" size={18} /><div><strong>Built around your world</strong><span>One perspective at a time</span></div></div>
     </nav>
   )
 }

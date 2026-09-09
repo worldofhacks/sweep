@@ -4,9 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
-  type ReactNode,
 } from 'react'
 import type { ModuleProps } from '../modules/types'
 import type { PlatformConnection } from '../platform/http'
@@ -19,6 +17,13 @@ import { CaptureRequestsPanel } from './CaptureRequestsPanel'
 import { isActionableRequest, isCurrentSurfaceRequest, linkedCaptureIds, spaceCaptureRequests } from './captureRequests'
 import { EMPTY_SPACE } from './drafts'
 import { useSpaceDraft } from './useSpaceDraft'
+import { AtlasDialog } from './AtlasDialog'
+import { CommunityGuide, ExampleArt, ExampleList, JourneyPanel } from '../community/CommunityPanels'
+import { contributingNeighbors, journeyScore } from '../community/journey'
+import { useJourney } from '../community/useJourney'
+import { COMMUNITY_EXAMPLES, type CommunityExample } from '../community/examples'
+import '../community/community.css'
+export { AtlasDialog } from './AtlasDialog'
 import {
   CATEGORY_LABEL,
   type Capture,
@@ -37,7 +42,10 @@ import './atlas.css'
 const SpaceMap = lazy(() => import('./SpaceMap'))
 const WorldViewer = lazy(() => import('./WorldViewer'))
 const DEFAULT_CENTER: [number, number] = [-97.7431, 30.2672]
-type Filter = 'all' | 'incident' | 'needs-captures' | 'resolved'
+const EXAMPLE_MAP_SPACES: Space[] = COMMUNITY_EXAMPLES.map(example => ({ ...example.space, id: example.id,
+  title: `Example · ${example.space.title}`, created_at: 0, updated_at: 0, status: 'active', verification: 'unverified',
+  capture_count: 0, coverage_percent: 0, contributors: 0 }))
+type Filter = 'all' | 'incident' | 'needs-captures' | 'resolved' | 'saved' | 'examples'
 type DetailTab = 'overview' | 'captures' | 'coverage' | 'requests' | 'world'
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.'
@@ -98,13 +106,17 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
   const [surfaceRequest, setSurfaceRequest] = useState<SurfaceRequest | null>(null)
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  const [modal, setModal] = useState<'capture' | 'connect' | 'share' | 'discard' | null>(null)
+  const [modal, setModal] = useState<'capture' | 'connect' | 'share' | 'discard' | 'guide' | 'journey' | 'example' | null>(null)
+  const [example, setExample] = useState<CommunityExample | null>(null)
   const [captureRequest, setCaptureRequest] = useState<CaptureRequestContext | undefined>()
   const [captureFilter, setCaptureFilter] = useState<CaptureRequestContext | null>(null)
   const [captureLimit, setCaptureLimit] = useState(24)
   const [invitation, setInvitation] = useState('')
   const [inviteTokens, setInviteTokens] = useState<Record<string, string>>({})
   const [contributor] = useState(identity)
+  const { journey, error: journeyError, toggleSaved, remember } = useJourney(
+    client ? `${client.connection.baseUrl}/${client.connection.sessionId}` : 'disconnected', contributor)
+  const score = journeyScore(journey)
   const [name, setName] = useState('Contributor')
   const [sharing, setSharing] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -241,6 +253,9 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
   }, [sharing, client, selected, contributor, name])
 
   const activeDetail = detail?.space.id === selected ? detail : null
+  useEffect(() => {
+    if (activeDetail) remember(activeDetail.captures)
+  }, [activeDetail, remember])
   const requestCount = activeDetail ? spaceCaptureRequests(activeDetail).filter(item => isActionableRequest(item, activeDetail)).length : 0
   const inspectRequest = (request: SpaceRequest | SurfaceRequest) => {
     setNotice(''); setSurfaceFocus(null)
@@ -257,7 +272,9 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
           .includes(query.toLowerCase())
         return (
           matches &&
-          (filter === 'all'
+          (filter === 'saved' ? journey.saved.includes(space.id)
+            : filter === 'examples' ? false
+            : filter === 'all'
             ? space.status === 'active'
             : filter === 'resolved'
               ? space.status === 'resolved'
@@ -267,7 +284,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                 : space.status === 'active' && (space.open_request_count ?? 0) > 0)
         )
       }),
-    [spaces, query, filter],
+    [spaces, query, filter, journey.saved],
   )
   const mapCenter: [number, number] =
     creating && hasCoordinate
@@ -280,6 +297,8 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
             ? [spaces[0].longitude, spaces[0].latitude]
             : center
   const focusedCell = tab === 'coverage' ? activeDetail?.coverage.cells.find(cell => cell.id === selectedCell) : undefined
+  const exampleView = !selected && !creating && (filter === 'examples' || (filter === 'all' && !loading && spaces.length === 0))
+  const openExample = (value: CommunityExample) => { setExample(value); setModal('example') }
 
   const run = async (operation: () => Promise<void>) => {
     setBusy(true)
@@ -335,6 +354,21 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
       setModal('share')
     })
 
+  const useExample = () => {
+    if (!client) { openConnect(); return }
+    if (!example) return
+    // Never overwrite an existing draft merely by browsing an example.
+    if (localDraft.draft) {
+      setModal(null); startDraft(); setNotice('Your existing draft is safe. Finish or discard it before using a starter story.'); return
+    }
+    try {
+      localDraft.session.start()
+      setDraft({ ...example.space }, [String(example.space.latitude), String(example.space.longitude)])
+      setCreating(true); setSelected(null); setSharing(false); setModal(null)
+      setNotice('This is your private draft. Replace the example text with your own observations before publishing.')
+    } catch (error) { setNotice(errorText(error)) }
+  }
+
   return (
     <main
       id="pane"
@@ -344,12 +378,14 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
     >
       <div className="atlas-topbar">
         <div className="atlas-title-group">
-          <span className="atlas-eyebrow">THE COLLABORATIVE WORLD</span>
+          <span className="atlas-eyebrow">YOUR COMMUNITY ATLAS</span>
           <h1>
             Spaces<span className="atlas-title-dot">.</span>
           </h1>
         </div>
         <div className="atlas-topbar-actions">
+          <button className="community-help" aria-label="How Sweep works" onClick={() => setModal('guide')}>How it works</button>
+          <button className="community-points" aria-label={`Your journey: ${score.points} perspective points`} onClick={() => setModal('journey')}><Icon name="spark" size={16} />{score.points}<span> pts</span></button>
           <span className={`atlas-workspace-status ${client ? 'is-connected' : ''}`}>
             <i />
             {client ? 'Shared workspace' : 'Workspace offline'}
@@ -364,6 +400,12 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
           </button>
         </div>
       </div>
+      {journeyError && <p className="community-storage-notice" role="status">{journeyError}</p>}
+      {!selected && !creating && <section className="community-hero" aria-label="Welcome to your community">
+        <div><span className="atlas-eyebrow"><Icon name="heart" size={13} /> SMALL CONTRIBUTIONS. SHARED POSSIBILITIES.</span><h2>Your perspective belongs here.</h2>
+          <p>Discover a place. Share what you see. Help your neighbors build the bigger picture.</p></div>
+        <button className="community-hero-action" onClick={() => setFilter('examples')}><span className="community-orbit"><Icon name="people" size={28} /></span><span><strong>A good place to start</strong><small>Explore stories from Austin <Icon name="arrow" size={14} /></small></span></button>
+      </section>}
       <div className="atlas-stage" data-scroll="1" data-detail={selected || creating ? '1' : undefined}>
         <Suspense fallback={<div className="atlas-map-loading">Loading your atlas…</div>}>
           {tab === 'world' && activeDetail?.reconstruction.status === 'ready' && client ? (
@@ -377,14 +419,15 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
             />
           ) : (
             <SpaceMap
-              spaces={visible}
+              spaces={exampleView ? EXAMPLE_MAP_SPACES.filter(space => `${space.title} ${space.description} ${space.place}`.toLowerCase().includes(query.toLowerCase())) : visible}
               detail={activeDetail}
-              center={focusedCell ? [focusedCell.longitude, focusedCell.latitude] : mapCenter}
+              center={exampleView ? [-97.728, 30.28] : focusedCell ? [focusedCell.longitude, focusedCell.latitude] : mapCenter}
+              overviewZoom={exampleView ? 12 : undefined}
               picking={creating && !submitted && !busy}
               coverageVisible={tab === 'coverage'}
               selectedCell={selectedCell}
               position={position}
-              onSelect={openSpace}
+              onSelect={id => { const starter = exampleView && COMMUNITY_EXAMPLES.find(value => value.id === id); if (starter) openExample(starter); else openSpace(id) }}
               onCell={setSelectedCell}
               onPick={(longitude, latitude) => {
                 setDraft((value) => ({ ...value, latitude, longitude }), [String(latitude), String(longitude)])
@@ -396,13 +439,9 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
         {!selected && !creating && (
           <section className="atlas-feed" aria-label="Space directory">
             <div className="atlas-feed-intro">
-              <span className="atlas-eyebrow">A SHARED PERSPECTIVE</span>
-              <h2>
-                See what’s happening.
-                <br />
-                Build the whole picture.
-              </h2>
-              <p>Local stories. Real perspectives. One evolving atlas.</p>
+              <span className="atlas-eyebrow">FIND YOUR NEXT CONNECTION</span>
+              <h2>Places worth caring about.</h2>
+              <p>A familiar corner. A shared question. A place to help.</p>
             </div>
             <label className="atlas-search">
               <Icon name="search" size={18} />
@@ -420,6 +459,8 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                   ['all', 'Explore'],
                   ['incident', 'Reports'],
                   ['needs-captures', 'Needs views'],
+                  ['saved', 'Saved'],
+                  ['examples', 'Examples'],
                   ['resolved', 'Resolved'],
                 ] as const
               ).map(([id, label]) => (
@@ -435,12 +476,15 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
             </div>
             <div className="atlas-list-heading">
               <span>
+                {exampleView ? 'Austin starter stories' :
+                  <>
                 {loading
                   ? 'Loading spaces'
                   : `${visible.length} ${visible.length === 1 ? 'space' : 'spaces'}`}
+                  </>}
               </span>
               <span>
-                Latest activity <Icon name="clock" size={13} />
+                {exampleView ? 'Examples, not live reports' : <>Latest activity <Icon name="clock" size={13} /></>}
               </span>
             </div>
             <div className="atlas-space-list">
@@ -453,9 +497,13 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                 <button className="atlas-text-button" onClick={startDraft}>Continue draft <Icon name="arrow" size={16} /></button>
               </div>}
               {visible.map((space) => (
-                <SpaceCard key={space.id} space={space} onOpen={() => openSpace(space.id, filter === 'needs-captures' ? 'requests' : 'overview')} />
+                <div className="community-space-row" key={space.id}><SpaceCard space={space} onOpen={() => openSpace(space.id, filter === 'needs-captures' ? 'requests' : 'overview')} />
+                  <button className="community-save" aria-label={`${journey.saved.includes(space.id) ? 'Unsave' : 'Save'} ${space.title}`} aria-pressed={journey.saved.includes(space.id)} onClick={() => toggleSaved(space.id)}><Icon name="bookmark" size={17} /></button>
+                </div>
               ))}
-              {!loading && visible.length === 0 && (
+              {filter === 'saved' && !visible.length && <div className="atlas-empty"><Icon name="bookmark" size={32} /><h3>A place to come back to.</h3><p>Save a space using its bookmark. Your saved list stays on this device; it doesn’t enable notifications.</p><button className="atlas-text-button" onClick={() => { setFilter('all'); setQuery('') }}>Explore all spaces <Icon name="arrow" /></button></div>}
+              {exampleView && <ExampleList query={query} onOpen={openExample} />}
+              {!loading && visible.length === 0 && !exampleView && !['examples', 'saved'].includes(filter) && (
                 <div className="atlas-empty">
                   <div className="atlas-empty-symbol">
                     <Icon name="spaces" size={32} />
@@ -662,6 +710,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                   <Icon name="share" size={18} />
                 </button>
               )}
+              {activeDetail && <button className="atlas-icon-button" aria-label={journey.saved.includes(activeDetail.space.id) ? 'Unsave this space' : 'Save this space'} aria-pressed={journey.saved.includes(activeDetail.space.id)} onClick={() => toggleSaved(activeDetail.space.id)}><Icon name="bookmark" size={18} /></button>}
             </div>
             {!activeDetail ? (
               <div className="atlas-empty" role="status">
@@ -716,6 +765,8 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
                       {activeDetail.space.description ||
                         'A shared space for a better view of this area. Add the first photo or video to begin.'}
                     </p>
+                    <div className="community-together"><Icon name="people" size={24} /><div><strong>There’s room for your perspective.</strong><p>Add a view, answer a request, or invite someone who knows this place.</p></div></div>
+                    {contributingNeighbors(activeDetail).length > 0 && <section className="community-neighbors" aria-label="Contributing neighbors"><h3>Built with a little help from…</h3><div>{contributingNeighbors(activeDetail).slice(0, 6).map(person => <span key={person.id}><i>{person.name.slice(0, 1).toUpperCase()}</i><strong>{person.name}</strong><small>{person.captures} {person.captures === 1 ? 'view' : 'views'}</small></span>)}</div><p>Names supplied with contributions · not live locations or verified identities.</p></section>}
                     {requestCount > 0 && <button className="atlas-request-summary" onClick={() => setTab('requests')}>
                       <Icon name="target" size={24} /><span><strong>{requestCount} {requestCount === 1 ? 'view requested' : 'views requested'}</strong>
                         <small>See where your next perspective can help.</small></span><Icon name="arrow" size={18} />
@@ -974,12 +1025,6 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
             </button>
           </div>
         )}
-        {!selected && !creating && (
-          <div className="atlas-map-caption">
-            <span className="atlas-eyebrow">A WORLD BUILT TOGETHER</span>
-            <p>One place. Every perspective.</p>
-          </div>
-        )}
         {notice && !creating && (
           <div className="atlas-toast" role="status">
             <Icon name="spaces" size={18} />
@@ -997,10 +1042,17 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
               ? 'Add your perspective'
               : modal === 'connect'
                 ? 'Connect your workspace'
+                : modal === 'guide' ? 'A small start. A shared story.'
+                : modal === 'journey' ? 'Every perspective counts.'
+                : modal === 'example' ? 'Imagine what we could see together.'
                 : modal === 'discard' ? 'Discard this local draft?' : 'Invite a contributor'
           }
           onClose={() => setModal(null)}
         >
+          {modal === 'guide' && <CommunityGuide />}
+          {modal === 'journey' && <>{journeyError && <p role="status">{journeyError}</p>}<JourneyPanel journey={journey} /></>}
+          {modal === 'example' && example && <div className="community-example-detail"><ExampleArt theme={example.theme} /><span className="atlas-eyebrow">AUSTIN STARTER STORY · NOT A LIVE REPORT</span><h3>{example.space.title}</h3><p className="atlas-place"><Icon name="pin" size={16} />{example.space.place}</p><p>{example.space.description}</p><h4>A little invitation</h4><p>{example.invitation}</p><h4>Three ways to add your perspective</h4><ol>{example.views.map(view => <li key={view}>{view}</li>)}</ol><p className="atlas-fine">Illustration, not a photograph or reconstruction. These coordinates are a starting place, not a verified incident location.</p>
+            {!invitedSpace && <button className="atlas-primary atlas-full" disabled={Boolean(client && !localDraft.loaded)} onClick={useExample}>{client ? localDraft.draft ? 'Continue your existing draft' : 'Start a space like this' : 'Connect a workspace to start'}<Icon name="arrow" size={16} /></button>}</div>}
           {modal === 'discard' && <>
             <p>This removes the draft’s text and selected location from this device. It cannot be undone.
               {submitted ? ' If publication already succeeded, the shared space remains available.' : ' No shared space or capture will be removed.'}</p>
@@ -1069,7 +1121,7 @@ export function SpacesModule({ services, initialSpace, captureNative, connectNat
 
 function SpaceCard({ space, onOpen }: { space: Space; onOpen: () => void }) {
   return (
-    <button className="atlas-space-card" onClick={onOpen}>
+    <button className="atlas-space-card" aria-label={`Open ${space.title}`} onClick={onOpen}>
       <div className="atlas-card-heading">
         <span className={`atlas-category ${space.category}`}>
           <span />
@@ -1224,39 +1276,6 @@ function MediaCard({
   )
 }
 
-export function AtlasDialog({
-  title,
-  children,
-  onClose,
-}: {
-  title: string
-  children: ReactNode
-  onClose: () => void
-}) {
-  const dialog = useRef<HTMLDialogElement>(null)
-  useEffect(() => {
-    dialog.current?.showModal()
-  }, [])
-  return (
-    <dialog
-      ref={dialog}
-      className="atlas-dialog"
-      aria-labelledby="atlas-dialog-title"
-      onCancel={onClose}
-    >
-      <div className="atlas-dialog-header">
-        <div>
-          <span className="atlas-eyebrow">SWEEP ATLAS</span>
-          <h2 id="atlas-dialog-title">{title}</h2>
-        </div>
-        <button className="atlas-icon-button" aria-label="Close dialog" onClick={onClose}>
-          <Icon name="close" />
-        </button>
-      </div>
-      {children}
-    </dialog>
-  )
-}
 
 export function ConnectForm({ onConnect, createClient }: {
   onConnect: (client: AtlasClient, space?: string) => void

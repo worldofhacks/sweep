@@ -38,7 +38,7 @@ void resolveRuntime().then((runtime) => {
   let media: ReturnType<typeof createMediaRuntime> | undefined
   const render = () => root.render(
     <StrictMode>
-      <App initialModule="speech" sessionId={runtime.sessionId} clients={clients} catalog={runtime.catalogClient}
+      <App initialModule="spaces" sessionId={runtime.sessionId} clients={clients} catalog={runtime.catalogClient}
         services={services} media={media} relayBaseUrl={runtime.baseUrl ?? undefined}
         mapEndpoint={runtime.mapEndpoint ?? undefined} />
     </StrictMode>,
