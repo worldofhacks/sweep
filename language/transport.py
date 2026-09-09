@@ -316,9 +316,9 @@ def _anthropic_body(request: ModelRequest) -> dict[str, object]:
             "never substitute its display unit. "
             "For exactly one selected ready ground robot, explicit 'pulse forward', "
             "'pulse left', or 'pulse right' "
-            "means exactly one ground_velocity step: forward linear_mm_s=80/angular_mrad_s=0, "
-            "left linear_mm_s=0/angular_mrad_s=350, "
-            "right linear_mm_s=0/angular_mrad_s=-350, all duration_ms=250. "
+            "means exactly one ground_velocity step: forward linear_mm_s=180/angular_mrad_s=0/duration_ms=1700, "
+            "left linear_mm_s=0/angular_mrad_s=350/duration_ms=250, "
+            "right linear_mm_s=0/angular_mrad_s=-350/duration_ms=250. "
             "'return home' for that robot means come_home {} "
             "using only the relay-configured approved return. "
             "Refuse other ground movement phrases, distances, angles, "
@@ -464,7 +464,7 @@ def _tool_schema() -> dict[str, object]:
                     },
                     "linear_mm_s": {"type": "integer", "minimum": 0, "maximum": 180},
                     "angular_mrad_s": {"type": "integer", "minimum": -785, "maximum": 785},
-                    "duration_ms": {"type": "integer", "minimum": 1, "maximum": 500},
+                    "duration_ms": {"type": "integer", "minimum": 1, "maximum": 1700},
                     "dx": {"type": "number"},
                     "dy": {"type": "number"},
                     "delta": {"type": "number"},
