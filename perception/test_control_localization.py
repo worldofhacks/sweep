@@ -577,3 +577,33 @@ def test_window_closing_without_a_regained_fix_blocks_subsequent_motion():
     tracker.ingest_height(height("height-2", 0.2), 0.2)
     relocalized = tracker.ingest_tag_fix(tag("tag-2", 0.2), 0.2)
     assert relocalized.status == "ready"
+
+
+def test_capture_gimbal_command_parameters_open_the_declared_window():
+    tracker = ControlLocalization(config())
+    tracker.declare_capture_blackout(
+        {"pitch": -45.0, "blackout_reason": "pano_360", "blackout_max_duration_s": 5.0},
+        now=1_000.0,
+    )
+    held_past_unplanned_threshold = tracker.snapshot(1_003.0)
+    assert held_past_unplanned_threshold.status == "hold"
+    assert held_past_unplanned_threshold.reason == "planned_optical_blackout"
+
+
+def test_gimbal_command_missing_the_declaration_fails_closed():
+    tracker = ControlLocalization(config())
+    with pytest.raises(ValueError, match="missing its planned blackout declaration"):
+        tracker.declare_capture_blackout({"pitch": -45.0}, now=0.0)
+    tracker.snapshot(0.0)
+    assert tracker.snapshot(3.0).status == "land"
+
+
+def test_gimbal_command_exceeding_the_cap_fails_closed():
+    tracker = ControlLocalization(config(max_planned_blackout_s=5.0))
+    with pytest.raises(ValueError, match="exceeds the configured cap"):
+        tracker.declare_capture_blackout(
+            {"pitch": -45.0, "blackout_reason": "pano_360", "blackout_max_duration_s": 6.0},
+            now=0.0,
+        )
+    tracker.snapshot(0.0)
+    assert tracker.snapshot(3.0).status == "land"

@@ -111,6 +111,7 @@ class SafetyConfig:
     max_capture_gimbal_error_deg: float
     positioning_loss_hold_ms: int
     motion_conflict_window_ms: int
+    max_capture_blackout_s: float = 8.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.geofence, Geofence):
@@ -139,6 +140,13 @@ class SafetyConfig:
             raise ValueError("max_capture_pose_drift_m cannot be negative")
         if not _finite_range(self.max_capture_gimbal_error_deg, 0, 180):
             raise ValueError("max_capture_gimbal_error_deg must be finite and in [0, 180)")
+        if (
+            isinstance(self.max_capture_blackout_s, bool)
+            or not isinstance(self.max_capture_blackout_s, int | float)
+            or not isfinite(self.max_capture_blackout_s)
+            or self.max_capture_blackout_s <= 0
+        ):
+            raise ValueError("max_capture_blackout_s must be a finite positive number")
         if not _finite_fraction(self.min_link_quality):
             raise ValueError("min_link_quality must be a fraction")
         if not _finite_fraction(self.min_position_quality):
@@ -1250,7 +1258,7 @@ class SafetyArbiter:
             or capabilities.operation is not CommandOperation.CAMERA_CAPABILITIES
             or set(capabilities.parameters) != {"capture_id", "pattern", "room_id"}
             or gimbal.operation is not CommandOperation.SET_GIMBAL_PITCH
-            or set(gimbal.parameters) != {"pitch"}
+            or set(gimbal.parameters) != {"pitch", "blackout_reason", "blackout_max_duration_s"}
             or not _nonempty_string(capabilities.parameters.get("capture_id"))
             or not _nonempty_string(capabilities.parameters.get("room_id"))
             or not _finite_number(gimbal.parameters.get("pitch"))
@@ -1259,6 +1267,12 @@ class SafetyArbiter:
                 plan,
                 snapshot,
                 "capture_room hold, capability, or gimbal step is malformed",
+            )
+        if not self._valid_capture_blackout_declaration(gimbal):
+            return self._invalid_plan_refusal(
+                plan,
+                snapshot,
+                "capture_room planned blackout declaration is missing or exceeds the cap",
             )
         pattern = capabilities.parameters.get("pattern")
         if pattern == "single_still":
@@ -1440,6 +1454,15 @@ class SafetyArbiter:
                     "formation commands do not match the deterministic assigned geometry",
                 )
         return None
+
+    def _valid_capture_blackout_declaration(self, gimbal: Command) -> bool:
+        reason = gimbal.parameters.get("blackout_reason")
+        max_duration_s = gimbal.parameters.get("blackout_max_duration_s")
+        return (
+            _nonempty_string(reason)
+            and _finite_number(max_duration_s)
+            and 0 < float(max_duration_s) <= self.config.max_capture_blackout_s
+        )
 
     def _valid_capture_step(
         self,

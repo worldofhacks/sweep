@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite
 from numbers import Real
@@ -435,6 +436,22 @@ class ControlLocalization:
             raise ValueError("a planned blackout window is already active")
         self._blackout_window = _PlannedBlackout(reason, now, max_duration_s)
         self._blackout_relocalize_after = now
+
+    def declare_capture_blackout(self, gimbal_parameters: Mapping[str, object], now: float) -> None:
+        """Open the blackout window carried by an arbiter-approved capture plan's gimbal step.
+
+        Executors call this with the exact ``SET_GIMBAL_PITCH`` command parameters the
+        arbiter already validated, rather than re-deriving reason/duration themselves.
+        Fails closed on a missing or wrongly typed key, the same as a raw
+        ``declare_planned_blackout`` call.
+        """
+        if "blackout_reason" not in gimbal_parameters or "blackout_max_duration_s" not in gimbal_parameters:
+            raise ValueError("gimbal command is missing its planned blackout declaration")
+        self.declare_planned_blackout(
+            gimbal_parameters["blackout_reason"],
+            gimbal_parameters["blackout_max_duration_s"],
+            now,
+        )
 
     def ingest_tag_fix(self, fix: TagFix, now: float) -> ControlLocalizationSnapshot:
         admission = self._replay.preflight(fix.event_id, fix.capture_time, "tag", now=now)

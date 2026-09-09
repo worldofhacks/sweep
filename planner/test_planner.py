@@ -190,6 +190,31 @@ def test_panorama_plan_preserves_room_association_and_protocol_order() -> None:
     capture = result.commands[4]
     assert capture.parameters["room_id"] == "room-a"
     assert capture.parameters["capture_id"] == "capture-a"
+    gimbal = result.commands[2]
+    assert gimbal.parameters["blackout_reason"] == "pano_360"
+    assert gimbal.parameters["blackout_max_duration_s"] == planning_config().capture_blackout_max_duration_s
+
+
+def test_every_capture_pattern_carries_a_planned_blackout_declaration_on_its_gimbal_step() -> None:
+    snapshot = make_snapshot(1)
+    for pattern in ("single_still", "pano_360", "reconstruct_8"):
+        intent = make_intent(
+            IntentName.CAPTURE_ROOM,
+            selection=(1,),
+            args={"room_id": "room-a", "capture_id": f"capture-{pattern}", "pattern": pattern},
+            confirm=True,
+        )
+
+        result = DeterministicPlanner(planning_config()).plan(intent, snapshot)
+
+        assert isinstance(result, Plan)
+        gimbal = next(
+            command
+            for command in result.commands
+            if command.operation is CommandOperation.SET_GIMBAL_PITCH
+        )
+        assert gimbal.parameters["blackout_reason"] == pattern
+        assert 0 < gimbal.parameters["blackout_max_duration_s"]
 
 
 def test_reconstruct_plan_has_eight_ordered_acknowledged_frames() -> None:
