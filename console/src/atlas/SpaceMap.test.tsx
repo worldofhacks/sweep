@@ -6,7 +6,7 @@ import type { Space } from './types'
 const mock = vi.hoisted(() => ({
   options: {} as Record<string, unknown>,
   handlers: {} as Record<string, (event?: unknown) => void>,
-  easeTo: vi.fn(), remove: vi.fn(), resize: vi.fn(), setData: vi.fn(), setMinZoom: vi.fn(),
+  easeTo: vi.fn(), remove: vi.fn(), resize: vi.fn(), setData: vi.fn(), setMinZoom: vi.fn(), setTiles: vi.fn(),
   tilesLoaded: false,
 }))
 vi.mock('maplibre-gl', () => ({ default: {
@@ -14,7 +14,7 @@ vi.mock('maplibre-gl', () => ({ default: {
     constructor(options: Record<string, unknown>) { mock.options = options }
     on(name: string, callback: (event?: unknown) => void) { mock.handlers[name] = callback }
     addControl() {} addSource() {} addLayer() {}
-    getSource() { return { setData: mock.setData } }
+    getSource() { return { setData: mock.setData, setTiles: mock.setTiles } }
     easeTo = mock.easeTo
     remove = mock.remove
     resize = mock.resize
@@ -64,6 +64,34 @@ it('reports an unavailable basemap without leaving the loading state indefinitel
   act(() => mock.handlers.error())
   expect(screen.getByRole('status')).toHaveTextContent('Some map tiles could not load.')
   expect(screen.queryByText('Loading street map…')).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Geographic map of spaces')).toHaveAttribute('aria-busy', 'false')
+})
+
+it('retries only street tiles without changing the selected map view or overlays', () => {
+  render(<SpaceMap {...props()} />)
+  act(() => mock.handlers.load())
+  act(() => mock.handlers.error())
+  mock.easeTo.mockClear()
+  mock.setData.mockClear()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry map' }))
+  expect(mock.setTiles).toHaveBeenCalledExactlyOnceWith(['https://tile.openstreetmap.org/{z}/{x}/{y}.png'])
+  expect(mock.easeTo).not.toHaveBeenCalled()
+  expect(mock.setData).not.toHaveBeenCalled()
+  expect(mock.remove).not.toHaveBeenCalled()
+  expect(screen.getByRole('status')).toHaveTextContent('Retrying street map…')
+  expect(screen.getByLabelText('Geographic map of spaces')).toHaveAttribute('aria-busy', 'true')
+  act(() => mock.handlers.idle())
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Geographic map of spaces')).toHaveAttribute('aria-busy', 'false')
+})
+
+it('retains a repeated tile failure even when the map becomes idle', () => {
+  render(<SpaceMap {...props()} />)
+  act(() => mock.handlers.error())
+  fireEvent.click(screen.getByRole('button', { name: 'Retry map' }))
+  act(() => { mock.handlers.error(); mock.handlers.idle() })
+  expect(screen.getByRole('status')).toHaveTextContent('Some map tiles could not load.')
+  expect(screen.getByRole('button', { name: 'Retry map' })).toBeEnabled()
   expect(screen.getByLabelText('Geographic map of spaces')).toHaveAttribute('aria-busy', 'false')
 })
 

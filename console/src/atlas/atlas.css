@@ -160,8 +160,9 @@
 }
 .atlas-map-error {
   position: absolute;
-  right: 16px;
+  right: 72px;
   bottom: 72px;
+  margin: 0;
   max-width: 260px;
   border: 1px solid #d9e0d6;
   border-radius: 8px;
@@ -170,6 +171,7 @@
   color: #66716a;
   font-size: 11px;
 }
+.atlas-map-retry { display: block; min-height: 44px; margin-top: 8px; }
 .atlas-map .maplibregl-ctrl-bottom-left {
   left: auto;
   right: 52px;
@@ -1579,7 +1581,7 @@
     max-width: 190px;
     font-size: 9px;
     bottom: 56px;
-    right: 56px;
+    right: 72px;
   }
   .atlas-toast {
     position: fixed;

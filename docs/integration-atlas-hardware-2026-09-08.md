@@ -20,8 +20,8 @@ is not incorporated by this integration.
 
 - Keep the Spaces landing page, one shared header, sidebar, responsive navigation,
   compact Stop control, confirmation dock, and existing mineral/pine design.
-  Atlas, Live, Gesture, the shared header, shell styles and tokens are unchanged
-  from #339. Search now uses the same working-pane component as other fleet pages.
+  At the initial merge, Atlas, Live, Gesture, the shared header, shell styles and
+  tokens are unchanged from #339. Search uses the same working-pane component as other fleet pages.
   Search, ordered-photo and captured-map controls reuse the shared spacing,
   borders, radii, colors and touch targets without a new component dependency.
 - Compose Atlas, semantic speech, search and ordered-photo clients together, both
@@ -84,6 +84,10 @@ map/3D bundle and toolchain/deprecation warnings remain visible.
 
 ## Deployment and merge gate
 
+The initial combined head `a94ae477` subsequently passed all six GitHub checks.
+Its complete Linux Python run collected 3,947 cases: 3,937 passed, 10 skipped,
+and four warnings. This result belongs to that head, not to later follow-ups.
+
 Deploy the updated relay before the new web/native clients. Keep Atlas storage
 durable, preserve local originals and outbox rows, and follow the migration and
 rollback notes in [the Atlas handoff](atlas-pr-handoff-2026-09-08.md). The original
@@ -100,3 +104,32 @@ whether to merge or close them.
 The hardware checkpoint's retained 7 ft soft / 8 ft hard height limits and pending
 physical localization, arrival, stopping-distance, multi-device and obstacle
 measurements remain unchanged. No physical commands were sent for this review.
+
+## Map recovery follow-up
+
+The shared desktop/native map now offers **Retry map** after a tile failure.
+It reloads only the raster street source, keeping the current camera, selected
+space, markers and coverage layers. A pending retry is labeled; a new failure
+restores the warning. MapLibre's idle event includes failed tiles, so it ends the
+pending state but never clears an error. There is no background retry loop,
+new dependency, new map provider, or claim of guaranteed offline imagery.
+The existing secondary button has a 44 px target and the notice stays clear of
+the zoom controls.
+
+The complete console suite passes 102 files / 1,303 tests; lint and both web/native
+asset builds pass. Both Android APKs assemble, and their unit tests and lint pass.
+Desktop (1440 x 900) and phone (390 x 844) browser checks deliberately refused
+street-tile requests, retained the warning after another failed attempt, then
+restored real Austin tiles using Retry map without reloading the page.
+
+The final fakeDebug APK also ran on the isolated AOSP API 35 emulator. With no
+active Android network, zooming the saved Austin space produced a tile warning.
+After Wi-Fi returned, Retry map restored the street map and cleared its pending
+notice, retaining the same selected space, marker and 200 m scale. The workspace
+metadata remained correctly labeled cached because its disposable relay was not
+running. All 12 private test originals retained identical checksums. No new
+capture, location sharing, physical hardware or fleet control was used. Local
+screenshots remain ignored under `output/playwright/map-recovery-*.png` and
+`output/playwright/android-map-retry-*.png`; this is not handset/network coverage
+or general Android system-inset acceptance. New-head CI and independent review
+remain required after publishing this follow-up.

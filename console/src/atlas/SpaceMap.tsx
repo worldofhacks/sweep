@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import maplibregl, { type GeoJSONSource, type Map as LibreMap } from 'maplibre-gl'
+import maplibregl, { type GeoJSONSource, type Map as LibreMap, type RasterTileSource } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Geometry } from 'geojson'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type { GeoPosition, Space, SpaceDetail } from './types'
@@ -20,6 +20,8 @@ const collection = (features: Feature<Geometry>[]): FeatureCollection => ({
   type: 'FeatureCollection',
   features,
 })
+const streetTiles = ['https://tile.openstreetmap.org/{z}/{x}/{y}.png']
+const tileError = 'Some map tiles could not load. Space locations and captures remain available.'
 function ring(space: Space): number[][] {
   return Array.from({ length: 65 }, (_, i) => {
     const a = (i / 64) * Math.PI * 2
@@ -37,6 +39,7 @@ export default function SpaceMap(props: Props) {
   const callbacks = useRef(props)
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
+  const [retrying, setRetrying] = useState(false)
   useEffect(() => {
     callbacks.current = props
   })
@@ -56,7 +59,7 @@ export default function SpaceMap(props: Props) {
           sources: {
             streets: {
               type: 'raster',
-              tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+              tiles: streetTiles,
               tileSize: 256,
               // Reuse the last real street tile when inspecting a small area.
               // Zooming closer must never request nonexistent z20–22 tiles.
@@ -167,9 +170,12 @@ export default function SpaceMap(props: Props) {
       })
       setReady(true)
     })
-    instance.on('error', () =>
-      setError('Some map tiles could not load. Space locations and captures remain available.'),
-    )
+    instance.on('error', () => {
+      setRetrying(false)
+      setError(tileError)
+    })
+    // Idle includes failed tiles, so it may end a retry but must never clear an error.
+    instance.on('idle', () => setRetrying(false))
     const resize = new ResizeObserver(() => {
       instance.resize()
       // Mercator's world is 512 logical pixels at z0. A taller viewport cannot
@@ -297,9 +303,18 @@ export default function SpaceMap(props: Props) {
     ;(instance.getSource('observations') as GeoJSONSource).setData(collection(points))
   }, [detail, ready, coverageVisible, selectedCell, position])
 
+  const retryMap = () => {
+    const source = map.current?.getSource('streets') as RasterTileSource | undefined
+    if (!source) return
+    setError('')
+    setRetrying(true)
+    // Refresh only the raster source; keep the camera, markers and coverage intact.
+    source.setTiles(streetTiles)
+  }
+
   return (
     <div className={`atlas-map ${picking ? 'is-picking' : ''}`}>
-      <div ref={container} className="atlas-map-canvas" aria-label="Geographic map of spaces" aria-busy={!ready && !error} />
+      <div ref={container} className="atlas-map-canvas" aria-label="Geographic map of spaces" aria-busy={(!ready || retrying) && !error} />
       <button className="atlas-map-recenter atlas-secondary" disabled={!ready}
         onClick={() => map.current?.easeTo({ center: props.center, zoom: detailId || picking ? 17.5 : 14.5,
           duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 650 })}>
@@ -310,10 +325,11 @@ export default function SpaceMap(props: Props) {
           +
         </div>
       )}
-      {!ready && !error && <p className="atlas-map-error" role="status">Loading street map…</p>}
+      {(!ready || retrying) && !error && <p className="atlas-map-error" role="status">{retrying ? 'Retrying street map…' : 'Loading street map…'}</p>}
       {error && (
         <p className="atlas-map-error" role="status">
           {error}
+          {error === tileError && <button className="atlas-secondary atlas-map-retry" onClick={retryMap}>Retry map</button>}
         </p>
       )}
     </div>
