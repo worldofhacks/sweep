@@ -432,7 +432,7 @@ class RelayLinkTest {
 
                 stub.sendNavigationAuthorization()
                 await("route authorization") { link.state.value.navigationAuthorization?.routeId == "route-1" }
-                stub.sendNavigationPose()
+                val oldRoutePose = stub.sendNavigationPose()
                 await("route pose") { link.state.value.navigationPose?.status?.name == "READY" }
 
                 val wrongTarget = stub.issueCommand(
@@ -443,8 +443,18 @@ class RelayLinkTest {
 
                 stub.sendNavigationAuthorization(commandId = "route-command-2", routeId = "route-2")
                 await("replacement route authorization") { link.state.value.navigationAuthorization?.routeId == "route-2" }
+                stub.resend(oldRoutePose)
+                await("old route pose dropped before replacement pose") {
+                    logs.count { it.contains("dropping invalid, stale, or replayed navigation pose") } == 1
+                }
+                assertNull(link.state.value.navigationPose)
                 stub.sendNavigationPose(commandId = "route-command-2", routeId = "route-2")
                 await("replacement route pose") { link.state.value.navigationPose?.routeId == "route-2" }
+                stub.resend(oldRoutePose)
+                await("old route pose dropped after replacement pose") {
+                    logs.count { it.contains("dropping invalid, stale, or replayed navigation pose") } == 2
+                }
+                assertEquals("route-2", link.state.value.navigationPose?.routeId)
                 val exact = stub.issueCommand(
                     CommandArgs.Goto(1_000, 0, 1_000, 300, navigationRouteId = "route-2"),
                     commandId = "route-command-2",

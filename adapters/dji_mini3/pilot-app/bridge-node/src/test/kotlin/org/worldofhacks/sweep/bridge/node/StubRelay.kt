@@ -265,6 +265,8 @@ class StubRelay(
         sockets.forEach { it.close(1001, "relay going away") }
     }
 
+    fun resend(frame: JsonObject) = broadcast(frame)
+
     override fun close() {
         heartbeatLoop.shutdownNow()
         // A server-side socket the node already closed has no call behind it; cancelling it throws.
