@@ -671,13 +671,13 @@ class SearchRuntime:
                     continue
                 arrival = assignment.transit.arrival_slot.pose
                 aircraft = snapshot.aircraft.get(assignment.drone.drone.drone_id)
+                if aircraft is None:
+                    continue
+                world_pose = self.navigation.config.frame(aircraft.drone_id).world(
+                    (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z), arrival.floor_id
+                )
                 if (
-                    aircraft is not None
-                    and dist(
-                        (aircraft.pose.x, aircraft.pose.y, aircraft.pose.z),
-                        (arrival.x_m, arrival.y_m, arrival.z_m),
-                    )
-                    <= self.navigation.config.position_tolerance_m
+                    dist(world_pose.xyz, arrival.xyz) <= self.navigation.config.position_tolerance_m
                     and aircraft.connection_epoch == task.connection_epoch
                     and aircraft.flight_state.value == "hovering"
                     and 0
