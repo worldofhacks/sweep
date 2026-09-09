@@ -15,7 +15,7 @@ from relay.capabilities import (
 
 MAX_GROUND_LINEAR_MM_S = 180
 MAX_GROUND_ANGULAR_MRAD_S = 785
-MAX_GROUND_DURATION_MS = 500
+MAX_GROUND_DURATION_MS = 1700
 
 
 class Mode(StrEnum):

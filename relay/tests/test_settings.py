@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE
+from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, C3_CAPABILITY_PROFILE
 from relay.settings import AdapterBackend, CapabilityRelease, RelaySettings, SettingsError
 from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY
 
@@ -240,6 +240,20 @@ def test_remote_release_binding_rejects_c2() -> None:
                 "SWEEP_CAPABILITY_RELEASE": "c2",
             }
         )
+
+
+def test_remote_release_binding_accepts_c3() -> None:
+    settings = RelaySettings.from_env(
+        {
+            "SWEEP_RELAY_TOKEN": CONSOLE_KEY.decode(),
+            "SWEEP_ADAPTER_BACKEND": "remote",
+            "SWEEP_CAPABILITY_RELEASE": "c3",
+        }
+    )
+
+    assert settings.adapter_backend is AdapterBackend.REMOTE
+    assert settings.capability_release is CapabilityRelease.C3
+    assert settings.capability_profile is C3_CAPABILITY_PROFILE
 
 
 @pytest.mark.parametrize(

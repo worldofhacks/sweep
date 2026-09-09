@@ -520,6 +520,7 @@ class WorldLocalizationAdapter:
         *,
         evidence_paths: Mapping[str, str | Path],
         allow_fixture_evidence: bool = False,
+        accept_fused_candidate_tags: bool = False,
     ) -> None:
         self.pins = pins
         if capture_clock_mapping.mapping_id != pins.capture_clock_mapping_id:
@@ -653,7 +654,12 @@ class WorldLocalizationAdapter:
         self._tags: dict[int, np.ndarray] = {}
         self._sizes: dict[int, float] = {}
         for tag in tags:
-            if not isinstance(tag, Mapping) or tag.get("verified_for_flight") is not True:
+            if not isinstance(tag, Mapping):
+                continue
+            admitted = tag.get("verified_for_flight") is True or (
+                accept_fused_candidate_tags and tag.get("source") == "auto_registered"
+            )
+            if not admitted:
                 continue
             try:
                 tag_id = tag["id"]

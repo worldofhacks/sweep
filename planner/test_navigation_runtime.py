@@ -196,6 +196,39 @@ def test_approval_rejects_tampered_document():
     assert runtime.approval.mode == "simulation"
 
 
+def _approval_with_validity(duration_ms):
+    raw = {
+        "v": 1,
+        "type": "navigation_approval",
+        "approval_id": "validity-window-test",
+        "session": "test-session",
+        "mode": "simulation",
+        "configuration_sha256": navigation_configuration_digest(
+            artifact(), NavigationExecutionConfig(
+                "level_1", MOTION, 0.2, 0.05, 500, 0.5, 5000,
+                (NavigationFrame(1, "measured-enu-world", IDENTITY),),
+            ),
+            PERMISSION,
+            "atrium",
+        ),
+        "issued_at_ms": 99000,
+        "expires_at_ms": 99000 + duration_ms,
+        "epochs": [[1, 1]],
+        "evidence_sha256": [],
+    }
+    return NavigationApproval.verify({**raw, "signature": sign_event(raw, KEY)}, KEY)
+
+
+def test_navigation_approval_accepts_a_seven_day_validity_window():
+    approval = _approval_with_validity(7 * 86_400_000)
+    assert approval.expires_at_ms - approval.issued_at_ms == 7 * 86_400_000
+
+
+def test_navigation_approval_rejects_validity_windows_longer_than_seven_days():
+    with pytest.raises(ValueError, match="must expire within seven days"):
+        _approval_with_validity(7 * 86_400_000 + 1)
+
+
 @pytest.mark.parametrize("count", [2, 3, 5])
 def test_line_routes_check_each_actual_segment_and_arrival_for_configured_fleet(count: int):
     from dataclasses import asdict

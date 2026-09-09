@@ -1,0 +1,139 @@
+{
+  "camera_matrix": [
+    [
+      904.9992232930593,
+      0.0,
+      640.3853773077074
+    ],
+    [
+      0.0,
+      902.2235058169234,
+      357.2100415972883
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "distortion_coefficients": [
+    0.14884184688362923,
+    -0.3750818255721304,
+    -0.0009650555714089585,
+    0.0008961606042202534,
+    0.40457165250504606
+  ],
+  "focal_stddev_px": [
+    10.157852195564178,
+    10.188826767826082
+  ],
+  "image_size_px": [
+    1280,
+    720
+  ],
+  "kind": "apriltag_intrinsics_candidate",
+  "minimum_pose_constraint_ratio": 0.005,
+  "minimum_selected_observation_count": 20,
+  "minimum_shortest_edge_px": 60.0,
+  "model": "pinhole",
+  "pinhole_fov_deg": {
+    "horizontal": 70.5345897669269,
+    "vertical": 43.50507849423563
+  },
+  "pipeline": {
+    "android_device_id": "redacted-device-id",
+    "camera_mode": "DJI FPV feed; zoom/crop mode and camera serial not independently verified",
+    "codec": "h264",
+    "decoder_path": "MediaMTX WHEP -> aiortc 1.15.0 -> PyAV 17.1.0 FFmpeg H264 -> BGR24 PNG, no resize",
+    "encoder": "DJI SDK encoded frames passthrough, no phone re-encode; H264 High 3.1 reported by publisher",
+    "evidence_status": "diagnostic; DJI recorded-live export provenance unsupported",
+    "fov_bounds_deg": {
+      "horizontal": [
+        58.0,
+        75.0
+      ],
+      "vertical": [
+        34.0,
+        47.0
+      ]
+    },
+    "fov_bounds_provenance": "see loc2/FOV_BOUNDS.md",
+    "fov_bounds_status": "independent bracket from DJI Mini 3 published 82.1-degree diagonal FOV spec, decomposed for a 16:9 crop; not derived from this fit",
+    "fps": 30,
+    "fps_note": "nominal source; received stream has documented frame losses",
+    "gimbal_attitude_note": "Varied by operator during camera-target holds; per-frame extrinsics not established",
+    "network_id": "wireless LAN identity not recorded; phone address redacted-phone-address",
+    "network_topology": [
+      "DJI aircraft",
+      "DJI controller USB",
+      "Seeker phone Wi-Fi",
+      "configured-media-host MediaMTX WHIP/WHEP",
+      "Mac Wi-Fi receiver"
+    ],
+    "phone": "Seeker Android 16",
+    "resolution_px": [
+      1280,
+      720
+    ]
+  },
+  "pose_constraint_ratio": 0.28081064264284666,
+  "raw_observation_count": 20,
+  "rejection_reasons": [],
+  "relative_focal_stddev": [
+    0.011224155705462781,
+    0.011293018528264292
+  ],
+  "rms_reprojection_error_px": 0.15203199214868812,
+  "selected_observation_count": 20,
+  "selection": {
+    "frames": [
+      15347,
+      16476,
+      18754,
+      20334,
+      22318,
+      23598,
+      25979,
+      27185,
+      28351,
+      29483,
+      31727,
+      33553,
+      34568,
+      37582,
+      40584,
+      42349,
+      43908,
+      55221,
+      59188,
+      61503
+    ],
+    "maximum_views": 30,
+    "minimum_frame_gap": 8,
+    "tag_ids": [
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54,
+      54
+    ]
+  },
+  "source_evidence": "docs/evidence/dji-calibration-20260909/fitting-evidence.json",
+  "status": "candidate",
+  "tag_black_square_edge_m": 0.199898
+}

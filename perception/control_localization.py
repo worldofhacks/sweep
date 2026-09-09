@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite
 from numbers import Real
@@ -197,6 +198,7 @@ class ControlLocalizationConfig:
     max_height_age_s: float = 0.2
     acceleration_variance_m2ps3: float = 0.1
     initial_velocity_variance_m2ps2: float = 1.0
+    max_planned_blackout_s: float = 8.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "drone_id", _positive_int(self.drone_id, "drone_id"))
@@ -247,6 +249,7 @@ class ControlLocalizationConfig:
             "max_height_age_s",
             "acceleration_variance_m2ps3",
             "initial_velocity_variance_m2ps2",
+            "max_planned_blackout_s",
         )
         for name in numeric_names:
             value = _finite(getattr(self, name), name)
@@ -393,6 +396,13 @@ class ControlLocalizationSnapshot:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class _PlannedBlackout:
+    reason: str
+    declared_at: float
+    max_duration_s: float
+
+
 class ControlLocalization:
     """A per-drone filter. It accepts only map-frame, source-provenanced measurements."""
 
@@ -407,6 +417,41 @@ class ControlLocalization:
         self._last_rejection: str | None = None
         self._contradictions: dict[str, tuple[float, str]] = {}
         self._loss_started_at: float | None = None
+        self._blackout_window: _PlannedBlackout | None = None
+        self._blackout_relocalize_after: float | None = None
+
+    def declare_planned_blackout(self, reason: str, max_duration_s: float, now: float) -> None:
+        """Open a bounded window in which a commanded gimbal excursion suspends the land timer.
+
+        Fails closed: an invalid or overlapping declaration raises without mutating state, so
+        a rejected call leaves the tracker behaving exactly as if none had been made.
+        """
+        reason = _identifier(reason, "reason")
+        now = _finite(now, "now")
+        max_duration_s = _finite(max_duration_s, "max_duration_s")
+        if not 0 < max_duration_s <= self.config.max_planned_blackout_s:
+            raise ValueError("planned blackout duration exceeds the configured cap")
+        active = self._blackout_window
+        if active is not None and now - active.declared_at <= active.max_duration_s:
+            raise ValueError("a planned blackout window is already active")
+        self._blackout_window = _PlannedBlackout(reason, now, max_duration_s)
+        self._blackout_relocalize_after = now
+
+    def declare_capture_blackout(self, gimbal_parameters: Mapping[str, object], now: float) -> None:
+        """Open the blackout window carried by an arbiter-approved capture plan's gimbal step.
+
+        Executors call this with the exact ``SET_GIMBAL_PITCH`` command parameters the
+        arbiter already validated, rather than re-deriving reason/duration themselves.
+        Fails closed on a missing or wrongly typed key, the same as a raw
+        ``declare_planned_blackout`` call.
+        """
+        if "blackout_reason" not in gimbal_parameters or "blackout_max_duration_s" not in gimbal_parameters:
+            raise ValueError("gimbal command is missing its planned blackout declaration")
+        self.declare_planned_blackout(
+            gimbal_parameters["blackout_reason"],
+            gimbal_parameters["blackout_max_duration_s"],
+            now,
+        )
 
     def ingest_tag_fix(self, fix: TagFix, now: float) -> ControlLocalizationSnapshot:
         admission = self._replay.preflight(fix.event_id, fix.capture_time, "tag", now=now)
@@ -631,9 +676,24 @@ class ControlLocalization:
             self._loss_started_at = None
             loss_age = None
 
+        blackout = self._blackout_window
+        blackout_active = False
+        if blackout is not None:
+            if now - blackout.declared_at <= blackout.max_duration_s:
+                blackout_active = True
+            else:
+                self._blackout_window = None
+        if (
+            self._blackout_relocalize_after is not None
+            and last["tag"] is not None
+            and last["tag"] > self._blackout_relocalize_after
+            and confidence == "green"
+        ):
+            self._blackout_relocalize_after = None
+
         state_reason = self._state_reason(vector, covariance)
         status, reason = "hold", "tag_fix_missing"
-        if loss_age is not None and loss_age >= _LAND_AFTER_LOSS_S:
+        if loss_age is not None and loss_age >= _LAND_AFTER_LOSS_S and not blackout_active:
             status, reason = "land", "tag_fix_lost"
         elif not self.config.production_evidence_verified:
             reason = "production_evidence_unverified"
@@ -642,6 +702,10 @@ class ControlLocalization:
                 (timestamp, kind, reason)
                 for kind, (timestamp, reason) in self._contradictions.items()
             )[2]
+        elif blackout_active and confidence != "green":
+            reason = "planned_optical_blackout"
+        elif self._blackout_relocalize_after is not None:
+            reason = "planned_blackout_relocalize_required"
         elif fix_age is None:
             reason = "tag_fix_missing"
         elif confidence != "green":

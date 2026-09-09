@@ -781,3 +781,106 @@ def test_selected_land_rejects_altered_plan_before_any_io(corruption: str) -> No
         else RefusalReason.INVALID_PLAN
     )
     assert flight.calls == []
+
+
+def test_capture_plan_with_valid_blackout_declaration_dispatches_without_refusal() -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    controller, planner, _, dispatcher, flight, camera = make_stack(snapshot)
+    intent = make_intent(
+        IntentName.CAPTURE_ROOM,
+        selection=(1,),
+        args={"room_id": "room", "capture_id": "capture", "pattern": "single_still"},
+        confirm=True,
+    )
+    plan = planner.plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+
+    result = dispatcher.dispatch(plan, snapshot)
+
+    assert result.refusal is None
+    assert camera.calls != []
+
+
+def test_capture_plan_missing_the_blackout_declaration_is_refused_before_any_io() -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    _, planner, _, dispatcher, flight, camera = make_stack(snapshot)
+    intent = make_intent(
+        IntentName.CAPTURE_ROOM,
+        selection=(1,),
+        args={"room_id": "room", "capture_id": "capture", "pattern": "single_still"},
+        confirm=True,
+    )
+    plan = planner.plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+    gimbal = plan.commands[2]
+    stripped = replace(gimbal, parameters={"pitch": gimbal.parameters["pitch"]})
+    commands = (plan.commands[0], plan.commands[1], stripped, *plan.commands[3:])
+
+    result = dispatcher.dispatch(replace(plan, commands=commands), snapshot)
+
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.INVALID_PLAN
+    assert flight.calls == []
+    assert camera.calls == []
+
+
+def test_capture_plan_blackout_declaration_exceeding_the_cap_is_refused_before_any_io() -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    _, planner, _, dispatcher, flight, camera = make_stack(snapshot)
+    intent = make_intent(
+        IntentName.CAPTURE_ROOM,
+        selection=(1,),
+        args={"room_id": "room", "capture_id": "capture", "pattern": "single_still"},
+        confirm=True,
+    )
+    plan = planner.plan(intent, snapshot)
+    assert isinstance(plan, Plan)
+    gimbal = plan.commands[2]
+    over_cap = replace(
+        gimbal,
+        parameters={**gimbal.parameters, "blackout_max_duration_s": 1_000.0},
+    )
+    commands = (plan.commands[0], plan.commands[1], over_cap, *plan.commands[3:])
+
+    result = dispatcher.dispatch(replace(plan, commands=commands), snapshot)
+
+    assert result.refusal is not None
+    assert result.refusal.reason is RefusalReason.INVALID_PLAN
+    assert flight.calls == []
+    assert camera.calls == []
+
+
+def test_non_capture_plan_is_unaffected_by_the_blackout_declaration_gate() -> None:
+    snapshot = make_snapshot(1, selection=(1,))
+    _, planner, _, dispatcher, flight, camera = make_stack(snapshot)
+    plan = planner.plan(make_intent(IntentName.LAND, selection=(1,), confirm=True), snapshot)
+    assert isinstance(plan, Plan)
+
+    result = dispatcher.dispatch(plan, snapshot)
+
+    assert result.refusal is None
+    assert flight.calls != []
+    assert camera.calls == []
+
+
+def test_declared_room_clearance_lowers_the_operating_ceiling():
+    config = replace(
+        safety_config(),
+        ceiling_m=2.1336,
+        operator_declared_vertical_clearance_m=1.5,
+    )
+    assert config.effective_ceiling_m == 1.5
+
+
+def test_operating_ceiling_binds_when_the_room_clears_more():
+    config = replace(
+        safety_config(),
+        ceiling_m=2.1336,
+        operator_declared_vertical_clearance_m=2.4,
+    )
+    assert config.effective_ceiling_m == 2.1336
+
+
+def test_a_non_positive_declared_clearance_is_refused():
+    with pytest.raises(ValueError):
+        replace(safety_config(), operator_declared_vertical_clearance_m=0.0)

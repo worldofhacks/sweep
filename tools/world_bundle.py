@@ -34,6 +34,15 @@ _MAX_POLYGON_VERTICES = 256
 _MAX_CORRIDOR_POINTS = 256
 _MAX_OBSERVATION_REFS = 64
 
+# Registration provenance: Ohmni's own SLAM fit, or an owner-approved external
+# camera fit (e.g. a drone nadir capture over a tag grid) into the same world datum.
+REGISTRATION_SOURCE_OHMNI_SLAM = "ohmni_slam"
+REGISTRATION_SOURCE_DRONE_CAMERA_FIT = "drone_camera_fit"
+_ALLOWED_REGISTRATION_SOURCES = {
+    REGISTRATION_SOURCE_OHMNI_SLAM,
+    REGISTRATION_SOURCE_DRONE_CAMERA_FIT,
+}
+
 
 class CandidateWorldBundle(Mapping[str, object]):
     """An immutable byte snapshot of a schema-v2 world bundle candidate."""
@@ -378,7 +387,10 @@ def _validate_manifest(
         == {"source", "observed_tags", "known_tags", "held_out_tag_ids", "maximum_residual_m"},
         "registration metadata does not match schema",
     )
-    _require(registration["source"] == "ohmni_slam", "registration source must be ohmni_slam")
+    _require(
+        registration["source"] in _ALLOWED_REGISTRATION_SOURCES,
+        f"registration source must be one of {sorted(_ALLOWED_REGISTRATION_SOURCES)}",
+    )
     maximum = _bounded_number(registration["maximum_residual_m"], "registration maximum_residual_m")
     inputs = {}
     for name in ("observed_tags", "known_tags"):

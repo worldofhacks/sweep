@@ -104,6 +104,14 @@ def test_registration_source_epoch_and_target_world_pins_are_required(bundle):
         validate_candidate(bundle)
 
 
+def test_registration_source_accepts_ohmni_slam_and_drone_camera_fit(bundle):
+    mutate(bundle, "manifest.yaml", lambda d: d["registration"].update(source="drone_camera_fit"))
+    validate_candidate(bundle)
+    mutate(bundle, "manifest.yaml", lambda d: d["registration"].update(source="made_up_source"))
+    with pytest.raises(ValueError, match="registration source"):
+        validate_candidate(bundle)
+
+
 def test_registration_inputs_are_hashed_and_not_just_claimed_residuals(bundle):
     path = bundle / "evidence" / "observed_tags.json"
     document = json.loads(path.read_text())

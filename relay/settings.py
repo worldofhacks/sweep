@@ -15,7 +15,12 @@ from urllib.parse import urlsplit
 from media.streams import CameraStream, parse_camera_mapping, validate_camera_mapping
 from relay.atlas_identity import AtlasIdentitySettings
 from relay.auth import StaticCredentialResolver
-from relay.capabilities import C1_CAPABILITY_PROFILE, C2_CAPABILITY_PROFILE, CapabilityProfile
+from relay.capabilities import (
+    C1_CAPABILITY_PROFILE,
+    C2_CAPABILITY_PROFILE,
+    C3_CAPABILITY_PROFILE,
+    CapabilityProfile,
+)
 from relay.contracts import NodeType
 from relay.observation_ingress import ObservationConfiguration
 from relay.session import RelayLimits
@@ -44,6 +49,7 @@ class AdapterBackend(StrEnum):
 class CapabilityRelease(StrEnum):
     C1 = "c1"
     C2 = "c2"
+    C3 = "c3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +211,7 @@ class RelaySettings:
         if not isinstance(self.adapter_backend, AdapterBackend):
             raise SettingsError("SWEEP_ADAPTER_BACKEND must be sim or remote")
         if not isinstance(self.capability_release, CapabilityRelease):
-            raise SettingsError("SWEEP_CAPABILITY_RELEASE must be c1 or c2")
+            raise SettingsError("SWEEP_CAPABILITY_RELEASE must be c1, c2, or c3")
         if (
             self.capability_release is CapabilityRelease.C2
             and self.adapter_backend is not AdapterBackend.SIM
@@ -449,6 +455,8 @@ class RelaySettings:
     def capability_profile(self) -> CapabilityProfile:
         if self.capability_release is CapabilityRelease.C2:
             return C2_CAPABILITY_PROFILE
+        if self.capability_release is CapabilityRelease.C3:
+            return C3_CAPABILITY_PROFILE
         return C1_CAPABILITY_PROFILE
 
     @property
@@ -533,7 +541,7 @@ def _capability_release(raw: str) -> CapabilityRelease:
     try:
         return CapabilityRelease(raw)
     except ValueError:
-        raise SettingsError("SWEEP_CAPABILITY_RELEASE must be c1 or c2") from None
+        raise SettingsError("SWEEP_CAPABILITY_RELEASE must be c1, c2, or c3") from None
 
 
 def _optional(raw: str | None) -> str | None:

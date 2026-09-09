@@ -132,3 +132,12 @@ C2_CAPABILITY_PROFILE = CapabilityProfile(
     name="c2_fleet_operations",
     enabled_intent_names=C1_IMPLEMENTED_INTENT_NAMES | C2_ADDITIONAL_INTENT_NAMES,
 )
+
+C3_ADDITIONAL_INTENT_NAMES = frozenset({IntentName.NAVIGATE, IntentName.SEARCH}) | (
+    GROUND_ADDITIONAL_INTENT_NAMES | SURVEY_ADDITIONAL_INTENT_NAMES
+)
+
+C3_CAPABILITY_PROFILE = CapabilityProfile(
+    name="c3_field_operations",
+    enabled_intent_names=C1_IMPLEMENTED_INTENT_NAMES | C3_ADDITIONAL_INTENT_NAMES,
+)

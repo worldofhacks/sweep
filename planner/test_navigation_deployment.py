@@ -463,6 +463,7 @@ def _flight_deployment_files(tmp_path):
                     name: str(Path(value).relative_to(tmp_path))
                     for name, value in evidence_paths.items()
                 },
+                "accept_fused_candidate_tags": False,
             }
         ],
     }

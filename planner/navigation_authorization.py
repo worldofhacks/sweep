@@ -66,8 +66,8 @@ class NavigationApproval:
         sha256_digest(document["configuration_sha256"], "configuration_sha256")
         start = integer(document["issued_at_ms"], "issued_at_ms")
         end = integer(document["expires_at_ms"], "expires_at_ms")
-        if not start < end <= start + 86_400_000:
-            raise ValueError("navigation approval must expire within one day")
+        if not start < end <= start + 7 * 86_400_000:
+            raise ValueError("navigation approval must expire within seven days")
         epochs = document["epochs"]
         if not isinstance(epochs, list) or not 1 <= len(epochs) <= MAX_AIRCRAFT:
             raise ValueError("navigation approval needs one through 32 aircraft epochs")

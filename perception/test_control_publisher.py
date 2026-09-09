@@ -262,6 +262,19 @@ def test_replay_records_use_canonical_wire_and_signing_path():
     assert event["type"] == "control_localization"
 
 
+def test_status_holds_as_production_evidence_unverified_when_config_leaves_the_flag_false():
+    mapping = config_mapping()
+    mapping["drones"][0]["fuser"]["production_evidence_verified"] = False
+    publisher = replay_publisher(mapping)
+    for record in ready_records():
+        publisher.enqueue(record)
+
+    frame = ControlLocalizationFrame.parse(publisher.publish(1, 1.0))
+
+    assert frame.wire.status == "hold"
+    assert not frame.wire.control_eligible
+
+
 def test_published_wire_projects_through_the_canonical_diagnostic_relay():
     publisher = replay_publisher()
     for record in ready_records():
