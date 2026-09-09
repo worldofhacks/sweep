@@ -10,12 +10,17 @@ import { membershipTone, type Tone } from '../../shell/derive'
 import { formatDeviceLink, formatPercent } from '../../shell/format'
 import { deriveCaptureProgress, deriveReadiness, deriveStream } from './derive-live'
 import { CameraChoice } from './CameraChoice'
+import { useState } from 'react'
+import type { LiveDetectionClient } from '../../media/detections'
+import { DetectionFeed } from './DetectionFeed'
 
 export interface FocusFeedProps {
   focused: RelayAircraftState | null
   requests: RequestRecord[]
   now: number
   media?: MediaRuntime
+  detections?: LiveDetectionClient
+  initialDetectionView?: boolean
 }
 
 interface Row {
@@ -25,7 +30,8 @@ interface Row {
 }
 
 /** The focused device at size, its stream label bar, and the nine state rows. */
-export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
+export function FocusFeed({ focused, requests, now, media, detections, initialDetectionView = false }: FocusFeedProps) {
+  const [detectionView, setDetectionView] = useState(initialDetectionView)
   const { cameras, camera, choose } = useCameraChoice(focused)
   const id = focused ? formatDeviceId(focused) : 'none'
   const noun = focused ? deviceNoun(focused.device_class) : 'device'
@@ -33,7 +39,12 @@ export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
     <section data-two="1" aria-label={`Focused ${noun} ${id}`}>
       <div className="lv-column">
         {focused && <CameraChoice device={focused} cameras={cameras} camera={camera} now={now} onChoose={choose} />}
-        {focused ? (
+        {detections && <label className="lv-det-copy"><input type="checkbox" checked={detectionView} onChange={(event) => setDetectionView(event.target.checked)} /> Object detection overlay</label>}
+        {detectionView && !detections && <p role="status">Object detection service is unavailable on this console.</p>}
+        {focused && camera && detectionView && detections && focused.client_observation?.connectionCurrent !== false ? (
+          <DetectionFeed key={`${focused.drone_id}:${focused.connection_epoch}:${camera.camera_id}`} client={detections}
+            source={{ drone_id: focused.drone_id, connection_epoch: focused.connection_epoch, camera_id: camera.camera_id, stream: camera.stream }} />
+        ) : focused ? (
           <Feed drone={focused} now={now} media={media} camera={camera} />
         ) : (
           <div className="lv-feed is-unreported">
@@ -55,15 +66,7 @@ export function FocusFeed({ focused, requests, now, media }: FocusFeedProps) {
           Each camera uses its configured stream and reports its own freshness.
           Switching cameras changes this view only; it does not select or command another device.
         </p>
-        <h3 className="lv-h3">Detections</h3>
-        <p className="lv-det-copy">
-          Shown at 0.6 and above. At 0.8 and above the device's feed is promoted to focus within one
-          second. A detection never emits a command — the operator decides.
-        </p>
-        <p className="lv-det-note" role="status">
-          The relay does not report detections on this console yet. Nothing is shown rather than a
-          fixture.
-        </p>
+        <p className="lv-det-copy">Detection view shows the latest analyzed image with matching boxes and confidence. It updates independently of video playback and never sends a movement command.</p>
       </div>
       <div className="lv-column">
         <p className="lv-eyebrow">Focused {noun}</p>

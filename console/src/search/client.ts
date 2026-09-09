@@ -1,4 +1,5 @@
 import type { IntentV1, SearchArgs } from '../relay/contract'
+import { relayHttpUrl } from '../relay/origin'
 
 export interface SearchCatalog {
   target_classes: string[]
@@ -64,10 +65,9 @@ export class HttpSearchClient implements SearchClient {
     return { ...value, mode: (value.mode ?? 'search') as 'search' | 'survey' } as unknown as SearchStatus
   }
   private async request(session: string, action: string, body?: object): Promise<unknown> {
-    const url = new URL(this.config.baseUrl)
-    url.protocol = url.protocol === 'wss:' || url.protocol === 'https:' ? 'https:' : 'http:'
-    url.pathname = `/session/${encodeURIComponent(session)}/search/${action}`; url.search = ''; url.hash = ''
-    const response = await this.fetcher(url.toString(), { method: body ? 'POST' : 'GET', headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) })
+    const url = relayHttpUrl(this.config.baseUrl, `/session/${encodeURIComponent(session)}/search/${action}`)
+    if (!url) throw new Error('The relay URL is invalid.')
+    const response = await this.fetcher(url, { method: body ? 'POST' : 'GET', headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) })
     const value: unknown = await response.json()
     if (!response.ok) throw new Error(record(value) && text(value.detail) ? value.detail : 'Search is unavailable.')
     return value

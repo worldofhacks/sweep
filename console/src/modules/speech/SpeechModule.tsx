@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from 'react'
+import { useEffect, useReducer, useRef, useState } from 'react'
 import './speech.css'
 import {
   deviceLabeller,
@@ -26,12 +26,21 @@ import {
 } from '../../voice/use-push-to-talk'
 import { TargetStrip } from '../gesture/TargetStrip'
 import { MultiviewCapture } from '../captures/MultiviewCapture'
+import { NavigationPreviewDetails } from '../control/navigation/NavigationPane'
+import { SearchPreviewView } from '../search/SearchModule'
+import type { SearchPreview } from '../../search/client'
+import { VoiceSearchMission } from './VoiceMission'
+import { FocusFeed } from '../live/FocusFeed'
+import { DeviceTelemetryPanel } from '../devices/DeviceTelemetryPanel'
+import { useSecondTick } from '../live/use-second-tick'
+import { observedControlState } from '../../control/observation'
+import { voiceObservationView } from './observation-command'
 import type { ModuleProps } from '../types'
 
 type SpeechPane = 'talk' | 'pipeline'
 
 const PANES: PaneTab[] = [
-  { id: 'talk', label: 'Speak or type' },
+  { id: 'talk', label: 'Voice commands' },
   { id: 'pipeline', label: 'Compiler pipeline' },
 ]
 
@@ -59,6 +68,7 @@ interface RelayPlanState {
 }
 
 interface SpeechState {
+  observationView: 'camera' | 'detections' | 'lidar' | null
   utterance: string
   origin: TranscriptOrigin | null
   compilerRefusal: { reason: string; sentence: string } | null
@@ -69,6 +79,7 @@ interface SpeechState {
 }
 
 const INITIAL: SpeechState = {
+  observationView: null,
   utterance: '',
   origin: null,
   compilerRefusal: null,
@@ -84,7 +95,7 @@ export function SpeechModule(props: ModuleProps) {
 }
 
 /** Session-keyed body: a session change unmounts every pending speech callback and preview. */
-function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
+function SpeechSession({ controller, now, roomId, services, media }: ModuleProps) {
   const [pane, setPane] = useState<SpeechPane>('talk')
   const {
     state,
@@ -99,6 +110,25 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
     ...services.voice,
   })
   const [speech, setSpeech] = useState<SpeechState>(INITIAL)
+  useSecondTick(speech.observationView !== null)
+  const focusedId = state.selectedFeedId ?? state.selection[0]
+  const focused = focusedId === undefined ? null : observedControlState(state, now()).aircraft[focusedId] ?? null
+  const [requestTargets, setRequestTargets] = useState<string | null>(null)
+  const [searchPreview, setSearchPreview] = useState<SearchPreview | null>(null)
+  const [searchZones, setSearchZones] = useState<readonly string[]>([])
+  const searchEnabled = state.enabledIntentNames.includes('search')
+  useEffect(() => {
+    let active = true
+    if (services.search && searchEnabled) {
+      void services.search.catalog(state.sessionId).then((catalog) => {
+        if (active) setSearchZones(catalog.zones)
+      }).catch(() => { if (active) setSearchZones([]) })
+    }
+    return () => { active = false }
+  }, [services.search, state.sessionId, searchEnabled])
+  const [preparing, setPreparing] = useState(false)
+  const preparedIntent = useRef<string | null>(null)
+  const targetsKey = JSON.stringify(state.selection.map((id) => [id, state.aircraft[id]?.connection_epoch]).sort((a, b) => Number(a[0]) - Number(b[0])))
   const relay = speech.relayPlan
   const relayView = relay === null ? null : deriveRelayPlan(relay, state.requests)
   useTicker(voice.isRecording || (relayView !== null && relayView.deadline !== null && !relayView.finished))
@@ -123,9 +153,25 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
   const reviewBlocked =
     semanticReview === null
       ? null
+      : requestTargets !== targetsKey || relay?.plan.roster_version !== state.rosterVersion
+        ? 'The selected devices changed after this request. Say it again for the current selection.'
+        : state.connection.status !== 'connected'
+          ? 'Reconnect to the relay before reviewing this request.'
       : reviewCatalog?.catalogVersion !== semanticReview.catalog_identity
         ? 'The accepted destination catalog changed after semantic review. Say it again after reloading the map.'
         : null
+  const destinations = reviewCatalog?.destinations.filter((destination) => !destination.excluded && state.selection.every((id) => destination.allowedClasses.includes(state.aircraft[id]?.device_class))) ?? []
+  const firstRoom = destinations[0]
+  const searchRoom = destinations.find((destination) => searchZones.includes(destination.zoneId))
+  const firstTag = destinations.flatMap((destination) => destination.aliases).find((alias) => /^tag\s+\d+$/i.test(alias))
+  const phrases = firstRoom ? [
+    `Go to ${firstRoom.name}`,
+    ...(firstTag ? [`Navigate to ${firstTag}`] : []),
+    ...(searchRoom && state.enabledIntentNames.includes('search') && state.selection.every((id) => state.aircraft[id]?.device_class === 'aircraft')
+      ? [`Survey ${searchRoom.name}`, `Find a backpack in ${searchRoom.name}`] : []),
+    'Hold position',
+  ] : TRY_PHRASES
+  const searchRequest = state.requests.find((request) => request.intent.name === 'search')
   const stageBlocked =
     relay !== null && relayView !== null && nextStep !== null
       ? stageBlockedReason(relay, relayView, nextStep, state, pendingRequest, roomId, now())
@@ -135,13 +181,14 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
     const inputChanged = utterance !== speech.utterance || origin !== speech.origin
     if (inputChanged) {
       voice.reset()
-      if (pendingRequest?.intent.source === 'language') {
+      if (preparing || pendingRequest?.intent.source === 'language' || pendingRequest?.intent.intent_id === preparedIntent.current) {
         invalidatePending(
           'language_input_changed',
           'The language input changed after preview. Compile and stage a fresh plan.',
         )
       }
     }
+    setSearchPreview(null)
     setSpeech((previous) => ({
       ...previous,
       utterance,
@@ -163,6 +210,7 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
       return
     }
     voice.reset()
+    setRequestTargets(targetsKey)
     void voice.compileText(text)
   }
 
@@ -194,15 +242,21 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
   }
 
   const prepareReview = async () => {
-    if (semanticReview === null || reviewBlocked !== null || semanticReview.kind === 'multiview') return
+    if (semanticReview === null || reviewBlocked !== null || semanticReview.kind === 'multiview' || preparing) return
+    setPreparing(true)
     try {
-      const prepared =
-        semanticReview.kind === 'navigate'
-          ? await controller.prepareNavigation(semanticReview.destination_id)
-          : await controller.prepareSearch(
-              semanticReview.destination_id,
-              semanticReview.kind === 'survey' ? undefined : semanticReview.target_class,
-            )
+      let prepared: unknown
+      if (semanticReview.kind === 'navigate') {
+        const intent = await controller.prepareNavigation(semanticReview.destination_id)
+        prepared = intent
+        preparedIntent.current = intent?.intent_id ?? null
+      } else {
+        const result = await controller.prepareSearch(semanticReview.destination_id,
+          semanticReview.kind === 'survey' ? undefined : semanticReview.target_class)
+        prepared = result
+        preparedIntent.current = result.intent.intent_id
+        setSearchPreview(result.preview)
+      }
       setSpeech((previous) =>
         previous.relayPlan === null
           ? previous
@@ -228,17 +282,19 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
               },
             },
       )
-    }
+    } finally { setPreparing(false) }
   }
 
   const startRecording = () => {
     if (!languageEnabled) return
-    if (pendingRequest?.intent.source === 'language') {
+    if (preparing || pendingRequest?.intent.source === 'language' || pendingRequest?.intent.intent_id === preparedIntent.current) {
       invalidatePending(
         'language_input_changed',
         'A new recording started after preview. Compile and stage a fresh plan.',
       )
     }
+    setRequestTargets(targetsKey)
+    setSearchPreview(null)
     setSpeech((previous) => ({
       ...previous,
       compilerRefusal: null,
@@ -250,8 +306,8 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
 
   return (
     <Pane
-      title="Speech to intents"
-      note="An utterance compiles to intents, the arbiter validates, you confirm. Never a command straight to a device."
+      title="Voice control"
+      note="Hold to speak, review the destination and selected devices, then confirm the mission."
       tabs={PANES}
       activeTab={pane}
       onTabChange={(id) => setPane(id as SpeechPane)}
@@ -311,7 +367,7 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
               <textarea
                 value={speech.utterance}
                 rows={2}
-                placeholder="capture the kitchen with a full panorama"
+                placeholder="Go to the lobby, navigate to tag 42, or survey the kitchen"
                 onChange={(event) => setUtterance(event.target.value, 'typed')}
               />
             </label>
@@ -320,11 +376,11 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
               className="sp-compile"
               onClick={() => compileTyped()}
             >
-              Compile to intents
+              Review transcript
             </button>
-            <p className="sp-eyebrow">Try one</p>
+            <p className="sp-eyebrow">Say a command · or tap to try</p>
             <div className="sp-phrases">
-              {TRY_PHRASES.map((phrase) => (
+              {phrases.map((phrase) => (
                 <button
                   key={phrase}
                   type="button"
@@ -335,9 +391,22 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
                 </button>
               ))}
             </div>
+            <details className="sp-hint">
+              <summary>Available rooms and tags</summary>
+              <p>Ground robots and aircraft use separate selections. Tags name approved arrival destinations.</p>
+              {destinations.length === 0 ? <p>No accepted destinations reported.</p> : <ul>{destinations.map((destination) =>
+                <li key={destination.zoneId}>{destination.name}{destination.aliases.length ? ` · ${destination.aliases.join(', ')}` : ''}</li>)}</ul>}
+            </details>
           </div>
 
           <div className="sp-column">
+            {speech.observationView && <section aria-label="Voice sensor view">
+              <p role="status">Showing {speech.observationView === 'lidar' ? 'raw LiDAR and device telemetry' : speech.observationView === 'detections' ? 'live object detections' : 'live camera'}.</p>
+              {!focused ? <p>Select or focus a device to inspect its sensors.</p> : speech.observationView === 'lidar'
+                ? <DeviceTelemetryPanel device={focused} now={now()} />
+                : <FocusFeed key={speech.observationView} focused={focused} requests={state.requests} now={now()} media={media}
+                    detections={services.liveDetection} initialDetectionView={speech.observationView === 'detections'} />}
+            </section>}
             {relay && relayView && (
               <RelayPlanCard
                 relay={relay}
@@ -347,10 +416,17 @@ function SpeechSession({ controller, now, roomId, services }: ModuleProps) {
                 blocked={stageBlocked}
                 onStage={stageStep}
                 label={deviceLabeller(state.aircraft)}
-                reviewBlocked={reviewBlocked}
+                reviewBlocked={preparing ? 'Preparing the route…' : pendingRequest ? 'Confirm or cancel the pending review before preparing another.' : reviewBlocked}
                 onPrepareReview={() => void prepareReview()}
+                reviewDestinationName={semanticReview && semanticReview.kind !== 'multiview' ? reviewCatalog?.destinations.find((d) => d.zoneId === semanticReview.destination_id)?.name : undefined}
+                reviewTargets={state.selection.map(deviceLabeller(state.aircraft)).join(', ')}
               />
             )}
+            {semanticReview?.kind === 'navigate' && controller.navigation.preview?.destination.zoneId === semanticReview.destination_id && (
+              <NavigationPreviewDetails preview={controller.navigation.preview} now={now()} />
+            )}
+            {searchPreview && searchPreview.intent_id === searchRequest?.intent.intent_id && <SearchPreviewView preview={searchPreview} />}
+            {services.search && searchRequest && <VoiceSearchMission key={searchRequest.intent.intent_id} client={services.search} session={state.sessionId} intentId={searchRequest.intent.intent_id} />}
             {semanticReview?.kind === 'multiview' && reviewBlocked === null && (
               <MultiviewCapture
                 key={`${semanticReview.catalog_identity}:${semanticReview.destination_ids.join(':')}`}
@@ -550,6 +626,8 @@ function RelayPlanCard({
   label,
   reviewBlocked,
   onPrepareReview,
+  reviewDestinationName,
+  reviewTargets,
 }: {
   relay: RelayPlanState
   view: RelayPlanView
@@ -560,6 +638,8 @@ function RelayPlanCard({
   label: DeviceLabeller
   reviewBlocked: string | null
   onPrepareReview: () => void
+  reviewDestinationName?: string
+  reviewTargets: string
 }) {
   const { plan } = relay
   const remainingMs = view.deadline === null ? null : Math.max(0, view.deadline - now)
@@ -654,12 +734,12 @@ function RelayPlanCard({
       {plan.kind === 'review' && plan.review && (
         <>
           <p className="sp-result-sentence">
-            The relay resolved this request against the accepted destination catalog. The console will request a fresh operational review before confirmation.
+            Heard “{plan.transcript}”. Review the route for {reviewTargets || 'the current selection'} before confirming.
           </p>
           <p className="sp-result-line">
             {plan.review.kind === 'multiview'
               ? `${plan.review.destination_ids.length} photograph stops are ready for review.`
-              : `${plan.review.kind} at ${plan.review.destination_id}`}
+              : `${plan.review.kind === 'search' ? `Search for ${plan.review.target_class}` : humanizeCode(plan.review.kind)} at ${reviewDestinationName ?? plan.review.destination_id}`}
           </p>
           {reviewBlocked && <p className="sp-result-blocked">{reviewBlocked}</p>}
           {plan.review.kind !== 'multiview' && (
@@ -730,6 +810,11 @@ function absorbVoice(
   }
   if (outcome !== previous.seen.outcome && outcome !== null) {
     const transcript = outcome.transcript?.trim() ?? ''
+    const observationView = voiceObservationView(transcript)
+    if (observationView !== null) return {
+      ...next, observationView, utterance: transcript, origin: outcome.source,
+      compilerRefusal: null, relayCompilerReason: null, relayPlan: null, sttError: null,
+    }
     if (outcome.status === 'transcribed' && outcome.plan) {
       next = {
         ...next,
@@ -755,6 +840,7 @@ function absorbVoice(
   }
   return next
 }
+
 
 function listenLabel(status: PushToTalkStatus, languageEnabled: boolean): string {
   if (!languageEnabled) return 'Language disabled — type below'

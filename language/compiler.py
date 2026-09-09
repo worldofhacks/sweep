@@ -66,9 +66,15 @@ class InMemoryAuditSink:
 
 
 class SessionCompilerAudit:
-    def __init__(self, log: SessionAuditLog, event_ids: Callable[[], str]) -> None:
+    def __init__(
+        self,
+        log: SessionAuditLog,
+        event_ids: Callable[[], str],
+        clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+    ) -> None:
         self._log = log
         self._event_ids = event_ids
+        self._clock_ms = clock_ms
 
     def append(self, event: Mapping[str, object]) -> None:
         self._log.append(
@@ -76,6 +82,8 @@ class SessionCompilerAudit:
                 **event,
                 "session": self._log.session,
                 "event_id": self._event_ids(),
+                "type": "language_audit",
+                "t": self._clock_ms(),
             }
         )
 

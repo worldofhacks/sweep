@@ -11,6 +11,7 @@ import type { MapEndpoint } from '../relay/map-endpoint'
 import type { TranscriptClient } from '../voice/client'
 import type { UsePushToTalkOptions } from '../voice/use-push-to-talk'
 import type { AtlasClient } from '../atlas/client'
+import type { LiveDetectionClient } from '../media/detections'
 
 /** Everything the hook returns: authoritative state plus the intent functions. */
 export type ConsoleController = ReturnType<typeof useControlConsole>
@@ -38,6 +39,7 @@ export type VoiceDependencies = Pick<
  * transcript client means the relay has no transcription endpoint here.
  */
 export interface ModuleServices {
+  liveDetection?: LiveDetectionClient
   atlas?: AtlasClient
   /** Accepted-map review port; absent until a real provider is connected. */
   navigation?: NavigationClient

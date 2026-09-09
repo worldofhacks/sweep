@@ -26,6 +26,8 @@ from adapters.ohmni.test_runtime import (
     _wait_for,
 )
 from adapters.protocols import AdapterError
+from language.relay_compiler import RelayTranscriptCompiler
+from language.test_semantic_reviews import CapturingTransport
 from planner.ground_navigation import GroundNavigationDeployment
 from planner.models import CommandOperation, LifecycleStatus
 from planner.test_ground_navigation import KEY, deployment_file
@@ -39,6 +41,8 @@ from relay.observation_ingress import ObservationConfiguration
 from relay.observations import ClockMapping, FrameDeclaration, FrameRegistry, SourceBinding
 from relay.settings import AdapterBackend, RelaySettings
 from relay.tests.conftest import ADAPTER_KEY, CONSOLE_KEY, SESSION
+from relay.tests.test_voice import FixedTranscriptionTransport, fixed_audio_duration
+from relay.voice import TranscriptService
 from tests.autonomy_fixtures import planning_config, safety_config
 from tools.world_replay import export_audit, read_replay
 
@@ -159,6 +163,16 @@ def ground_platform(tmp_path: Path, monkeypatch, request, world_confidence):
             planning=planning_config(),
             safety=safety_config(),
             ground_navigation=deployment,
+        ),
+        transcript_service_factory=lambda runtime: TranscriptService(
+            transcription=FixedTranscriptionTransport("Go to the lobby."),
+            duration_probe=fixed_audio_duration,
+            compiler=RelayTranscriptCompiler(
+                sessions=runtime.sessions.get,
+                transport=CapturingTransport(
+                    {"kind": "review", "review": {"kind": "navigate", "destination_id": "lobby"}}
+                ),
+            ),
         ),
     )
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -610,10 +624,23 @@ def test_named_ground_preview_confirm_and_guard_reach_the_real_node(
             json.dumps({"v": 1, "type": "auth", "source": "console", "token": CONSOLE_KEY.decode()})
         )
         _receive_until(console, lambda frame: frame.get("type") == "state")
+        voice = client.post(
+            f"/api/sessions/{SESSION}/transcripts",
+            headers={
+                **headers,
+                "Content-Type": "audio/webm",
+                "X-Sweep-Correlation-Id": "ground-voice-review",
+            },
+            content=b"isolated voice upload",
+        )
+        assert voice.status_code == 200, voice.text
+        assert voice.json()["plan"]["kind"] == "review", voice.json()
+        assert voice.json()["emissions"] == []
+        destination = voice.json()["plan"]["review"]["destination_id"]
         compiled = client.post(
             base + "/compile",
             headers=headers,
-            json={"intentId": "ground-reviewed", "query": "lobby"},
+            json={"intentId": "ground-reviewed", "query": destination},
         )
         assert compiled.status_code == 200, compiled.text
         envelope = compiled.json()

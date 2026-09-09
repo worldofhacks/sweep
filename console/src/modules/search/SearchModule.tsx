@@ -179,7 +179,7 @@ export function SearchModule({ controller, services }: ModuleProps) {
 }
 
 
-function SearchPreviewView({ preview }: { preview: SearchPreview }) {
+export function SearchPreviewView({ preview }: { preview: SearchPreview }) {
   return (
     <div className="se-panel">
       <h2>Frozen mission preview</h2>
@@ -196,7 +196,7 @@ function SearchPreviewView({ preview }: { preview: SearchPreview }) {
   )
 }
 
-function SearchStatusView({ status, acknowledging, onAcknowledge }: {
+export function SearchStatusView({ status, acknowledging, onAcknowledge }: {
   status: SearchStatus
   acknowledging: string | null
   onAcknowledge: (sightingId: string) => void

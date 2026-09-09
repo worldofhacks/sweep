@@ -150,6 +150,7 @@ class ReviewDestination:
     destination_id: str
     name: str
     aliases: tuple[str, ...] = ()
+    enabled_kinds: tuple[ReviewKind, ...] = tuple(ReviewKind)
 
     def __post_init__(self) -> None:
         _review_identifier(self.destination_id, "review destination_id")
@@ -158,12 +159,20 @@ class ReviewDestination:
             raise ValueError("review destination aliases are invalid")
         for alias in self.aliases:
             _review_text(alias, "review destination alias")
+        if (
+            not isinstance(self.enabled_kinds, tuple)
+            or not self.enabled_kinds
+            or len(set(self.enabled_kinds)) != len(self.enabled_kinds)
+            or any(not isinstance(kind, ReviewKind) for kind in self.enabled_kinds)
+        ):
+            raise ValueError("review destination kinds are invalid")
 
     def model_dict(self) -> dict[str, object]:
         return {
             "destination_id": self.destination_id,
             "name": self.name,
             "aliases": list(self.aliases),
+            "enabled_kinds": [kind.value for kind in self.enabled_kinds],
         }
 
 
@@ -827,7 +836,9 @@ def _validate_review_request(raw: object, catalog: ReviewCatalog) -> ReviewReque
         return None
     if kind not in catalog.enabled_kinds:
         return None
-    destination_ids = {item.destination_id for item in catalog.destinations}
+    destination_ids = {
+        item.destination_id for item in catalog.destinations if kind in item.enabled_kinds
+    }
     if kind is ReviewKind.NAVIGATE:
         if (
             set(raw) != {"kind", "destination_id"}
@@ -1631,7 +1642,7 @@ def _string_list(value: object) -> bool:
 
 
 def _camera_pattern_list(value: object) -> bool:
-    return _string_list(value) and set(value) <= {"pano_360", "reconstruct_8"}
+    return _string_list(value) and set(value) <= {"pano_360", "reconstruct_8", "single_still"}
 
 
 def _thaw(value: object) -> object:

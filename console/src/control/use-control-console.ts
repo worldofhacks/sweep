@@ -848,6 +848,7 @@ export function useControlConsole({
    */
   const invalidatePending = useCallback(
     (reasonCode: string, detail: string) => {
+      previewSequence.current += 1
       navigationGeneration.current += 1
       resetNavigation()
       const t = intentDependencies.now()

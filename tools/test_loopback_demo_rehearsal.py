@@ -10,6 +10,10 @@ from urllib.request import Request, urlopen
 
 from websockets.sync.client import connect
 
+from language.relay_compiler import RelayTranscriptCompiler
+from language.test_semantic_reviews import CapturingTransport
+from relay.tests.test_voice import FixedTranscriptionTransport, fixed_audio_duration
+from relay.voice import TranscriptService
 from tools.loopback_demo_rehearsal import (
     LoopbackDemoRehearsal,
     _rehearsal_deployment,
@@ -43,6 +47,92 @@ def _wait_for(predicate, *, timeout_s: float = 15.0):
             return result
         time.sleep(0.05)
     raise AssertionError("condition did not become true")
+
+
+def _voice_review(rehearsal, token, text, kind, destination="lobby"):
+    transport = CapturingTransport(
+        {"kind": "review", "review": {"kind": kind, "destination_id": destination}}
+    )
+    runtime = rehearsal._composition.runtime
+    rehearsal._app.state.transcript_service = TranscriptService(
+        transcription=FixedTranscriptionTransport(text),
+        duration_probe=fixed_audio_duration,
+        compiler=RelayTranscriptCompiler(sessions=runtime.sessions.get, transport=transport),
+    )
+    request = Request(
+        f"http://127.0.0.1:{rehearsal.relay_port}/api/sessions/{rehearsal.session_id}/transcripts",
+        data=b"isolated audio upload",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "audio/webm",
+            "X-Sweep-Correlation-Id": "loopback-voice",
+        },
+    )
+    with urlopen(request, timeout=10) as response:
+        outcome = json.loads(response.read())
+    assert outcome["plan"]["kind"] == "review", json.dumps(outcome)
+    assert outcome["emissions"] == []
+    assert (
+        transport.requests[0].facts["review_catalog"]["catalog_identity"]
+        == outcome["plan"]["review"]["catalog_identity"]
+    )
+    return outcome["plan"]["review"]
+
+
+def test_voice_tag_review_previews_confirms_and_completes_aircraft_navigation(tmp_path):
+    with LoopbackDemoRehearsal(
+        start_console=False, bootstrap_path=tmp_path / "voice.json"
+    ) as rehearsal:
+        token = json.loads(rehearsal.bootstrap_path.read_text())["relay"]["token"]
+        _select_aircraft(rehearsal, token)
+        review = _voice_review(rehearsal, token, "Go to tag 42.", "navigate")
+        base = f"http://127.0.0.1:{rehearsal.relay_port}/api/sessions/{rehearsal.session_id}/navigation"
+        catalog = _http_json(base + "/catalog", token)["catalog"]
+        lobby = next(d for d in catalog["destinations"] if d["zoneId"] == "lobby")
+        assert "tag 42" in lobby["aliases"]
+        session = rehearsal._composition.runtime.sessions[rehearsal.session_id]
+        preview = _http_json(
+            base + "/preview",
+            token,
+            {
+                "session": rehearsal.session_id,
+                "intentId": "voice-tag-navigation",
+                "zoneId": review["destination_id"],
+                "rosterVersion": session.registry.roster_version,
+                "selected": [{"id": 1, "deviceClass": "aircraft", "epoch": 1}],
+                **{
+                    key: catalog[key]
+                    for key in ("catalogVersion", "map", "configVersion", "motionConfig")
+                },
+            },
+        )
+        assert preview["preview"]["dispatchEligible"] is True
+        assert preview["preview"]["routes"][0]["holdBehavior"] == "hover"
+        confirmed = _http_json(
+            base + "/confirm",
+            token,
+            {
+                "intentId": "voice-tag-navigation",
+                "previewId": preview["preview"]["previewId"],
+                "previewHash": preview["previewHash"],
+            },
+        )
+        assert confirmed["status"] == "accepted", confirmed
+
+        def terminal():
+            return next(
+                (
+                    e
+                    for e in reversed(_audit_events(rehearsal))
+                    if e.get("intent_id") == f"platform:{preview['preview']['previewId']}"
+                    and e.get("source") == "autonomy"
+                    and e.get("status") in {"completed", "failed", "refused", "invalidated"}
+                ),
+                None,
+            )
+
+        outcome = _wait_for(terminal, timeout_s=60)
+        assert outcome["status"] == "completed", outcome
 
 
 def _select_aircraft(rehearsal: LoopbackDemoRehearsal, token: str) -> None:
@@ -375,6 +465,7 @@ def test_loopback_rehearsal_completes_an_empty_aircraft_survey(tmp_path) -> None
         token = json.loads(bootstrap.read_text())["relay"]["token"]
         base = f"http://127.0.0.1:{rehearsal.relay_port}/session/{rehearsal.session_id}"
         _select_aircraft(rehearsal, token)
+        review = _voice_review(rehearsal, token, "Survey the lobby.", "survey")
         intent_id = "loopback-empty-survey"
         intent = {
             "v": 1,
@@ -385,7 +476,7 @@ def test_loopback_rehearsal_completes_an_empty_aircraft_survey(tmp_path) -> None
             "source": "console",
             "session": rehearsal.session_id,
             "name": "search",
-            "args": {"zone_id": "lobby", "mode": "survey"},
+            "args": {"zone_id": review["destination_id"], "mode": "survey"},
             "selection": [1],
             "mode": "indoor",
             "confirm": True,

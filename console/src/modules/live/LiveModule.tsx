@@ -8,16 +8,17 @@ import type { ModuleProps } from '../types'
 import { FocusFeed } from './FocusFeed'
 import { Mosaic } from './Mosaic'
 import { useSecondTick } from './use-second-tick'
+import { observedControlState } from '../../control/observation'
 
 /** One dynamic wall, with local device inspection opened from a tile. */
-export function LiveModule({ controller, now, media }: ModuleProps) {
+export function LiveModule({ controller, now, media, services }: ModuleProps) {
   const [inspecting, setInspecting] = useState(false)
   const { state, selectFeed, toggleAircraft } = controller
   const devices = useMemo(() => sortedAircraft(state.aircraft), [state.aircraft])
   useSecondTick(devices.length > 0)
   const currentNow = now()
   const focused =
-    state.selectedFeedId === null ? null : (state.aircraft[state.selectedFeedId] ?? null)
+    state.selectedFeedId === null ? null : (observedControlState(state, currentNow).aircraft[state.selectedFeedId] ?? null)
 
   return (
     <Pane
@@ -31,7 +32,7 @@ export function LiveModule({ controller, now, media }: ModuleProps) {
           <button type="button" className="lv-focus lv-back" onClick={() => setInspecting(false)}>
             Back to All devices
           </button>
-          <FocusFeed focused={focused} requests={state.requests} now={currentNow} media={media} />
+          <FocusFeed focused={focused} requests={state.requests} now={currentNow} media={media} detections={services.liveDetection} />
         </>
       ) : devices.length === 0 ? (
         <EmptyModule

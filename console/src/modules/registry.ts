@@ -45,8 +45,8 @@ export const MODULES: readonly ModuleDefinition[] = [
   {
     id: 'speech',
     label: 'Speech',
-    title: 'Speech to intents',
-    note: 'An utterance compiles to intents, the arbiter validates, you confirm. Never a command straight to a device.',
+    title: 'Voice control',
+    note: 'Speak a destination or mission, review the selected devices and route, then confirm.',
     component: SpeechModule,
     context: FleetContext,
   },

@@ -677,6 +677,7 @@ class TranscriptService:
         review_catalog: object = None,
         now_ms: int,
         refresh_state: Callable[[], tuple[object, int]] | None = None,
+        refresh_review_catalog: Callable[[], object] | None = None,
     ) -> VoiceOutcome:
         """Transcribe one upload and hand the transcript to the compiler.
 
@@ -747,6 +748,8 @@ class TranscriptService:
                     session_id=session_id,
                     cost_usd=cost_usd,
                 )
+        if refresh_review_catalog is not None:
+            review_catalog = refresh_review_catalog()
         return self._compile_transcript(
             transcript,
             source="whisper",
@@ -771,6 +774,7 @@ class TranscriptService:
         review_catalog: object = None,
         now_ms: int,
         refresh_state: Callable[[], tuple[object, int]] | None = None,
+        refresh_review_catalog: Callable[[], object] | None = None,
     ) -> VoiceOutcome:
         """Compile one typed utterance through the same grounded compiler as speech."""
         if not is_valid_correlation_id(correlation_id):
@@ -788,6 +792,8 @@ class TranscriptService:
             grounded_state = compiler_relay_state(relay_state)
             grounded_rooms = compiler_rooms(rooms)
             capability_version = compiler_capability_version(grounded_state)
+            if refresh_review_catalog is not None:
+                review_catalog = refresh_review_catalog()
             if refresh_state is not None:
                 fresh_state, now_ms = refresh_state()
                 grounded_state = compiler_relay_state(fresh_state)

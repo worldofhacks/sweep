@@ -222,7 +222,12 @@ def _catalog_draft(deployment: NavigationDeployment) -> dict[str, object]:
         ("demo-east", "Demo East", [(7, 2), (9, 2), (9, 4), (7, 4), (7, 2)]),
     ):
         item = copy.deepcopy(zone)
-        item.update(id=zone_id, name=name, aliases=[], points=[{"x": x, "y": y} for x, y in points])
+        item.update(
+            id=zone_id,
+            name=name,
+            aliases=["tag 42"] if zone_id == "lobby" else [],
+            points=[{"x": x, "y": y} for x, y in points],
+        )
         zones.append(item)
     index = draft["features"].index(zone)
     draft["features"][index : index + 1] = zones

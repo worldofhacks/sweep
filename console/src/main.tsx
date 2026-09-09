@@ -28,6 +28,7 @@ void resolveRuntime().then((runtime) => {
     language: runtime.languageClient,
   }
   const sharedServices = {
+    liveDetection: runtime.liveDetectionClient ?? undefined,
     atlas: runtime.atlas ?? undefined,
     transcript: runtime.transcriptClient ?? undefined,
     search: runtime.searchClient ?? undefined,
@@ -37,7 +38,7 @@ void resolveRuntime().then((runtime) => {
   let media: ReturnType<typeof createMediaRuntime> | undefined
   const render = () => root.render(
     <StrictMode>
-      <App initialModule="spaces" sessionId={runtime.sessionId} clients={clients} catalog={runtime.catalogClient}
+      <App initialModule="speech" sessionId={runtime.sessionId} clients={clients} catalog={runtime.catalogClient}
         services={services} media={media} relayBaseUrl={runtime.baseUrl ?? undefined}
         mapEndpoint={runtime.mapEndpoint ?? undefined} />
     </StrictMode>,
