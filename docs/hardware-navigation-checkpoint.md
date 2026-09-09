@@ -12,8 +12,9 @@ The owner approved the [53-tag map](../deployments/real-navigation/tag-map-53.js
 on 8 September 2026. The [approval record](../deployments/real-navigation/map-approval.json)
 pins the exact snapshot. The original capture record remains unchanged so its
 provenance survives. The owner supplied six wall offsets on 9 September and retained
-the existing height limits. Applying those offsets to wall geometry and verifying
-replacement tags remain part of the upcoming map test.
+the existing height limits. The offsets are incorporated into entrance wall geometry
+and the staging package. Replacement tags and complete route clearance still need
+verification during the map test.
 
 ## Software verification
 
@@ -35,9 +36,11 @@ reported on the checkpoint PR.
 ## What to prepare for the map test
 
 The [recorded wall measurements](../deployments/real-navigation/wall-measurements-20260909.json)
-start at the black square's top-left corner, with directions relative to facing up
-the upright printed tag. They are corner offsets, so conversion to map geometry
-must account for the offset between that corner and each saved tag center.
+start at the black square's top-left corner. Tags 19 and 33 use directions relative
+to the upright printed tag. Tag 48's back and left refer to the back-left of the
+atrium, as clarified by the owner and recorded in the earlier survey. The generated
+geometry converts the corner offsets through the saved tag transforms using the
+retained 7.87-inch black-square size.
 
 | Tag | Wall direction | Distance |
 | --- | --- | --- |
@@ -50,6 +53,23 @@ must account for the offset between that corner and each saved tag center.
 
 The owner retained the 7 ft soft and 8 ft hard height limits. These are flight-policy
 limits; any lower obstacle still constrains the measured route geometry.
+
+The [wall geometry](../deployments/real-navigation/entrance-wall-geometry.json)
+contains six finite segments. The lobby opening at tag 19 is 56 inches (1.4224 m);
+the atrium opening at tag 33 is 59 inches (1.4986 m). Their two-metre segments are
+centred on the measured wall points. The two tag-48 walls meet at their calculated
+back-left intersection and extend two metres along the room boundary. These lengths
+are the owner's estimate, rather than a complete room perimeter.
+
+The [world-bundle obstacle document](../deployments/real-navigation/entrance-obstacles.yaml)
+turns those faces into outward 0.10 m collision strips across the retained flight
+height range. That strip depth is a modeling choice, not measured wall thickness.
+The strips preserve the measured opening widths. Import or merge this obstacle
+document when assembling the full world bundle; the staging package includes the
+same geometry. The provisional LiDAR overlay supplies comparison context and does
+not move the measured walls.
+
+![Measured entrances and atrium corner](../deployments/real-navigation/entrance-walls-preview.png)
 
 | Input | Record | Used by |
 | --- | --- | --- |
@@ -80,6 +100,7 @@ Regenerate the staging record from the repository root:
 uv run python -m tools.prepare_real_navigation_package \
   --source deployments/real-navigation/tag-map-53.json \
   --map-approval deployments/real-navigation/map-approval.json \
+  --wall-measurements deployments/real-navigation/wall-measurements-20260909.json \
   --output deployments/real-navigation/real-navigation-staging.json
 ```
 
@@ -87,6 +108,16 @@ This records the accepted tag baseline and remaining measurements. It does not
 produce an executable flight configuration. The formation drafts in this file
 retain their own two-aircraft and clearance requirements; they are outside the
 three workflows being completed here.
+
+Regenerate the separate wall geometry and obstacle document with:
+
+```sh
+uv run python -m tools.entrance_wall_geometry \
+  --tag-map deployments/real-navigation/tag-map-53.json \
+  --measurements deployments/real-navigation/wall-measurements-20260909.json \
+  --output deployments/real-navigation/entrance-wall-geometry.json \
+  --obstacles-output deployments/real-navigation/entrance-obstacles.yaml
+```
 
 Use the [world-bundle tools](WORLD_BUNDLE.md) and
 [geometry authoring tools](MAP_GEOMETRY_TOOLS.md) to incorporate the measurements.

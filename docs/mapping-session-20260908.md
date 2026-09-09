@@ -2,7 +2,7 @@
 
 The retained map contains all 53 expected tags: IDs 0–53, with 29 intentionally absent. The final coordinate frame uses tag 38 as its origin, positive X toward tag 39, and positive Z upward. Camera observations cover the corridor and both floor grids; the wall-tag alternatives retain their measurement and fit provenance.
 
-The owner approved this tag-map baseline on 8 September after checking physical measurements. The checkpoint retains the original map bytes and a separate [approval record](../deployments/real-navigation/map-approval.json) tied to their SHA-256. On 9 September, the owner supplied [six wall offsets](../deployments/real-navigation/wall-measurements-20260909.json) from the black top-left corners of tags 19, 33 and 48 and retained the existing height limits. The offsets still need to be incorporated into wall geometry; replacement tags and camera/mount calibration still need hardware verification.
+The owner approved this tag-map baseline on 8 September after checking physical measurements. The checkpoint retains the original map bytes and a separate [approval record](../deployments/real-navigation/map-approval.json) tied to their SHA-256. On 9 September, the owner supplied [six wall offsets](../deployments/real-navigation/wall-measurements-20260909.json) from the black top-left corners of tags 19, 33 and 48 and retained the existing height limits. The offsets now produce [entrance wall geometry](../deployments/real-navigation/entrance-wall-geometry.json), world-bundle obstacles and a plan preview. Replacement tags and camera/mount calibration still need hardware verification.
 
 ## Retained artifacts
 
@@ -37,4 +37,4 @@ The recorded inputs are in `office-tag-layout-provisional-20260908/provisional-o
 
 ## Physical acceptance still required
 
-Retain the approved tag-map baseline and height limits while incorporating the wall offsets and verifying replacement tags. Use the measured geometry to generate the static flight grid, routes and geofence through the existing bundle tooling. Validate camera intrinsics, the fixed-head mount and world-frame alignment on hardware. Exercise LiDAR guards and stop controls during the map test. The [hardware checkpoint guide](hardware-navigation-checkpoint.md) records the measurements and software verification.
+Retain the approved tag-map baseline and height limits while verifying replacement tags. Combine the generated entrance obstacles with complete route geometry to generate the static flight grid, routes and geofence through the existing bundle tooling. Validate camera intrinsics, the fixed-head mount and world-frame alignment on hardware. Exercise LiDAR guards and stop controls during the map test. The [hardware checkpoint guide](hardware-navigation-checkpoint.md) records the measurements and software verification.

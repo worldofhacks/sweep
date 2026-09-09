@@ -3,14 +3,76 @@
   "source": "owner_measurements",
   "tagMapSha256": "7f4f1f2bf3e2ba0285568a7a0a78bd25587fcba82b5b31a97b4c592b00ca2009",
   "referenceCorner": "black_top_left",
-  "directionReference": "facing up the upright printed tag",
+  "directionReference": "Tags 19 and 33: upright printed tag. Tag 48: back and left of the atrium tag grid.",
   "measurements": [
-    { "tagId": 19, "wallDirection": "right", "distanceIn": 23, "distanceM": 0.5842 },
-    { "tagId": 19, "wallDirection": "left", "distanceIn": 33, "distanceM": 0.8382 },
-    { "tagId": 33, "wallDirection": "right", "distanceIn": 16, "distanceM": 0.4064 },
-    { "tagId": 33, "wallDirection": "left", "distanceIn": 43, "distanceM": 1.0922 },
-    { "tagId": 48, "wallDirection": "back", "distanceIn": 47, "distanceM": 1.1938 },
-    { "tagId": 48, "wallDirection": "left", "distanceIn": 36, "distanceM": 0.9144 }
+    {
+      "tagId": 19,
+      "wallDirection": "right",
+      "distanceIn": 23,
+      "distanceM": 0.5842,
+      "entranceId": "lobby-entrance",
+      "normalTagXY": [
+        1,
+        0
+      ]
+    },
+    {
+      "tagId": 19,
+      "wallDirection": "left",
+      "distanceIn": 33,
+      "distanceM": 0.8382,
+      "entranceId": "lobby-entrance",
+      "normalTagXY": [
+        -1,
+        0
+      ]
+    },
+    {
+      "tagId": 33,
+      "wallDirection": "right",
+      "distanceIn": 16,
+      "distanceM": 0.4064,
+      "entranceId": "atrium-entrance",
+      "normalTagXY": [
+        1,
+        0
+      ]
+    },
+    {
+      "tagId": 33,
+      "wallDirection": "left",
+      "distanceIn": 43,
+      "distanceM": 1.0922,
+      "entranceId": "atrium-entrance",
+      "normalTagXY": [
+        -1,
+        0
+      ]
+    },
+    {
+      "tagId": 48,
+      "wallDirection": "back",
+      "distanceIn": 47,
+      "distanceM": 1.1938,
+      "entranceId": "atrium-back-left",
+      "normalTagXY": [
+        0,
+        1
+      ],
+      "joinsWallDirection": "left"
+    },
+    {
+      "tagId": 48,
+      "wallDirection": "left",
+      "distanceIn": 36,
+      "distanceM": 0.9144,
+      "entranceId": "atrium-back-left",
+      "normalTagXY": [
+        1,
+        0
+      ],
+      "joinsWallDirection": "back"
+    }
   ],
   "normalization": "The owner's '16ib' entry is recorded as 16 inches.",
   "heightLimits": {
@@ -18,5 +80,21 @@
     "softCeilingM": 2.1336,
     "hardCeilingM": 2.4384
   },
-  "geometryStatus": "measurements_recorded_not_yet_projected_to_wall_geometry"
+  "geometryStatus": "incorporated_in_entrance_wall_geometry",
+  "tagBlackSizeM": 0.199898,
+  "tagBlackSizeBasis": {
+    "measurement": "7.87 in black-square side, retained owner measurement",
+    "sourcePath": "/var/tmp/gauntlet/sweep-production/office-tag-layout-provisional-20260908/provisional-office-tag-layout.json",
+    "sourceSha256": "a8bc9ee9238a43c491e8dc3401d1fc9bb5ef0db330e4fe0c2855c5398d705720"
+  },
+  "floorId": "level_1",
+  "wallLengthM": 2.0,
+  "wallLengthBasis": "Owner estimates walls extend about 2 meters. Entrance segments are centered at the measured points; the two atrium corner walls meet at their line intersection and extend into the room boundary.",
+  "occupiedDepthM": 0.1,
+  "occupiedDepthBasis": "Outward collision strip; physical wall thickness was not measured.",
+  "atriumDirectionBasis": {
+    "confirmation": "Owner clarified the back of the atrium wall; prior survey places tag 48 at the back-left corner with the same 47 in and 36 in measurements.",
+    "sourcePath": "/var/tmp/gauntlet/sweep-production/office-tag-inventory-20260908/office-tag-source.txt",
+    "sourceSha256": "97870fa2126ec09c7c427cae06232a3dbaf07fa909ca551f2d5c54ba67be6247"
+  }
 }

@@ -9,6 +9,8 @@ from collections.abc import Mapping, Sequence
 from math import isfinite
 from pathlib import Path
 
+from tools.entrance_wall_geometry import build_wall_geometry
+
 _EXPECTED_TAG_IDS = frozenset(set(range(54)) - {29})
 _SOURCE_FRAME = "unit11_atrium_38_to_39_v1"
 _AREAS = (
@@ -134,7 +136,12 @@ def _map_approval(path: Path | None, source_digest: str) -> dict[str, object]:
     return {**approval, "status": "accepted"}
 
 
-def build_package(source: Path, *, map_approval: Path | None = None) -> dict[str, object]:
+def build_package(
+    source: Path,
+    *,
+    map_approval: Path | None = None,
+    wall_measurements: Path | None = None,
+) -> dict[str, object]:
     payload = source.read_bytes()
     raw = json.loads(payload)
     if not isinstance(raw, dict):
@@ -148,7 +155,7 @@ def build_package(source: Path, *, map_approval: Path | None = None) -> dict[str
     approval = _map_approval(map_approval, digest)
     accepted = approval["status"] == "accepted"
     areas = [_area(*specification, tag_points) for specification in _AREAS]
-    return {
+    package = {
         "schemaVersion": 1,
         "kind": "real_navigation_staging_package",
         "activation": "blocked",
@@ -222,6 +229,13 @@ def build_package(source: Path, *, map_approval: Path | None = None) -> dict[str
             },
         ],
     }
+    if wall_measurements is not None:
+        package["wallGeometry"] = build_wall_geometry(source, wall_measurements)
+        package["activationChecks"][1]["evidence"] = (
+            "Measured entrance offsets are incorporated as finite wall obstacles. "
+            "Complete route clearance and replacement-tag verification remain outstanding."
+        )
+    return package
 
 
 def main() -> None:
@@ -229,8 +243,13 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--map-approval", type=Path)
+    parser.add_argument("--wall-measurements", type=Path)
     arguments = parser.parse_args()
-    package = build_package(arguments.source, map_approval=arguments.map_approval)
+    package = build_package(
+        arguments.source,
+        map_approval=arguments.map_approval,
+        wall_measurements=arguments.wall_measurements,
+    )
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")
 

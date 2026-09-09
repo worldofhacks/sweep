@@ -1,0 +1,372 @@
+{
+  "schemaVersion": 1,
+  "kind": "entrance_wall_geometry",
+  "coordinateFrame": "unit11_atrium_38_to_39_v1",
+  "tagMapSha256": "7f4f1f2bf3e2ba0285568a7a0a78bd25587fcba82b5b31a97b4c592b00ca2009",
+  "measurementsSha256": "c36bd7a906d837ff80707be1de07d86db0c6b2954eda9120afa7920169dd651e",
+  "heightLimits": {
+    "decision": "retain_existing_limits",
+    "softCeilingM": 2.1336,
+    "hardCeilingM": 2.4384
+  },
+  "extentModel": {
+    "lengthM": 2.0,
+    "placement": "centered_entrances_and_joined_atrium_corner",
+    "lengthBasis": "owner_estimate",
+    "occupiedDepthM": 0.1,
+    "depthBasis": "outward_collision_strip_not_measured_wall_thickness",
+    "verticalBasis": "block_the_retained_flight_height_range"
+  },
+  "wallSegments": [
+    {
+      "id": "tag-19-right-wall",
+      "tagId": 19,
+      "entranceId": "lobby-entrance",
+      "wallDirection": "right",
+      "referenceCornerM": [
+        21.164482516563442,
+        0.4256779947919538,
+        0.0
+      ],
+      "wallPointXYM": [
+        21.16792135281796,
+        -0.15851188393346083
+      ],
+      "outwardNormalXY": [
+        0.005886402352821851,
+        -0.9999826749835922
+      ],
+      "startXYM": [
+        20.167938677834368,
+        -0.16439828628628267
+      ],
+      "endXYM": [
+        22.16790402780155,
+        -0.152625481580639
+      ],
+      "lengthM": 2.0,
+      "extentPlacement": "centered_on_measured_wall_point"
+    },
+    {
+      "id": "tag-19-left-wall",
+      "tagId": 19,
+      "entranceId": "lobby-entrance",
+      "wallDirection": "left",
+      "referenceCornerM": [
+        21.164482516563442,
+        0.4256779947919538,
+        0.0
+      ],
+      "wallPointXYM": [
+        21.159548534111305,
+        1.2638634729632008
+      ],
+      "outwardNormalXY": [
+        -0.005886402352821851,
+        0.9999826749835922
+      ],
+      "startXYM": [
+        22.159531209094897,
+        1.2697498753160226
+      ],
+      "endXYM": [
+        20.159565859127714,
+        1.257977070610379
+      ],
+      "lengthM": 2.0,
+      "extentPlacement": "centered_on_measured_wall_point"
+    },
+    {
+      "id": "tag-33-right-wall",
+      "tagId": 33,
+      "entranceId": "atrium-entrance",
+      "wallDirection": "right",
+      "referenceCornerM": [
+        7.933022338082788,
+        0.3463758832232019,
+        0.0
+      ],
+      "wallPointXYM": [
+        7.935414571998974,
+        -0.060017075890129945
+      ],
+      "outwardNormalXY": [
+        0.005886402352821851,
+        -0.9999826749835922
+      ],
+      "startXYM": [
+        6.935431897015382,
+        -0.0659034782429518
+      ],
+      "endXYM": [
+        8.935397246982566,
+        -0.05413067353730809
+      ],
+      "lengthM": 2.0,
+      "extentPlacement": "centered_on_measured_wall_point"
+    },
+    {
+      "id": "tag-33-left-wall",
+      "tagId": 33,
+      "entranceId": "atrium-entrance",
+      "wallDirection": "left",
+      "referenceCornerM": [
+        7.933022338082788,
+        0.3463758832232019,
+        0.0
+      ],
+      "wallPointXYM": [
+        7.926593209433036,
+        1.4385569608402813
+      ],
+      "outwardNormalXY": [
+        -0.005886402352821851,
+        0.9999826749835922
+      ],
+      "startXYM": [
+        8.926575884416629,
+        1.444443363193103
+      ],
+      "endXYM": [
+        6.926610534449444,
+        1.4326705584874595
+      ],
+      "lengthM": 2.0,
+      "extentPlacement": "centered_on_measured_wall_point"
+    },
+    {
+      "id": "tag-48-back-wall",
+      "tagId": 48,
+      "entranceId": "atrium-back-left",
+      "wallDirection": "back",
+      "referenceCornerM": [
+        0.10825548474488629,
+        -1.3570750944310512,
+        0.0
+      ],
+      "wallPointXYM": [
+        0.10469539078501963,
+        -2.550869786047242
+      ],
+      "outwardNormalXY": [
+        -0.0029821527557938126,
+        -0.9999955533725843
+      ],
+      "startXYM": [
+        -0.8097005432188714,
+        -2.548142905567344
+      ],
+      "endXYM": [
+        1.1902905635262973,
+        -2.554107211078932
+      ],
+      "lengthM": 2.0,
+      "extentPlacement": "from_measured_wall_intersection"
+    },
+    {
+      "id": "tag-48-left-wall",
+      "tagId": 48,
+      "entranceId": "atrium-back-left",
+      "wallDirection": "left",
+      "referenceCornerM": [
+        0.10825548474488629,
+        -1.3570750944310512,
+        0.0
+      ],
+      "wallPointXYM": [
+        -0.8061404492590047,
+        -1.3543482139511533
+      ],
+      "outwardNormalXY": [
+        -0.9999955533725843,
+        0.0029821527557938126
+      ],
+      "startXYM": [
+        -0.8097005432188714,
+        -2.548142905567344
+      ],
+      "endXYM": [
+        -0.8037362377072838,
+        -0.5481517988221756
+      ],
+      "lengthM": 2.0,
+      "extentPlacement": "from_measured_wall_intersection"
+    }
+  ],
+  "obstacleDocument": {
+    "schema_version": 2,
+    "units": "meters",
+    "frame": "world",
+    "obstacles": [
+      {
+        "id": "tag-19-right-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            20.167938677834368,
+            -0.16439828628628267
+          ],
+          [
+            22.16790402780155,
+            -0.152625481580639
+          ],
+          [
+            22.168492668036833,
+            -0.2526237490789982
+          ],
+          [
+            20.16852731806965,
+            -0.2643965537846419
+          ],
+          [
+            20.167938677834368,
+            -0.16439828628628267
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      },
+      {
+        "id": "tag-19-left-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            22.159531209094897,
+            1.2697498753160226
+          ],
+          [
+            20.159565859127714,
+            1.257977070610379
+          ],
+          [
+            20.15897721889243,
+            1.3579753381087383
+          ],
+          [
+            22.158942568859615,
+            1.3697481428143818
+          ],
+          [
+            22.159531209094897,
+            1.2697498753160226
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      },
+      {
+        "id": "tag-33-right-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            6.935431897015382,
+            -0.0659034782429518
+          ],
+          [
+            8.935397246982566,
+            -0.05413067353730809
+          ],
+          [
+            8.935985887217848,
+            -0.15412894103566732
+          ],
+          [
+            6.9360205372506645,
+            -0.165901745741311
+          ],
+          [
+            6.935431897015382,
+            -0.0659034782429518
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      },
+      {
+        "id": "tag-33-left-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            8.926575884416629,
+            1.444443363193103
+          ],
+          [
+            6.926610534449444,
+            1.4326705584874595
+          ],
+          [
+            6.926021894214162,
+            1.5326688259858188
+          ],
+          [
+            8.925987244181346,
+            1.5444416306914623
+          ],
+          [
+            8.926575884416629,
+            1.444443363193103
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      },
+      {
+        "id": "tag-48-back-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            -0.8097005432188714,
+            -2.548142905567344
+          ],
+          [
+            1.1902905635262973,
+            -2.554107211078932
+          ],
+          [
+            1.189992348250718,
+            -2.65410676641619
+          ],
+          [
+            -0.8099987584944508,
+            -2.6481424609046025
+          ],
+          [
+            -0.8097005432188714,
+            -2.548142905567344
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      },
+      {
+        "id": "tag-48-left-wall",
+        "floor_id": "level_1",
+        "polygon": [
+          [
+            -0.8097005432188714,
+            -2.548142905567344
+          ],
+          [
+            -0.8037362377072838,
+            -0.5481517988221756
+          ],
+          [
+            -0.9037357930445422,
+            -0.5478535835465962
+          ],
+          [
+            -0.9097000985561299,
+            -2.5478446902917646
+          ],
+          [
+            -0.8097005432188714,
+            -2.548142905567344
+          ]
+        ],
+        "z_min_m": 0.0,
+        "z_max_m": 2.4384
+      }
+    ],
+    "no_fly": []
+  }
+}
