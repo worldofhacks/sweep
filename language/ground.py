@@ -17,9 +17,9 @@ def pulse_arguments(transcript: str) -> dict[str, int] | None:
         return None
     direction = next(value.lower() for value in match.groups() if value is not None)
     return {
-        "linear_mm_s": 80 if direction == "forward" else 0,
+        "linear_mm_s": 180 if direction == "forward" else 0,
         "angular_mrad_s": {"forward": 0, "left": 350, "right": -350}[direction],
-        "duration_ms": 250,
+        "duration_ms": 1700 if direction == "forward" else 250,
     }
 
 
