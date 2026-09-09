@@ -470,17 +470,25 @@ def test_platform_fleet_first_wire_failure_prevents_the_second_aircraft_send(tmp
                     {**preview, "execution": qualified["execution"]}
                 )
                 command, _ = _next_command(first)
+                assert command["operation"] == "goto"
                 first.send_json(_acknowledgement(command, "failed", clock))
+                hold, _ = _next_command(first)
+                assert hold["operation"] == "hover"
+                assert hold["drone_id"] == 1
+                first.send_json(_acknowledgement(hold, "completed", clock))
                 deadline = time.monotonic() + 2
+                refused = False
                 while time.monotonic() < deadline:
-                    if any(
+                    refused = any(
                         event.get("status") == "refused"
                         and event.get("intent_id") == command["intent_id"]
                         for record in session.replay()["events"]
-                        if (event := record["event"]).get("type") == "acknowledgement"
-                    ):
+                        if (event := record["event"]).get("type") == "refusal"
+                    )
+                    if refused:
                         break
                     time.sleep(0.01)
-                assert _issued_drones(session) == [1]
+                assert refused
+                assert _issued_drones(session) == [1, 1]
     finally:
         composition.close()
