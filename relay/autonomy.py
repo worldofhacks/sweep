@@ -1756,10 +1756,18 @@ class AutonomySession:
                 except Exception:
                     _LOGGER.exception("search detection cleanup failed after navigation tracking")
         events.extend(self._queue_navigation_tracking_hold(session, job.intent))
-        self._defer_multiview_callback(self._report_multiview_execution, job.intent, result)
+        self._defer_execution_callback(self._report_multiview_execution, job.intent, result)
         return events
 
-    def _defer_multiview_callback(self, callback: Callable[..., None], *args: object) -> None:
+    def _complete_search_execution(self, intent: IntentV1, result: ExecutionResult) -> None:
+        try:
+            if self.search_runtime is not None:
+                self.search_runtime.complete_execution(intent.intent_id, result)
+        finally:
+            if self.search_detection is not None:
+                self.search_detection.finish_mission(intent.intent_id)
+
+    def _defer_execution_callback(self, callback: Callable[..., None], *args: object) -> None:
         runtime = self._composition.runtime_if_bound()
         loop = None if runtime is None else runtime.loop
         if loop is None or loop.is_closed():
@@ -1817,7 +1825,7 @@ class AutonomySession:
             hold_lane.pending.append(hold_job)
             hold_lane.ready.notify()
         events.extend(hold_job.publications)
-        self._defer_multiview_callback(self._report_navigation_tracking_hold, safety_intent)
+        self._defer_execution_callback(self._report_navigation_tracking_hold, safety_intent)
         return events
 
     def _report_navigation_tracking_hold(self, intent: IntentV1) -> None:
@@ -1968,7 +1976,11 @@ class AutonomySession:
                 raise
             return None
         if result.status is not LifecycleStatus.EXECUTING:
-            self._defer_multiview_callback(
+            if owner.job.intent.name is IntentName.SEARCH:
+                self._defer_execution_callback(
+                    self._complete_search_execution, owner.job.intent, result
+                )
+            self._defer_execution_callback(
                 self._report_multiview_execution, owner.job.intent, result
             )
         return RelayExecution(result, tuple(events))

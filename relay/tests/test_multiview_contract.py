@@ -328,7 +328,7 @@ def test_tracking_hold_terminalizes_other_confirmed_multiview_workflows() -> Non
     owner._composition = composition
     owner._cancel = lambda *args, **kwargs: AutonomySession._cancel(owner, *args, **kwargs)
     owner._route = lambda *args, **kwargs: AutonomySession._route(owner, *args, **kwargs)
-    owner._defer_multiview_callback = lambda *args: AutonomySession._defer_multiview_callback(
+    owner._defer_execution_callback = lambda *args: AutonomySession._defer_execution_callback(
         owner, *args
     )
     owner._report_navigation_tracking_hold = lambda *args: (
