@@ -1,0 +1,22 @@
+{
+  "recordedAt": "2026-09-09",
+  "source": "owner_measurements",
+  "tagMapSha256": "7f4f1f2bf3e2ba0285568a7a0a78bd25587fcba82b5b31a97b4c592b00ca2009",
+  "referenceCorner": "black_top_left",
+  "directionReference": "facing up the upright printed tag",
+  "measurements": [
+    { "tagId": 19, "wallDirection": "right", "distanceIn": 23, "distanceM": 0.5842 },
+    { "tagId": 19, "wallDirection": "left", "distanceIn": 33, "distanceM": 0.8382 },
+    { "tagId": 33, "wallDirection": "right", "distanceIn": 16, "distanceM": 0.4064 },
+    { "tagId": 33, "wallDirection": "left", "distanceIn": 43, "distanceM": 1.0922 },
+    { "tagId": 48, "wallDirection": "back", "distanceIn": 47, "distanceM": 1.1938 },
+    { "tagId": 48, "wallDirection": "left", "distanceIn": 36, "distanceM": 0.9144 }
+  ],
+  "normalization": "The owner's '16ib' entry is recorded as 16 inches.",
+  "heightLimits": {
+    "decision": "retain_existing_limits",
+    "softCeilingM": 2.1336,
+    "hardCeilingM": 2.4384
+  },
+  "geometryStatus": "measurements_recorded_not_yet_projected_to_wall_geometry"
+}

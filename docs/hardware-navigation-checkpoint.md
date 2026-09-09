@@ -11,8 +11,9 @@ multi-stop photo and search/survey workflows use the aircraft execution path.
 The owner approved the [53-tag map](../deployments/real-navigation/tag-map-53.json)
 on 8 September 2026. The [approval record](../deployments/real-navigation/map-approval.json)
 pins the exact snapshot. The original capture record remains unchanged so its
-provenance survives. Measurements of walls and heights, plus verification of
-replacement tags, remain part of the upcoming map test.
+provenance survives. The owner supplied six wall offsets on 9 September and retained
+the existing height limits. Applying those offsets to wall geometry and verifying
+replacement tags remain part of the upcoming map test.
 
 ## Software verification
 
@@ -32,6 +33,23 @@ interoperability checks cover the phone changes separately. Repository-wide CI i
 reported on the checkpoint PR.
 
 ## What to prepare for the map test
+
+The [recorded wall measurements](../deployments/real-navigation/wall-measurements-20260909.json)
+start at the black square's top-left corner, with directions relative to facing up
+the upright printed tag. They are corner offsets, so conversion to map geometry
+must account for the offset between that corner and each saved tag center.
+
+| Tag | Wall direction | Distance |
+| --- | --- | --- |
+| 19 | Right | 23 in |
+| 19 | Left | 33 in |
+| 33 | Right | 16 in |
+| 33 | Left | 43 in |
+| 48 | Back | 47 in |
+| 48 | Left | 36 in |
+
+The owner retained the 7 ft soft and 8 ft hard height limits. These are flight-policy
+limits; any lower obstacle still constrains the measured route geometry.
 
 | Input | Record | Used by |
 | --- | --- | --- |
