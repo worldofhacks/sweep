@@ -133,3 +133,35 @@ screenshots remain ignored under `output/playwright/map-recovery-*.png` and
 `output/playwright/android-map-retry-*.png`; this is not handset/network coverage
 or general Android system-inset acceptance. New-head CI and independent review
 remain required after publishing this follow-up.
+
+## Android safe-area follow-up
+
+The integration was fast-forwarded to hardware checkpoint `a8a63cb2`, retaining
+the author's unavailable-tag record and exclusion of tags 35 and 49 from staging
+localization candidates. All 19 navigation-package tests passed; the surveyed
+baseline and physical activation gates remain unchanged.
+
+Atlas now includes display-cutout insets alongside system bars and the keyboard,
+following [Android's edge-to-edge guidance](https://developer.android.com/develop/ui/views/layout/edge-to-edge).
+The API 35 emulator reported a 136 px top cutout but a 66 px status bar; reserving
+only the latter could put app content inside the cutout. Padding comes from the
+current insets, not a fixed device-specific value. The existing layout, colors,
+navigation, capture persistence and Fleet behavior are otherwise unchanged.
+
+Six regression cases per Android variant cover a cutout larger than the status
+bar, repeated delivery, rotated insets, keyboard show/hide, and ordinary screens
+on API 24, 28 and 35. Both complete Android suites pass: 105 fake + 125 probe =
+230 tests, with no failures or skips. Both APK assemblies, Android lint,
+native-library alignment (4 fake / 66 probe libraries), and 16 KB ZIP alignment
+checks pass.
+
+The installed fake APK's actual WebView begins at y=136 rather than y=66. With
+the emulator offline and no reverse tunnels, Fleet opened its disconnected setup
+screen; Android Back restored the same Austin space, map and bottom navigation
+with the WebView still below the cutout. All 12 private test originals retained
+identical checksums. Screenshots remain ignored under
+`output/playwright/android-safe-area-*.png`. An initially cropped system clock
+also occurred on Android Home; this app-inset correction is not qualification of
+every emulator system-UI state or physical handset. Keyboard and rotation cases
+here are unit checks, not a physical-device acceptance claim. Fresh combined-head
+CI and an independent approving review remain required.

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.view.View
 import android.webkit.GeolocationPermissions
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -120,9 +121,7 @@ class AtlasActivity : ComponentActivity() {
         }
         setContentView(host)
         ViewCompat.setOnApplyWindowInsetsListener(host) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-            insets
+            applyAtlasWindowInsets(view, insets)
         }
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         web.setBackgroundColor(0xfff6f7f2.toInt())
@@ -379,4 +378,12 @@ class AtlasActivity : ComponentActivity() {
         private fun blocked() = WebResourceResponse("text/plain", "UTF-8", 403, "Unavailable",
             mapOf("Cache-Control" to "no-store"), ByteArrayInputStream("This resource is unavailable.".toByteArray()))
     }
+}
+
+internal fun applyAtlasWindowInsets(view: View, insets: WindowInsetsCompat): WindowInsetsCompat {
+    // A display cutout can be taller than the status bar, especially after rotation.
+    val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or
+        WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime())
+    view.setPadding(safe.left, safe.top, safe.right, safe.bottom)
+    return insets
 }
