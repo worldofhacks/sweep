@@ -295,6 +295,7 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
                 ],
             },
         )
+        max_pose_age_ms = rehearsal._composition.config.navigation.config.position_max_age_ms
         _wait_for(
             lambda: (
                 (
@@ -303,7 +304,7 @@ def test_loopback_rehearsal_completes_two_stops_and_retrieves_each_still(tmp_pat
                     ].control_pose(1)
                 )
                 is not None
-                and 0 <= epoch_ms() - pose.fix_time_ms <= 20
+                and 0 <= epoch_ms() - pose.fix_time_ms <= max_pose_age_ms
             ),
             timeout_s=3,
         )
