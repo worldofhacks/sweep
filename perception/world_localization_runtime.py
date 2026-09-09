@@ -85,7 +85,12 @@ class WorldLocalizationRuntimeConfig:
         for item in raw["devices"]:
             item = _mapping(
                 item,
-                {"pins", "capture_clock_mapping", "evidence_paths"},
+                {
+                    "pins",
+                    "capture_clock_mapping",
+                    "evidence_paths",
+                    "accept_fused_candidate_tags",
+                },
                 "world localization device",
             )
             pins = _pins(item["pins"])
@@ -93,6 +98,8 @@ class WorldLocalizationRuntimeConfig:
                 raise ValueError(
                     "runtime configuration requires recorded_live uncertainty evidence"
                 )
+            if type(item["accept_fused_candidate_tags"]) is not bool:
+                raise ValueError("accept_fused_candidate_tags must be a boolean")
             mapping = _clock_mapping(item["capture_clock_mapping"])
             evidence_paths = _evidence_paths(item["evidence_paths"], source.parent)
             adapter = WorldLocalizationAdapter(
@@ -101,6 +108,7 @@ class WorldLocalizationRuntimeConfig:
                 pins,
                 mapping,
                 evidence_paths=evidence_paths,
+                accept_fused_candidate_tags=item["accept_fused_candidate_tags"],
             )
             publisher_drone = publisher.drones.get(pins.drone_id)
             if publisher_drone is None:

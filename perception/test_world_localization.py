@@ -441,6 +441,55 @@ def adapter(tmp_path):
     )
 
 
+def test_unverified_auto_registered_tag_is_excluded_without_explicit_opt_in(tmp_path):
+    bundle, accepted, authoring, geometry_directory, report, geometry_sha256 = measured_geometry(
+        tmp_path
+    )
+    manifest = json.loads((bundle / "manifest.yaml").read_text())
+    evidence_paths, hashes = evidence(tmp_path, manifest, geometry_directory, authoring)
+    active_pins = pins(manifest, hashes, report, geometry_sha256)
+    adapter = WorldLocalizationAdapter(
+        bundle, accepted, active_pins, mapping(), evidence_paths=evidence_paths
+    )
+    assert adapter._tags.keys() == {0, 3}
+
+
+def test_unverified_auto_registered_tag_is_admitted_with_explicit_opt_in(tmp_path):
+    bundle, accepted, authoring, geometry_directory, report, geometry_sha256 = measured_geometry(
+        tmp_path
+    )
+    manifest = json.loads((bundle / "manifest.yaml").read_text())
+    evidence_paths, hashes = evidence(tmp_path, manifest, geometry_directory, authoring)
+    active_pins = pins(manifest, hashes, report, geometry_sha256)
+    adapter = WorldLocalizationAdapter(
+        bundle,
+        accepted,
+        active_pins,
+        mapping(),
+        evidence_paths=evidence_paths,
+        accept_fused_candidate_tags=True,
+    )
+    assert adapter._tags.keys() == {0, 2, 3}
+
+
+def test_unverified_non_auto_registered_tag_stays_excluded_even_with_opt_in(tmp_path):
+    bundle, accepted, authoring, geometry_directory, report, geometry_sha256 = measured_geometry(
+        tmp_path
+    )
+    manifest = json.loads((bundle / "manifest.yaml").read_text())
+    evidence_paths, hashes = evidence(tmp_path, manifest, geometry_directory, authoring)
+    active_pins = pins(manifest, hashes, report, geometry_sha256)
+    adapter = WorldLocalizationAdapter(
+        bundle,
+        accepted,
+        active_pins,
+        mapping(),
+        evidence_paths=evidence_paths,
+        accept_fused_candidate_tags=True,
+    )
+    assert 1 not in adapter._tags
+
+
 def test_camera_tag_and_dynamic_capture_pose_become_rotated_enu_fix(adapter):
     assert adapter.ingest(camera_frame(), connection_epoch=7) == ()
     assert adapter.ingest(body_pose(), connection_epoch=7) == ()
