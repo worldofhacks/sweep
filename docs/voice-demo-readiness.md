@@ -54,6 +54,33 @@ detection checkbox in device inspection.
 
 ## Standalone live detection configuration
 
+The setup command builds a private configuration from the relay's actual media roster,
+copies or downloads the hash-pinned model, and never restarts a running service. Run it
+on the relay host with its existing private environment JSON (or omit `--runtime-json`
+when the service environment is already loaded). Use a new output directory:
+
+```sh
+python -m tools.live_detection_setup --runtime-json /srv/sweep/runtime.json prepare \
+  --camera 1:primary:1280x720 \
+  --download-model --output /srv/sweep/live-detection
+python -m tools.live_detection_setup --runtime-json /srv/sweep/runtime.json check \
+  --config /srv/sweep/live-detection/live-detection.json
+```
+
+`1:primary:1280x720` matches the aircraft observed during this audit. Replace it for
+other devices; repeat `--camera` for each actual camera. Dimensions must match decoded
+frames. Use `--model /path/to/yolox_s.onnx` to reuse the pinned model without downloading.
+The default RTSP origin is `rtsp://127.0.0.1:8554`; use `--rtsp-origin` when MediaMTX
+is elsewhere, including a separate container. Credentials come from the existing
+dedicated media-reader settings, never from the relay token.
+
+The check requires two different fresh analyzed frames from every selected camera and
+closes its decoders afterward. Exit 0 means camera/model inference passed, exit 1 means
+the live check failed, and exit 2 means setup/configuration failed. Its report contains
+no stream credentials. A passing check with zero detections does not establish object
+recognition accuracy. Enable the generated file using the setting below, then restart
+the relay during a suitable operator window and serve the new console build.
+
 Set `SWEEP_LIVE_DETECTION_CONFIG` to a JSON file on the relay host. The model path is
 relative to that file and must remain inside its directory. The loader checks its SHA-256.
 Use the YOLOX-s ONNX artifact pinned in `perception/yolox_onnx.py`:
@@ -120,6 +147,17 @@ On the hosted console during this audit, September 8, 2026 CDT:
 - The destination catalog returned HTTP 409: **No current approved world-map bundle
   is available.** Map approval/selection remains a deployment prerequisite.
 - Hardware movement was not triggered on the hosted session during this audit.
+
+Follow-up commissioning, September 8 at approximately 23:05 CDT:
+
+- The hosted roster still had one aircraft, device 1, epoch 4, with the `primary`
+  camera on `drone1` reporting live. No ground robot was connected to that session,
+  so live ground LiDAR could not be exercised there.
+- A real 1280x720 DJI frame from the concurrent WHEP calibration capture passed
+  YOLOX inference in approximately 134 ms. That calibration view had no detections.
+- The available SSH key was rejected for the saved deployment account. Hosted
+  deployment remains pending server access; neither the relay nor camera publisher
+  was restarted by this task. The calibration recording continued independently.
 
 Run focused checks from the repository root:
 
