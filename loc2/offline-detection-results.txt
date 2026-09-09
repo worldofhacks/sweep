@@ -1,0 +1,28 @@
+=== 1. TagLocalizer.estimate() on the 23 real committed PNGs ===
+frame-015347.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-016476.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-018754.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-020334.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-022318.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-023598.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-025979.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-027185.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-028351.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-029483.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-031727.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-033553.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-034568.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-037582.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-040584.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-042349.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-043908.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-055221.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-059188.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frame-061503.png: accepted=False reason=unknown_or_duplicate_tag tags=None
+frames: 20, mean tags/frame: 0.00, min: 0, max: 0
+
+=== 2. Hallway walk: independent single-tag camera-position agreement ===
+hallway frames: 231
+tags-solved-per-frame histogram: {0: 161, 1: 52, 2: 10, 4: 4, 3: 2, 5: 2}
+pairwise same-frame position disagreements (m), n=60:
+  median: 0.0795  mean: 0.0886  p90: 0.1594  max: 0.1960

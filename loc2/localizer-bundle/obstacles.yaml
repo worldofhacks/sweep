@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "units": "meters",
+  "obstacles": [],
+  "placeholder_note": "Empty: TagLocalizer never reads this document. Not a survey claim."
+}

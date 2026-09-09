@@ -1,0 +1,85 @@
+{
+  "latency_path": "../latency/latency_dji-mini3.json",
+  "latency_sha256": "bf36bf154b3ce3d7137a436516c77d700e1925d5c286ac11440eea28ec43b87b",
+  "localizer": {
+    "T_body_camera": [
+      [
+        0.0,
+        -1.0,
+        6.123233995736766e-17,
+        0.08
+      ],
+      [
+        -1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        -6.123233995736766e-17,
+        -1.0,
+        -0.015
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "accepted_versions": {
+      "real-navigation-unit11-atrium-localizer-v1": "50733df7c96ab46c03f2920ae36148c864983b0a410b78dc308e2560026f4780"
+    },
+    "bundle": "../localizer-bundle",
+    "calibration_path": "../dji-mini3-real-navigation-calibration.json",
+    "calibration_sha256": "04413ba39bb01d86715b9532867588c6679b3dd041c27f5a78356728e8538417",
+    "camera_serial": "dji-mini3-real-navigation-venue-unverified",
+    "consensus": {
+      "maximum_candidate_tags": 6,
+      "maximum_rotation_residual_rad": 0.1,
+      "maximum_translation_residual_m": 0.15,
+      "minimum_distinct_tags": 2
+    },
+    "pipeline": {
+      "android_device_id": "redacted-device-id",
+      "camera_mode": "DJI FPV feed; zoom/crop mode and camera serial not independently verified",
+      "codec": "h264",
+      "decoder_path": "MediaMTX WHEP -> aiortc 1.15.0 -> PyAV 17.1.0 FFmpeg H264 -> BGR24 PNG, no resize",
+      "encoder": "DJI SDK encoded frames passthrough, no phone re-encode; H264 High 3.1 reported by publisher",
+      "evidence_status": "diagnostic; DJI recorded-live export provenance unsupported",
+      "fov_bounds_deg": {
+        "horizontal": [
+          58.0,
+          75.0
+        ],
+        "vertical": [
+          34.0,
+          47.0
+        ]
+      },
+      "fov_bounds_provenance": "see loc2/FOV_BOUNDS.md",
+      "fov_bounds_status": "independent bracket from DJI Mini 3 published 82.1-degree diagonal FOV spec, decomposed for a 16:9 crop; not derived from this fit",
+      "fps": 30,
+      "fps_note": "nominal source; received stream has documented frame losses",
+      "gimbal_attitude_note": "Varied by operator during camera-target holds; per-frame extrinsics not established",
+      "network_id": "wireless LAN identity not recorded; phone address redacted-phone-address",
+      "network_topology": [
+        "DJI aircraft",
+        "DJI controller USB",
+        "Seeker phone Wi-Fi",
+        "configured-media-host MediaMTX WHIP/WHEP",
+        "Mac Wi-Fi receiver"
+      ],
+      "phone": "Seeker Android 16",
+      "resolution_px": [
+        1280,
+        720
+      ],
+      "latency_endpoint": "localization_decode"
+    }
+  },
+  "stream_path": "drone1",
+  "decoder_path_attested_geometrically_equivalent": "opencv-ffmpeg-rtsp",
+  "decoder_path_attestation_rationale": "Operator attestation: MediaMTX WHEP -> aiortc -> PyAV -> BGR and cv2.VideoCapture opencv-ffmpeg-rtsp are both unscaled FFmpeg H264 BGR decoders at 1280x720, geometrically equivalent for pinhole intrinsics."
+}

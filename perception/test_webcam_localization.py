@@ -14,11 +14,9 @@ from relay.settings import RelaySettings
 from tests.test_tag_localization import scene, world_config
 
 
-def webcam_scene(tmp_path, *, count=2, **scene_kwargs):
+def webcam_scene(tmp_path, *, count=2, decoder_path="opencv-ffmpeg-rtsp", **scene_kwargs):
     _, image, camera, body_camera, config = scene(tmp_path, count=count, **scene_kwargs)
-    config["pipeline"].update(
-        decoder_path="opencv-ffmpeg-rtsp", latency_endpoint="localization_decode"
-    )
+    config["pipeline"].update(decoder_path=decoder_path, latency_endpoint="localization_decode")
     calibration_path = tmp_path / "calibration.yaml"
     calibration = json.loads(calibration_path.read_text())
     calibration["pipeline"] = config["pipeline"]
@@ -127,6 +125,22 @@ def test_latency_pin_and_decoder_endpoint_are_enforced(tmp_path):
     config["latency_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     with pytest.raises(ValueError, match="localization decoder"):
         WebcamLocalization(config, allow_synthetic=True)
+
+
+def test_mismatched_decoder_path_refuses_without_attestation(tmp_path):
+    config, _, _ = webcam_scene(tmp_path, decoder_path="MediaMTX WHEP -> aiortc -> PyAV -> BGR")
+    with pytest.raises(ValueError, match="localization decoder"):
+        WebcamLocalization(config, allow_synthetic=True)
+
+
+def test_attested_geometric_equivalence_admits_a_different_decoder_path(tmp_path):
+    config, image, _ = webcam_scene(
+        tmp_path, decoder_path="MediaMTX WHEP -> aiortc -> PyAV -> BGR"
+    )
+    config["decoder_path_attested_geometrically_equivalent"] = "opencv-ffmpeg-rtsp"
+    loop = WebcamLocalization(config, allow_synthetic=True)
+    result = loop.update(image, 10.1, 10.12)
+    assert result["pose_observation"]["filter_status"] == "accepted"
 
 
 @pytest.mark.parametrize("values", [[600] * 21, [100]])
