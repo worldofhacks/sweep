@@ -240,11 +240,16 @@ class FakeNode:
 
     async def _telemetry_loop(self) -> None:
         interval = 1.0 / self.config.telemetry_hz
+        last_camera_readiness = time.monotonic()
         while True:
             await asyncio.sleep(interval)
             if self._connection_epoch is not None:
                 self._enqueue(self._telemetry_frame())
                 self._enqueue(self._node_status_frame())
+                now = time.monotonic()
+                if now - last_camera_readiness >= 2.0:
+                    self._enqueue(self._capture_readiness_frame())
+                    last_camera_readiness = now
 
     def _handle_membership(self, frame: dict[str, object]) -> None:
         epoch = frame.get("connection_epoch")

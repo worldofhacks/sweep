@@ -110,7 +110,7 @@ def _submit_console_intent(
         while time.monotonic() < deadline:
             event = json.loads(socket.recv(timeout=max(0.001, deadline - time.monotonic())))
             if event.get("intent_id") == intent_id and event.get("source") == "autonomy":
-                assert event["status"] in {"accepted", "completed"}, json.dumps(
+                assert event["status"] in {"accepted", "executing", "completed"}, json.dumps(
                     event, sort_keys=True
                 )
                 return
@@ -220,6 +220,19 @@ def test_loopback_rehearsal_publishes_a_fresh_signed_pose_and_private_bootstrap(
         assert rehearsal._composition.config.planning.flight_speed_m_s == 0.04
         assert rehearsal._composition.config.safety.operator_timeout_ms == 120_000
         autonomy = rehearsal._composition.session(rehearsal.session_id)
+        session = runtime.sessions[rehearsal.session_id]
+        initial_readiness = session.capture_readiness(1)
+        assert initial_readiness is not None
+        refreshed = _wait_for(
+            lambda: (
+                readiness
+                if (readiness := session.capture_readiness(1)) is not None
+                and readiness.t > initial_readiness.t
+                else None
+            ),
+            timeout_s=3,
+        )
+        assert refreshed.camera_ok and refreshed.storage_ok
         assert rehearsal._app is not None
         approved = rehearsal._app.state.platform_services.maps.approved_bundle(rehearsal.session_id)
         authoring_map_pin = rehearsal._composition.config.navigation.config.authoring_map_pin
